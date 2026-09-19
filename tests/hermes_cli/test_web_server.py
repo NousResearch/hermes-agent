@@ -809,6 +809,18 @@ class TestWebServerEndpoints:
         resp = self.client.post("/api/gateway/drain", json={"action": "explode"})
         assert resp.status_code == 400
 
+    def test_gateway_drain_rejects_malformed_json_without_writing_marker(self):
+        from gateway.drain_control import drain_request_path
+
+        resp = self.client.post(
+            "/api/gateway/drain",
+            content=b"{not json",
+            headers={"content-type": "application/json"},
+        )
+
+        assert resp.status_code == 400
+        assert not drain_request_path().exists()
+
 
 
 

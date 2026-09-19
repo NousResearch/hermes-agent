@@ -429,6 +429,13 @@ def _probe_single_server(
     from tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
+    from tools.mcp_oauth import interactive_oauth_forced
+    if interactive_oauth_forced():
+        # A login probe (`hermes mcp login`, dashboard or TUI re-auth) gets one connection attempt:
+        # the initial-connect retries would start a second PKCE flow while the first browser tab
+        # still waits for consent.
+        from tools.mcp_tool_server_run import SINGLE_LOGIN_ATTEMPT_KEY
+        config = {**config, SINGLE_LOGIN_ATTEMPT_KEY: True}
     if connect_timeout is None:
         try:
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))

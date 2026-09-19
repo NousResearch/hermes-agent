@@ -142,6 +142,22 @@ class TestValidateToolset:
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
 
+    def test_registered_plugin_platform_bundle_is_valid(self):
+        """``hermes-<platform>`` for a plugin platform (teams, google_chat) resolves via
+        resolve_toolset(), so validation must agree instead of flagging it unknown."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        assert validate_toolset("hermes-fixture_plugin_platform") is False
+        platform_registry.register(PlatformEntry(
+            name="fixture_plugin_platform", label="Fixture", adapter_factory=lambda cfg: None,
+            check_fn=lambda: True))
+        try:
+            assert resolve_toolset("hermes-fixture_plugin_platform")
+            assert validate_toolset("hermes-fixture_plugin_platform") is True
+        finally:
+            platform_registry.unregister("fixture_plugin_platform")
+        assert validate_toolset("hermes-fixture_plugin_platform") is False
+
     def test_mcp_alias_uses_live_registry(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

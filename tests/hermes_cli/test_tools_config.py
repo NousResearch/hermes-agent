@@ -62,6 +62,26 @@ def test_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_plugin_platform_default_toolset_no_runtime_warning(caplog):
+    """A plugin platform saved with its synthesized default (``teams: [hermes-teams]``) resolves to the
+    core tools, so the #38798 "no valid toolsets" warning must not fire."""
+    import hermes_cli.tools_config as _tc
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    _tc._warned_invalid_platform_toolsets.discard("fixture_plugin_platform")
+    platform_registry.register(PlatformEntry(
+        name="fixture_plugin_platform", label="Fixture", adapter_factory=lambda cfg: None, check_fn=lambda: True))
+    config = {"platform_toolsets": {"fixture_plugin_platform": ["hermes-fixture_plugin_platform"]}}
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+            enabled = _get_platform_tools(config, "fixture_plugin_platform")
+    finally:
+        platform_registry.unregister("fixture_plugin_platform")
+
+    assert "terminal" in enabled
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     """When at least one configured toolset is valid, tools still resolve, so
     the runtime zero-tools warning must not fire (the migration-time check still

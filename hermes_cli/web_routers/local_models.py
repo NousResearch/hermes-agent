@@ -87,6 +87,11 @@ class SideloadBody(BaseModel):
     path: str                   # absolute path to a .gguf on this machine
 
 
+class MtpOverrideBody(BaseModel):
+    model_id: str
+    enabled: bool | None = None  # None -> return to the catalog's posture
+
+
 def _human_gb(n: int | float) -> str:
     return f"{n / (1 << 30):.1f} GB"
 
@@ -706,9 +711,56 @@ async def local_models_delete(model_id: str):
         path.unlink(missing_ok=True)
     # Growth state dies with the model: a re-download starts back at its zero-spill window, not a stale grown one.
     _quiet(lambda: growth.clear_window_override(model_id), None, debug="window-override clear skipped")
+    # A forced MTP posture is per-file state and must not leak onto a future model with the same id.
+    _quiet(
+        lambda: growth.clear_mtp_override(model_id),
+        None,
+        debug="mtp-override clear skipped",
+    )
     threading.Thread(target=_refresh_runtime, args=("post-delete runtime refresh skipped",), daemon=True,
                      name="lr-post-delete").start()
     return {"ok": True}
+
+
+@router.post("/api/local-models/models/{model_id}/mtp")
+async def local_models_set_mtp(model_id: str, body: MtpOverrideBody):
+    """Force a model's MTP posture, then bounce the router so the new launch policy takes effect.
+
+    The catalog stays the authority for the models it knows; this is the escape hatch for
+    dynamically-MTP'd builds it has never heard of (and for disabling a draft whose acceptance
+    you don't like on a catalog model).
+    """
+    if body.model_id != model_id:
+        raise HTTPException(status_code=422, detail="body model_id must match the path")
+    if not _variant_files_on_disk(model_id) and catalog.entry_for_model(model_id) is None:
+        raise HTTPException(status_code=404, detail="model not found")
+    if body.enabled is None:
+        _quiet(
+            lambda: growth.clear_mtp_override(model_id),
+            None,
+            debug="mtp-override clear skipped",
+        )
+    else:
+        # The whole point of the call is the persisted posture: a failed write must
+        # answer with an error, not ok — otherwise the next start silently runs the
+        # old launch policy while the dashboard believes it changed.
+        try:
+            growth.save_mtp_override(model_id, body.enabled)
+        except Exception as exc:
+            logger.warning("mtp-override save failed for %s: %s", model_id, exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"could not persist the MTP override for {model_id}",
+            ) from exc
+    threading.Thread(
+        target=_refresh_runtime,
+        args=("post-mtp-override runtime refresh skipped",),
+        daemon=True,
+        name="lr-post-mtp",
+    ).start()
+    # Report what the store actually holds, not what the caller asked for.
+    effective = growth.load_mtp_overrides().get(model_id)
+    return {"ok": True, "model_id": model_id, "mtp_override": effective}
 
 
 # ── quickstart: one click from nothing to a working default ──

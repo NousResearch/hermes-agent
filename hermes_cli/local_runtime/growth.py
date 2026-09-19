@@ -13,6 +13,34 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def mtp_overrides_path():
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "mtp_overrides.json"
+
+
+def load_mtp_overrides() -> dict:
+    """model_id -> forced MTP posture. Empty on any read problem."""
+    with suppress(Exception):
+        with open(mtp_overrides_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {str(k): bool(v) for k, v in data.items()}
+    return {}
+
+
+def save_mtp_override(model_id: str, enabled: bool) -> None:
+    overrides = load_mtp_overrides()
+    overrides[model_id] = bool(enabled)
+    _write_overrides(overrides, path=mtp_overrides_path())
+
+
+def clear_mtp_override(model_id: str) -> None:
+    overrides = load_mtp_overrides()
+    if model_id in overrides:
+        del overrides[model_id]
+        _write_overrides(overrides, path=mtp_overrides_path())
+
+
 def window_overrides_path():
     from hermes_cli.local_runtime.binaries import runtimes_root
 
@@ -28,8 +56,8 @@ def load_window_overrides() -> dict:
     return {}
 
 
-def _write_overrides(overrides: dict) -> None:
-    path = window_overrides_path()
+def _write_overrides(overrides: dict, path=None) -> None:
+    path = path or window_overrides_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(overrides, indent=1), encoding="utf-8")
 

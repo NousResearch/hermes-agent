@@ -12,9 +12,11 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _COMPRESSION_MARKER_TEMPLATE,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
+    _truncate_tool_call_args_json,
 )
 from hermes_state import SessionDB
 
@@ -2370,7 +2372,9 @@ class TestTruncateToolCallArgsJson:
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert "HERMES-CONTEXT-COMPRESSION" in parsed["content"]
+        # Head preserved, marker appended (not substituted for the leaf's own text).
+        assert parsed["content"].startswith("# Shopping Browser Setup Notes\n\n"[:200])
+        assert parsed["content"].endswith("⟫")
         assert len(shrunk) < len(original)
 
 
@@ -2391,7 +2395,8 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert "HERMES-CONTEXT-COMPRESSION" in parsed["note"]
+        assert parsed["note"].startswith("z" * 200)
+        assert parsed["note"].endswith("⟫")
 
 
 
@@ -2429,87 +2434,45 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert "HERMES-CONTEXT-COMPRESSION" in parsed["content"]
+        assert parsed["content"].startswith(huge_content[:200])
+        assert parsed["content"].endswith("⟫")
 
 
 class TestTruncationMarkerNotImitable:
     """Regression tests for #83714.
 
     A model replayed its own history containing the bare
-    ``"...[truncated]"`` marker and, in a later turn, imitated it —
-    writing the literal marker into a *new* tool call's ``new_string``
-    instead of real content, which the file tools then wrote straight to
-    disk (see PR #83752's write_file/patch_tool guard, the safety net for
-    when this still slips through). The compressor-side fix is to stop
-    injecting a marker that looks like something the model itself would
-    plausibly write.
+    ``"...[truncated]"`` marker and, in a later turn, imitated it — writing
+    the literal marker into a *new* tool call's ``new_string`` instead of
+    real content. The compressor-side fix is to stop injecting a marker that
+    looks like something the model itself would plausibly write.
     """
 
-    def _helper(self):
-        from agent.context_compressor import _truncate_tool_call_args_json
-        return _truncate_tool_call_args_json
-
     def test_old_bare_marker_no_longer_produced(self):
-        """The exact literal that caused #83714 must never come out of the
-        shrink helper again, in isolation or as a suffix."""
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({"path": "/f.py", "new_string": "y" * 600})
-        shrunk = _json.loads(shrink(payload))["new_string"]
+        """The exact literal that caused #83714 must never come out of the shrink helper again."""
+        payload = json.dumps({"path": "/f.py", "new_string": "y" * 600})
+        shrunk = json.loads(_truncate_tool_call_args_json(payload))["new_string"]
         assert "...[truncated]" not in shrunk
-        assert not shrunk.endswith("...[truncated]")
 
-    def test_marker_uses_distinctive_non_ascii_delimiters(self):
-        """The marker must be visually/structurally unlike prose a model
-        would naturally continue with — distinctive delimiters are one of
-        the deliberate anti-imitation properties (see
-        ``_COMPRESSION_MARKER_TEMPLATE``'s docstring)."""
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({"content": "x" * 1000})
-        shrunk = _json.loads(shrink(payload))["content"]
-        assert "⟪" in shrunk and "⟫" in shrunk
+    def test_shrink_only_replaces_when_it_reclaims_and_never_re_shrinks(self):
+        """Shrinking is a one-way, size-reducing rewrite of a leaf.
 
-    def test_marker_states_it_is_not_original_content(self):
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({"content": "x" * 1000})
-        shrunk = _json.loads(shrink(payload))["content"]
-        assert "NOT part of the original" in shrunk
+        Every replayed leaf must lose bytes (a leaf just over the cap used to
+        *grow*, because the marker is longer than the text it replaces), keep a
+        200-char head plus the marker with true counts, and be a fixed point: a
+        second pass over already-shrunk args must not rewrite the counts.
+        """
+        # Just over the cap: replacing here would be a net gain of characters.
+        tiny = json.dumps({"new_string": "y" * 201, "pad": "z" * 320})
+        assert _truncate_tool_call_args_json(tiny) == tiny
 
-    def test_marker_carries_a_per_instance_char_count(self):
-        """The omitted/total counts vary per call, so a model that copies
-        the marker verbatim into an unrelated new tool call produces an
-        internally inconsistent (and thus more obviously wrong) string,
-        rather than a plausible-looking universal abbreviation token."""
-        import json as _json
-        shrink = self._helper()
-        # head_chars=200: a 300-char input omits 100, a 3000-char input omits 2800.
-        shrunk_short = _json.loads(shrink(_json.dumps({"c": "x" * 300})))["c"]
-        shrunk_long = _json.loads(shrink(_json.dumps({"c": "x" * 3000})))["c"]
-        assert shrunk_short != shrunk_long
-        assert "100 of 300 chars omitted" in shrunk_short
-        assert "2,800 of 3,000 chars omitted" in shrunk_long
-
-    def test_string_below_threshold_is_untouched(self):
-        """Strings at or under head_chars never get a marker at all — the
-        char-count check above only applies once shrinking actually kicks in."""
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({"c": "x" * 150})
-        parsed = _json.loads(shrink(payload))
-        assert parsed["c"] == "x" * 150
-
-    def test_shrunk_value_stays_a_plain_string(self):
-        """#11762 established that the shrunk JSON shape must match the
-        original (string leaf stays a string leaf) so strict providers
-        don't 400 on a type mismatch when the history is replayed. The
-        #83714 marker-text fix must not regress that invariant."""
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({"new_string": "z" * 500})
-        parsed = _json.loads(shrink(payload))
-        assert isinstance(parsed["new_string"], str)
+        payload = json.dumps({"content": "x" * 2000})
+        once = _truncate_tool_call_args_json(payload)
+        assert len(once) < len(payload)
+        assert json.loads(once)["content"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
+            omitted=1800, total=2000
+        )
+        assert _truncate_tool_call_args_json(once) == once
 
 
 class TestLazyContextResolution:

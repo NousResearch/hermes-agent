@@ -1239,9 +1239,13 @@ class AIAgent(
         """Whether a fallback provider remains (mirrors ``try_activate_fallback``'s guard) — gates the
         "trying fallback..." status so we never announce one that won't be attempted.
 
+        Route-aware (#110822): the walk uses the per-primary ``fallback_routes`` chain when one is
+        configured for the current primary.
+
         See #17446.
         """
-        return getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
+        from agent.chat_completion_helpers import active_fallback_chain
+        return int(getattr(self, "_fallback_index", 0) or 0) < len(active_fallback_chain(self))
 
     _restore_primary_runtime = _forward("agent.agent_runtime_helpers", "restore_primary_runtime")
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")

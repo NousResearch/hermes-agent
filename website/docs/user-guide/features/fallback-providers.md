@@ -182,6 +182,57 @@ fallback_providers:
     model: gpt-5.3-codex
 ```
 
+### Per-Primary Fallback Chains
+
+One global chain cannot express "primary A fails over to B, but primary B fails over to C" or "my
+local model must never fail over to a cloud provider". `fallback_routes` adds per-primary chains on
+top of `fallback_providers`, which stays the default:
+
+```yaml
+fallback_providers:            # default chain — used by any primary without its own route
+  - provider: nous
+    model: hermes-4
+
+fallback_routes:
+  # openrouter/vendor/model-a → openai-codex/model-b, then xai-oauth/model-c
+  - when:
+      provider: openrouter
+      model: vendor/model-a
+    fallback_providers:
+      - provider: openai-codex
+        model: model-b
+      - provider: xai-oauth
+        model: model-c
+
+  # openai-codex/model-b → xai-oauth/model-c only
+  - when:
+      provider: openai-codex
+      model: model-b
+    fallback_providers:
+      - provider: xai-oauth
+        model: model-c
+
+  # any model on a local endpoint: never fall back
+  - when:
+      provider: custom
+    fallback_providers: []
+```
+
+Semantics:
+
+- The route is matched against the **effective primary** — its provider and model at the moment the
+  fallback is attempted, so `/model`, aliases, channel/profile overrides and delegated children all
+  use their own primary's route.
+- Matching is case-insensitive. Omitting `when.model` matches every model on that provider.
+- The **first matching route wins**; an explicitly empty `fallback_providers: []` means "this
+  primary never falls back".
+- **No matching route → the top-level `fallback_providers` chain**, unchanged. That includes the
+  existing behaviour when `fallback_routes` is absent or malformed.
+- Entry format is identical to `fallback_providers` (same `provider`/`model`/`base_url`/`key_env`
+  fields, legacy `fallback_model` still merged last), and the existing same-backend skip, cooldown,
+  credential-pool and per-turn primary restoration behaviour is unchanged. A route is walked as one
+  chain: once it is exhausted, Hermes does not re-route to the fallback's own route mid-turn.
+
 ### Where Fallback Works
 
 | Context | Fallback Supported |

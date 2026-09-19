@@ -391,6 +391,20 @@ import {
 }
 
 {
+  for (const [filePath, expectedMime] of [
+    ['/tmp/report.html', 'text/html'],
+    ['/tmp/report.htm', 'text/html'],
+    ['/tmp/notes.txt', 'text/plain'],
+    ['/tmp/data.csv', 'text/csv'],
+  ]) {
+    const payload = mediaPayloadForFile({ buffer: Buffer.from('body'), filePath });
+    assert.ok(payload.document);
+    assert.equal(payload.mimetype, expectedMime, filePath);
+  }
+  console.log('  ✓ text/web documents keep their specific MIME types');
+}
+
+{
   const payload = buildPollPayload({
     question: 'Proceed?',
     options: ['Approve', 'Deny'],

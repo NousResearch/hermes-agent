@@ -11,6 +11,8 @@ export const MIME_MAP = {
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  html: 'text/html', htm: 'text/html',
+  txt: 'text/plain', csv: 'text/csv',
 };
 
 export function normalizeWhatsAppId(value) {

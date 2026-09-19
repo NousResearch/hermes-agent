@@ -97,3 +97,7 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Compact progress presentation is resolved once; callbacks never borrow another turn's settings.
+    tool_progress_comment_descriptions: bool = field(default=False, kw_only=True)
+    tool_preview_max_len: int = field(default=0, kw_only=True)
+    friendly_tool_labels: bool = field(default=True, kw_only=True)

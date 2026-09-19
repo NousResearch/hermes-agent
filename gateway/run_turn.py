@@ -3019,6 +3019,15 @@ class GatewayTurnMixin:
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
+            tool_progress_comment_descriptions=disp.resolve_display_setting(
+                disp.user_config, disp.platform_key, "tool_progress_comment_descriptions", False,
+            ),
+            tool_preview_max_len=disp.resolve_display_setting(
+                disp.user_config, disp.platform_key, "tool_preview_length", 0,
+            ),
+            friendly_tool_labels=bool(disp.resolve_display_setting(
+                disp.user_config, disp.platform_key, "friendly_tool_labels", True,
+            )),
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )

@@ -2036,6 +2036,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
+  tool_progress_comment_descriptions: false  # Gateway all/new: opt-in first-comment labels
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
@@ -2071,6 +2072,38 @@ display:
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+### Comment descriptions in gateway tool progress
+
+Set `display.tool_progress_comment_descriptions: true` to use a first-line comment
+as the compact label for `terminal` and `execute_code` calls in gateway `all` and
+`new` modes. The default is `false`. You can enable it for one platform:
+
+```yaml
+display:
+  tool_progress_comment_descriptions: false
+  platforms:
+    mattermost:
+      tool_progress: all
+      tool_progress_comment_descriptions: true
+      tool_preview_length: 60
+```
+
+The first physical line must start with `#`, optionally indented with ASCII spaces
+or tabs. For example, `# Check branch and status` displays as
+`Running: Check branch and status`. A whitespace-separated closing `#` is optional.
+LF, CRLF and lone CR end the first line. Shebangs (`#!`), empty labels, later
+comments and invalid argument types use the existing preview instead. Other tools,
+verbose details, logs, raw source and executed arguments are unchanged.
+
+Labels have invisible/control characters removed and recognizable credentials
+redacted, including URL credentials, even when general secret redaction is disabled.
+Markup, mentions and URL punctuation become inert display characters. The label is
+limited by `tool_preview_length` (40 characters in compact gateway mode when the
+resolved value is nonpositive); the tool name or friendly verb is outside that budget.
+The enabled flag, cap and `friendly_tool_labels` choice are captured for each turn,
+so concurrent conversations keep their own presentation settings. An explicit
+platform `false` overrides a global `true`.
 
 ### Per-turn summary and spinner token flow
 

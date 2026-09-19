@@ -6,11 +6,12 @@
  *  - a live clarify question letters its options A/B/C and offers the type-your-own row
  *    (lettered one past the last choice), answerable from the panel;
  *  - a live batch clarify stages picks and typed answers per question;
- *  - a live goal can be paused and resumed straight from the panel.
+ *  - a live goal, loop and heartbeat can each be paused and resumed straight from the panel.
  *
  * Output: .inbox-work/live-approval-evidence/ (shared with the approval spec).
  */
 
+import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -105,6 +106,78 @@ async function openInbox(page: Page): Promise<void> {
   await page.getByRole('button', { name: /^(Action Center|Action Center — \d+ need attention)$/ }).first().click()
   await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible()
 }
+
+function pythonBinary(): string {
+  const configured = process.env.HERMES_DESKTOP_PYTHON
+
+  if (!configured) {
+    throw new Error('HERMES_DESKTOP_PYTHON must point at the Python that drives the app')
+  }
+
+  return configured
+}
+
+/**
+ * Seed one active automation onto the newest session in the sandbox DB, before opening the
+ * panel. Creation flows are not part of this change — the controls' job is pausing and
+ * resuming what already exists — so the state goes in directly rather than through a menu.
+ */
+function seedAutomation(hermesHome: string, kind: 'goal' | 'loop' | 'heartbeat'): void {
+  const script = path.join(hermesHome, 'seed-live-automation.py')
+
+  fs.writeFileSync(script, SEED_LIVE_AUTOMATION_SOURCE, 'utf8')
+  execSync(`"${pythonBinary()}" "${script}" "${path.join(hermesHome, 'state.db')}" ${kind}`, {
+    stdio: 'pipe'
+  })
+}
+
+const SEED_LIVE_AUTOMATION_SOURCE = `
+import json, sqlite3, sys, time
+
+db_path, kind = sys.argv[1], sys.argv[2]
+now = time.time()
+con = sqlite3.connect(db_path)
+row = con.execute(
+    "SELECT session_key FROM sessions WHERE session_key != '' ORDER BY started_at DESC LIMIT 1"
+).fetchone()
+if row is None:
+    sys.exit("no session row to seed")
+key = row[0]
+metas = {
+    "goal": {
+        "goal": "Ship with the panel controls",
+        "status": "active",
+        "turns_used": 1,
+        "max_turns": 12,
+        "created_at": now,
+        "last_turn_at": now,
+    },
+    "loop": {
+        "prompt": "Pause the loop from the panel",
+        "status": "active",
+        "mode": "interval",
+        "interval_seconds": 3600,
+        "current_delay": 3600,
+        "created_at": now,
+        "next_due_at": now + 3600,
+    },
+    "heartbeat": {
+        "prompt": "Pause the heartbeat from the panel",
+        "interval_seconds": 3600,
+        "status": "active",
+        "created_at": now,
+        "last_fired_at": now,
+        "fire_count": 0,
+    },
+}
+con.execute(
+    "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)",
+    (kind + ":" + key, json.dumps(metas[kind])),
+)
+con.commit()
+con.close()
+print("seeded", kind, key)
+`;
 
 test('a live clarify letters options A–C and the type-your-own row answers it', async () => {
   test.setTimeout(300_000)
@@ -209,22 +282,13 @@ test('a live batch clarify stages picks and typed answers per question', async (
 test('a live goal can be paused and resumed from the inbox panel', async () => {
   test.setTimeout(420_000)
 
-  await withApp('goal-controls', null, async (_fixture, page) => {
-    // Prime the session first: the composer chrome (and its Create-automation menu) is
-    // reachable in a fresh chat, but the same flow as automation-local.spec.ts is the
-    // proven path, so walk it identically.
-    const prompt = 'Write a short greeting for the inbox controls test'
-
+  await withApp('goal-controls', null, async (fixture, page) => {
+    // Prime the session first, then seed an active goal onto it — the panel reads the
+    // live session's persisted automation, which is exactly what the controls act on.
     await sendPrompt(page, 'Hello. This is the inbox controls test.')
     await expect(page.getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 30_000 })
 
-    // Create a goal the same way a person does: composer → Create automation.
-    await page.getByRole('button', { name: 'Add files and actions', exact: true }).first().click()
-    await page.getByRole('menuitem', { name: /Create automation/ }).click()
-    await expect(page.getByRole('dialog')).toBeVisible()
-    await page.getByLabel('Goal prompt', { exact: true }).fill(prompt)
-    await page.getByRole('button', { name: 'Start goal', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30_000 })
+    seedAutomation(fixture.sandbox.hermesHome, 'goal')
 
     await openInbox(page)
 
@@ -257,21 +321,14 @@ test('a live goal can be paused and resumed from the inbox panel', async () => {
 test('a live loop can be paused and resumed from the panel', async () => {
   test.setTimeout(420_000)
 
-  await withApp('loop-controls', null, async (_fixture, page) => {
-    // Prime the session, then create a loop the same way a person does.
+  await withApp('loop-controls', null, async (fixture, page) => {
+    // Prime the session, then seed an hourly loop. A resumed loop re-arms to fire within
+    // about five seconds by design; that fire just serves one mock turn and the loop stays
+    // active, so the Pause control returns.
     await sendPrompt(page, 'Hello. This is the loop controls test.')
     await expect(page.getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 30_000 })
 
-    await page.getByRole('button', { name: 'Add files and actions', exact: true }).first().click()
-    await page.getByRole('menuitem', { name: /Create automation/ }).click()
-    await page.getByRole('button', { name: 'Loop', exact: true }).click()
-    await page.getByLabel('Loop prompt', { exact: true }).fill('Pause the loop from the panel')
-    await page.getByLabel('Interval', { exact: true }).fill('3600')
-    // A generous run limit: resuming a loop re-arms it to fire within ~5s, and a limit of 1
-    // would let that fire COMPLETE the loop (controls then disappear before we can resume).
-    await page.getByLabel(/Run limit/).fill('50')
-    await page.getByRole('button', { name: 'Start loop', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30_000 })
+    seedAutomation(fixture.sandbox.hermesHome, 'loop')
 
     await openInbox(page)
 
@@ -299,17 +356,12 @@ test('a live loop can be paused and resumed from the panel', async () => {
 test('a live heartbeat can be paused and resumed from the panel', async () => {
   test.setTimeout(420_000)
 
-  await withApp('heartbeat-controls', null, async (_fixture, page) => {
+  await withApp('heartbeat-controls', null, async (fixture, page) => {
+    // Prime the session, then seed an hourly heartbeat onto it.
     await sendPrompt(page, 'Hello. This is the heartbeat controls test.')
     await expect(page.getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 30_000 })
 
-    await page.getByRole('button', { name: 'Add files and actions', exact: true }).first().click()
-    await page.getByRole('menuitem', { name: /Create automation/ }).click()
-    await page.getByRole('button', { name: 'Heartbeat', exact: true }).click()
-    await page.getByLabel('Heartbeat prompt', { exact: true }).fill('Pause the heartbeat from the panel')
-    await page.getByLabel('Interval', { exact: true }).fill('3600')
-    await page.getByRole('button', { name: 'Create heartbeat', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30_000 })
+    seedAutomation(fixture.sandbox.hermesHome, 'heartbeat')
 
     await openInbox(page)
 

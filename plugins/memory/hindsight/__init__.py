@@ -1102,9 +1102,15 @@ class HindsightMemoryProvider(MemoryProvider):
         content, context = args["content"], args.get("context")
         item = self._build_retain_kwargs(content, context=context, tags=args.get("tags"),
                                          occurred_at=args.get("occurred_at"))
-        logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                     self._bank_id, len(content), context)
-        self._retain_batch(item, bank_id=self._bank_id)
+        logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s, retain_async=%s",
+                     self._bank_id, len(content), context, self._retain_async)
+        # Honor the configured retain_async flag (matches sync_turn's behavior).
+        # The cloud client's default is retain_async=False, which makes a tool
+        # call block on the server's LLM extraction. Without this the agent's
+        # explicit hindsight_retain tool calls hang until the daemon's LLM
+        # timeout (default 600s), surfacing as a bare "Failed to store memory:"
+        # at the model layer.
+        self._retain_batch(item, bank_id=self._bank_id, retain_async=self._retain_async)
         logger.debug("Tool hindsight_retain: success")
         return "Memory stored successfully."
 

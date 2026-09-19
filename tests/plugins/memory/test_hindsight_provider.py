@@ -477,11 +477,31 @@ class TestToolHandlers:
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
+        # Honor the configured retain_async flag at the call level so the tool
+        # path doesn't silently fall through to the cloud client's default of
+        # False (which blocks on the daemon's LLM extraction).
+        assert call_kwargs["retain_async"] == provider._retain_async
         item = call_kwargs["items"][0]
         assert item["content"] == "user likes dark mode"
         # bank_id/retain_async are call-level args, never item keys.
         assert "bank_id" not in item
         assert "retain_async" not in item
+
+    def test_retain_thread_async_flag_through_tool(self, provider_with_config):
+        """The tool path passes retain_async from config (default True), matching sync_turn."""
+        provider = provider_with_config(retain_async=True)
+        json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "anything"}
+        ))
+        assert provider._client.aretain_batch.call_args.kwargs["retain_async"] is True
+
+    def test_retain_thread_async_false_through_tool(self, provider_with_config):
+        """When retain_async=False is configured, the tool passes it through (sync behavior)."""
+        provider = provider_with_config(retain_async=False)
+        json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "anything"}
+        ))
+        assert provider._client.aretain_batch.call_args.kwargs["retain_async"] is False
 
     def test_retain_defaults_item_timestamp_when_no_occurred_at(self, provider, monkeypatch):
         event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))

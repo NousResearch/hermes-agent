@@ -13,7 +13,11 @@ from hermes_constants import (
 )
 
 
-def test_portal_account_timeout_does_not_join_stalled_worker(monkeypatch):
+@pytest.mark.parametrize(
+    "fetcher",
+    [account_usage._fetch_portal_account, billing_usage.fetch_nous_account],
+)
+def test_portal_account_timeout_does_not_join_stalled_worker(monkeypatch, fetcher):
     release = threading.Event()
 
     def stalled_fetch(*, force_fresh: bool = False):

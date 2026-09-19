@@ -181,4 +181,3 @@ export {
   type WebSocketAuthParam
 } from './websocket-url'
 export { type ModelOptionsResult, type ModelOptionProvider, type ConnectionRequestPayload } from './gateway-contract.generated'
-export { type GatewayClientOptions } from './json-rpc-gateway'

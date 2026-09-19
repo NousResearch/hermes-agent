@@ -1380,11 +1380,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
     elif st.target_provider == "custom" and st.current_base_url:
         # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
-        # ANOTHER provider (the per-turn config sync adopting ``provider: custom``), the configured
-        # custom endpoint wins: keeping the session's URL pairs the new model with the previous
-        # provider's host and key (#73680). The resolver raises with no endpoint and no key, and
-        # lands on the OpenRouter DEFAULT with a key but no ``model.base_url`` (#74143) — both mean
-        # "nothing configured": keep the current endpoint.
+        # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
+        # endpoint wins, or the new model is paired with the old provider's host and key (#73680).
+        # With nothing configured the resolver either raises (st.* keep the session values) or
+        # lands on OpenRouter's default (#74143) — the session endpoint is kept in both cases.
         key, url = st.current_api_key, st.current_base_url
         if st.current_provider != "custom":
             with suppress(Exception):
@@ -1446,8 +1445,9 @@ def _creds_for_current_provider(st: _Switch) -> None:
             pass
         # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
         # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
-        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
-        # key/endpoint rotation is not pinned to a stale session.
+        # (#74143). Keep the session endpoint + key then (also when the resolver came back empty,
+        # whatever host the session is on); a config-backed custom URL still wins so key/endpoint
+        # rotation is not pinned to a stale session.
         if (
             st.current_provider in {"custom", "local"} and st.current_base_url
             and (not st.base_url or _fell_back_to_openrouter_default(st))

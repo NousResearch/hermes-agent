@@ -3210,6 +3210,65 @@ class TestDoubleCompactionSummaryRole:
         )
 
 
+class TestSummaryConstraintProvenance:
+
+    def test_rebuilds_constraints_from_explicit_user_scope(self, compressor):
+        scoped = "Do not delete the script."
+        durable = "Never delete credential files without my explicit approval."
+        generated = (
+            "## Historical Task Snapshot\nUser asked: 'repair the command.'\n\n"
+            "## Constraints & Preferences\n"
+            f"- {scoped}\n"
+            f"- {durable}\n\n"
+            "## Key Decisions\n"
+            f"Keep {scoped} attached to this operation.\n\n"
+            "## Constraints & Preferences\n"
+            f"{scoped}"
+        )
+        turns = [
+            {"role": "user", "content": scoped},
+            {"role": "assistant", "content": "I repaired the command."},
+            {"role": "user", "content": durable},
+            {"role": "assistant", "content": "I will retain that policy."},
+        ]
+
+        with patch.object(compressor, "_call_summary_llm", return_value=generated):
+            result = compressor._generate_summary(turns)
+
+        assert result is not None
+        body = compressor._strip_summary_prefix(result)
+        constraints = body.split("## Constraints & Preferences\n", 1)[1].split("\n## ", 1)[0]
+        assert body.count("## Constraints & Preferences") == 1
+        assert scoped not in constraints
+        assert durable in constraints
+        assert f"Keep {scoped} attached to this operation." in body
+
+    def test_iterative_summary_cannot_reintroduce_scoped_constraint(self, compressor):
+        scoped = "Do not delete the script."
+        compressor._previous_summary = (
+            "## Historical Task Snapshot\nNone.\n\n"
+            "## Constraints & Preferences\n"
+            f"{scoped}\n"
+        )
+        generated = (
+            "## Historical Task Snapshot\nUser asked: 'continue.'\n\n"
+            "## Constraints & Preferences\n"
+            f"{scoped}\n\n"
+            "## Completed Actions\n1. Continued the operation."
+        )
+
+        with patch.object(compressor, "_call_summary_llm", return_value=generated):
+            result = compressor._generate_summary([
+                {"role": "user", "content": "Continue."},
+                {"role": "assistant", "content": "Continuing."},
+            ])
+
+        assert result is not None
+        body = compressor._strip_summary_prefix(result)
+        constraints = body.split("## Constraints & Preferences\n", 1)[1].split("\n## ", 1)[0]
+        assert scoped not in constraints
+
+
 class TestSummaryPromptBounding:
 
 

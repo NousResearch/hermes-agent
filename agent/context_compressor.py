@@ -10,6 +10,7 @@ import logging
 import sqlite3
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -778,6 +779,46 @@ LEAN_TAIL_CAP_TOKENS = 25_000
 _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
 _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
+_CONSTRAINTS_HEADING = "## Constraints & Preferences"
+_CONSTRAINTS_SECTION_RE = re.compile(
+    rf"(?ms)^{re.escape(_CONSTRAINTS_HEADING)}\s*\n.*?(?=\n##\s|\Z)"
+)
+# A summary model cannot reliably infer whether an imperative is durable. Only explicit future-facing
+# language or broad always/never policies may enter the standing section; all other user text remains historical.
+_STANDING_CONSTRAINT_MARKERS = (
+    "from now on",
+    "going forward",
+    "in the future",
+    "for future tasks",
+    "for future requests",
+    "as a standing rule",
+    "my preference is",
+    "my standing preference is",
+    "my rule is",
+    "remember that",
+    "de agora em diante",
+    "a partir de agora",
+    "daqui em diante",
+    "no futuro",
+    "para tarefas futuras",
+    "minha preferencia e",
+    "minha regra e",
+    "lembre se de que",
+    "mantenha como regra",
+)
+_STANDING_CONSTRAINT_PREFIX_RE = re.compile(r"^(?:(?:i|we)\s+)?(?:always|never|sempre|nunca)\b")
+_SCOPED_CONSTRAINT_REFERENCE_RE = re.compile(
+    r"\b(?:this|that|these|those|current|the (?:script|file|command|operation|task|request|change|patch|document)|"
+    r"este|esta|esse|essa|atual|o (?:script|arquivo|comando|pedido|arquivo)|a (?:operacao|tarefa|mudanca))\b"
+)
+_STANDING_BROAD_POLICY_RE = re.compile(
+    r"\b(?:all|any|every|each|files|scripts|credentials?|secrets?|api keys?|"
+    r"without (?:my )?(?:explicit )?(?:approval|authorization|consent))\b"
+)
+_CONCRETE_ITEM_RE = re.compile(
+    r"\b(?:a|the)\s+(?:script|file|command|operation|task|request|change|patch|document)\b|"
+    r"\b(?:script|file|command|operation|task|request|change|patch|document)\b(?!s\b)"
+)
 _LEAN_RECOVERY_HEADING = "## Context Recovery"
 # Demote tool results older than the newest N rounds so the tail budget binds
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
@@ -836,6 +877,38 @@ def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
         "verbatim. These are the user's actual words and override any "
         "paraphrase of them above.)"
     )
+
+
+def _normalize_constraint_text(text: str) -> str:
+    """Normalize user text for conservative scope checks and duplicate elimination."""
+    without_accents = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return " ".join(without_accents.casefold().split())
+
+
+def _constraint_sentence_candidates(text: str) -> list[str]:
+    """Yield short source spans that can be evaluated as independent user statements."""
+    for line in re.split(r"\r?\n+", text):
+        line = re.sub(r"^\s*(?:[-*•]\s+|>\s+|\d+[.)]\s+)", "", line).strip()
+        if not line:
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            sentence = sentence.strip(" `\\\"'")
+            if sentence:
+                yield sentence
+
+
+def _is_explicit_standing_constraint(text: str) -> bool:
+    """Return whether *text* explicitly requests future-wide constraint semantics."""
+    normalized = _normalize_constraint_text(text)
+    if not normalized or normalized.startswith(("never mind", "nao importa")):
+        return False
+    if any(marker in normalized for marker in _STANDING_CONSTRAINT_MARKERS):
+        return True
+    if _SCOPED_CONSTRAINT_REFERENCE_RE.search(normalized):
+        return False
+    if not _STANDING_CONSTRAINT_PREFIX_RE.match(normalized):
+        return bool(_STANDING_BROAD_POLICY_RE.search(normalized))
+    return not _CONCRETE_ITEM_RE.search(normalized) or bool(_STANDING_BROAD_POLICY_RE.search(normalized))
 
 
 def _build_recovery_footer(session_id: str, region_len: int) -> str:
@@ -1772,9 +1845,9 @@ in-flight work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",
         "constraints": (
-            "[User preferences, coding style, constraints, important decisions. Any security or safety constraint "
-            "the user stated (files/data to avoid, operations that must not be performed, credential-handling rules) "
-            "MUST be quoted VERBATIM here so it continues to apply after compaction — never paraphrase those.]"
+            "[This section is rebuilt deterministically from explicit, durable user statements after generation. "
+            "Do not infer or paraphrase constraints here. Operation-scoped instructions belong in the historical "
+            "record, even when phrased as safety rules.]"
         ),
         "resolved_questions": (
             "[Questions the user asked that were ALREADY answered — include the answer so it is not repeated]"
@@ -3196,7 +3269,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         active_task = f"User asked: {user_asks[-1]!r}" if user_asks else _NO_USER_TASK_SENTINEL
         previous_summary_note = ""
         if self._previous_summary:
-            previous_summary = redact_sensitive_text(self._previous_summary.strip())
+            previous_summary = redact_sensitive_text(
+                self._ground_summary_constraints(self._previous_summary, turns_to_summarize).strip()
+            )
             if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
                 previous_summary = (previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
                                     + "\n...[previous summary snapshot truncated]")
@@ -3491,6 +3566,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             summary = self._augment_summary_lean(summary, turns_to_summarize)
+            summary = self._ground_summary_constraints(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -3924,6 +4000,41 @@ Write only the summary body. Do not include any preamble or prefix."""
 
             return _HISTORICAL_TASK_SECTION_RE.sub(_collapse, body).strip()
         return f"{replacement}{body}".strip()
+
+    @classmethod
+    def _extract_standing_user_constraints(cls, messages: List[Dict[str, Any]]) -> list[str]:
+        """Collect only explicit, redacted standing statements from real user turns."""
+        constraints: list[str] = []
+        seen: set[str] = set()
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            if cls._is_synthetic_compression_user_turn(message):
+                continue
+            text = _redact_compaction_text(_content_text_for_contains(message.get("content"))).strip()
+            for candidate in _constraint_sentence_candidates(text):
+                if not _is_explicit_standing_constraint(candidate):
+                    continue
+                key = _normalize_constraint_text(candidate)
+                if key and key not in seen:
+                    seen.add(key)
+                    constraints.append(candidate)
+        return constraints
+
+    @classmethod
+    def _ground_summary_constraints(cls, summary: str, messages: List[Dict[str, Any]]) -> str:
+        """Replace model-selected constraints with a deterministic user-source projection."""
+        constraints = cls._extract_standing_user_constraints(messages)
+        rendered = "\n".join(f"- {constraint}" for constraint in constraints)
+        if not rendered:
+            rendered = "[No explicitly durable user constraint was found in the compacted user turns.]"
+        replacement = f"{_CONSTRAINTS_HEADING}\n{rendered}"
+        body = cls._strip_summary_prefix(summary)
+        first_section = _CONSTRAINTS_SECTION_RE.search(body)
+        if first_section:
+            remainder = _CONSTRAINTS_SECTION_RE.sub("", body[first_section.end():])
+            return f"{body[:first_section.start()]}{replacement}{remainder}".strip()
+        return body
 
     @classmethod
     def _find_context_summaries(cls, messages: List[Dict[str, Any]], start: int, end: int) -> list[tuple[int, str]]:

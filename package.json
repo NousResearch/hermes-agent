@@ -56,7 +56,10 @@
     "undici@^6": "6.28.0",
     "undici@^7": "7.29.0",
     "postcss": "8.5.23",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "browserslist": "^4.28.8",
+    "fast-uri": "^3.1.7",
+    "sanitize-html": "^2.17.7"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
@@ -67,7 +70,7 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
+    "electron@41.10.7": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true

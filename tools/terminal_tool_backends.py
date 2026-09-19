@@ -83,8 +83,12 @@ def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
 
 
 def _container_config_from_config(config: Dict[str, Any]) -> dict:
-    """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
-    return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
+    """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``):
+    the built-in defaults plus every other config key unchanged, so a plugin-registered backend can read
+    its own keys without core enumerating them."""
+    shaped = {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
+    shaped.update({key: value for key, value in config.items() if key not in shaped})
+    return shaped
 
 
 def _resources(cc: Dict[str, Any]) -> dict:

@@ -23,6 +23,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "openai/gpt-6-astra-flex": "0.5x price, flex tier",
     "openai/gpt-6-astra-pro-fast": "2x price, priority tier",
     "openai/gpt-6-astra-pro-flex": "0.5x price, flex tier",
+    "stealth/union-alpha": "free, stealth model",
 }
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
@@ -43,14 +44,16 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
         "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
     )
 ]
 
-# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier).
+# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier —
+# ``stealth/union-alpha`` is a $0 stealth SKU without the ``:free`` suffix).
 _OPENROUTER_ONLY = {
     "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
     "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
+    "stealth/union-alpha",
 }
 
 
@@ -228,24 +231,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "gemini-3-flash",
         "grok-4.6", "grok-4.5", "grok-build-0.1", "muse-spark-1.2", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "deepseek-v4-pro",
-        "deepseek-v4-flash", "deepseek-v4-flash-free", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
+        "deepseek-v4-flash", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
     ],
-    # OpenCode keyless free tier — OFFLINE FLOOR only. provider_model_ids("opencode-free")
-    # revalidates live against GET /zen/v1/models and filters to the anonymous tier, so this list
-    # may lag the relay (intentional). Known-delisted models are REMOVED (the offline fallback must
-    # not offer a model that 401s; x-preview-f-free delisted 2026-08-26, hy3-free and
-    # laguna-s-2.1-free delisted 2026-09-09 — both dropped from live /zen/v1/models and 401
-    # "Model … is not supported" anonymously).
-    "opencode-free": [
-        "deepseek-v4-flash-free", "mimo-v2.5-free",
-        "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free",
-        "muse-spark-1.3-contributor-free",
-    ],
     # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
     # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
-    # — the Go-subscription twin of Zen's keyless Ox Alpha — was delisted 2026-09-09.
+    # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09.
     "opencode-go": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
         "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
@@ -391,7 +383,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
-    "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
+    "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
 }
@@ -459,8 +451,7 @@ _PROVIDER_ALIASES = dict((
     ("minimax-china", "minimax-cn"), ("minimax_cn", "minimax-cn"), ("minimax-portal", "minimax-oauth"),
     ("minimax-global", "minimax-oauth"), ("minimax_oauth", "minimax-oauth"), ("claude", "anthropic"),
     ("claude-code", "anthropic"), ("deep-seek", "deepseek"), ("opencode", "opencode-zen"), ("zen", "opencode-zen"),
-    ("go", "opencode-go"), ("opencode-go-sub", "opencode-go"), ("free", "opencode-free"),
-    ("opencode_free", "opencode-free"), ("aigateway", "ai-gateway"), ("vercel", "ai-gateway"),
+    ("go", "opencode-go"), ("opencode-go-sub", "opencode-go"), ("aigateway", "ai-gateway"), ("vercel", "ai-gateway"),
     ("vercel-ai-gateway", "ai-gateway"), ("kilo", "kilocode"), ("kilo-code", "kilocode"),
     ("kilo-gateway", "kilocode"), ("dashscope", "alibaba"), ("aliyun", "alibaba"), ("qwen", "alibaba"),
     ("alibaba-cloud", "alibaba"), ("qwen-portal", "qwen-oauth"), ("hf", "huggingface"),
@@ -539,12 +530,6 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go", "opencode-zen", "deepseek", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
 })
-
-
-# Providers whose catalog is served with NO credential get a constant credential fingerprint in
-# the disk cache: the anonymous opencode-free catalog's freshness comes from TTL revalidation,
-# so folding in unrelated auth.json mtimes would only bust the SWR cache needlessly.
-_KEYLESS_STABLE_CACHE_PROVIDERS = frozenset({"opencode-free"})
 
 
 # OpenRouter-style ids -> Copilot ids. Dash-notation Claude ids are accepted too: Hermes' default

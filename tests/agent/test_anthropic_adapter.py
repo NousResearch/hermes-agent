@@ -1203,8 +1203,9 @@ class TestRoleAlternation:
         _, result = convert_messages_to_anthropic(messages)
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert "Hello" in result[0]["content"]
-        assert "World" in result[0]["content"]
+        # Each turn stays its own text block (never joined into one string), so the first turn's
+        # bytes match what a later request replays standalone and the cache prefix survives.
+        assert result[0]["content"] == [{"type": "text", "text": "Hello"}, {"type": "text", "text": "World"}]
 
     def test_preserves_proper_alternation(self):
         messages = [
@@ -1896,3 +1897,39 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+
+def test_oauth_system_prompt_sanitizer_preserves_docs_url():
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-20250514",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Hermes Agent by Nous Research uses hermes-agent skills. "
+                    "Docs: https://hermes-agent.nousresearch.com/docs ; "
+                    "interpreter ~/.hermes/hermes-agent/venv/bin/python ; "
+                    "source github.com/NousResearch/hermes-agent ; mail hermes-agent@example.com ; "
+                    "skill_view(name='hermes-agent') ; hermes-agent's docs ; built by hermes-agent."
+                ),
+            },
+            {"role": "user", "content": "Hi"},
+        ],
+        tools=None,
+        max_tokens=4096,
+        reasoning_config=None,
+        is_oauth=True,
+    )
+
+    system_text = "\n".join(block["text"] for block in kwargs["system"])
+    assert "Claude Code by Anthropic uses claude-code skills." in system_text
+    assert "https://hermes-agent.nousresearch.com/docs" in system_text
+    # Paths and repo slugs are addresses too: a subagent told to run
+    # ``~/.hermes/claude-code/venv/bin/python`` fails on a file that does not exist.
+    assert "~/.hermes/hermes-agent/venv/bin/python" in system_text
+    assert "github.com/NousResearch/hermes-agent" in system_text
+    assert "hermes-agent@example.com" in system_text
+    assert "skill_view(name='hermes-agent')" in system_text  # a quoted slug is an identifier
+    assert "built by claude-code." in system_text  # a sentence-final dot is prose
+    assert "claude-code's docs" in system_text  # so is a possessive
+    assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix

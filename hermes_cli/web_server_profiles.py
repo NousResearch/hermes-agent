@@ -106,9 +106,10 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
-        "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
+        "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
+        "bot_title": meta("bot_title", ""),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 
@@ -246,8 +247,7 @@ def _config_profile_scope(profile: Optional[str]):
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
@@ -261,17 +261,19 @@ def _config_profile_scope(profile: Optional[str]):
         activate_multi_profile_hosting()
         hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
         secrets = build_profile_secret_scope(scoped)
-    elif is_multiplex_active():
-        secrets = launch_secret_scope(process_home)
     else:
-        secrets = None  # single-profile dashboard: legacy os.environ precedence (systemd / op-run injection)
+        # The dashboard's own profile: its launch-env scope (live env + .env while single-profile, so
+        # systemd / op-run injection keeps resolving; frozen at activation afterwards). Bound even
+        # before any secondary is served so the request's credential source is decided HERE: a
+        # concurrent first ``?profile=B`` request flips ``get_secret`` to fail closed mid-request,
+        # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
+        secrets = launch_secret_scope(process_home)
     with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
-        token = set_secret_scope(secrets) if secrets is not None else None
+        token = set_secret_scope(secrets)
         try:
             yield scoped
         finally:
-            if token is not None:
-                reset_secret_scope(token)
+            reset_secret_scope(token)
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with
@@ -286,8 +288,8 @@ def _config_profile_scope(profile: Optional[str]):
 _TERMINAL_BACKENDS: List[Dict[str, str]] = [
     dict(zip(("name", "label", "description"), row)) for row in (
         ("local", "Local", "Run commands directly on this machine. No isolation."),
-        ("docker", "Docker",
-         "Run commands in an isolated Docker container with a persistent workspace."),
+        ("docker", "Docker / Podman",
+         "Run commands in an isolated Docker or Podman container with a persistent workspace."),
         ("singularity", "Singularity / Apptainer",
          "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),

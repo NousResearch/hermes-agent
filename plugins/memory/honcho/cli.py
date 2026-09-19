@@ -149,7 +149,8 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
                 out = _apply_edits(cfg.snapshot, cfg, disk)
             elif path.exists():
                 out = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, disk))
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, out, mode=0o600)
         if isinstance(cfg, _ReadConfig):  # a later write on the same object applies only edits made after this one
             cfg.snapshot, cfg.path = copy.deepcopy(dict(cfg)), path

@@ -1,7 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -39,7 +39,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { sessionTileOwnerRoute } from '@/store/session-states'
+import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -157,6 +157,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'asyncResult',
+  'asyncResultKind',
   'id',
   'role',
   'pending',
@@ -365,7 +366,12 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
       return withAuthoritativeTurnState(previous, message)
     }
 
-    const sameText = nextText === previousVisibleText || nextText === previousText.trim()
+    // Empty prose carries no identity: an empty-text cached assistant and an
+    // empty/tool-only hydrated row can share a role ordinal while being
+    // different turns, and plain `'' === ''` would pair them (#114543),
+    // grafting the cached reasoning/tool parts onto the unrelated row.
+    const sameText =
+      nextText.length > 0 && (nextText === previousVisibleText || nextText === previousText.trim())
 
     // Mid-turn, the authoritative text has advanced past the cached copy by one
     // or more deltas. That is still the same turn, and the cached row holds the
@@ -382,12 +388,15 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // inherit its reasoning/tool parts (#76444 review / salvage).
     const sameTurn =
       sameText ||
-      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (nextText.length > 0 &&
+        previousTrimmed.length > 0 &&
+        isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
       (message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
         !hasStructuralParts(message) &&
-        isLiveTailRow(previous))
+        isLiveTailRow(previous) &&
+        isLiveTailRow(message))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
@@ -836,11 +845,33 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    projected.push({
-      id: `user-inflight-${sessionId}`,
-      role: 'user',
-      parts: [textPart(inflightUser)]
-    })
+    // A synthetic starting prompt (process_complete, hidden, …) carries the
+    // display typing its persisted row will get: render it through the same
+    // timeline projection history uses instead of as a user bubble (#112144).
+    // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
+    const displayKind = projection.inflight?.display_kind
+    const typed = displayKind
+      ? toChatMessages([
+          {
+            role: 'user',
+            content: inflightUser,
+            display_kind: displayKind,
+            ...(projection.inflight?.display_metadata !== undefined
+              ? { display_metadata: projection.inflight.display_metadata }
+              : {})
+          }
+        ])
+      : null
+
+    if (typed) {
+      projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
+    } else {
+      projected.push({
+        id: `user-inflight-${sessionId}`,
+        role: 'user',
+        parts: [textPart(inflightUser)]
+      })
+    }
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1412,14 +1443,16 @@ export function dropListedSession(storedSessionId: string): void {
   setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
+export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
+  return isMessagingSource(session.source)
+    ? 'messaging'
+    : normalizeSessionSource(session.source) === 'cron'
+      ? 'cron'
+      : 'sessions'
+}
+
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
-  const target: ListedSessionSlice =
-    slice ??
-    (isMessagingSource(session.source)
-      ? 'messaging'
-      : normalizeSessionSource(session.source) === 'cron'
-        ? 'cron'
-        : 'sessions')
+  const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
 
   const prepend = (prev: SessionInfo[]) => [
     session,
@@ -1444,7 +1477,7 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
-  setSessions(prev => [
+  const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => {
       if (sessionMatchesStoredId(existing, storedSessionId)) {
@@ -1453,7 +1486,23 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 
       return (existing._lineage_root_id ?? existing.id) !== lineage
     })
-  ])
+  ]
+
+  // A resolve can observe a source move (cross-room /resume rewrites the row to
+  // source='matrix', #113827): the row belongs to its current slice, and the
+  // stale copy in every other slice must go or the session shows twice.
+  // Identity-stable when nothing matched — every sidebar memo keys on these
+  // arrays, and a resolve runs on each row open.
+  const evict = (prev: SessionInfo[]) =>
+    prev.some(existing => sessionMatchesStoredId(existing, storedSessionId))
+      ? prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
+      : prev
+
+  const target = listedSliceTarget(session)
+
+  setSessions(target === 'sessions' ? prepend : evict)
+  setMessagingSessions(target === 'messaging' ? prepend : evict)
+  setCronSessions(target === 'cron' ? prepend : evict)
 }
 
 // Every session row reachable through the profile-scoped project tree —
@@ -1624,7 +1673,8 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
     routingSessionId: storedSessionId,
     tileOwnerRoute: sessionTileOwnerRoute,
     sessionOwnerHint: getSessionOwnerHint,
-    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id)
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id),
+    eventOwner: runtimeSessionOwner
   })
 
   if (owner) {

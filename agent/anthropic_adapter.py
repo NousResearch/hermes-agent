@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import subprocess
+from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -467,9 +468,14 @@ def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
 
 
 _OAUTH_SYSTEM_REPLACEMENTS = (
-    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"),
-    ("hermes-agent", "claude-code"), ("Nous Research", "Anthropic"),
+    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
+# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
+# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
+# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
+# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
+# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -486,6 +492,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:
@@ -662,7 +669,16 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # returns the accumulated snapshot. TimeoutError is the caller's deadline seam: the host
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
-        for event in stream if callable(on_stream_event) else ():
+        # Some SDK versions drop optional message_delta metadata from the final snapshot.
+        # Non-iterable shims (get_final_message-only) skip straight to the snapshot.
+        stop_details = None
+        for event in (stream if isinstance(stream, Iterable) else ()):
+            if getattr(event, "type", None) == "message_delta":
+                details = getattr(getattr(event, "delta", None), "stop_details", None)
+                if details is not None:
+                    stop_details = details
+            if not callable(on_stream_event):
+                continue
             try:
                 on_stream_event(event)
             except TimeoutError:
@@ -672,7 +688,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 raise
             except Exception:
                 logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
-        return stream.get_final_message()
+        message = stream.get_final_message()
+        if stop_details is not None:
+            message.stop_details = stop_details
+        return message
 
 
 def create_anthropic_message(

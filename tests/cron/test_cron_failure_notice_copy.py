@@ -39,6 +39,22 @@ def test_auth_failure_points_at_login_and_a_retry_command(monkeypatch):
     assert "401" not in msg
 
 
+def test_auth_failure_names_the_pinned_provider_and_the_failing_profile(monkeypatch, tmp_path):
+    """A profile's credentials are its own (93889b770da): the notice must send the operator to
+    THIS profile's sign-in for the job's pinned provider, never a bare placeholder (#114012)."""
+    _no_chain(monkeypatch)
+    profile_home = tmp_path / ".hermes" / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    msg = _summarize_cron_failure_for_delivery(
+        {**JOB, "provider": "openai-codex"}, "Error code: 401 - Unauthorized")
+    assert "`hermes -p ops auth add openai-codex --type oauth`" in msg, msg
+    assert "<provider>" not in msg
+    unpinned = _summarize_cron_failure_for_delivery(JOB, "Error code: 401 - Unauthorized")
+    assert "`hermes -p ops auth add <provider>`" in unpinned, unpinned
+
+
 def test_rate_and_usage_limit_phrases_still_yield_a_provider_notice(monkeypatch):
     """The old cron regex ladder matched these substrings; the shared classifier must too, or a
     Nous Portal limit turns into a raw generic notice."""
@@ -84,6 +100,9 @@ def test_blocked_config_notice_says_it_did_not_run_and_will_self_heal():
     assert "did not run" in text
     assert "provider credential missing: no key" in text
     assert "Nothing was charged" in text
+    # Some blocks (MCP server temporarily down) clear on their own, so the retry
+    # line must not condition the retry on the user fixing something.
+    assert "once this is fixed" not in text
     assert "`hermes cron doctor`" in text
     for jargon in ("configuration validation", "LLM call", "pre-dispatch"):
         assert jargon not in text

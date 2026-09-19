@@ -297,6 +297,30 @@ class TestRunSingleChildSchemaValidation:
         assert entry["status"] == "completed"
         assert "error" not in entry
 
+    def test_retry_turn_runs_in_delegated_child_context(self, monkeypatch):
+        """The retry is a second run_conversation on the child, issued from the parent's
+        thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
+        so the kanban stop guard nudges the child toward a board tool it does not have
+        (#109735 / #87671)."""
+        from agent.delegation_context import is_delegated_child_context
+        from tools.delegate_tool_child_run import _validate_child_output_schema
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        seen: list = []
+
+        class _Child(_StubChild):
+            session_id = "sess-child"
+
+            def run_conversation(self, user_message, task_id=None, **_kwargs):
+                seen.append(is_delegated_child_context())
+                return super().run_conversation(user_message, task_id, **_kwargs)
+
+        child = _Child(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
+        assert seen == [True]
+        assert is_delegated_child_context() is False
+
 
 # ---------------------------------------------------------------------------
 # delegate_task dispatch-time schema handling

@@ -428,7 +428,7 @@ class TestUpdatePublication:
         emitted = self._capture(server, monkeypatch)
 
         class _InlineThread:
-            def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
                 self._t, self._a, self._k = target, args, kwargs or {}
 
             def start(self):

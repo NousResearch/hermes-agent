@@ -89,3 +89,42 @@ def test_auto_provider_with_loopback_base_url_resolves_without_recursing(isolate
     monkeypatch.setattr(runtime_provider, "_resolves_to_custom", unexpected_provider_resolution)
 
     assert resolve_provider("auto") == "custom"
+
+
+def test_a_provider_configured_after_boot_flips_the_stale_setup_record(isolated_home, monkeypatch):
+    """A serve process whose boot inventory found nothing keeps that record for its lifetime;
+    ``setup.status`` reads it (``wait_for_record``), so the dashboard chat stayed on "Setup
+    Required" after the user configured a provider — from the Models page, a picker key, or
+    ``hermes setup`` in another process. A ``False`` record is reconciled with the config files
+    on read: it flips (+ one ``setup.ready``) once something carries inference, and a blank
+    machine stays ``False`` with no broadcast."""
+    from hermes_cli import free_tier_bootstrap as fb
+
+    broadcasts = []
+    monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+    boot = fb.run_bootstrap(announce=False)
+    assert boot.provider_configured is False
+    assert fb.wait_for_record(timeout=0) is boot and broadcasts == [], "blank machine: nothing to reconcile"
+
+    # The record is the launch profile's: a write scoped to another profile (the dashboard's
+    # ``?profile=b``) must not let THAT profile's provider open the launch gate.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    profile_b = isolated_home / "profiles" / "b"
+    profile_b.mkdir(parents=True)
+    (profile_b / "config.yaml").write_text("model:\n  default: qwen3\n  provider: custom\n  base_url: http://127.0.0.1:8000/v1\n  api_key: dummy\n", encoding="utf-8")
+    token = set_hermes_home_override(str(profile_b))
+    try:
+        assert fb.reconcile_record() is boot and broadcasts == [], "another profile's provider is not ours"
+    finally:
+        reset_hermes_home_override(token)
+
+    (isolated_home / "config.yaml").write_text(
+        "model:\n  default: qwen3\n  provider: custom\n  base_url: http://127.0.0.1:8000/v1\n  api_key: dummy\n",
+        encoding="utf-8",
+    )
+    fresh = fb.wait_for_record(timeout=0)
+    assert fresh.provider_configured is True and fresh.other_providers is True
+    assert fresh.inference_provider == "custom"
+    assert fresh.has_identity is boot.has_identity and fresh.failure == boot.failure, "the mint verdict is kept"
+    assert broadcasts == [fresh]
+    assert fb.wait_for_record(timeout=0) is fresh and broadcasts == [fresh], "settled: no re-inventory, no re-announce"

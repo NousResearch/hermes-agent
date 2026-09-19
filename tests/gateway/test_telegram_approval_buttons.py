@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.platforms.base import unauthorized_action_notice
+from gateway.platforms.base import unauthorized_action_notice, utf16_len
 
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
@@ -76,6 +76,53 @@ class TestTelegramExecApproval:
         assert "rm -rf /important" in kwargs["text"]
         assert "dangerous deletion" in kwargs["text"]
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("smart_denied", [False, True])
+    async def test_oversized_escaped_approval_text_keeps_inline_keyboard(self, smart_denied):
+        """The rendered HTML card (escaped command + reason + framing) must fit Telegram's
+        4096-char cap, otherwise the API rejects it and the gateway falls back to /approve."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="&" * 3700,  # inside the old raw budget; 5x larger once escaped
+            session_key="s",
+            description="<reason>" * 1000,
+            smart_denied=smart_denied,
+        )
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert "&amp;&amp;" in kwargs["text"] and "&lt;reason&gt;" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_emoji_dense_approval_card_fits_in_utf16_units(self):
+        """Telegram counts UTF-16 code units (astral emoji = 2), like the adapter's chunker."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(chat_id="12345", command="😀" * 3000, session_key="s")
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_slash_confirm_preview_fits_after_markdown_escaping(self):
+        """The slash-confirm card is measured after format_message (MarkdownV2 escaping expands
+        text), so a 3800-char raw message must still land under the 4096 cap."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_slash_confirm(
+            chat_id="12345", title="t", message="." * 3800, session_key="s", confirm_id="c1")
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
 
 
     @pytest.mark.asyncio

@@ -14,7 +14,7 @@ import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import wraps
 import logging
 import os
@@ -137,6 +137,7 @@ from gateway.browser_control_broker import (
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms.tcp_site import start_tcp_site
 
 
 logger = logging.getLogger(__name__)
@@ -199,9 +200,25 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+
+
+def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
+    """Host/port the adapter binds: config.yaml ``platforms.api_server`` wins over the env fallbacks.
+
+    Shared with the CLI restart path, which must wait on the SAME address the replacement will
+    bind — an env-only reading missed every config.yaml port (#91547).
+    """
+    host = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
+    raw_port = extra.get("port")
+    if raw_port is None:
+        raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
+    return host, _coerce_port(raw_port, DEFAULT_PORT)
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
-CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+# Send a comment before remote API clients' common 20-second idle deadline.
+# This constant is shared by OpenAI chat/Responses and native session SSE.
+CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
@@ -370,6 +387,12 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+    if (message.get("display_kind") == "hidden"
+            and (message.get("display_metadata") or {}).get("notification_category") == "diagnostic"):
+        # Retain row identity and execution evidence in storage, not in the notification UI.
+        return {k: v for k, v in message.items() if k in {
+            "id", "session_id", "role", "timestamp", "display_kind", "platform_message_id",
+        }} | {"content": ""}
     projected = project_compaction_message_for_display(message)
     if projected is None:
         projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
@@ -578,7 +601,7 @@ def _reap_disconnected_agent_processes(
         is_still_current = _epoch_still_current
     from gateway.run import _reap_gateway_turn_processes
     threading.Thread(
-        target=_reap_gateway_turn_processes, args=(process_task_id, process_baseline),
+        target=copy_context().run, args=(_reap_gateway_turn_processes, process_task_id, process_baseline),
         kwargs={"source": source, "is_still_current": is_still_current},
         name=f"api-turn-reaper-{process_task_id[:12]}", daemon=True).start()
 
@@ -662,7 +685,8 @@ async def _abandon_agent_task(
     agent = agent_ref[0] if agent_ref else None
     if agent is not None:
         with suppress(Exception):
-            request_hard_interrupt(agent, reason)
+            # The abandoning client/server is the issuer, not the user (#112647).
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()
@@ -1133,11 +1157,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
-        self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        raw_port = extra.get("port")
-        if raw_port is None:
-            raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
-        self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
+        self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
@@ -1170,7 +1190,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
-        # /v1/runs). Read from config.yaml gateway.api_server.max_concurrent_runs; 0 disables the cap.
+        # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
+        # gateway.api_server.max_concurrent_runs; 0 disables the cap.
         # Bounds CPU / memory / upstream-LLM-quota exhaustion from a request flood (#7483).
         self._inflight_agent_runs: int = 0
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
@@ -1198,6 +1219,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
         ``GatewayRunner._running_agents``): exactly the set the drain waits on. Returns count."""
+        run_ids = {
+            run_id for run_id, task in self._active_run_tasks.items() if not task.done()
+        } | set(self._active_run_agents)
+        _api_runs._mark_shutdown_interrupted_runs(self, run_ids)
         # Dedupe by identity: an agent in both registries must be interrupted once.
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())
@@ -1205,7 +1230,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         interrupted = 0
         for agent in agents.values():
             try:
-                if request_hard_interrupt(agent, reason):
+                if request_hard_interrupt(agent, reason, tool_reason="gateway shutdown"):
                     interrupted += 1
             except Exception as exc:
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
@@ -1283,7 +1308,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         profile_name = ""
         with suppress(Exception):
             from hermes_cli.profiles import get_active_profile_name
-            profile = get_active_profile_name()
+            profile = get_active_profile_name()  # launch profile, pre-identity (advertised model name)
             if profile and profile not in {"default", "custom"}:
                 profile_name = profile
         return resolve_effective_model(explicit, profile_name, "hermes-agent")
@@ -2002,7 +2027,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as exc:
             with suppress(Exception):
                 from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                return _resolve_runtime_agent_kwargs_for_provider(provider_name)
+                return _resolve_runtime_agent_kwargs_for_provider(provider_name, target_model=target_model or None)
             if required:
                 raise _ProviderAuthResolutionError(str(exc)) from exc
             logger.debug(
@@ -2760,6 +2785,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
+                                        notification_category: str = "result") -> None:
+        """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key);
+        see ``api_server_runs.run_internal_session_turn``."""
+        await _api_runs.run_internal_session_turn(
+            self, session_id=session_id, text=text, profile=profile,
+            notification_category=notification_category, _api_server=sys.modules[__name__])
+
     @_require_auth
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -2797,8 +2830,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
                 # the tui_gateway lookups heal.
                 from tools.bot_mode_probe import BOT_CHAT_TITLE
-                stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
-                if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
+
+                def _resurrect() -> bool:
+                    # Lookup + unarchive (a WRITE with the full write patience) as one worker-thread
+                    # hop: a contended lock parks this thread, never the event loop (#113772).
+                    stale = db.get_session_by_title(title_filter)
+                    return bool(stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]))
+
+                if title_filter == BOT_CHAT_TITLE and await asyncio.to_thread(_resurrect):
                     sessions = await _list()
             except Exception:
                 pass  # resolution degrades to today's no-row behavior
@@ -3041,7 +3080,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return None, lock_error
-        if not self._persist_session_runtime_lock(session_id, runtime_request):
+        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return None, _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         lock_active = bool(runtime_request.get("require_model_lock"))
@@ -3123,6 +3162,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
+        # Spending the budget without checking it refused every other caller while never
+        # refusing this route — and a fleet's cross-machine DMs all arrive here.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
@@ -3145,6 +3190,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
@@ -3191,24 +3239,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
+                # Terminal status and flags come from the result (interrupted -> cancelled,
+                # unfinished -> failed); a late steer rides along as ``pending_steer`` for replay.
+                status, fields = _api_runs.terminal_run_status(result if is_dict else {})
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, "completed": True,
-                    "partial": bool(result.get("partial")) if is_dict else False,
-                    "interrupted": False, "runtime": effective_runtime}))
-                # A steer accepted after the final reply lands in result["pending_steer"]; surface
-                # it so clients can replay it rather than lose it.
-                pending_steer = result.get("pending_steer") if is_dict else None
-                completed_payload = {
-                    "session_id": effective_session_id, "message_id": message_id, "completed": True,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
-                if pending_steer:
-                    completed_payload["pending_steer"] = pending_steer
-                await queue.put(_event_payload("run.completed", completed_payload))
+                    "content": final_response, **fields, "runtime": effective_runtime}))
+                await queue.put(_event_payload(f"run.{status}", {
+                    "session_id": effective_session_id, "message_id": message_id, **fields,
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
                 self._set_run_status(
-                    run_id, "completed", session_id=effective_session_id, usage=usage,
-                    last_event="run.completed",
-                    **({"pending_steer": pending_steer} if pending_steer else {}))
+                    run_id, status, session_id=effective_session_id,
+                    # The reply text, so a caller whose stream died can still read it from
+                    # GET /v1/runs/{run_id}; POST /v1/runs already records output in `_finish`.
+                    output=final_response, usage=usage,
+                    last_event=f"run.{status}", **fields)
             except asyncio.CancelledError:
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
                 raise
@@ -3287,7 +3332,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return lock_error
-        if not self._persist_session_runtime_lock(session_id, runtime_request):
+        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         requested = runtime_request.get("requested") or {}
@@ -3693,7 +3738,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3718,6 +3763,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
                 agent = None
+                from agent.notification_presentation import notification_turn
+                from gateway.warning_notifications import diagnostic_turn_muted
+                muted = diagnostic_turn_muted({"notification_category": notification_category}, "api_server")
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
@@ -3755,10 +3803,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
-                    result = agent.run_conversation(**conversation_kwargs)
-                    return self._finish_turn_result(
+                    with notification_turn(agent, muted=muted, session_id=session_id or ""):
+                        result = agent.run_conversation(**conversation_kwargs)
+                    result, usage = self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)
+                    if muted and isinstance(result, dict):
+                        # Project presentation only after finishing the source outcome. Keep
+                        # the agent's result, transcript, failure flags and usage intact.
+                        result = {**result, "_notification_presentation_suppressed": True}
+                    return result, usage
                 except _ProviderAuthResolutionError as exc:
                     # Typed provider-auth failure only, handled once for every caller in
                     # run.py's response shape (text, no HTTP error).
@@ -3766,8 +3820,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                    session_id or "", exc)
                     return (
                         {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [],
-                         "api_calls": 0, "tools": []},
+                         "api_calls": 0, "tools": [],
+                         **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                except Exception as exc:
+                    if muted:
+                        # Keep the original exception/traceback for logs and failure
+                        # handling; the HTTP/SSE boundary suppresses its presentation.
+                        setattr(exc, "_notification_presentation_suppressed", True)
+                    raise
                 finally:
                     # Turn over (any outcome): clear ownership so a late disconnect can't reap
                     # background work this turn deliberately left running.
@@ -3959,19 +4020,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly (a pre-probe raced the bind, misreporting TIME_WAIT as "in use").
-            # SO_REUSEADDR off on macOS (BSD can split traffic between two listeners).
             # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
             # real bind and reported a TIME_WAIT socket as "in use" (#10297), failing gateway restarts for
-            # up to ~60s. SO_REUSEADDR is platform-dependent (same rationale as the webhook adapter,
-            # #65482): - macOS (BSD semantics): two sockets with SO_REUSEADDR can silently split traffic
-            # while both report success — disable. - Linux: SO_REUSEADDR only permits rebinding past
-            # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
-            # (enabled) for instant restart rebinds.
-            self._site = web.TCPSite(
-                self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
+            # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
+            # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
             try:
-                await self._site.start()
+                # aiohttp registers a site with its runner before binding, so a failed start leaves the
+                # site registered: rebuild the runner per attempt rather than reach into its internals.
+                for attempt in range(_BIND_ATTEMPTS):
+                    try:
+                        self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
+                        break
+                    except OSError as exc:
+                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                            raise
+                        await self._runner.cleanup()
+                        self._runner = web.AppRunner(self._app)
+                        await self._runner.setup()
+                        await asyncio.sleep(0.2 * (attempt + 1))
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

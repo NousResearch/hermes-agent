@@ -49,7 +49,7 @@ def run_preflight_gate(
         v.failed = True
         v._turn_exit_reason = "ollama_runtime_context_too_small"
         append_message(messages, {"role": "assistant", "content": v.final_response})
-        agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
+        agent._emit_diagnostic_status("❌ Ollama runtime context is too small for Hermes tool use")
         v.api_call_count -= 1
         agent._api_call_count = v.api_call_count
         with suppress(Exception):

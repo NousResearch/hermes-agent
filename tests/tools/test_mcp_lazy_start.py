@@ -334,3 +334,48 @@ class TestResolveServerLazy:
 
     def test_explicit_false(self):
         assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx", "lazy": False}) is False
+
+
+class TestLazyMcpStatus:
+    def test_lazy_registration_reports_lazy_with_cached_tools_not_failed(self, caplog):
+        """A ``lazy: true`` server registered from the schema cache is a working server: status
+        ``lazy`` with its cached tool count (``connected`` False), and the discovery summary counts
+        it as a lazy server, never as failed (#111717). Controls: an unregistered eager server stays
+        ``configured``; a live one stays ``connected``."""
+        import logging
+
+        from tools import mcp_tool_config as _mcp_config
+        from tools import mcp_tool_loop as _mcp_loop
+        from tools.mcp_tool_scope import _server_key
+
+        servers = _lazy_config()
+        controls = {"eager": {"command": "/nonexistent/eager"}, "live": {"command": "/nonexistent/live"}}
+        live = SimpleNamespace(session=object(), _registered_tool_names=["l1", "l2"], _sampling=None, _tools=[])
+        cached = ["mcp_playwright_browser_navigate", "mcp_playwright_browser_click"]
+
+        def _fake_register(name, cfg, entry):
+            key = _server_key(name)
+            mcp._lazy_server_configs[key] = dict(cfg)
+            mcp._lazy_server_tool_names[key] = list(cached)
+            return list(cached)
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch.object(_mcp_config, "_load_mcp_config", return_value=dict(servers)), \
+             patch.object(_mcp_loop, "_try_acquire_mcp_discovery_lock", return_value=mcp._LOCK_UNAVAILABLE), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
+             patch("tools.mcp_tool_registration._register_from_cache_sync", side_effect=_fake_register), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock), \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), patch("tools.mcp_tool_loop._run_on_mcp_loop"), \
+             caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            _mcp_discovery.discover_mcp_tools()
+            mcp._servers[_server_key("live")] = live
+            status = {e["name"]: e for e in _mcp_discovery.get_mcp_status({**servers, **controls})}
+
+        summaries = [r.getMessage() for r in caplog.records if "tool(s) from" in r.getMessage()]
+        assert summaries and all("failed" not in m for m in summaries), summaries
+        assert any("1 lazy, not spawned yet" in m for m in summaries), summaries
+        assert (status["playwright"]["status"], status["playwright"]["tools"],
+                status["playwright"]["connected"]) == ("lazy", len(cached), False)
+        assert status["eager"]["status"] == "configured" and status["eager"]["tools"] == 0
+        assert status["live"]["status"] == "connected" and status["live"]["tools"] == 2

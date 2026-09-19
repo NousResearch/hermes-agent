@@ -37,6 +37,10 @@ def matrix_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     monkeypatch.setenv("XAI_API_KEY", "test-key")
 
+    # This matrix supplies its own SDK fake; lazy installation is neither
+    # required nor permitted by the hermetic test runner.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
     fal_calls: List[Dict[str, Any]] = []
     xai_calls: List[Dict[str, Any]] = []
 

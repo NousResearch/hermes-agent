@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from agent.sdk_transform_bypass import bypass_sdk_request_transform
 from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -77,7 +79,8 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        agent._session_db.queue_token_counts(agent.session_id, **counts())
+        from agent.turn_usage import _agent_session_source
+        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
@@ -194,7 +197,6 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Internal MCP server wrapping Hermes' native tools: its inner dispatch has no tool_progress_callback, so the
 # codex-level mcpToolCall IS the display event and the mcp.hermes-tools.* prefix is stripped (users see Hermes tools).
-_INTERNAL_MCP_SERVER = "hermes-tools"
 _STATIC_TOOL_NAMES = {"commandExecution": "exec_command", "fileChange": "apply_patch", "webSearch": "web_search"}
 _STABLE_ID_PREFIXES = {"commandExecution": "exec", "fileChange": "apply_patch"}
 _MCP_LIKE_ITEM_TYPES = {"mcpToolCall", "dynamicToolCall"}
@@ -211,7 +213,7 @@ def _codex_item_to_tool_name(item: dict) -> str:
     item_type = item.get("type") or ""
     if item_type == "mcpToolCall":
         server, tool = item.get("server") or "mcp", item.get("tool") or "unknown"
-        return tool if server == _INTERNAL_MCP_SERVER else f"mcp.{server}.{tool}"
+        return tool if server == HERMES_TOOLS_MCP_SERVER_NAME else f"mcp.{server}.{tool}"
     if item_type == "dynamicToolCall":
         return item.get("tool") or "dynamic"
     return _STATIC_TOOL_NAMES.get(item_type) or item_type or "unknown"
@@ -248,7 +250,8 @@ def _codex_item_to_preview(item: dict) -> Any:
 
 
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
-    """(result_text, is_error) for a completed tool item; mirrors the projector's tool-result content."""
+    """(result_text, is_error) for a completed tool item — display-facing text for live tool cards (the
+    persisted history keeps the projector's ``{exit_code, output}`` envelope instead)."""
     item_type = item.get("type") or ""
     if item_type == "commandExecution":
         out, exit_code = item.get("aggregatedOutput") or "", item.get("exitCode")
@@ -488,7 +491,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
-    # Wedged client (deadline blown, watchdog tripped, OAuth refresh died, subprocess exited): retire it.
+    # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
+    # silence alone no longer retires — it only logs a warning (#112928).
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
@@ -839,42 +843,6 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     return sanitized
 
 
-# Bulk request fields carrying the conversation payload; the rest is scalar config the SDK transform handles fast.
-_SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
-
-
-def _is_plain_json_data(value: Any) -> bool:
-    """True when ``value`` is purely JSON wire types; pydantic models / generators must keep the typed SDK path."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return True
-    if isinstance(value, dict):
-        return all(isinstance(key, str) and _is_plain_json_data(item) for key, item in value.items())
-    if isinstance(value, list):
-        return all(_is_plain_json_data(item) for item in value)
-    return False
-
-
-def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
-    """Route bulk payload fields around the SDK's ``maybe_transform``.
-
-    ``responses.create`` re-walks the whole body against the ResponseCreateParams union with the GIL held —
-    multi-MB conversations can wedge for hours, pre-network, where no watchdog socket kill helps. The SDK
-    merges ``extra_body`` AFTER the transform, so moving wire-format bulk fields there yields a byte-identical
-    request without the walk. HERMES_CODEX_SDK_TRANSFORM=1 disables."""
-    if os.environ.get("HERMES_CODEX_SDK_TRANSFORM", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return stream_kwargs
-    moved = {f: stream_kwargs[f] for f in _SDK_TRANSFORM_BYPASS_FIELDS
-             if isinstance(stream_kwargs.get(f), (dict, list)) and _is_plain_json_data(stream_kwargs[f])}
-    if not moved:
-        return stream_kwargs
-    bypassed = {key: value for key, value in stream_kwargs.items() if key not in moved}
-    extra_body = bypassed.get("extra_body")
-    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
-    # An explicit caller-provided extra_body entry keeps precedence (SDK post-transform merge).
-    bypassed["extra_body"] = {**merged, **{f: v for f, v in moved.items() if f not in merged}}
-    return bypassed
-
-
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
@@ -940,7 +908,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)

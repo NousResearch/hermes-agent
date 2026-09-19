@@ -59,10 +59,11 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     OS-essential allowlist passes by exact name.
     """
     try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
         is_env_passthrough = lambda _: False  # noqa: E731
         resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
+        scoped_passthrough_additions = lambda _present: {}  # noqa: E731
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -85,6 +86,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             scrubbed[k] = v
         elif k.startswith("HERMES_"):
             _dropped_hermes.append(k)
+    # Declared names only the bound profile scope holds (a routed profile's own .env / sources
+    # never enter the process env) — the loop above sees only names ``source_env`` carries.
+    scrubbed.update((k, v) for k, v in scoped_passthrough_additions(scrubbed).items() if is_passthrough(k))
     if _dropped_hermes:
         logger.debug(
             "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
@@ -126,7 +130,9 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     from hermes_time import get_timezone_name
 
     _tz_name = get_timezone_name()
-    if _tz_name:
+    # Windows CPython does not support IANA names in TZ.  Leaving TZ unset
+    # preserves the OS-configured local timezone for the child process.
+    if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
     apply_subprocess_home_env(child_env)

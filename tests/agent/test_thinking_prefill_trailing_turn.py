@@ -127,6 +127,40 @@ class TestThinkingPrefillTrailingTurn:
             f"Empty assistant stub(s) reached the wire: {empty_assistants}"
         )
 
+    def test_prefill_row_keeps_reasoning_out_of_content(self, loop_agent):
+        """The prefill stub carries the model's reasoning in its reasoning fields only: its
+        ``content`` stays empty when appended, and no transcript row ever stores the
+        chain-of-thought as an ordinary reply (#111761)."""
+        import agent.turn_empty_response as ter
+
+        reasoning = "Let me work through the request step by step."
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_response(),
+            _final_response(),
+        ]
+        appended = []
+        real_append = ter.append_message
+
+        def spy(messages, msg, *args, **kwargs):
+            appended.append(dict(msg))
+            return real_append(messages, msg, *args, **kwargs)
+
+        with (
+            patch.object(ter, "append_message", spy),
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("do the thing")
+
+        stubs = [m for m in appended if m.get("_thinking_prefill")]
+        assert len(stubs) == 1
+        assert not (stubs[0].get("content") or "").strip()
+        assert stubs[0]["reasoning"] == reasoning
+        assert not any(
+            m.get("role") == "assistant" and m.get("content") == reasoning for m in result["messages"]
+        )
+
     def test_internal_marker_never_reaches_the_wire(self, loop_agent):
         """``_thinking_prefill`` survives the API-copy build on purpose, but the
         transport must still keep it off the wire."""

@@ -97,7 +97,7 @@ def _make_runner_and_captured(monkeypatch, run_still_current=True):
     captured: list[str] = []
 
     class _StubGatewayRunner:
-        def _adapter_for_source(self, source):
+        def _delivery_adapter_for(self, source):
             return None
 
         async def _deliver_platform_notice(self, source, content):

@@ -22,7 +22,7 @@ Write ML papers for NeurIPS/ICML/ICLR: design→submit.
 | Dependencies | `semanticscholar`, `arxiv`, `habanero`, `requests`, `scipy`, `numpy`, `matplotlib`, `SciencePlots` |
 | Platforms | linux, macos |
 | Tags | `Research`, `Paper Writing`, `Experiments`, `ML`, `AI`, `NeurIPS`, `ICML`, `ICLR`, `ACL`, `AAAI`, `COLM`, `LaTeX`, `Citations`, `Statistical Analysis` |
-| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
+| Related skills | [`arxiv`](../../bundled/research/research-arxiv.md), [`subagent-driven-development`](../software-development/software-development-subagent-driven-development.md) |
 
 ## Reference: full SKILL.md
 

@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root
 from utils import atomic_json_write
@@ -78,6 +78,18 @@ _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
 BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
 
+# Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
+# ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
+# Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
+# the re-run is told to adopt that row instead of appending a second copy
+# (``hermes_cli.quiet_single_query.adopt_unanswered_turn``, which consumes the variable before the turn).
+RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
+
+
+def retry_turn_env(env: Optional[Mapping[str, str]]) -> dict[str, str]:
+    """The re-run's child env: the first attempt's env plus the resume marker."""
+    return {**(os.environ if env is None else env), RESUME_UNANSWERED_TURN_ENV: "1"}
+
 
 def relay_root(root: Path | str) -> Path:
     return Path(root) / RELAY_DIR_NAME
@@ -86,7 +98,8 @@ def relay_root(root: Path | str) -> Path:
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
-        (base / sub).mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(base / sub)
     return base
 
 
@@ -228,6 +241,8 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(env, dict):
+            raise ValueError(f"expected a JSON object, got {type(env).__name__}")
         created = float(env.get("created_at") or path.stat().st_mtime)
     except (OSError, ValueError):
         return False
@@ -239,6 +254,15 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
             f"expired after {ttl}s waiting for the Desktop to drain it — it was NOT delivered. "
             "Resend once the Desktop reconnects."))
     return True
+
+
+def _queued_at(path: Path) -> tuple[float, str]:
+    """Claim order for one outbox entry: oldest first. ``mtime`` is what ``_sweep_stale`` already
+    treats as an envelope's age, and unlike the whole-second ``created_at`` field it separates two
+    DMs sent in the same second. The name only breaks ties."""
+    with contextlib.suppress(OSError):
+        return (path.stat().st_mtime, path.name)
+    return (0.0, path.name)
 
 
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
@@ -254,7 +278,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     ttl = _envelope_ttl_seconds()
     now = time.time()
     out: list[dict] = []
-    for path in sorted((base / OUTBOX_DIR).glob("*.json")):
+    # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
+    # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
+    # by filename ordered them by ``uuid4().hex`` — at random.
+    for path in sorted((base / OUTBOX_DIR).glob("*.json"), key=_queued_at):
         if ttl > 0 and _expire_if_stale(root, path, ttl, now):
             with contextlib.suppress(OSError):
                 path.unlink()
@@ -262,7 +289,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            out.append(json.loads(claimed.read_text(encoding="utf-8")))
+            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+            if not isinstance(envelope, dict):
+                raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
+            out.append(envelope)
     return out
 
 

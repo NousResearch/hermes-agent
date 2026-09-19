@@ -667,6 +667,57 @@ class TestE2EMessagesRead:
                           {"session_key": "nonexistent:key"})
         assert "error" in result
 
+    def test_read_messages_reports_truncation_flags(self, mcp_server_e2e, _event_loop):
+        """Every message reports truncated/stored_length so a cut is never silent."""
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "messages_read",
+                          {"session_key": "agent:main:telegram:dm:123456"})
+        for msg in result["messages"]:
+            assert "truncated" in msg
+            assert "stored_length" in msg
+            assert msg["stored_length"] == len(msg["content"]) or msg["truncated"]
+
+    def test_read_messages_full_disables_2000_char_cap(self, mcp_server_e2e, _event_loop, mock_session_db):
+        server, _ = mcp_server_e2e
+        long_content = "x" * 4500
+        conn = sqlite3.connect(str(mock_session_db._db_path))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("20260329_120000_abc123", "assistant", long_content, "2026-03-29T15:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        capped = _run_tool(server, "messages_read",
+                          {"session_key": "agent:main:telegram:dm:123456"})
+        long_msg = next(m for m in capped["messages"] if m["content"].startswith("xxxx"))
+        assert len(long_msg["content"]) == 2000
+        assert long_msg["truncated"] is True
+        assert long_msg["stored_length"] == 4500
+
+        full = _run_tool(server, "messages_read",
+                        {"session_key": "agent:main:telegram:dm:123456", "full": True})
+        full_msg = next(m for m in full["messages"] if m["content"].startswith("xxxx"))
+        assert len(full_msg["content"]) == 4500
+        assert full_msg["truncated"] is False
+
+    def test_read_messages_offset_pages_past_the_cap(self, mcp_server_e2e, _event_loop, mock_session_db):
+        server, _ = mcp_server_e2e
+        long_content = "a" * 2000 + "b" * 2000
+        conn = sqlite3.connect(str(mock_session_db._db_path))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("20260329_120000_abc123", "assistant", long_content, "2026-03-29T15:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _run_tool(server, "messages_read",
+                          {"session_key": "agent:main:telegram:dm:123456", "offset": 2000})
+        paged_msg = next(m for m in result["messages"] if m["content"].startswith("bbbb"))
+        assert paged_msg["content"] == "b" * 2000
+        assert paged_msg["stored_length"] == 4000
+
 
 class TestE2EAttachmentsFetch:
     def test_fetch_media_from_message(self, mcp_server_e2e, _event_loop):

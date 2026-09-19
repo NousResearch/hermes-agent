@@ -519,17 +519,26 @@ class _ToolHandlers:
             "total_tokens": entry.get("total_tokens", 0),
         }, indent=2)
 
-    def messages_read(self, session_key: str, limit: int = 50) -> str:
+    def messages_read(self, session_key: str, limit: int = 50, full: bool = False, offset: int = 0) -> str:
         """Read recent messages from a conversation.
 
         Returns the message history in chronological order with role, content,
-        and timestamp for each message.
+        and timestamp for each message. By default each message's content is
+        capped at 2000 characters; a truncated message reports
+        ``truncated: true`` and its true ``stored_length`` so the cut is never
+        silent. Pass ``full=true`` to disable the cap, or use ``offset`` to
+        page further back into a message's content from the same starting
+        point already returned.
 
         Args:
             session_key: The session key from conversations_list
             limit: Maximum number of messages to return (default 50, most recent)
+            full: Return each message's complete content with no 2000-char cap
+            offset: Character offset into each message's content to start reading from
+                (only meaningful when reading a single truncated message's remainder)
         """
         limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
+        offset = _coerce_int(offset, default=0, minimum=0, maximum=10**9)
         all_messages, error = _conversation_messages(session_key)
         if error:
             return error
@@ -538,8 +547,17 @@ class _ToolHandlers:
             role = msg.get("role", "")
             content = _extract_message_content(msg) if role in {"user", "assistant"} else ""
             if content:
-                filtered.append({"id": str(msg.get("id", "")), "role": role,
-                                 "content": content[:2000], "timestamp": msg.get("timestamp", "")})
+                stored_length = len(content)
+                if full:
+                    shown = content[offset:]
+                else:
+                    shown = content[offset:offset + 2000]
+                truncated = (offset + len(shown)) < stored_length
+                filtered.append({
+                    "id": str(msg.get("id", "")), "role": role,
+                    "content": shown, "timestamp": msg.get("timestamp", ""),
+                    "truncated": truncated, "stored_length": stored_length,
+                })
         messages = filtered[-limit:]
         return json.dumps({"session_key": session_key, "count": len(messages),
                            "total_in_session": len(filtered), "messages": messages}, indent=2)

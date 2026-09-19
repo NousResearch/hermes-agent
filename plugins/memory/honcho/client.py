@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 from agent.memory_provider import spawn_context_thread as _spawn_context_thread
 from agent.secret_scope import get_secret
+from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.profiles import _get_default_hermes_home
 from hermes_constants import get_hermes_home
 from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
@@ -44,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 HOST = "hermes"
 _AUTOMATIC_SESSION_TITLE_SOURCES = frozenset({TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM})
+
+# Identifies the harness to the Honcho backend the user configured (host name and Hermes
+# version). Carries no per-user identifier and adds no request.
+_HOST_HEADER = {"X-Honcho-Host": f"{HOST}/{_HERMES_VERSION}"}
 
 
 def _sanitize_url(url: str | None) -> str | None:
@@ -665,7 +670,8 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
     raw = config.raw or {}
     explicit_key = _host_block(raw, config.host).get("apiKey") or raw.get("apiKey")
     api_key = "local" if _is_local_base_url(base_url) and not explicit_key else config.api_key
-    kwargs: dict = {"workspace_id": config.workspace_id, "api_key": api_key, "environment": config.environment, "timeout": timeout}
+    kwargs: dict = {"workspace_id": config.workspace_id, "api_key": api_key, "environment": config.environment,
+                    "timeout": timeout, "default_headers": dict(_HOST_HEADER)}
     if base_url:
         # The SDK's route builders already carry the version prefix ("/v3/..."), so
         # strip a trailing version segment from any base_url to avoid "/v3/v3/...".

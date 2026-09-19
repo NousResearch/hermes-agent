@@ -193,6 +193,11 @@ For every key, resolution order is: **host block > root > env var > default**.
 | `peerName` | string | — | User peer identity |
 | `aiPeer` | string | host key | AI peer identity |
 
+Hermes identifies itself on Honcho requests with `X-Honcho-Host: hermes/<version>` — the
+same static harness identity the OpenViking provider already sends. It carries no per-user
+identifier, adds no separate request, and rides only authenticated calls to the Honcho
+instance you configured (cloud or self-hosted).
+
 ### Identity Mapping (Gateway Multi-User)
 
 In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a platform-native runtime ID (Telegram UID, Discord snowflake, Slack user). These three keys control how those runtime IDs map to Honcho peers. The resolver is config-driven and deterministic — no automatic merging or runtime inference.

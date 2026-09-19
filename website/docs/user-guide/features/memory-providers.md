@@ -63,6 +63,10 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 
 The auto-injected dialectic also scales its reasoning level by query length (longer query → deeper reasoning, capped at `reasoningLevelCap`); see [Query-Adaptive Reasoning Level](./honcho.md#query-adaptive-reasoning-level).
 
+Hermes identifies itself on Honcho requests with `X-Honcho-Host: hermes/<version>`. This
+static harness identity carries no per-user identifier, adds no separate request, and goes
+only to the Honcho instance you configured.
+
 **Setup Wizard:**
 ```bash
 hermes memory setup        # select "honcho" — runs the Honcho-specific post-setup

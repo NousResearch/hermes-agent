@@ -867,8 +867,8 @@ _SPECIAL_MODEL_LISTS = {
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
     """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
-    → curated static list (offline insurance) → live /models probe (small providers without
-    models.dev data). Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
+    → curated static list (offline insurance) → provider-owned catalog (generic /models
+    probe for unregistered providers). Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
     from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
     curated = _PROVIDER_MODELS.get(provider_id, [])
@@ -887,7 +887,14 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
-    live_models = fetch_api_models(api_key_for_probe, effective_base)
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider_id)
+    if profile is not None:
+        # Provider catalogs can use a different endpoint, auth, or response shape.
+        curated = curated or list(profile.fallback_models)
+        live_models = profile.fetch_models(api_key=api_key_for_probe, base_url=effective_base)
+    else:
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
     if live_models and len(live_models) >= len(curated):
         _report_live_models(live_models, f"{pconfig.name} API")
         return live_models

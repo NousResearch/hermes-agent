@@ -1,0 +1,90 @@
+"""First-time setup must consume the registered provider catalog (#116408)."""
+from unittest.mock import Mock
+
+import pytest
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_setup_offers_registered_provider_catalog(monkeypatch, live):
+    import providers
+    from providers.base import ProviderProfile
+    from hermes_cli import auth, config, model_setup_flows as flows, models
+
+    class SetupProfile(ProviderProfile):
+        def fetch_models(self, *, api_key=None, base_url=None):
+            assert api_key == "synthetic-test-key"
+            assert base_url == self.base_url
+            return list(self.fallback_models) if live else None
+
+    profile = SetupProfile(
+        name="scout-setup-catalog", display_name="Setup catalog",
+        auth_type="api_key", env_vars=("SCOUT_SETUP_TEST_KEY",),
+        base_url="https://setup.example.invalid/v1",
+        fallback_models=("declared-plugin-model",),
+    )
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
+    auth._register_plugin_provider(profile)
+    monkeypatch.setattr(flows, "_ensure_flow_api_key", lambda *_: (None, "synthetic-test-key", False))
+    monkeypatch.setattr(flows, "_env_base_url", lambda *_: "")
+    monkeypatch.setattr(flows, "_prompt_base_url_override", lambda value, *_args, **_kwargs: value)
+    monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
+    monkeypatch.setattr(config, "load_config", lambda: {})
+    monkeypatch.setattr(models, "fetch_api_models", lambda *_args, **_kwargs: [])
+    from hermes_cli import models_pricing
+    monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda *_: {})
+    picker = Mock(return_value=None)
+    monkeypatch.setattr(flows, "_pick_model_or_prompt", picker)
+    monkeypatch.setattr(flows, "_finish_model", Mock())
+
+    flows._model_flow_api_key_provider({}, profile.name)
+
+    assert picker.call_args.args[0] == list(profile.fallback_models)
+
+
+def test_setup_uses_profile_endpoint_and_headers(tmp_path, monkeypatch):
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from types import SimpleNamespace
+
+    import providers
+    from providers.base import ProviderProfile
+    from hermes_cli import model_setup_flows as flows
+
+    requests = []
+
+    class CatalogHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append((self.path, self.headers.get("X-Catalog-Contract")))
+            payload = json.dumps({"data": [{"id": "live-catalog-model"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CatalogHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    profile = ProviderProfile(
+        name="scout-live-catalog", base_url=base + "/inference",
+        models_url=base + "/catalog", default_headers={"X-Catalog-Contract": "present"},
+    )
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
+    try:
+        result = flows._api_key_provider_model_list(
+            profile.name, SimpleNamespace(name="Test catalog"),
+            "synthetic-test-key", "", profile.base_url,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+    assert result == ["live-catalog-model"]
+    assert requests == [("/catalog", "present")]

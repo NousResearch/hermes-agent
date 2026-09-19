@@ -58,7 +58,7 @@ async def test_real_output_consumer_authorizes_new_on_exact_fenced_owner(files_t
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['absent', 'foreign', 'replacement', 'owner_db', 'registry',
                                    'evidence_owner', 'evidence_adapter', 'evidence_record', 'evidence_missing',
-                                   'replacement_before_api'])
+                                   'replacement_before_api', 'replacement_during_callback'])
 async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_target, monkeypatch, change):
     from gateway import session_api_turn, session_peer_output
     from gateway.platforms import api_server_runs
@@ -101,6 +101,9 @@ async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_tar
             def changed(*args, **kwargs):
                 current = capture(*args, **kwargs)
                 assert current is not None
+                if change == 'replacement_during_callback':
+                    t.adapter._room_output_admission = MethodType(lambda *args: True, t.adapter)
+                    return current
                 if change == 'evidence_owner':
                     return replace(current, owner=(object(), *current.owner[1:]))
                 if change == 'evidence_adapter':

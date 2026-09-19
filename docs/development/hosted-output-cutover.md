@@ -30,7 +30,8 @@ that exact consumer through the server-only `_room_output_authorizer` argument,
 not a new lookup that could accept replacement between capture and API entry.
 Inside the existing shared-first/owner SQL
 fence, `authorize_dispatch` verifies current dispatch, policy, catalog and both
-grant stores, then requires that same consumer for signed artifact rights.
+grant stores, then requires that same consumer before and after its read-only
+callback for signed artifact rights.
 Missing, rebound, unavailable or incomplete Output consent refuses NEW instead
 of degrading to text. Default four/five-right input grants require no consumer;
 accepted replay bypasses the NEW check and creates no execution.

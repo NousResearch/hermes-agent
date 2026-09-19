@@ -6,18 +6,16 @@ import { chatMessageText, toChatMessages } from './chat-messages'
 
 // #68321 / GregKM 2026-09-02 v0.21.0 DB-level evidence: an assistant row
 // whose persisted `content` is empty but whose user-visible response text
-// lives only in `reasoning` / `reasoning_content` is dropped by hydration
+// lives only in `codex_message_items` is dropped by hydration
 // after a session/profile switch-back — the live stream rendered it, the
 // rehydrated transcript loses it. This file pins that no reasoning-carrying
-// assistant row may vanish.
-
-const reasoningOnlyRow: SessionMessage = {
-  id: 71,
-  role: 'assistant',
-  content: '',
-  reasoning: 'Here is the plan: first inspect the repo, then propose a fix, then run the tests.',
-  timestamp: 2
-}
+// assistant row WITH a codex sidecar (visible reply text) may vanish.
+//
+// Note (2026-09-18, PR #114463): an assistant row whose ONLY payload is
+// `reasoning` — no codex sidecar, no tool_calls, no content — is a
+// retry-churn artifact, NOT a reply, and is now deliberately dropped
+// pre-merge by toChatMessages (isDropOnlyReasoningAssistant). See
+// chat-messages.mid-reply-loss.test.ts for that contract.
 
 describe('#68321 assistant rows whose reply persisted only in codex_message_items', () => {
   it('restores the reply text from codex_message_items when content persisted empty (#68321 GregKM repro)', () => {
@@ -89,5 +87,22 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
 
     const [assistant] = toChatMessages([row])
     expect(chatMessageText(assistant)).toBe('Canonical persisted reply')
+  })
+
+  it('drops a reasoning-only row with no sidecar (PR #114463 contract)', () => {
+    // The OLD dead fixture: content '', reasoning only, no codex items,
+    // no tool_calls. Under the pre-merge drop this is a retry-churn
+    // artifact and must NOT surface as visible bubble or reasoning block.
+    const messages = toChatMessages([
+      { id: 109, role: 'user', content: 'go', timestamp: 1 },
+      { id: 71, role: 'assistant', content: '', reasoning: 'Here is the plan: first inspect the repo, then propose a fix, then run the tests.', timestamp: 2 },
+      { id: 111, role: 'user', content: 'next', timestamp: 3 }
+    ])
+
+    expect(messages.map(m => m.role)).toEqual(['user', 'user'])
+    expect(messages.some(m => m.role === 'assistant')).toBe(false)
+    expect(
+      messages.some(m => m.parts.some(p => p.type === 'reasoning' && /Here is the plan/.test(p.text)))
+    ).toBe(false)
   })
 })

@@ -165,6 +165,9 @@ class ApiRequestHooksMixin:
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
+        # Persistence-disabled forks share their parent's session ID and are not real sessions.
+        if getattr(self, "_persist_disabled", False):
+            return
         # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
         with suppress(Exception):
             from hermes_cli import lifecycle as _lifecycle

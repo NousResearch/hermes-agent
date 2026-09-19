@@ -76,24 +76,86 @@ def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
+# Activity-day attribution (#107861): in-window ledger rows plus the unledgered
+# residual of sessions started after cutoff, pinned to date(started_at).
+# Single bound parameter: the CTE aliases cutoff so daily/totals stay compatible
+# with _rows(db, sql, cutoff).
+_USAGE_DAY_ATTRIBUTION_CTE = """
+            WITH bounds AS (
+                SELECT ? AS cutoff
+            ),
+            ledger_by_session_day AS (
+                SELECT session_id,
+                       day,
+                       COALESCE(input_tokens, 0) AS input_tokens,
+                       COALESCE(output_tokens, 0) AS output_tokens,
+                       COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
+                       COALESCE(reasoning_tokens, 0) AS reasoning_tokens,
+                       COALESCE(estimated_cost_usd, 0) AS estimated_cost,
+                       COALESCE(actual_cost_usd, 0) AS actual_cost,
+                       COALESCE(api_call_count, 0) AS api_calls
+                  FROM session_daily_usage
+                 WHERE day >= date((SELECT cutoff FROM bounds), 'unixepoch')
+            ),
+            ledger_lifetime AS (
+                SELECT session_id,
+                       SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+                       SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+                       SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
+                       SUM(COALESCE(reasoning_tokens, 0)) AS reasoning_tokens,
+                       SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd,
+                       SUM(COALESCE(actual_cost_usd, 0)) AS actual_cost_usd,
+                       SUM(COALESCE(api_call_count, 0)) AS api_call_count
+                  FROM session_daily_usage
+                 GROUP BY session_id
+            ),
+            residual AS (
+                SELECT s.id AS session_id,
+                       date(s.started_at, 'unixepoch') AS day,
+                       MAX(0, COALESCE(s.input_tokens, 0) - COALESCE(l.input_tokens, 0)) AS input_tokens,
+                       MAX(0, COALESCE(s.output_tokens, 0) - COALESCE(l.output_tokens, 0)) AS output_tokens,
+                       MAX(0, COALESCE(s.cache_read_tokens, 0) - COALESCE(l.cache_read_tokens, 0)) AS cache_read_tokens,
+                       MAX(0, COALESCE(s.reasoning_tokens, 0) - COALESCE(l.reasoning_tokens, 0)) AS reasoning_tokens,
+                       MAX(0, COALESCE(s.estimated_cost_usd, 0) - COALESCE(l.estimated_cost_usd, 0)) AS estimated_cost,
+                       MAX(0, COALESCE(s.actual_cost_usd, 0) - COALESCE(l.actual_cost_usd, 0)) AS actual_cost,
+                       MAX(0, COALESCE(s.api_call_count, 0) - COALESCE(l.api_call_count, 0)) AS api_calls
+                  FROM sessions s
+                  LEFT JOIN ledger_lifetime l ON l.session_id = s.id
+                 WHERE s.started_at > (SELECT cutoff FROM bounds)
+            ),
+            residual_nz AS (
+                SELECT * FROM residual
+                 WHERE input_tokens > 0 OR output_tokens > 0 OR cache_read_tokens > 0
+                    OR reasoning_tokens > 0 OR estimated_cost > 0 OR actual_cost > 0
+                    OR api_calls > 0
+            ),
+            combined AS (
+                SELECT * FROM ledger_by_session_day
+                UNION ALL
+                SELECT * FROM residual_nz
+            )
+"""
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
-        daily = _rows(db, """
-            SELECT date(started_at, 'unixepoch') as day,
+        daily = _rows(db, _USAGE_DAY_ATTRIBUTION_CTE + """
+            SELECT day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ?
-            GROUP BY day ORDER BY day
+                   COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost), 0) as actual_cost,
+                   COUNT(DISTINCT session_id) as sessions,
+                   SUM(api_calls) as api_calls
+              FROM combined
+             GROUP BY day
+             ORDER BY day
         """, cutoff)
 
         by_model = _rows(db, """
@@ -114,16 +176,16 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         aux_rows = _aux_usage_rows(db, cutoff)
         by_model = _merge_aux_into_by_model(by_model, aux_rows)
 
-        totals = _rows(db, """
+        totals = _rows(db, _USAGE_DAY_ATTRIBUTION_CTE + """
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
                    SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ?
+                   COALESCE(SUM(estimated_cost), 0) as total_estimated_cost,
+                   COALESCE(SUM(actual_cost), 0) as total_actual_cost,
+                   COUNT(DISTINCT session_id) as total_sessions,
+                   SUM(api_calls) as total_api_calls
+              FROM combined
         """, cutoff)[0]
         usage = InsightsEngine(db).get_usage_breakdown(days=days)
 

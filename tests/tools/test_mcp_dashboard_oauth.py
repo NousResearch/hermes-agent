@@ -1,9 +1,22 @@
 """Hosted-dashboard bridge for MCP OAuth browser callbacks."""
 
 import asyncio
+import logging
 import threading
 
 import pytest
+
+
+def _flow(flow_id: str = "flow-retry", server_name: str = "asana"):
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    return DashboardOAuthFlow(
+        flow_id=flow_id,
+        server_name=server_name,
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri=f"https://agent.example/mcp/oauth/callback/{flow_id}",
+    )
 
 
 def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
@@ -121,14 +134,6 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 
 
-def _flow(flow_id: str):
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
-
-    return DashboardOAuthFlow(
-        flow_id=flow_id, server_name="asana", profile=None, hermes_home="/tmp/hermes-test",
-        redirect_uri=f"https://agent.example/mcp/oauth/callback/{flow_id}")
-
-
 def test_first_mark_error_reason_reaches_callback_waiter_and_is_never_clobbered():
     """A failure marked before any browser redirect (worker crash, authorization-URL timeout,
     user cancel) must reach the SDK's callback waiter — not the generic no-code line — and the
@@ -219,3 +224,201 @@ def test_preregistered_pinned_redirect_port_keeps_loopback_listener_under_dashbo
 
         result = asyncio.run(_authorize())
     assert (result.code, result.state) == ("code-5", "state-5")
+
+
+def test_ended_flow_is_reopened_for_the_retry_instead_of_raising():
+    """An ended handle must be re-minted for the next authorization attempt, not raise.
+
+    The MCP server task inherits this flow for its whole life (``_park`` re-establishes nothing:
+    the ContextVar stays set), so a stale handle raised ``RuntimeError: OAuth flow already
+    ended`` out of the SDK's auth flow on every retry and parked the server for good.
+    """
+    flow = _flow()
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=stale"))
+    flow.deliver_callback(code="spent-code", state="stale", error=None)
+    assert asyncio.run(flow.wait_for_callback()) == ("spent-code", "stale", None)
+    flow.mark_approved()
+
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=fresh"))
+
+    snapshot = flow.snapshot()
+    assert snapshot["status"] == "authorization_required"
+    assert snapshot["authorization_url"] == "https://idp.example/authorize?state=fresh"
+    assert flow.expected_state == "fresh"
+    # the ended attempt's spent authorization code must never be replayed to the new attempt
+    with pytest.raises(TimeoutError):
+        asyncio.run(flow.wait_for_callback(timeout=0.05))
+    flow.deliver_callback(code="fresh-code", state="fresh", error=None)
+    assert asyncio.run(flow.wait_for_callback()) == ("fresh-code", "fresh", None)
+
+
+def test_failed_attempt_reopens_the_same_handle():
+    """An attempt that failed (not cancelled) is recoverable too — the desktop keeps polling the
+    same flow id, so re-minting in place is what lets it show a working URL again."""
+    flow = _flow("flow-failed")
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=one"))
+    flow.mark_error("connection dropped mid-consent")
+
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=two"))
+
+    assert flow.snapshot() == {
+        "flow_id": "flow-failed",
+        "server_name": "asana",
+        "status": "authorization_required",
+        "authorization_url": "https://idp.example/authorize?state=two",
+        "error": None,
+    }
+
+
+def test_first_publish_is_unchanged_and_a_repeat_does_not_reopen():
+    """Protection: the ordinary first flow behaves exactly as before, and a repeat of the same URL
+    (the SDK re-invoking the handler) neither reopens the flow nor pushes a second URL."""
+    flow = _flow("flow-first")
+    url = "https://idp.example/authorize?state=s1"
+    expected = {
+        "flow_id": "flow-first",
+        "server_name": "asana",
+        "status": "authorization_required",
+        "authorization_url": url,
+        "error": None,
+    }
+
+    asyncio.run(flow.publish_authorization_url(url))
+    assert flow.snapshot() == expected
+
+    asyncio.run(flow.publish_authorization_url(url))
+    assert flow.snapshot() == expected
+    assert flow.expected_state == "s1"
+    # nothing was re-minted, so no callback slot was opened/wiped behind the waiting worker
+    assert not flow._callback_ready.is_set()
+    # and the flow is still the one the browser callback completes
+    flow.deliver_callback(code="code-first", state="s1", error=None)
+    assert asyncio.run(flow.wait_for_callback()) == ("code-first", "s1", None)
+
+
+def test_concurrent_reopens_leave_one_live_url_and_state_pair():
+    """Re-minting is serialized on the flow lock: concurrent publishes leave ONE live (url, state)
+    pair — never two active flows — and the callback slot still belongs to that pair."""
+    flow = _flow("flow-race-reopen")
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=ended"))
+    flow.mark_error("attempt 1 failed")
+
+    start = threading.Barrier(3)
+    errors: list = []
+
+    def publish(state: str) -> None:
+        start.wait()
+        try:
+            asyncio.run(
+                flow.publish_authorization_url(f"https://idp.example/authorize?state={state}")
+            )
+        except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+            errors.append(exc)
+
+    workers = [threading.Thread(target=publish, args=(state,)) for state in ("a", "b")]
+    for worker in workers:
+        worker.start()
+    start.wait()
+    for worker in workers:
+        worker.join()
+
+    assert errors == []
+    assert flow.expected_state in {"a", "b"}
+    assert flow.snapshot()["status"] == "authorization_required"
+    assert flow.snapshot()["authorization_url"] == (
+        f"https://idp.example/authorize?state={flow.expected_state}"
+    )
+    flow.deliver_callback(code="code-race", state=flow.expected_state, error=None)
+    assert asyncio.run(flow.wait_for_callback())[0] == "code-race"
+
+
+def test_cancelled_flow_stays_terminal():
+    """A user cancellation is not "ended by accident": the retrying worker must not reopen it
+    (the per-server slot has to free promptly, and the user said no)."""
+    flow = _flow("flow-cancelled")
+    flow.mark_error("Cancelled by user", cancelled=True)
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=late"))
+
+    assert flow.snapshot()["status"] == "error"
+    assert flow.expected_state is None
+
+
+@pytest.mark.no_isolate
+@pytest.mark.parametrize("ended_by", ["approved", "error"])
+def test_server_task_does_not_park_on_an_ended_dashboard_flow(
+    ended_by, monkeypatch, tmp_path, caplog
+):
+    """End-to-end shape of the report: an MCP server task whose inherited dashboard flow already
+    ended used to raise out of the redirect handler on every attempt of the initial-connect ladder
+    and park ("failed initial connection after 3 attempts").
+
+    With the flow re-minted, the ladder fails (if at all) only for the ordinary reason — nobody
+    completed the consent screen — and the handle is live and completable again.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_dashboard_oauth import dashboard_oauth_flow
+    from tools.mcp_oauth import _make_redirect_handler
+    from tools.mcp_tool import MCPServerTask
+
+    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
+    _real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_delay, *a, **kw):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
+
+    flow = _flow("flow-stale", "asana")
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=spent"))
+    if ended_by == "approved":
+        flow.mark_approved()
+    else:
+        flow.mark_error("worker gave up on the earlier attempt")
+    flow.mark_worker_done()
+
+    handler = _make_redirect_handler(0)
+
+    class _Task(MCPServerTask):
+        def _is_http(self) -> bool:
+            return False
+
+        def _deregister_tools(self) -> None:
+            self._registered_tool_names = []
+
+        async def _run_stdio(self, config):
+            # The SDK's auth flow sits inside the transport and calls the redirect handler.
+            with dashboard_oauth_flow(flow):
+                await handler("https://idp.example/authorize?state=fresh")
+            raise TimeoutError("OAuth callback timed out — the consent screen was never completed")
+
+    async def _scenario():
+        task = _Task("asana")
+        failure = None
+        try:
+            await task.start({"command": "x"})
+        except Exception as exc:  # noqa: BLE001 — the connect failure under test
+            failure = exc
+        parked = task._was_parked
+        await task.shutdown()
+        return failure, parked, task._task
+
+    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+        failure, parked, run_task = asyncio.run(_scenario())
+
+    assert failure is not None, "the transport never failed, so the ladder was not exercised"
+    assert not (isinstance(failure, RuntimeError) and "already ended" in str(failure)), (
+        "an ended dashboard flow handle reached the connect ladder"
+    )
+    assert parked, "the ladder should end in a park, not a silent exit"
+    assert run_task.done(), "run task must be reaped by shutdown()"
+    assert any("parking" in record.getMessage() for record in caplog.records)
+
+    # The retry re-minted the handle: the browser can still complete the new attempt.
+    assert flow.snapshot()["status"] == "authorization_required"
+    assert flow.expected_state == "fresh"
+    flow.deliver_callback(code="late-code", state="fresh", error=None)
+    assert asyncio.run(flow.wait_for_callback())[0] == "late-code"

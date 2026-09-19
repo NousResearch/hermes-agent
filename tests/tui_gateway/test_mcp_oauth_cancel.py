@@ -141,3 +141,30 @@ def test_cancel_does_not_revoke_an_approved_flow(tmp_path, monkeypatch):
         "status": "approved",
     }
     assert sessions.cancel_flow("missing", "reports", home)["ok"] is False
+
+
+def test_cancelled_session_is_not_reopened_by_a_retrying_worker(tmp_path, monkeypatch):
+    """A cancel is terminal-for-good: the worker's next authorization attempt must fail instead of
+    silently re-minting the flow the user abandoned (and holding the per-server slot again)."""
+    home = str(tmp_path)
+    flow = DashboardOAuthFlow(
+        "cancel-then-retry", "reports", None, home, "http://127.0.0.1:49152/callback"
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=first"))
+    monkeypatch.setattr(
+        sessions,
+        "_sessions",
+        {
+            "cancel-then-retry": {
+                "flow": flow,
+                "server_name": "reports",
+                "hermes_home": home,
+                "httpd": None,
+            }
+        },
+    )
+
+    assert sessions.cancel_flow("cancel-then-retry", "reports", home)["ok"] is True
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=second"))
+    assert flow.snapshot()["status"] == "error"

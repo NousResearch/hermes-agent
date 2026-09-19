@@ -250,7 +250,7 @@ def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str
     if rec is None:
         return {"ok": False, "error_message": err}
     flow = rec["flow"]
-    flow.mark_error("OAuth cancelled by user")
+    flow.mark_error("OAuth cancelled by user", cancelled=True)
     _shutdown_listener(rec)
     return {"ok": True, "status": flow.snapshot()["status"]}
 

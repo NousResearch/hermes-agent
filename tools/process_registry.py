@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -1026,7 +1027,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # hang waiting for `q` — default them to cat, honoring any pager the user set.
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
-        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
+        # Size the PTY from the real terminal instead of a fixed 30x120, and export the same
+        # size: plenty of TUIs read COLUMNS/LINES before falling back to ioctl(TIOCGWINSZ).
+        # ``get_terminal_size`` already prefers those env vars, and its fallback is the historical
+        # 30x120, so a headless host (gateway, cron) behaves exactly as before.
+        cols, rows = shutil.get_terminal_size(fallback=(120, 30))
+        pty_env.setdefault("COLUMNS", str(cols))
+        pty_env.setdefault("LINES", str(rows))
+        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(rows, cols))
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc

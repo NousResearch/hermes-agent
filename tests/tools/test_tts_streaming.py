@@ -6,6 +6,7 @@ synth path are all mocked. Covers the registry/resolver, provider availability,
 the chunked-streamer playback path, and the universal per-sentence sync fallback.
 """
 
+import json
 import os
 import queue
 import sys
@@ -897,11 +898,16 @@ def test_display_callback_not_called_when_streaming_enabled(monkeypatch):
 
 
 def _timed_sync_run(monkeypatch, sentences, *, synth_s=0.12, play_s=0.12,
-                    synth_fail_on=None, stop_after_plays=None):
+                    synth_fail_on=None, stop_after_plays=None, synth_rewrites_suffix=False):
     """Drive stream_tts_to_speaker over the sync path with timed fakes.
 
     Returns (events, stop, done): events is [(kind, sentence, t_start, t_end)]
     with kinds "synth"/"play", timestamps from a shared monotonic origin.
+
+    ``synth_rewrites_suffix`` makes the fake provider mimic a command provider declaring
+    ``format: wav`` (or ``voice_compatible``, which ffmpeg-converts to .ogg): it writes its
+    own extension and reports that path in the tool's JSON envelope, leaving the requested
+    ``.mp3`` an empty placeholder (#115029).
     """
     from tools import tts_tool
     from tools.tts_tool_speaker import stream_tts_to_speaker
@@ -916,10 +922,13 @@ def _timed_sync_run(monkeypatch, sentences, *, synth_s=0.12, play_s=0.12,
         if synth_fail_on and synth_fail_on in text:
             raise RuntimeError("synth exploded")
         time.sleep(synth_s)
-        with open(output_path, "wb") as fh:
+        target = f"{os.path.splitext(output_path)[0]}.wav" if synth_rewrites_suffix else output_path
+        with open(target, "wb") as fh:
             fh.write(b"x" * 100)
         with lock:
             events.append(("synth", text, t0, time.monotonic() - origin))
+        if synth_rewrites_suffix:
+            return json.dumps({"success": True, "file_path": target, "file_paths": [target]})
 
     def fake_play(path):
         t0 = time.monotonic() - origin
@@ -1006,3 +1015,37 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert created, "expected temp files to be created via mkstemp"
     leftovers = [p for p in created if os.path.exists(p)]
     assert not leftovers, f"temp files not cleaned: {leftovers}"
+
+
+def test_sync_pipeline_plays_the_path_the_provider_reports(monkeypatch):
+    """#115029: a provider whose artifact lands off the requested path must still be spoken.
+
+    Command providers declaring ``format: wav`` rewrite the requested ``.mp3`` to ``.wav``,
+    and ``voice_compatible`` ffmpeg-converts it to ``.ogg``. The pipeline gated playback on
+    its own ``mkstemp`` path, which the provider left empty — every sentence was dropped in
+    silence. The tool's reported path is the gate; the placeholder is not leaked either.
+    """
+    from tools import tts_tool_speaker
+
+    created = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracking_mkstemp(*a, **k):
+        fd, path = real_mkstemp(*a, **k)
+        created.append(path)
+        return fd, path
+
+    monkeypatch.setattr(tts_tool_speaker.tempfile, "mkstemp", tracking_mkstemp)
+    events, _stop, done = _timed_sync_run(monkeypatch, ["First full sentence here. "],
+                                          synth_s=0.0, play_s=0.0,
+                                          synth_rewrites_suffix=True)
+
+    plays = [e[1] for e in events if e[0] == "play"]
+    assert len(plays) == 1 and plays[0].endswith(".wav"), (
+        f"the artifact the provider reported must be played, got {plays}")
+    assert done.is_set()
+
+    placeholders = list(created)
+    artifacts = [f"{os.path.splitext(p)[0]}.wav" for p in placeholders]
+    leftovers = [p for p in placeholders + artifacts if os.path.exists(p)]
+    assert not leftovers, f"temp audio files leaked: {leftovers}"

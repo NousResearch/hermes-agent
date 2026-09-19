@@ -11,6 +11,7 @@ playback). Origin seams are resolved through :func:`_origin` at call time.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import platform
@@ -72,6 +73,22 @@ def _drain_chunks(chunk_queue: "queue.Queue[Optional[bytes]]") -> List[bytes]:
     return list(iter(chunk_queue.get, None))
 
 
+def _reported_audio_path(raw: object) -> Optional[str]:
+    """First non-empty file ``text_to_speech_tool`` reports writing, else None (#115029).
+
+    Providers may ignore the requested ``output_path``: a command provider declaring
+    ``format: wav`` rewrites the suffix, ``voice_compatible`` ffmpeg-converts to ``.ogg``.
+    Only the path reported in the tool's JSON envelope (``file_paths`` > ``file_path``)
+    is known to hold audio, so the requested path is a fallback, never the gate."""
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        paths = payload.get("file_paths") or ([payload["file_path"]] if payload.get("file_path") else [])
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return next((str(path) for path in paths
+                 if path and os.path.isfile(path) and os.path.getsize(path) > 0), None)
+
+
 class _SyncSentencePipeline:
     """Overlap per-sentence synthesis with playback for non-streaming providers.
 
@@ -99,14 +116,22 @@ class _SyncSentencePipeline:
         self._executor.shutdown(wait=True)
 
     def _synthesize_to_tmp(self, cleaned: str) -> Optional[str]:
+        """Synthesize one sentence; returns the artifact the tool reports (the requested
+        ``mkstemp`` path is only a fallback — a provider that writes its own container leaves
+        that placeholder empty and the sentence would be dropped silently, #115029)."""
         if self._stop.is_set():
             return None
         tmp_path = None
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
-            _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return tmp_path
+            raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            written = _reported_audio_path(raw)
+            if written is None:
+                return tmp_path  # tool reported nothing usable: keep the old gate (size check)
+            if os.path.abspath(written) != os.path.abspath(tmp_path):
+                _unlink_quietly(tmp_path)  # wrote elsewhere: drop the empty placeholder
+            return written
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)

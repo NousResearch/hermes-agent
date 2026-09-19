@@ -396,6 +396,7 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         kb.request_review(
             conn, tid, summary="done",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
+            reviewer="reviewer",
         )
         assert kb.get_task(conn, tid).status == "review"
 
@@ -445,13 +446,14 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
 
     with kbc.connect() as conn:
         # Review-lane task with a fresh PR comment.
-        review_id = kb.create_task(conn, title="review me", assignee="reviewer")
+        review_id = kb.create_task(conn, title="review me", assignee="worker")
         claimed = kb.claim_task(conn, review_id)
         assert claimed is not None
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
         assert kb.request_review(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
+            reviewer="reviewer",
         )
         # Ready-lane task with the same fresh PR comment.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
@@ -692,7 +694,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         task_id = kb.create_task(
             conn,
             title="domain review",
-            assignee="reviewer",
+            assignee="worker",
             skills=["domain-specific-review"],
         )
         implementation = kb.claim_task(conn, task_id)
@@ -702,6 +704,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
             task_id,
             summary="ready",
             expected_run_id=implementation.current_run_id,
+            reviewer="reviewer",
         )
         monkeypatch.setattr(
             kbd,
@@ -743,7 +746,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
 
         review_ids: list[str] = []
         for title in ("review one", "review two"):
-            task_id = kb.create_task(conn, title=title, assignee="reviewer")
+            task_id = kb.create_task(conn, title=title, assignee="worker")
             implementation = kb.claim_task(conn, task_id)
             assert implementation is not None
             assert kb.request_review(
@@ -751,6 +754,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
                 task_id,
                 summary="ready",
                 expected_run_id=implementation.current_run_id,
+                reviewer="reviewer",
             )
             review_ids.append(task_id)
 

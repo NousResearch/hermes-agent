@@ -214,8 +214,10 @@ def test_max_spawn_stays_per_board(kanban_home, all_assignees_spawnable):
 
 
 def _park_in_review(conn: sqlite3.Connection, title: str, assignee: str) -> str:
-    tid = kb.create_task(conn, title=title, assignee=assignee)
-    _set_task_status(conn, tid, "review")
+    tid = kb.create_task(conn, title=title, assignee="implementer")
+    kb.claim_task(conn, tid)
+    run_id = kb.get_task(conn, tid).current_run_id
+    kb.request_review(conn, tid, summary="done", expected_run_id=run_id, reviewer=assignee)
     return tid
 
 
@@ -245,7 +247,7 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
 
 def _guard_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
     """Latest run ``rate_limited`` → ``check_respawn_guard`` returns a cooldown."""
-    now = int(time.time())
+    now = int(time.time()) + 5
     with kb.write_txn(conn):
         conn.execute(
             "INSERT INTO task_runs (task_id, profile, status, outcome, "
@@ -253,7 +255,8 @@ def _guard_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
             "'rate_limited', ?, ?)",
             (review_id, now, now),
         )
-    assert kbd.check_respawn_guard(conn, review_id, lane="review") == "rate_limit_cooldown"
+    guard = kbd.check_respawn_guard(conn, review_id, lane="review")
+    assert guard == "rate_limit_cooldown", guard
     return {"max_in_progress": 1}
 
 

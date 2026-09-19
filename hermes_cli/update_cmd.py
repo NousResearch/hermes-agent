@@ -89,14 +89,13 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _web_toolchain_roots)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
-    _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
-    _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
-    _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
-    _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
-    _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
-    _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
-    _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
-    _sync_with_upstream_if_needed)
+    _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _apply_update_ref, _assess_parked_branch_switch,
+    _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _classify_update_ref,
+    _count_commits_between, _discard_lockfile_churn, _ensure_non_trampoline_git, _fetch_update_ref,
+    _get_origin_url, _git_is_trampoline, _has_upstream_remote, _is_fork, _locate_real_git,
+    _mark_skip_upstream_prompt, _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
+    _print_parked_branch_kept_notice, _print_parked_branch_skip_warning, _prune_orphan_rescue_refs,
+    _should_skip_upstream_prompt, _sync_fork_with_upstream, _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     _clear_stale_sqlite_sidecars,
@@ -1152,7 +1151,8 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
 
 
 def _verify_head_after_pull(
-    git_cmd, branch: str, pre_pull_sha, *, in_place_update: bool, _windows_gateway_resume
+    git_cmd, branch: str, pre_pull_sha, *, in_place_update: bool, _windows_gateway_resume,
+    skip_head_moved_gate: bool = False,
 ) -> str | None:
     """Return the post-pull HEAD SHA; ``sys.exit(1)`` if the pull was a no-op or landed off-branch."""
     # A detached checkout pinned to a SHA can report "N new commit(s)" and a successful
@@ -1165,7 +1165,7 @@ def _verify_head_after_pull(
     # doctor`` healthy. Compare pre-pull and post-pull HEAD; if they match, surface the no-op instead of
     # claiming success.
     post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
-    if pre_pull_sha and post_pull_sha == pre_pull_sha:
+    if not skip_head_moved_gate and pre_pull_sha and post_pull_sha == pre_pull_sha:
         print()
         print("✗ Code did not move — update was a no-op.")
         print(
@@ -1291,13 +1291,14 @@ def _finish_already_up_to_date(
 def _apply_pulled_update(
     git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume, args) -> None:
+    _windows_gateway_resume, args, skip_head_moved_gate: bool = False) -> None:
     """Post-pull phase, pre-swap half: verify HEAD, arm the fleet marker, sweep bytecode, then
     hand the rest of the run to an interpreter born on the pulled code (never returns)."""
     _invalidate_update_cache()
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
-        _windows_gateway_resume=_windows_gateway_resume)
+        _windows_gateway_resume=_windows_gateway_resume,
+        skip_head_moved_gate=skip_head_moved_gate)
 
     # Gateways still serve pre-pull modules until the restart phase; an interrupt before a
     # completed restart leaves this marker so the next update catches up even when git is
@@ -1589,6 +1590,37 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     try:
+        pin_ref = _m()._resolve_update_ref(args)
+        if pin_ref:
+            pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            _apply_update_ref(
+                git_cmd,
+                pin_ref,
+                assume_yes=assume_yes,
+                gateway_mode=gateway_mode,
+                gw_input_fn=gw_input_fn,
+                discard_local_changes=opts.discard_local_changes,
+            )
+            branch = "HEAD"
+            _pin_plan = _CheckoutPlan(
+                auto_stash_ref=None,
+                commit_count=1,
+                in_place_update=False,
+                parked_branch_switched=False,
+                prompt_for_restore=False,
+                switch_block_reason=None,
+                upstream_checked=True,
+            )
+            _apply_pulled_update(
+                git_cmd, branch, pre_pull_sha, _pin_plan, opts, gateway_mode=gateway_mode,
+                is_fork=is_fork, desktop_dir=desktop_dir,
+                had_desktop_app_before_update=had_desktop_app_before_update,
+                pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
+                _windows_gateway_resume=_windows_gateway_resume, args=args,
+                skip_head_moved_gate=True,
+            )
+            return
+
         # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
         branch = _m()._resolve_update_branch(args)
 

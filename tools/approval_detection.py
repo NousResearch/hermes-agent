@@ -805,6 +805,82 @@ _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
 })
+# Rules anchored on a COMMAND WORD must not fire on quoted prose. `echo 'ufw disable'`,
+# `grep -n 'iptables -F' notes.md` and `hermes ... --body "docker system prune -a --volumes"` pass
+# that text to a command as an ARGUMENT; the shell never runs it, so requiring approval for it is a
+# false positive that trains the operator to approve without reading. Same rationale as the
+# _CMDPOS-anchored rules above (mkfs/dd/shutdown) and the quote-masked hardline rules. Matching
+# runs against _mask_quoted_prose, which keeps quoted text the shell really executes RAW: `$(...)`
+# and backticks inside double quotes, plus the payload variants `_command_detection_variants()`
+# surfaces for shell carriers (`sh -c 'ufw disable'`) and interpreter flags (`python3 -c ...`).
+#
+# Deliberately NOT applied to the SQL-statement rules (`DROP SCHEMA`, `ALTER TABLE ... DROP
+# COLUMN`, `UPDATE ... SET ... = NULL`, `DELETE FROM`): there the quoted string IS the statement a
+# database client executes (`psql -c 'DELETE FROM leads WHERE id = 42'`), so it is code, not prose —
+# masking it would drop a real positive. Those rules keep matching quoted text, exactly as the
+# pre-existing `DROP TABLE|DATABASE` rule already does on main.
+_QUOTE_MASKED_COMMAND_DESCRIPTIONS = frozenset({
+    "kill PID 1 (init)",
+    "bring network interface down",
+    "systemctl isolate/rescue (drops all running services)",
+    "disable swap (swapoff)",
+    "write to sysrq-trigger (kernel emergency command)",
+    "symlink over /etc file (ln -sf)",
+    "write to authorized_keys (SSH key injection)",
+    "kill processes by name (killall)",
+    "kill processes on file/socket (fuser -k)",
+    "git mirror push (deletes/overwrites remote refs not present locally)",
+    "git push prune (deletes remote refs absent locally)",
+    "git push delete (removes a remote branch/ref)",
+    "git push force via +refspec prefix (rewrites remote history)",
+    "git push with lease (safe force variant, still overwrites when lease holds)",
+    "shred --remove (irreversible file destruction)",
+    "wipe filesystem signatures (wipefs)",
+    "truncate file to zero (data destruction)",
+    "redis data destruction (FLUSHALL/FLUSHDB/DEL)",
+    "pg_restore --clean (drops existing database objects)",
+    "drop PostgreSQL cluster (pg_dropcluster)",
+    "docker volume rm/prune (destroys volume data)",
+    "docker system prune --all/--volumes (destroys images and volumes)",
+    "docker rm --force (forced container removal)",
+    "docker pause (suspends container)",
+    "apt remove/purge of security or infrastructure package",
+    "rsync --delete over live data tree (deletes files missing at source)",
+    "remove crontab (crontab -r)",
+    "empty redirect truncates backup dump file",
+    "redirect overwrites latest backup file",
+    "ssh-keygen overwrites default SSH identity key",
+    "delete Vault secret (vault kv delete)",
+    "disable firewall (ufw disable/reset)",
+    "open database/app service port (ufw allow)",
+    "relax firewall default policy (ufw default allow)",
+    "open firewall to any source (ufw allow from any)",
+    "deny SSH access (ufw deny 22)",
+    "modify firewall rules (iptables)",
+    "flush nftables ruleset",
+    "accept-all nftables rule (nft add rule ... accept)",
+    "stop fail2ban (disables brute-force protection)",
+    "grant group/other read access to env/credential file",
+    "set SUID bit on executable",
+    "remove all permissions (chmod 000)",
+    "recursive chown of /root or /root/.ssh",
+    "grant privileged group membership (usermod -aG sudo)",
+    "lock user account (usermod -L)",
+    "delete user password (passwd -d)",
+    "recursive ACL modification (setfacl -R)",
+    "store git credentials in plaintext (credential.helper store)",
+    "dump environment variables to file",
+    "exfiltrate environment variables over network (printenv/env pipe to network tool)",
+    "create root-equivalent user (uid 0)",
+    "docker run --privileged (container escapes to host)",
+    "git checkout -- (discards uncommitted changes)",
+    "git stash drop/clear (destroys stashed changes)",
+    "git history rewrite (filter-repo/filter-branch)",
+    "git reflog expire (destroys recovery path)",
+    "git add of env file (secrets into commit history)",
+    "clear shell history (history -c)",
+})
+_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS |= _QUOTE_MASKED_COMMAND_DESCRIPTIONS
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1875,7 +1951,13 @@ def detect_dangerous_command(command: str) -> tuple:
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
+                    # Quoted text is DATA, except under a shell carrier (sh -c, eval, source, .)
+                    # whose quoted argument is code the shell really runs — those scan raw, the
+                    # same rule the hardline matcher applies above.
+                    masked_lower = (
+                        command_lower if _contains_shell_carrier(command_lower)
+                        else _mask_quoted_prose(command_lower)
+                    )
                 if pattern_re.search(masked_lower):
                     return (True, description, description)
             elif pattern_re.search(command_lower):

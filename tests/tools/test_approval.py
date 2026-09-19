@@ -2352,7 +2352,11 @@ class TestFnBacklogHardening:
         ("ufw allow from any to any", "open firewall to any source (ufw allow from any)"),
         ("nft add rule inet filter input accept",
          "accept-all nftables rule (nft add rule ... accept)"),
-        ("iptables -P INPUT ACCEPT", "modify firewall rules (iptables)"),  # X089 (already gated)
+        # Quoted text the shell still EXECUTES stays gated: a shell carrier's quoted argument is
+        # code, not prose, so the quote-guard must not hide it.
+        ("bash -c 'ufw disable'", "disable firewall (ufw disable/reset)"),
+        ("eval 'iptables -F'", "modify firewall rules (iptables)"),
+        ("sh -c 'shred -u /srv/app/state.db'", "shred --remove (irreversible file destruction)"),
         # ---- history ----
         ("git checkout -- .", "git checkout -- (discards uncommitted changes)"),  # X033
         ("git stash drop", "git stash drop/clear (destroys stashed changes)"),  # X038
@@ -2485,6 +2489,25 @@ class TestFnBacklogHardening:
         "git commit -m 'do not use --mirror on shared remotes'",  # flag name inside quoted prose
         "git remote add mirror git@host:repo.git",
         "git fetch --all --prune",                    # prune on FETCH only moves tracking refs
+        # ── quoted prose is DATA: a destructive command word inside a string argument stays clean ──
+        # The rules are anchored on a command word and bounded to one segment, and the command-word
+        # rules are matched against the quote-masked variant, so echoing, grepping or documenting a
+        # destructive command does not require approval. The three first cases are the reported
+        # false positives this guards against.
+        "echo 'iptables -P INPUT ACCEPT'",
+        "grep -n 'iptables -P INPUT ACCEPT' tests/tools/test_approval.py",
+        "grep -n 'ufw disable' notes.md",
+        "echo 'ufw allow 5432/tcp'",
+        "echo \"docker system prune -a --volumes\"",
+        "git commit -m \"note: ufw disable is documented in the runbook\"",
+        "grep -n 'nft flush ruleset' CHANGELOG.md",
+        "grep -rn 'systemctl isolate rescue.target' docs/",
+        "echo 'shred -u /srv/app/state.db'",
+        "printf '%s' 'redis-cli FLUSHALL'",
+        "echo 'pg_restore --clean -d appdb /root/backups/appdb.dump'",
+        "echo 'crontab -r'",
+        "echo 'chmod u+s /usr/local/bin/tool'",
+        "echo 'git push --mirror origin'",
         # ── everyday read-only commands: the gate must stay silent on all of them ──────────────
         "ufw status",
         "ls -la",

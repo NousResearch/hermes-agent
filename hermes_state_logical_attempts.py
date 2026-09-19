@@ -196,18 +196,24 @@ def _terminal(conn, key, encoded):
     aid = key[len(ADMISSION_PREFIX):]
     try:
         row = json.loads(encoded)
-        if not isinstance(row, dict) or row.get('admission_id') != aid or row.get('status') != 'terminal':
+        if not isinstance(row, dict):
             raise ValueError('invalid terminal identity')
-        values = _identity(row)
+        # Establish independent physical attribution BEFORE checking corruptible
+        # nonidentity fields. A bad status/digest/intent is not global ambiguity
+        # when the retained identity hash and retirement marker prove this scope.
+        principal, sid, request = (_text(row[k]) for k in
+                                   ('principal_id', 'target_session_id', 'request_id'))
         identity = conn.execute('SELECT value FROM state_meta WHERE key=?',
-            (identity_key(values['principal_id'], values['session_id'], values['request_id']),)).fetchone()
-        retired = conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + values['session_id'],)).fetchone()
+            (identity_key(principal, sid, request),)).fetchone()
+        retired = conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone()
         if identity is None or json.loads(identity[0]) != aid or retired is None:
             raise ValueError('terminal identity is not witnessed')
         # Scope now has independent canonical identity evidence, even if payload
         # integrity fails. Never turn that failure into unrelated-profile poison.
         conn.execute('INSERT OR REPLACE INTO logical_attempt_dirty VALUES(?,?,?)',
-                     ('terminal', aid, values['session_id']))
+                     ('terminal', aid, sid))
+        if row.get('admission_id') != aid or row.get('status') != 'terminal':
+            raise ValueError('invalid terminal admission')
         project_admission(conn, row, migrating=True, erased=row['payload_json'] == '{}')
         conn.execute("DELETE FROM logical_attempt_dirty WHERE source='terminal' AND admission_id=?", (aid,))
         return None

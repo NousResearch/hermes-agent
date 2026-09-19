@@ -67,6 +67,34 @@ def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_cr
 
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
+def test_model_extra_reasoning_content_lands_on_final_message_and_persists(_mock_close, mock_create):
+    """Unknown Z.AI delta fields parked by Pydantic remain visible after Relay."""
+    reasoning_delta = SimpleNamespace(
+        content=None, tool_calls=None, reasoning_content=None, reasoning=None,
+        model_extra={"reasoning_content": "I should retain this."},
+    )
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(index=0, delta=reasoning_delta, finish_reason=None)],
+            model="glm-5.3-flash", usage=None,
+        ),
+        _make_chunk(content="Done", finish_reason="stop", model="glm-5.3-flash"),
+    ]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = iter(chunks)
+    mock_create.return_value = mock_client
+
+    agent = _agent()
+    response = agent._interruptible_streaming_api_call({})
+    msg = response.choices[0].message
+    assert msg.reasoning_content == "I should retain this."
+    persisted = agent._build_assistant_message(msg, "stop")
+    assert persisted["reasoning"] == "I should retain this."
+    assert persisted["reasoning_content"] == "I should retain this."
+
+
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
 def test_no_details_leaves_attribute_absent(_mock_close, mock_create):
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = iter([

@@ -25,29 +25,38 @@
     "method": "web_form",
     "url": "https://www.usphonebook.com/opt-out",
     "requires": {
-      "profile_url": true,
+      "profile_url": false,
       "email_verification": true,
-      "captcha": false,
+      "captcha": true,
       "gov_id": false,
       "account": false,
       "phone_callback": false,
-      "payment": false
+      "payment": false,
+      "address_or_dob": true
     },
     "inputs": [
       "full_name",
-      "contact_email",
-      "profile_url"
+      "contact_email"
     ],
-    "notes": "Reverse-phone + people-search. Opt-out: paste the listing URL, provide an email, confirm via the emailed link.",
+    "playbook": [
+      "The live /opt-out route redirects to /removal. Stage 1 asks legal first/last name + contact email + Google reCAPTCHA, then emails a 24-hour verification link.",
+      "Open the fresh verification link in the same browser session. Stage 2 requires first/last name, city, state, ZIP, email, and at least one of date of birth or street address. Middle name and phone are optional. A second Google reCAPTCHA checkbox is required before the final POST.",
+      "If DOB or street address is outside the active case's disclosure boundary, queue one consolidated human decision. After explicit authorization of one field, keep the other plus middle name and phone withheld unless separately approved.",
+      "Do not send the request to support@usphonebook.com: its official auto-reply says that mailbox does not process privacy requests and routes opt-outs back to /removal.",
+      "After the confirmation says the request was received, record awaiting_processing, allow 72 hours, clear browser cache/start a fresh search, and record confirmed_removed only if that new search proves the listing absent."
+    ],
+    "notes": "Field-verified 2026-08-10. The former profile-URL + email recipe is stale. Current flow: legal name/email/reCAPTCHA -> emailed 24-hour link -> city/state/ZIP plus either DOB or street address -> second reCAPTCHA -> 72-hour processing confirmation. Both reCAPTCHAs were standard Google checkboxes and cleared without solver/bypass in the operator CDP browser. Official support email refuses privacy requests.",
     "quirks": [
-      "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
-      "Needs the confirmed profile_url.",
-      "Email verification required."
+      "The public /opt-out route redirects to /removal and uses Google reCAPTCHA on the initial name/email request.",
+      "The emailed second-stage form marks city, state, and ZIP as required; client-side validation also requires either date of birth or street address even though neither is individually marked with an asterisk. Middle name and phone remain optional and should be withheld by default.",
+      "The second-stage form also requires its own Google reCAPTCHA checkbox. A POST without that checkbox returns the same form with 'Captcha is required'.",
+      "Use a fresh verification email/link when a prior ticket returns generic validation errors for every populated field; stale/consumed ticket context can make valid values look invalid.",
+      "The Privacy Rights page routes public-record visibility requests back to the opt-out form; Right to Delete does not supply an alternate email lane for a consumer with no direct relationship.",
+      "support@usphonebook.com is not a privacy-request lane; its verified auto-reply refuses such requests."
     ],
     "est_processing_days": 3,
     "reappearance_risk": "medium"
   },
-  "last_verified": null,
-  "source": "curated",
-  "confidence": "documented"
+  "last_verified": "2026-08-10",
+  "source": "curated"
 }

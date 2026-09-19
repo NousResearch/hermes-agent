@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.memory_provider import MemoryProvider
+
 
 class RecordingMemoryProvider:
     name = "recording"
@@ -32,7 +34,7 @@ def test_shutdown_memory_provider_is_idempotent():
 
     manager = MagicMock()
     agent = object.__new__(AIAgent)
-    agent._memory_manager = manager
+    setattr(agent, "_memory_manager", manager)
     agent.context_compressor = None
     agent.session_id = "session-1"
 
@@ -41,6 +43,84 @@ def test_shutdown_memory_provider_is_idempotent():
 
     manager.on_session_end.assert_called_once()
     manager.shutdown_all.assert_called_once()
+
+
+def test_builtin_memory_provider_aliases_do_not_load_plugin():
+    """memory.provider builtin/built-in/none must not call load_memory_provider (#75647)."""
+    for alias in ("builtin", "built-in", "none", "BUILTIN", " None "):
+        cfg = {"memory": {"provider": alias}, "agent": {}}
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            patch("plugins.memory.load_memory_provider") as load_memory_provider,
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        assert getattr(agent, "_memory_manager") is None, alias
+        load_memory_provider.assert_not_called()
+
+
+def test_builtin_provider_alias_keeps_file_memory_enabled(tmp_path):
+    """Built-in MEMORY.md remains available when only the external provider is disabled."""
+    from tools.memory_tool import ENTRY_DELIMITER, MemoryStore
+
+    memory_dir = tmp_path / "memories"
+    memory_dir.mkdir()
+    memory_file = memory_dir / "MEMORY.md"
+    existing_entry = "The project uses SQLite."
+    added_entry = "The test suite runs on macOS."
+    memory_file.write_text(existing_entry, encoding="utf-8")
+    cfg = {
+        "memory": {"provider": "builtin", "memory_enabled": True},
+        "agent": {},
+    }
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider") as load_memory_provider,
+        patch("tools.memory_tool.get_memory_dir", return_value=memory_dir),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+
+        memory_store = getattr(agent, "_memory_store")
+        assert isinstance(memory_store, MemoryStore)
+        assert memory_store.memory_enabled
+        assert memory_store.memory_entries == [existing_entry]
+        assert getattr(agent, "_memory_manager") is None
+        load_memory_provider.assert_not_called()
+
+        result = memory_store.add("memory", added_entry)
+        assert result["success"] is True
+        assert memory_file.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(
+            [existing_entry, added_entry]
+        )
+        reloaded_store = MemoryStore()
+        reloaded_store.load_from_disk()
+        assert reloaded_store.memory_entries == [existing_entry, added_entry]
 
 
 def test_blank_memory_provider_does_not_auto_enable_honcho():
@@ -71,7 +151,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
             skip_memory=False,
         )
 
-    assert agent._memory_manager is None
+    assert getattr(agent, "_memory_manager") is None
     from_global_config.assert_not_called()
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
@@ -83,14 +163,14 @@ def test_close_shuts_down_memory_provider():
     from run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
-    agent._memory_manager = MagicMock()
+    setattr(agent, "_memory_manager", MagicMock())
     agent.context_compressor = None
     agent.session_id = ""
     agent._session_messages = []
 
     agent.close()
 
-    agent._memory_manager.shutdown_all.assert_called_once()
+    getattr(agent, "_memory_manager").shutdown_all.assert_called_once()
 
 
 def test_aiagent_forwards_user_id_alt_to_memory_provider():
@@ -119,7 +199,7 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
             user_id_alt="union-id",
         )
 
-    assert agent._memory_manager is not None
+    assert getattr(agent, "_memory_manager") is not None
     assert provider.init_session_id == "sess-alt"
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
@@ -128,10 +208,18 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
-class CoreShadowProvider:
+class CoreShadowProvider(MemoryProvider):
     """Provider that tries to register tools shadowing built-in core tools."""
 
-    name = "core-shadow"
+    @property
+    def name(self) -> str:
+        return "core-shadow"
+
+    def is_available(self) -> bool:
+        return True
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        pass
 
     def get_tool_schemas(self):
         return [
@@ -168,5 +256,3 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
-
-

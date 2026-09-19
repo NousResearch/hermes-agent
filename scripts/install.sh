@@ -1173,10 +1173,31 @@ install_node_line() {
 
     local node_link_dir
     node_link_dir="$(get_command_link_dir)"
-    mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    # Only create node/npm/npx symlinks for layouts where the link dir is
+    # the *only* PATH entry the shell sees: root FHS (/usr/local/bin) and
+    # Termux ($PREFIX/bin). For a user install the link dir is ~/.local/bin,
+    # which the user's own rc files prepend to PATH for tools like uv,
+    # pipx, and claude — so symlinking node/npm/npx there silently shadows
+    # the user's own Node toolchain (nvm, Homebrew, volta, etc.) in every
+    # interactive shell (#45279). check_node() already gate-keeps:
+    # install_node_line() is only reached when the user's system Node was
+    # too old or had a bad npm band, so the managed Node is what Hermes
+    # *needs* internally — it just doesn't need to hijack the user's
+    # interactive `which node`. Hermes resolves its own runtime via
+    # find_hermes_node_executable() (absolute path under $HERMES_HOME/node),
+    # and with_hermes_node_path() prepends that dir only for Hermes-owned
+    # subprocesses, so skipping the symlinks is safe. Mirrors the
+    # HERMES_NODE_SKIP_LINKS=1 policy bootstrap_hermes_managed_node()
+    # already uses in hermes_constants.py for the same reason.
+    if [ "$ROOT_FHS_LAYOUT" = true ] || is_termux; then
+        mkdir -p "$node_link_dir"
+        ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+        ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+        ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    else
+        log_info "Skipping node/npm/npx symlinks in ~/.local/bin — managed Node stays private (see #45279)"
+    fi
 
     configure_managed_node_npm_prefix
 

@@ -650,3 +650,148 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     # The other profile's .env value stands; the process config was not applied.
     assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Parent-injected loopback Dashboard capability pair (#115955)
+# ---------------------------------------------------------------------------
+
+
+def test_parent_loopback_pair_capture_conditions(monkeypatch):
+    """Only a COMPLETE plain-HTTP loopback pair is captured as a parent-granted
+    process capability: token plus URL on 127.0.0.1/localhost/::1. https or
+    remote-host URLs (standalone/public Dashboards) and half pairs are plain
+    configuration and must NOT be captured."""
+    from hermes_cli.env_loader import _capture_parent_loopback_dashboard_pair
+
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    assert _capture_parent_loopback_dashboard_pair() is None
+
+    # A token without its URL (or vice versa) is not a capability pair.
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
+    assert _capture_parent_loopback_dashboard_pair() is None
+
+    for url in ("http://127.0.0.1:43123", "http://localhost:9000", "http://[::1]:9000"):
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", url)
+        assert _capture_parent_loopback_dashboard_pair() == ("tok", url)
+
+    # Standalone/public Dashboard URLs keep dotenv precedence.
+    for url in ("https://127.0.0.1:43123", "http://0.0.0.0:43123", "http://dashboard.example.com"):
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", url)
+        assert _capture_parent_loopback_dashboard_pair() is None
+
+
+def test_parent_injected_loopback_pair_beats_persisted_dotenv(tmp_path, monkeypatch):
+    """Regression for #115955: a persisted HERMES_DASHBOARD_SESSION_TOKEN in
+    ~/.hermes/.env must not split the loopback pair a parent process injected —
+    the child Dashboard used to authenticate with the persisted token while the
+    caller probed with the injected one and got HTTP 401. The .env here defines
+    ONLY the token (no PUBLIC_URL line): that alone was enough to split the
+    pair; the reapply restores both halves."""
+    from hermes_cli import env_loader
+
+    monkeypatch.setattr(
+        env_loader,
+        "_PARENT_LOOPBACK_DASHBOARD_PAIR",
+        ("link-token", "http://127.0.0.1:43123"),
+    )
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "link-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "http://127.0.0.1:43123")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "link-token"
+    assert os.getenv("HERMES_DASHBOARD_PUBLIC_URL") == "http://127.0.0.1:43123"
+
+
+def test_non_loopback_dashboard_values_keep_dotenv_precedence(tmp_path, monkeypatch):
+    """Without a captured loopback pair (here: a public https URL injected
+    instead), the persistent .env keeps its existing override=True precedence —
+    the fix is scoped to the loopback capability pair only."""
+    from hermes_cli import env_loader
+
+    monkeypatch.setattr(env_loader, "_PARENT_LOOPBACK_DASHBOARD_PAIR", None)
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\n"
+        "HERMES_DASHBOARD_PUBLIC_URL=https://public.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "injected-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://public.example.com")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "persisted-token"
+    assert os.getenv("HERMES_DASHBOARD_PUBLIC_URL") == "https://public.example.com"
+
+
+def test_loopback_dotenv_values_can_change_across_reloads(tmp_path, monkeypatch):
+    """No parent injection here, so loopback Dashboard values in .env are plain
+    configuration: each reload must publish the file's CURRENT value — the fix
+    must not freeze the first load's values in place."""
+    from hermes_cli import env_loader
+
+    monkeypatch.setattr(env_loader, "_PARENT_LOOPBACK_DASHBOARD_PAIR", None)
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=first-token\n"
+        "HERMES_DASHBOARD_PUBLIC_URL=http://127.0.0.1:9000\n",
+        encoding="utf-8",
+    )
+
+    load_hermes_dotenv(hermes_home=home)
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "first-token"
+
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=second-token\n"
+        "HERMES_DASHBOARD_PUBLIC_URL=http://127.0.0.1:9001\n",
+        encoding="utf-8",
+    )
+    load_hermes_dotenv(hermes_home=home)
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "second-token"
+    assert os.getenv("HERMES_DASHBOARD_PUBLIC_URL") == "http://127.0.0.1:9001"
+
+
+def test_loopback_dotenv_pair_does_not_leak_between_homes(tmp_path, monkeypatch):
+    """The pair is captured at import time ONLY, so home A's .env loopback
+    values are never mistaken for a parent injection when home B loads in the
+    same process — B's own .env Dashboard settings must win over A's residue."""
+    from hermes_cli import env_loader
+
+    # This test process started without an injected pair, so the import-time
+    # capture must still be None even after A's .env publishes loopback values.
+    assert env_loader._PARENT_LOOPBACK_DASHBOARD_PAIR is None
+
+    home_a = tmp_path / "home-a"
+    home_a.mkdir()
+    (home_a / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=home-a-token\n"
+        "HERMES_DASHBOARD_PUBLIC_URL=http://127.0.0.1:9000\n",
+        encoding="utf-8",
+    )
+    load_hermes_dotenv(hermes_home=home_a)
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "home-a-token"
+
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    (home_b / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=home-b-token\n"
+        "HERMES_DASHBOARD_PUBLIC_URL=http://192.168.1.10:9000\n",
+        encoding="utf-8",
+    )
+    load_hermes_dotenv(hermes_home=home_b)
+
+    # Home A's values must not be replayed as a "parent injection" over B's.
+    assert env_loader._PARENT_LOOPBACK_DASHBOARD_PAIR is None
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "home-b-token"
+    assert os.getenv("HERMES_DASHBOARD_PUBLIC_URL") == "http://192.168.1.10:9000"

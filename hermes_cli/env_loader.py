@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
@@ -60,6 +61,56 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
     "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
 })
+
+
+# A parent integration (desktop shell, gateway machine profile, link-style callers) exec's a short-lived
+# child with a fresh HERMES_DASHBOARD_SESSION_TOKEN + HERMES_DASHBOARD_PUBLIC_URL pointing at a loopback
+# Dashboard. The two values form ONE process capability: the parent keeps the token to authenticate its
+# /api probes and the child server must accept exactly that token (#115955). Every dotenv layer in
+# load_hermes_dotenv() loads with override=True, so a persistent HERMES_DASHBOARD_SESSION_TOKEN in
+# ~/.hermes/.env silently replaced the injected token and split the pair — the parent's probes then got
+# HTTP 401 from its own child. Captured ONCE at import time, the only moment os.environ still holds
+# parent-process values rather than output an earlier load pass published: a reload-time detection would
+# mistake one home's .env values for a parent injection and replay them into every sibling home.
+_PARENT_LOOPBACK_DASHBOARD_PAIR: tuple[str, str] | None = None
+
+
+def _capture_parent_loopback_dashboard_pair() -> tuple[str, str] | None:
+    """Snapshot an explicitly injected plain-HTTP loopback Dashboard pair, or None.
+
+    Only a COMPLETE pair qualifies: token plus public URL whose scheme is ``http`` and whose host is
+    127.0.0.1, localhost, or ::1. Standalone/public Dashboard settings (https, remote host, or a token
+    without its URL) are configuration, not a parent-granted per-process capability, and keep the
+    existing dotenv precedence."""
+    token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+    url = os.environ.get("HERMES_DASHBOARD_PUBLIC_URL")
+    if not token or not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme != "http":
+        return None
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return (token, url)
+
+
+_PARENT_LOOPBACK_DASHBOARD_PAIR = _capture_parent_loopback_dashboard_pair()
+
+
+def _reapply_parent_loopback_dashboard_pair() -> None:
+    """Re-assert the captured loopback pair over every dotenv layer, LAST in load_hermes_dotenv().
+
+    The user .env, project .env, external-secret, managed-scope, and terminal-config layers can each
+    publish standalone Dashboard settings; an explicitly injected loopback capability pair must survive
+    them all for this process."""
+    if _PARENT_LOOPBACK_DASHBOARD_PAIR is None:
+        return
+    token, url = _PARENT_LOOPBACK_DASHBOARD_PAIR
+    os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = token
+    os.environ["HERMES_DASHBOARD_PUBLIC_URL"] = url
 
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
@@ -458,6 +509,7 @@ def load_hermes_dotenv(
     # cron standalone runs) call load_hermes_dotenv() repeatedly and used to flip the effective backend back
     # to the stale .env value mid-session (#29186, #67323).
     _reapply_terminal_config_bridge(home_path)
+    _reapply_parent_loopback_dashboard_pair()
 
     return loaded
 

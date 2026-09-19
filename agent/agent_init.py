@@ -1192,6 +1192,11 @@ def _apply_display_config(agent, _agent_cfg, platform):
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
+    from agent.usage_limits import UsageLimitsConfig
+    agent._usage_limits_config = UsageLimitsConfig.from_mapping(
+        _agent_cfg.get("usage_limits", {})
+    )
+
 
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:

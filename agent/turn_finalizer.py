@@ -124,6 +124,12 @@ def _resolve_budget_fallback(
 ) -> Tuple[Any, Any, bool]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback)``."""
+    if str(_turn_exit_reason).startswith("usage_limit_"):
+        # Do not spend another provider call to summarize an exhausted budget.
+        return (
+            final_response or "Conversation usage limit reached. Stopped before the next iteration; completed work is retained in the conversation.",
+            _turn_exit_reason, False,
+        )
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
@@ -475,6 +481,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and not failed
+        and not str(_turn_exit_reason).startswith("usage_limit_")
         and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
@@ -566,7 +573,7 @@ def finalize_turn(
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
-        "partial": False,  # True only when stopped due to invalid tool calls
+        "partial": str(_turn_exit_reason).startswith("usage_limit_"),
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,

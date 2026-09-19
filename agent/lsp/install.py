@@ -175,7 +175,9 @@ def _run_installer(tool: str, pkg: str, cmd: list, *, timeout: int, env: Optiona
             timeout=timeout, env=env, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
-            logger.warning("[install] %s install failed for %s: %s", tool, pkg, proc.stderr.strip()[:500])
+            # pnpm reports ERR_PNPM_* on stdout with an empty stderr; log whichever stream carries the reason.
+            detail = (proc.stderr.strip() or proc.stdout.strip())[:500]
+            logger.warning("[install] %s install failed for %s: %s", tool, pkg, detail)
             return False
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("[install] %s install errored for %s: %s", tool, pkg, e)

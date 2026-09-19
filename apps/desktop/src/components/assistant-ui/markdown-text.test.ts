@@ -94,12 +94,12 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
-  it('strips orphan numeric citation markers outside code spans', () => {
-    const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
+  it('preserves grounded numeric citation markers without touching protected contexts', () => {
+    const input =
+      'The first claim[1] supports the second claim[12]. Keep `items[1]`, [the linked source](https://example.com/12), $\\sqrt[3]{8}$, and [draft] unchanged.'
 
-    expect(output).toContain('source,')
-    expect(output).not.toContain('source[0]')
-    expect(output).toContain('`items[0]`')
+    expect(preprocessMarkdown(input)).toBe(input)
+    expect(preprocessMarkdown('The ungrounded source[0] is omitted.')).toBe('The ungrounded source is omitted.')
   })
 
   it('demotes title/url blocks wrapped in malformed inline fences', () => {
@@ -379,10 +379,10 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown('\\(\\sqrt[3]{8}\\)')).toContain('$\\sqrt[3]{8}$')
   })
 
-  it('still strips a citation marker in prose that also contains math', () => {
+  it('preserves a citation marker in prose that also contains math', () => {
     const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
 
-    expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
+    expect(output).toBe('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
   })
 
   it('shields inline math whose body contains an escaped dollar', () => {

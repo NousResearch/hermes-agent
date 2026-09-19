@@ -71,7 +71,7 @@ const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
-const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+const ORPHAN_ZERO_CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[0\](?!\()/gu
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -247,7 +247,7 @@ function rewriteProseSegment(segment: string): string {
   return linkifySessionRefs(
     autoLinkRawUrls(
       routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(ORPHAN_ZERO_CITATION_MARKER_RE, '')
       )
     )
   )
@@ -273,10 +273,9 @@ export function shieldDirectiveLines(text: string): string {
  * Apply the prose rewrites to visible prose only.
  *
  * Inline code has always been shielded here. Math has to be shielded for the
- * same reason: these rewrites read TeX as prose. `CITATION_MARKER_RE` is the
- * one that bites — its lookbehind accepts any letter, so the `t` of `\sqrt`
- * qualifies and `$\sqrt[3]{8}$` loses its index to what looks like a citation
- * marker, long before KaTeX sees it.
+ * same reason: these rewrites read TeX as prose. In particular, numeric
+ * bracket markers are meaningful both in TeX and as grounded citations, so
+ * this pipeline must leave them intact.
  *
  * Split on math spans is odd-index-is-a-delimiter (capturing split), not a
  * `startsWith('$')` test, so a prose segment that merely opens with a stray
@@ -721,8 +720,8 @@ export function preprocessMarkdown(text: string): string {
  * `preprocessMarkdown` — delimiter normalization (`\(…\)`, `\[…\]`), display
  * math on its own lines, and currency-dollar escaping — but deliberately skips
  * the chat-only transforms (reasoning-block stripping, `@session:` ref
- * linking, preview-target stripping, raw-URL autolinking, citation-marker
- * stripping). A file's prose is author content, not model output, so those
+ * linking, preview-target stripping, and raw-URL autolinking). A file's prose
+ * is author content, not model output, so those
  * rewrites must not touch it. Code fences and inline code spans pass through
  * untouched so `$`, `\(` and `\begin` inside listings are never mangled.
  *

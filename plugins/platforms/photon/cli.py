@@ -74,7 +74,20 @@ def _run_device_login(args: argparse.Namespace) -> int:
 
 def _setup_token(args: argparse.Namespace) -> Optional[str]:
     """[1/5] Reuse a valid dashboard token or run device login; None on failure."""
-    token = photon_auth.load_photon_token()
+    try:
+        token = photon_auth.load_photon_token()
+    except OSError as e:
+        # _load_auth() re-raises on an unreadable store rather than degrading to
+        # an empty one. Stop with an actionable message instead of a traceback:
+        # this path is also reached from `hermes gateway setup`, whose platform
+        # loop does not guard setup_fn(), so an escaping exception would drop the
+        # operator out of configuring every other channel too.
+        print(
+            f"could not read auth.json ({e}) — your stored credentials were "
+            "left untouched; fix the file permissions and re-run",
+            file=sys.stderr,
+        )
+        return None
     if token:
         # The dashboard token has a short TTL (~3-4 days); a stale one makes every management
         # call 401, so validate upfront and fall back to a fresh login.
@@ -244,22 +257,32 @@ def _autoconfigure_access(phone: str) -> None:
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
-    phone, assigned = photon_auth.load_user_numbers()
-    if not (phone and assigned):
-        spectrum_id, project_secret = photon_auth.load_project_credentials()
-        if spectrum_id and project_secret:
-            try:
-                photon_auth.refresh_user_numbers(spectrum_id, project_secret)
-            except Exception as e:
-                print(f"      (could not refresh Photon user numbers: {e})", file=sys.stderr)
-    # auth.print_credential_summary's emit callback is the only sink that sees
-    # credential-derived strings (keeps cli.py taint-free for CodeQL).
-    photon_auth.print_credential_summary(print)
+    rc = 0
+    try:
+        phone, assigned = photon_auth.load_user_numbers()
+        if not (phone and assigned):
+            spectrum_id, project_secret = photon_auth.load_project_credentials()
+            if spectrum_id and project_secret:
+                try:
+                    photon_auth.refresh_user_numbers(spectrum_id, project_secret)
+                except Exception as e:
+                    print(f"      (could not refresh Photon user numbers: {e})", file=sys.stderr)
+        # auth.print_credential_summary's emit callback is the only sink that sees
+        # credential-derived strings (keeps cli.py taint-free for CodeQL).
+        photon_auth.print_credential_summary(print)
+    except OSError as e:
+        # _load_auth() re-raises on a present-but-unreadable auth.json instead of
+        # degrading to an empty store (that degrade was one save away from wiping
+        # the shared file). `status` is read-only and is precisely the command an
+        # operator runs to diagnose this, so report it rather than traceback.
+        print(f"  credentials         : ✗ could not read auth.json ({e})")
+        print("                        credentials were NOT modified — fix the file and re-run")
+        rc = 1
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
-    return 0
+    return rc
 
 
 def _telemetry_enabled() -> bool:

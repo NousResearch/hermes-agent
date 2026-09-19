@@ -904,9 +904,37 @@ class SearchMixin:
         parts.append(self._escape_shell_arg(pattern))
         return parts
 
+    def _resolve_grep_root_symlink(self, path: str) -> str:
+        """Resolve a symlinked search root for the grep fallback (#116270).
+
+        ``grep -r`` skips a symlink handed to it as the path argument (exit 1,
+        nothing on stderr — byte-identical to "no match"; ``-R`` only follows
+        links met during traversal, not the argument itself), and ``find``'s
+        ``-type f`` tests the link, not its target, so both grep paths returned
+        a confident zero. The write path already lands edits on the link's
+        target (``readlink -f``/``realpath`` in ``file_operations.py``); resolve
+        the read side the same way so the two agree. rg follows argument
+        symlinks natively and never comes through here. A broken link or an
+        unreadable path keeps the original argument so the engine reports the
+        failure it always would have."""
+        if not path:
+            return path
+        try:
+            anchor = getattr(self.env, "cwd", None) or self.cwd
+            full = path if os.path.isabs(path) else os.path.join(anchor, path)
+            if not os.path.islink(full):
+                return path
+            resolved = os.path.realpath(full)
+            return resolved or path
+        except Exception:
+            return path
+
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
+        # Resolve the root before the prune/hidden-dir classification so a link
+        # pointing into e.g. ~/.hermes takes the pruned path its target needs.
+        path = self._resolve_grep_root_symlink(path)
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
         protected_paths = self._protected_prune_paths(path)

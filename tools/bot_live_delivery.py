@@ -29,9 +29,44 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
+def _owner_entry(profile_home: Path | str, session_id: str | None) -> dict[str, Any] | None:
+    """Registry entry for an exact stored ``session_id`` as ``{**entry, profile_home}``; None when absent."""
+    if not session_id:
+        return None
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    home = Path(profile_home).resolve()
+    for entry in active_session_registry_snapshot(registry_home=home):
+        if entry["session_id"] == session_id:
+            return {**entry, "profile_home": str(home)}
+    return None
+
+
+def _advertised_owner(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Owner tuple for an entry that advertised the mailbox consumer capability; None otherwise."""
+    meta = (entry or {}).get("metadata") or {}
+    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
+        return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
+            "live_session_id": meta["live_session_id"]}
+    return None
+
+
+def _compression_tip(profile_home: Path | str, session_id: str) -> str | None:
+    """Live tip of ``session_id``'s compression chain; None when the profile has no state.db."""
+    home = Path(profile_home).resolve()
+    if not (home / "state.db").is_file():
+        return None
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db", read_only=True)
+    try:
+        return db.get_compression_tip(session_id) or session_id
+    finally:
+        db.close()
+
+
 def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
-    from hermes_cli.active_sessions import active_session_registry_snapshot
     from hermes_state import SessionDB
 
     home = Path(profile_home).resolve()
@@ -43,22 +78,26 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
         session_id = db.get_compression_tip(row["id"]) if row else None
     finally:
         db.close()
-    if not session_id:
-        return None
-    for entry in active_session_registry_snapshot(registry_home=home):
-        if entry["session_id"] == session_id:
-            return {**entry, "profile_home": str(home)}
-    return None
+    return _owner_entry(home, session_id)
 
 
 def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
     """Only advertised consumers may receive owner-pinned mailbox deliveries."""
-    entry = find_canonical_owner(profile_home)
-    meta = (entry or {}).get("metadata") or {}
-    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
-        return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
-            "live_session_id": meta["live_session_id"]}
-    return None
+    return _advertised_owner(find_canonical_owner(profile_home))
+
+
+def find_live_owner(profile_home: Path | str, session_id: str) -> dict[str, Any] | None:
+    """Advertised live owner for an arbitrary ``session_id``, or None.
+
+    The mailbox address is the session id, not the "Bot Chat" title: every live Desktop/TUI session
+    advertises the consumer capability on its lease (``tui_gateway/session_lifecycle.py``), so any
+    of them can be delivered to from outside its process — which is what the mailbox is for.
+    """
+    session_id = str(session_id or "")
+    if not session_id:
+        return None
+    home = Path(profile_home).resolve()
+    return _advertised_owner(_owner_entry(home, _compression_tip(home, session_id)))
 
 
 def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:

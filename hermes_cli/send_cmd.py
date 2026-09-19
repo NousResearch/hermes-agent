@@ -191,6 +191,37 @@ def _load_hermes_env() -> None:
             target[key] = str(val)
 
 
+# A live TUI/Desktop session has no messaging adapter, so the platform path below cannot reach it.
+# It receives through the durable per-session mailbox instead (tools/bot_live_delivery.py), which the
+# session's OWN in-process poller claims (tui_gateway/session_notifications.py) — the same handoff the
+# Bot DM path uses, addressed by session id rather than by the "Bot Chat" title.
+_LIVE_SESSION_TARGETS = ("tui", "desktop")
+
+
+def _send_to_live_session(target: str, message: str | None, *, json_mode: bool, quiet: bool) -> int | None:
+    """``--to tui:<session_key>``: queue ``message`` for that live session. None when not this target."""
+    platform, _, session_key = target.partition(":")
+    platform, session_key = platform.strip().lower(), session_key.strip()
+    if platform not in _LIVE_SESSION_TARGETS or message is None:
+        return None
+    from hermes_constants import get_hermes_home
+    from tools.bot_live_delivery import deliver_to_live_owner, find_live_owner
+
+    home = get_hermes_home()
+    owner = find_live_owner(home, session_key)
+    if owner is None:
+        payload = {"error": (
+            f"no live {platform} session owns '{session_key or '<session_key>'}'. "
+            "A mailbox delivery needs a running TUI/Desktop session holding that session key; "
+            "retry while it is open.")}
+    else:
+        record = deliver_to_live_owner(home, owner, message)
+        payload = {"success": True, "delivery_id": record["delivery_id"], "status": record["status"],
+                   "surface": platform, "session_id": owner["session_id"],
+                   "note": "queued; the session runs it as a turn on its next idle poll"}
+    return _emit_result(json.dumps(payload), json_mode=json_mode, quiet=quiet)
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
@@ -228,6 +259,11 @@ def cmd_send(args: argparse.Namespace) -> None:
     if subject:
         message = f"{subject}\n\n{message.lstrip()}"
 
+    # Live TUI/Desktop targets never reach the platform stack — they go to the session's mailbox.
+    if (live_exit := _send_to_live_session(target, message, json_mode=getattr(args, "json", False),
+                                           quiet=getattr(args, "quiet", False))) is not None:
+        sys.exit(live_exit)
+
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
     from tools.send_message_tool import send_message_tool
 
@@ -246,7 +282,9 @@ _SEND_ARGUMENTS = (
         "Delivery target. Format: 'platform' (home channel), "
         "'platform:chat_id', 'platform:chat_id:thread_id', or "
         "'platform:#channel-name'. Examples: telegram, "
-        "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, signal:+15551234567."))),
+        "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, signal:+15551234567. "
+        "For a live TUI/Desktop conversation there is no messaging platform: address it as "
+        "'tui:<session_key>', which queues into that session's own mailbox."))),
     (("message",), dict(nargs="?", default=None, help="Message text. If omitted, read from --file or stdin.")),
     (("-f", "--file"), dict(metavar="PATH", default=None, help=(
         "Read message body from PATH (text only). Use '-' to force stdin. "
@@ -284,6 +322,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "  hermes send --to discord:#ops --file /tmp/report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
             "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
+            "  hermes send --to tui:20260919_101010_ab12cd \"run finished\"   # live TUI/Desktop session\n"
             "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"

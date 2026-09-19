@@ -136,6 +136,41 @@ class TestParseReport:
         assert not report.passed
 
 
+def _sc6_finding(token, package, file="scripts/setup.py", line=132):
+    """Synthetic SC6 'Possible Typosquatting' finding, shaped like the
+    SkillEvaluator JSON for an upstream SkillSpector SC6 hit (issue #109536)."""
+    return {
+        "check_name": "typosquat",
+        "severity": "high",
+        "message": f"Possible Typosquatting: '{token}' resembles popular package '{package}'",
+        "file_path": file,
+        "line_number": line,
+        "suggestion": "verify the dependency name",
+    }
+
+
+class TestSc6KeywordBuiltinFilter:
+    """SC6 flags bare identifiers by similarity to popular packages; Python
+    keywords and builtins can never be typosquats, so those findings are
+    guaranteed false positives and must not reach the advisory report."""
+
+    def test_keyword_and_builtin_typosquats_dropped(self):
+        report = _parse_report(_report_json([
+            _sc6_finding("print", "pylint"),   # builtin flagged in the issue
+            _sc6_finding("import", "isort"),   # keyword flagged in the issue
+        ]))
+        assert report.findings == []
+
+    def test_genuine_typosquat_and_non_typosquat_keyword_kept(self):
+        report = _parse_report(_report_json([
+            _sc6_finding("requets", "requests"),  # real typosquat: not a keyword/builtin
+            _finding("emails", message="email near print() call"),  # not an SC6 finding
+        ]))
+        assert len(report.findings) == 2
+        flagged = [f.message for f in report.findings]
+        assert any("requets" in m for m in flagged)
+
+
 class TestRunTier1Scan:
     def test_scanner_missing_degrades(self, tmp_path):
         with mock.patch("tools.skillevaluator_scan.shutil.which", return_value=None):

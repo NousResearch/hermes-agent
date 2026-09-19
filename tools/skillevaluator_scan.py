@@ -8,8 +8,11 @@ with a loud warning); a missing/crashing/timed-out/unparseable scanner is a no-o
 
 from __future__ import annotations
 
+import builtins
 import json
+import keyword
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -76,9 +79,29 @@ def tier1_advisory_enabled() -> bool:
         return True
 
 
+# SC6 is an upstream SkillSpector check ("Possible Typosquatting") that flags bare
+# identifiers by string similarity to popular packages. Python keywords and builtins
+# can never BE typosquats, so those hits are guaranteed false positives (#109536).
+_TYPOSQUAT_TOKEN = re.compile(r"""['"]([^'"]+)['"]""")
+_NON_PACKAGE_IDENTIFIERS = frozenset(keyword.kwlist) | frozenset(
+    name for name in dir(builtins) if not name.startswith("_"))
+
+
+def _is_keyword_builtin_typosquat(check: str, message: str) -> bool:
+    """True for an SC6 typosquat finding whose flagged token is a Python keyword
+    or builtin (e.g. ``print``~``pylint``, ``import``~``isort``)."""
+    if "typosquat" not in check.lower() and "typosquat" not in message.lower():
+        return False
+    match = _TYPOSQUAT_TOKEN.search(message)
+    token = match.group(1) if match else ""
+    return bool(token) and token in _NON_PACKAGE_IDENTIFIERS
+
+
 def _parse_report(report: dict) -> Tier1Report:
     """Reduce a SkillEvaluator JSON report to install-relevant findings. Findings from ``status == "incomplete"``
-    validators are kept (partial evidence is evidence) but excluded from the pass/fail signal."""
+    validators are kept (partial evidence is evidence) but excluded from the pass/fail signal.
+    SC6 typosquat findings that flag a Python keyword/builtin are dropped — upstream false
+    positives that would otherwise collapse the advisory signal-to-noise ratio (#109536)."""
     findings: List[Tier1Finding] = []
     incomplete: List[str] = []
     failed = False
@@ -88,11 +111,15 @@ def _parse_report(report: dict) -> Tier1Report:
             incomplete.append(validator)
         else:
             failed = failed or not res.get("passed", True)
-        findings.extend(Tier1Finding(
-            check=str(f.get("check_name", "")), validator=validator, severity=str(f.get("severity", "info")).lower(),
-            message=str(f.get("message", ""))[:200], file=str(f.get("file_path", "")),
-            line=int(f.get("line_number") or 0), suggestion=str(f.get("suggestion", ""))[:200])
-            for f in res.get("findings", []) or [] if isinstance(f, dict))
+        for f in res.get("findings", []) or []:
+            if not isinstance(f, dict):
+                continue
+            if _is_keyword_builtin_typosquat(str(f.get("check_name", "")), str(f.get("message", ""))):
+                continue  # guaranteed SC6 false positive on a keyword/builtin
+            findings.append(Tier1Finding(
+                check=str(f.get("check_name", "")), validator=validator, severity=str(f.get("severity", "info")).lower(),
+                message=str(f.get("message", ""))[:200], file=str(f.get("file_path", "")),
+                line=int(f.get("line_number") or 0), suggestion=str(f.get("suggestion", ""))[:200]))
     return Tier1Report(available=True, passed=not failed and not findings, findings=findings,
                        incomplete_checks=incomplete)
 

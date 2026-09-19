@@ -1,0 +1,168 @@
+{
+  "name": "hermes-agent",
+  "displayName": "Hermes Agent",
+  "description": "Hermes Agent — self-improving AI agent integrated directly into VS Code via MCP",
+  "version": "1.0.0",
+  "publisher": "nousresearch",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NousResearch/hermes-agent"
+  },
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Chat",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "hermes",
+    "mcp",
+    "chat",
+    "coding assistant"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hermes.showChat",
+        "title": "Hermes: Show Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "hermes.explainCode",
+        "title": "Hermes: Explain This Code"
+      },
+      {
+        "command": "hermes.fixCode",
+        "title": "Hermes: Fix This Code"
+      },
+      {
+        "command": "hermes.reviewCode",
+        "title": "Hermes: Review This Code"
+      },
+      {
+        "command": "hermes.customTask",
+        "title": "Hermes: Custom Task..."
+      },
+      {
+        "command": "hermes.sendSelection",
+        "title": "Hermes: Send Selection to Chat"
+      },
+      {
+        "command": "hermes.stopAgent",
+        "title": "Hermes: Stop Agent"
+      },
+      {
+        "command": "hermes.clearChat",
+        "title": "Hermes: Clear Chat History"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "hermes.explainCode",
+          "group": "hermes",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "hermes.fixCode",
+          "group": "hermes",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "hermes.reviewCode",
+          "group": "hermes",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "hermes.customTask",
+          "group": "hermes",
+          "when": "editorHasSelection"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "hermes.clearChat",
+          "group": "navigation",
+          "when": "view == hermes.chatView"
+        },
+        {
+          "command": "hermes.stopAgent",
+          "group": "navigation",
+          "when": "view == hermes.chatView"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hermes-sidebar",
+          "title": "Hermes Agent",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "hermes-sidebar": [
+        {
+          "id": "hermes.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Hermes Agent",
+      "properties": {
+        "hermes.mcpCommand": {
+          "type": "string",
+          "default": "hermes",
+          "description": "Command to launch Hermes MCP server (e.g. 'hermes' or full path)"
+        },
+        "hermes.mcpArgs": {
+          "type": "array",
+          "default": ["mcp", "serve"],
+          "description": "Arguments passed to the Hermes MCP server command"
+        },
+        "hermes.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to Hermes MCP server on startup"
+        },
+        "hermes.maxHistory": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum number of messages to keep in chat history"
+        },
+        "hermes.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use (leave empty to use Hermes' default)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "eslint": "^8.0.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

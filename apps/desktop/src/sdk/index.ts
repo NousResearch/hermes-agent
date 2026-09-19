@@ -103,6 +103,7 @@ import {
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import { setSidebarNavHidden, setSidebarNavOrder } from '@/store/sidebar-nav'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
@@ -903,6 +904,33 @@ export const host = {
    *  against older behavior unchanged. */
   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
+
+  /** Sidebar nav preferences — hide or re-order the sidebar's nav rows (core
+   *  built-ins and contributed rows alike), the way a sidebar-manager plugin
+   *  wants to. Core still owns rendering: a preference only ever moves or drops
+   *  a row that would otherwise render, and an id naming a row that no longer
+   *  exists is inert.
+   *
+   *  Preferences PERSIST (a disable → enable cycle must not scramble the layout
+   *  the user chose), which means they also outlive the plugin that wrote them:
+   *  a row this call hid stays hidden after the plugin is removed. Clearing one
+   *  is the writer's job — `hide(id, false)` / `setOrder([])` — since the store
+   *  does not yet record which plugin wrote a preference.
+   *
+   *  Ids are the rows' own ids (`SIDEBAR_NAV` built-ins like `'capabilities'`,
+   *  or a contributed nav contribution's id). */
+  sidebar: {
+    /** Hide or show one nav row. */
+    hide: (navId: string, hidden = true): void => {
+      setSidebarNavHidden(navId, hidden)
+    },
+
+    /** Replace the manual nav order with `ids`. Rows the order does not name
+     *  keep their default relative order after the named ones. */
+    setOrder: (ids: string[]): void => {
+      setSidebarNavOrder(ids)
+    }
+  },
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —

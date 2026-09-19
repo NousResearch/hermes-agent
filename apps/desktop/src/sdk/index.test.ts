@@ -293,3 +293,30 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+describe('host.sidebar nav preferences', () => {
+  beforeEach(async () => {
+    const nav = await import('@/store/sidebar-nav')
+
+    nav.$sidebarHiddenNavIds.set([])
+    nav.$sidebarNavOrderIds.set([])
+  })
+
+  it('hide/unhide write the hidden-nav store', async () => {
+    const { $sidebarHiddenNavIds } = await import('@/store/sidebar-nav')
+
+    host.sidebar.hide('cron')
+    expect($sidebarHiddenNavIds.get()).toEqual(['cron'])
+
+    host.sidebar.hide('cron', false)
+    expect($sidebarHiddenNavIds.get()).toEqual([])
+  })
+
+  it('setOrder writes the manual nav order', async () => {
+    const { $sidebarNavOrderIds } = await import('@/store/sidebar-nav')
+
+    host.sidebar.setOrder(['artifacts', 'cron'])
+
+    expect($sidebarNavOrderIds.get()).toEqual(['artifacts', 'cron'])
+  })
+})

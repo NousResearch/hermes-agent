@@ -132,6 +132,7 @@ import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } fr
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
+import { $sidebarHiddenNavIds, $sidebarNavOrderIds, orderSidebarNav } from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -366,6 +367,19 @@ export function ChatSidebar({
         ]
       }),
     [navContributions]
+  )
+
+  // Nav preferences (host.sidebar): a plugin may hide rows or re-order them.
+  // Applied here, at render, so the preference never mutates the default list.
+  // They persist across a plugin disable → enable cycle by design (see
+  // store/sidebar-nav.ts) — which also means they outlive a plugin that is
+  // removed, so a row it hid stays hidden until something clears the store.
+  const hiddenNavIds = useStore($sidebarHiddenNavIds)
+  const navOrderIds = useStore($sidebarNavOrderIds)
+
+  const navItems = useMemo(
+    () => orderSidebarNav([...SIDEBAR_NAV, ...contributedNav], hiddenNavIds, navOrderIds),
+    [contributedNav, hiddenNavIds, navOrderIds]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -1513,7 +1527,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {[...SIDEBAR_NAV, ...contributedNav].map(item => {
+              {navItems.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =

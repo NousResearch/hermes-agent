@@ -536,6 +536,9 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.sidebar.hide(navId, hidden?)          // hide/show a sidebar nav row (built-in or contributed)
+host.sidebar.setOrder(ids)                 // nav rows in `ids` order first; unnamed rows keep
+                                           //   their default order after them
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,

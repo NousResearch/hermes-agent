@@ -489,5 +489,8 @@ def _is_session_expired_error(exc: BaseException) -> bool:
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()
-        found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
+        browseros_neo_expired = "browseros neo session" in msg and "is no longer live" in msg
+        found = (found or isinstance(current, transport_error_types)
+                 or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
+                 or browseros_neo_expired)
     return found

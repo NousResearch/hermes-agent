@@ -48,6 +48,23 @@ def test_is_session_expired_detects_session_not_found():
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
+def test_is_session_expired_detects_browseros_neo_dead_binding():
+    """BrowserClaw reports an expired BrowserOS Neo binding with vendor-specific wording."""
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    exc = RuntimeError(
+        "MCPError: BrowserOS neo session 0c8c8fe8-2353-495d-bb6d-372d520947ee is no longer live"
+    )
+    assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_does_not_match_unrelated_no_longer_live_error():
+    """The generic phrase alone must not turn arbitrary application failures into transport retries."""
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    assert _is_session_expired_error(RuntimeError("document is no longer live")) is False
+
+
 def test_is_session_expired_traversal_is_budget_bounded():
     """Pathologically long chains stop at the node budget without spinning."""
     import tools.mcp_tool as mcp_mod
@@ -273,7 +290,9 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     old_session = MagicMock()
 
     async def _old_call(*a, **kw):
-        raise RuntimeError("Session terminated")
+        raise RuntimeError(
+            "MCPError: BrowserOS neo session 0c8c8fe8-2353-495d-bb6d-372d520947ee is no longer live"
+        )
 
     old_session.call_tool = _old_call
     new_session = MagicMock()

@@ -4,7 +4,7 @@ import { en } from '@/i18n/en'
 
 import { defaultBindings, KEYBIND_ACTIONS, keybindAction } from './actions'
 
-describe('session.archive keybind action', () => {
+describe('keybind actions that ship unbound', () => {
   it('is registered under the session category', () => {
     const action = keybindAction('session.archive')
 
@@ -29,6 +29,15 @@ describe('session.archive keybind action', () => {
     const matches = KEYBIND_ACTIONS.filter(action => action.id === 'session.archive')
 
     expect(matches).toHaveLength(1)
+  })
+
+  it('registers dictation with an English label and no default chord', () => {
+    const action = keybindAction('composer.dictate')
+
+    expect(action).toMatchObject({ category: 'composer', defaults: [] })
+    expect(defaultBindings()['composer.dictate']).toEqual([])
+    expect(en.keybinds.actions['composer.dictate']).toBe('Start / stop dictation')
+    expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'composer.dictate')).toHaveLength(1)
   })
 })
 

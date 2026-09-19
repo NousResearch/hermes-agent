@@ -172,6 +172,9 @@ describe('actionAllowedInInput', () => {
     // (or the pre-#76185 'shift+n') must not fire while the user types N.
     expect(actionAllowedInInput('session.new', 'n')).toBe(false)
     expect(actionAllowedInInput('session.new', 'shift+n')).toBe(false)
+    // Dictation is intentionally bindable without a shipped chord. A user who
+    // assigns a bare/Shift chord expects it to remain reachable from the draft.
+    expect(actionAllowedInInput('composer.dictate', 'shift+d')).toBe(true)
   })
 
   it('leaves text navigation chords with the focused input even when rebound to an allowed action', async () => {

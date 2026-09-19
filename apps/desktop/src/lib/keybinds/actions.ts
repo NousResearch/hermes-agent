@@ -67,6 +67,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // chord, so ship it unbound there (rebindable in the panel) rather than
   // stealing the long-standing sidebar binding.
   { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
+  // Dictation is intentionally unbound: it is available for users who prefer
+  // a keyboard trigger without claiming a chord from text entry by default.
+  { id: 'composer.dictate', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },

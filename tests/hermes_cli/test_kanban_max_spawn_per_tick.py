@@ -36,9 +36,6 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Drop cached modules so config/home resolution rebinds to this home.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
     from hermes_cli import kanban_db as _kb
     _kb.init_db()
     return _kb, home
@@ -159,9 +156,6 @@ def home_with_protected_config(tmp_path, monkeypatch):
         (prof_dir / "config.yaml").write_text("tier: 1\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
     from hermes_cli import kanban_db as _kb
     _kb.init_db()
     return _kb, home
@@ -247,9 +241,6 @@ def test_cli_dispatch_passes_max_spawn_per_tick_from_config(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_per_tick_cli_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
     from hermes_cli import kanban as kb_cli
     from hermes_cli import kanban_db
 

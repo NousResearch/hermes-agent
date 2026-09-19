@@ -7,27 +7,34 @@ the task is skipped (existing behavior preserved).
 from __future__ import annotations
 
 import json
-import os
-import sys
-import tempfile
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture()
-def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
-    test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
-    monkeypatch.setenv("HERMES_HOME", test_home)
-    # Force-reimport so the fresh HERMES_HOME is picked up.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+def isolated_kanban_home(tmp_path, monkeypatch):
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    KENSEI (test-isolation fix): the previous version deleted every
+    ``hermes_cli*``/``hermes_state``/``hermes_constants`` entry from
+    ``sys.modules`` to force a re-import. That poisons any LATER test in the
+    same session: modules imported at module level hold the OLD module
+    objects while re-imports create NEW ones, so the plugin hook registry
+    (``get_plugin_manager()._hooks``) splits across two instances and
+    ``on_kanban_dispatch_tick`` subscribers stop being seen —
+    test_kanban_dispatch_tick_hook fails when it runs after this file.
+    The purge is unnecessary: ``kanban_home()`` resolves HERMES_HOME (via
+    ``get_default_hermes_root()``) at CALL time, so ``monkeypatch.setenv``
+    alone redirects the DB. Same pattern the sibling kanban test modules use.
+    """
+    test_home = tmp_path / ".hermes"
+    test_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(test_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from hermes_cli import kanban_db
-    yield kanban_db, test_home
-    # Cleanup is best-effort; tempfile dir survives but pytest isolation
-    # gives each test its own monkeypatched HERMES_HOME so no cross-test
-    # contamination.
+    kanban_db.init_db()
+    return kanban_db, str(test_home)
 
 
 def _fake_spawn(*args, **kwargs):

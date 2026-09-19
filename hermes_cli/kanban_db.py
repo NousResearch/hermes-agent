@@ -3487,7 +3487,7 @@ def _set_task_status_direct(
     actor: str,
 ) -> bool:
     """Apply a guarded direct lane move and preserve run/graph invariants."""
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
     effective_status = new_status
     with write_txn(conn):
         previous = conn.execute(
@@ -3548,7 +3548,8 @@ def _set_task_status_direct(
                 summary=f"status changed to {effective_status} ({actor})",
             )
             terminations.append(
-                (previous["worker_pid"], previous["claim_lock"])
+                (previous["worker_pid"], previous["claim_lock"],
+                 _row_get(previous, "worker_started_at"))
             )
         _append_event(
             conn,
@@ -3569,8 +3570,8 @@ def _set_task_status_direct(
             )
             terminations.extend(invalidated["terminations"])
 
-    for worker_pid, claim_lock in terminations:
-        _terminate_reclaimed_worker(worker_pid, claim_lock)
+    for pid, claim_lock, started_at in terminations:
+        _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     if effective_status in {"done", "ready", "review"}:
         recompute_ready(conn)
     return True

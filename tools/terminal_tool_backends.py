@@ -126,8 +126,8 @@ def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
 
 # --- Environment builders. Signature: (*, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
 # (env_type is only forwarded to the plugin-registry fallback, not to the built-in builders.)
-def _build_local_env(*, cwd, timeout, **_):
-    return _LocalEnvironment(cwd=cwd, timeout=timeout)
+def _build_local_env(*, cwd, timeout, local_config=None, **_):
+    return _LocalEnvironment(cwd=cwd, timeout=timeout, local_config=local_config)
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
@@ -243,7 +243,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
-                  ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
+                  ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only,
+                  local_config=local_config)
     if builder is not None:
         env = builder(**kwargs)
     else:

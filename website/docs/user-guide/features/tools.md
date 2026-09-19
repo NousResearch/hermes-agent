@@ -66,7 +66,7 @@ The terminal tool can execute commands in different environments:
 
 | Backend | Description | Use Case |
 |---------|-------------|----------|
-| `local` | Run on your machine (default) | Development, trusted tasks |
+| `local` | Run on your machine (default); optional macOS Seatbelt confinement | Development, trusted tasks or scoped macOS workspaces |
 | `docker` | Isolated containers | Security, reproducibility |
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
 | `singularity` | HPC containers | Cluster computing, rootless |
@@ -82,6 +82,8 @@ terminal:
   backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
+  # macOS opt-in: local_sandbox: seatbelt
+  # Explicit Seatbelt network policy: local_sandbox_network: deny  # or allow
 ```
 
 ### Shell startup files and non-interactive commands

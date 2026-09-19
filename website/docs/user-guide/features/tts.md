@@ -519,7 +519,7 @@ HF_HUB_DISABLE_XET=1
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
 
-**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Hermes tokenizes the rendered template into an argument list and executes it without a shell, so operators such as `|`, `>`, `&&`, and `;` are passed as literal arguments. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
+**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, `{model}`, and `{prompt}` placeholders. Hermes tokenizes the rendered template into an argument list and executes it without a shell, so operators such as `|`, `>`, `&&`, and `;` are passed as literal arguments. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 
 #### Example: Doubao / Volcengine ASR
 
@@ -590,7 +590,7 @@ This complements the legacy `HERMES_LOCAL_STT_COMMAND` escape hatch via the buil
 
 #### STT placeholders
 
-Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces are safe.
+Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces and other shell-sensitive characters are safe. `{prompt}` expands to an empty argument when no prompt is configured.
 
 | Placeholder       | Meaning                                                              |
 |-------------------|----------------------------------------------------------------------|
@@ -600,6 +600,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{format}`        | Configured output format: `txt` / `json` / `srt` / `vtt`             |
 | `{language}`      | Configured language code (defaults to `en`)                          |
 | `{model}`         | `stt.providers.<name>.model`, empty when unset                       |
+| `{prompt}`        | Effective `stt.prompt` after `pre_transcription` overrides, empty when unset |
 
 Use `{{` and `}}` for literal braces (handy when embedding JSON snippets in the command).
 

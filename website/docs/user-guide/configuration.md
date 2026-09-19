@@ -2353,11 +2353,11 @@ stt:
 | `deepinfra` | `prompt` | OpenAI-compatible path, forwarded unchanged |
 | `xai` | not supported | Logged at DEBUG, the request proceeds without the prompt |
 | `elevenlabs` | not supported | Logged at DEBUG, the request proceeds without the prompt |
-| `local_command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
-| `stt.providers.<name>` with `type: command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
+| `local_command` | `{prompt}` placeholder | Forwarded to the command template, empty when no prompt is set |
+| `stt.providers.<name>` with `type: command` | `{prompt}` placeholder | Forwarded to the command template, empty when no prompt is set |
 | Plugin-registered providers | `prompt` in the `transcribe(**extra)` kwargs | Only sent when a prompt is set, so providers that predate this key see unchanged calls |
 
-**Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Other backends (`mistral`, plugin providers) receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
+**Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Other backends (`mistral`, command providers, plugin providers) receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
 
 :::warning Prompts are uploaded with your audio
 The final prompt is sent to the configured STT provider alongside the audio file. Keep secrets and session-derived context out of `stt.prompt` and out of anything a `pre_transcription` hook returns, especially when the provider is a hosted API rather than local `faster-whisper`.

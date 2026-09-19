@@ -19,6 +19,7 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -225,6 +226,94 @@ class TestTranscribeCommandSTT:
         }
         result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
         assert result["transcript"] == DEFAULT_COMMAND_STT_LANGUAGE
+
+
+# ---------------------------------------------------------------------------
+# {prompt}: the effective stt.prompt / hook prompt reaches the command process
+# ---------------------------------------------------------------------------
+
+PROMPT = "Hermes, OpenVINO, Mautic"
+
+
+def _echo_prompt_command() -> str:
+    """A command that writes ``<argv[2]>`` — the ``{prompt}`` placeholder — to {output_path}."""
+    payload = (
+        "import sys, pathlib; "
+        "pathlib.Path(sys.argv[1]).write_text('<' + sys.argv[2] + '>', encoding='utf-8')"
+    )
+    return f'"{sys.executable}" -c "{payload}" {{output_path}} {{prompt}}'
+
+
+class TestCommandProviderPromptPlaceholder:
+    """Command providers get the same prompt contract as built-ins: ``{prompt}``
+    carries the effective prompt (``stt.prompt``, then ``pre_transcription``
+    overrides) as one shell-quoted argument, and expands to an empty argument
+    when no prompt is configured."""
+
+    def test_prompt_reaches_the_command_process(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", {"type": "command", "command": _echo_prompt_command()},
+            {}, prompt=PROMPT,
+        )
+        assert result["success"] is True
+        assert result["transcript"] == f"<{PROMPT}>"
+
+    def test_prompt_is_shell_safe_with_quotes_and_non_ascii(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        prompt = "Hermes \"quoted\" 'single' $HOME `whoami` ; ls | cat 中文词表"
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", {"type": "command", "command": _echo_prompt_command()},
+            {}, prompt=prompt,
+        )
+        assert result["success"] is True
+        assert result["transcript"] == f"<{prompt}>"
+
+    def test_prompt_placeholder_is_empty_when_unset(self, tmp_path, monkeypatch):
+        """No prompt configured → an empty shell token, same convention as the
+        TTS ``{voice}``/``{model}`` placeholders — never the literal ``{prompt}``."""
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        seen = {}
+
+        def fake_run(command, timeout, env_passthrough=None):
+            seen["command"] = command
+            raise subprocess.CalledProcessError(1, command, output="", stderr="captured")
+
+        monkeypatch.setattr("tools.transcription_command._run_command_stt", fake_run)
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", {"type": "command", "command": _echo_prompt_command()}, {},
+        )
+        assert result["success"] is False  # the stubbed runner never ran anything
+        rendered = seen["command"]
+        assert "{prompt}" not in rendered
+        assert rendered.endswith(("''", '""'))  # posix / windows empty token
+
+    def test_dispatch_passes_config_prompt_to_command_provider(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "audio.wav")
+        cfg = {
+            "provider": "fake-cli",
+            "prompt": PROMPT,
+            "providers": {"fake-cli": {"type": "command", "command": _echo_prompt_command()}},
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+            result = transcribe_audio(str(audio))
+        assert result["success"] is True
+        assert result["transcript"] == f"<{PROMPT}>"
+
+    def test_pre_transcription_hook_prompt_wins_over_config(self, tmp_path, monkeypatch):
+        audio = _make_silent_wav(tmp_path / "audio.wav")
+        cfg = {
+            "provider": "fake-cli",
+            "prompt": "config base",
+            "providers": {"fake-cli": {"type": "command", "command": _echo_prompt_command()}},
+        }
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", lambda name, **kw: [{"prompt": "hook wins"}])
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+            result = transcribe_audio(str(audio))
+        assert result["success"] is True
+        assert result["transcript"] == "<hook wins>"
 
 
 # ---------------------------------------------------------------------------

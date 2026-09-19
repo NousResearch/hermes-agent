@@ -7,8 +7,11 @@ transport queue. Callers supply the database path (production handlers use the g
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from contextlib import closing
@@ -16,9 +19,78 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
+import contextlib
+import errno
+import hashlib
+import json
+import os
+import re
+import sqlite3
+from contextlib import closing
+from functools import partial
+from pathlib import Path
+from typing import Any, Iterator, Mapping
+
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
     identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
+
+# Cross-process file locking: fcntl on Unix, msvcrt on Windows.
+# Used to serialize shared state.db access across multiple profile gateways.
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+
+
+def _lock_path(db_path: Path | str) -> Path:
+    """Return the path to the advisory lock file for a given database."""
+    return Path(db_path).with_suffix(".hosted_rooms.lock")
+
+
+def _is_lock_contention_errno(exc: OSError) -> bool:
+    """Return True if the OSError indicates genuine lock contention (not fd exhaustion)."""
+    return exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK)
+
+
+@contextlib.contextmanager
+def _hosted_rooms_lock(db_path: Path | str) -> Iterator[None]:
+    """Acquire an exclusive cross-process lock for hosted_rooms database operations.
+
+    This lock serializes access to the shared state.db across multiple profile
+    gateway processes during critical operations like pruning. The lock file is
+    created next to the database file with a .hosted_rooms.lock suffix.
+
+    Yields when the lock is acquired. Releases the lock on exit.
+    """
+    lock_file = _lock_path(db_path)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = None
+    try:
+        lock_fd = open(lock_file, "w", encoding="utf-8")
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        elif msvcrt:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        if lock_fd is not None:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                elif msvcrt:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+
 
 PROTOCOL_VERSION = 2
 MAX_ROOM_ID_CHARS = 128
@@ -600,9 +672,16 @@ def _prune_disbanded_rooms_locked(
 
 
 def prune_disbanded_rooms(db_path: DbPath, *, now: float | None = None) -> int:
-    """Purge deleted Group Chat payloads while reserving their identities."""
-    with _transaction(db_path, immediate=True) as conn:
-        return _prune_disbanded_rooms_locked(conn, now=_now(now))
+    """Purge deleted Group Chat payloads while reserving their identities.
+
+    This function acquires a cross-process advisory lock to serialize access
+    to the shared state.db across multiple profile gateway processes. This
+    prevents database corruption when multiple gateways start simultaneously
+    (e.g. during `hermes update` fleet restart).
+    """
+    with _hosted_rooms_lock(db_path):
+        with _transaction(db_path, immediate=True) as conn:
+            return _prune_disbanded_rooms_locked(conn, now=_now(now))
 
 
 # --- room links / grants / reservations / remote runs ---------------------------------

@@ -3711,6 +3711,9 @@ export const en: Translations = {
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
       contextUsage: 'Context usage',
+      contextMeterTitle: (used, max, percent) => `Context window ${used}/${max} — ${percent} used`,
+      contextMeterTotals: (input, output, total, calls) =>
+        `session in ${input} · out ${output} · Σ${total} tok · ${calls} API calls`,
       systemResources: {
         title: 'System Resources',
         loading: 'Resources…',

@@ -89,6 +89,14 @@ describe('statusbar item visibility', () => {
     expect(row.getAttribute('aria-checked')).toBe('true')
   })
 
+  it('keeps a locked item visible even while its id sits in the hidden set (persistent context meter)', () => {
+    $statusbarHiddenIds.set(['context-usage'])
+
+    bar([item('context-usage', 'Context Meter', { lockedVisible: true, variant: 'menu' })])
+
+    expect(screen.getByText('Context Meter')).toBeTruthy()
+  })
+
   it('leaves items that never opted into the menu alone', () => {
     $statusbarHiddenIds.set(['plugin-thing'])
     bar([{ id: 'plugin-thing', label: 'Plugin thing', variant: 'action' }])
@@ -99,14 +107,13 @@ describe('statusbar item visibility', () => {
   it('starts the per-turn session readouts hidden and restores them from the menu', async () => {
     const statusbar = bar([
       item('running-timer', 'Turn timer', { variant: 'text' }),
-      item('context-usage', 'Context meter', { variant: 'menu' }),
       item('cache-hit-rate', 'Cache hit rate', { variant: 'text' }),
       item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
       item('session-timer', 'Session timer', { variant: 'text' }),
       item('gateway-health', 'Gateway')
     ])
 
-    for (const label of ['Turn timer', 'Context meter', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
+    for (const label of ['Turn timer', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
       expect(screen.queryByText(label)).toBeNull()
     }
 

@@ -49,6 +49,16 @@ export function usageContextLabel(usage: UsageStats): string {
   return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''
 }
 
+/** `Σ182.4k tok` — the session's LIFETIME token total (the cumulative figure
+ *  the sidebar's token meta paints), not the live context window. '' before
+ *  the first call. `total` is authoritative when reported; the in/out split
+ *  is the fallback for payloads that omit it. */
+export function sessionUsageTotalLabel(usage: UsageStats): string {
+  const total = usage.total || usage.input + usage.output
+
+  return total > 0 ? `Σ${compactNumber(total)} tok` : ''
+}
+
 export function contextBarLabel(usage: UsageStats): string {
   if (!usage.context_max) {
     return ''

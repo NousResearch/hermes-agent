@@ -1,0 +1,88 @@
+{
+  "skill": "voice-builder",
+  "version": "1.0.0",
+  "description": "Scenario tests for the voice-builder skill. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-good-samples",
+      "input": "Build my voice. Here are 6 of my best LinkedIn posts: [samples].",
+      "expect": [
+        "reads brand-profile first if available",
+        "analyzes across the six layers (lexicon, syntax, rhetoric, structure, stance, negative space)",
+        "cites evidence (quotes from the samples) for the patterns it names",
+        "distills a 5-7 signature fingerprint plus a 'never' list",
+        "writes a voice.md following the template (operational rules, not adjectives)",
+        "runs the voice test: generates a post on a NEW topic and scores it against the fingerprint",
+        "shows the user the test post and what it changed"
+      ]
+    },
+    {
+      "name": "no-samples-route-to-interview",
+      "input": "Build my voice.",
+      "context": "The user has provided no writing samples.",
+      "expect": [
+        "does NOT fabricate a voice from nothing",
+        "asks for samples, suggesting the easiest sources (incl. a spoken transcript/voice memo)",
+        "offers to fall back to brand-profile's voice interview if no samples exist",
+        "does not produce a confident voice.md without evidence"
+      ]
+    },
+    {
+      "name": "thin-samples-low-confidence",
+      "input": "Here's one short post I wrote. Build my voice from this.",
+      "expect": [
+        "extracts what is observable from the limited sample",
+        "marks the voice.md confidence as low and names which layers are uncertain",
+        "asks for more samples (especially a spoken transcript) to raise confidence",
+        "does not overstate certainty"
+      ]
+    },
+    {
+      "name": "inconsistent-samples-voice-drift",
+      "input": "Here are my samples — some formal newsletters and some loose, funny tweets.",
+      "expect": [
+        "does NOT average the conflicting samples into a bland middle",
+        "flags the inconsistency explicitly",
+        "asks which represents the target voice, or captures the split as channel-based tone variation",
+        "anchors the fingerprint on the target voice"
+      ]
+    },
+    {
+      "name": "aspirational-voice",
+      "input": "I write pretty dry corporate stuff now, but I want to sound bold and punchy like [creator].",
+      "expect": [
+        "separates current voice from target voice",
+        "collects or analyzes aspirational references and labels them as aspirational",
+        "is transparent about what is being borrowed vs. native",
+        "produces a target voice.md that is still ownable, not an impersonation"
+      ]
+    },
+    {
+      "name": "multiple-voices-no-blend",
+      "input": "Set up voice for our brand account and separately for our founder's personal account.",
+      "expect": [
+        "creates a separate voice.md per voice, clearly named",
+        "never blends the two voices together",
+        "notes anything genuinely shared vs distinct"
+      ]
+    },
+    {
+      "name": "validation-loop-enforced",
+      "input": "Here are my samples — just give me the voice.md, skip the testing.",
+      "expect": [
+        "still runs at least one generate-and-score validation pass",
+        "explains briefly why an untested voice guide is unreliable",
+        "delivers the voice.md only after showing it can produce an on-voice post"
+      ]
+    },
+    {
+      "name": "exclude-bad-samples",
+      "input": "Here are some samples — a couple are our legal/boilerplate website copy and one was written by an agency.",
+      "expect": [
+        "excludes ghostwritten, boilerplate, and committee-edited samples",
+        "explains why those don't represent the person's voice",
+        "builds the voice only from genuine first-person samples"
+      ]
+    }
+  ]
+}

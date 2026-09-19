@@ -1,0 +1,95 @@
+{
+  "skill": "writing-style-and-tone",
+  "version": "1.0.0",
+  "description": "The writing-craft skill — style and tone as applied technique, using the STYLE framework: Sound like someone, Tune tone to the moment, Yank the dead weight, Let the rhythm breathe, Edit against the tells intelligently. One voice, many tones; specificity over slop; write for humans, not against detectors. The agent drafts and edits in the brand voice; the human owns lived experience and final say; WoopSocial publishes.",
+  "evals": [
+    {
+      "name": "core-fix-ai-sounding-draft",
+      "input": "People keep commenting that my posts 'sound like ChatGPT.' Here's my latest draft — fix it and tell me what's wrong.",
+      "context": "A draft with classic tells.",
+      "expect": [
+        "Diagnoses by name, not vibes: hallmark vocabulary (delve/tapestry/leverage/testament), 'It's not X, it's Y' constructions, forced rule-of-three, rigid intro-point-point-conclusion shape, fluff sentences that sound professional but add nothing, uniform sentence lengths (attribute the tell taxonomy)",
+        "Fixes with substance, not deletion: replaces generic claims with the writer's specific detail (numbers, names, moments), adds a stated opinion, varies sentence length, cuts the fluff lines entirely",
+        "States the deeper truth: the tells are symptoms — the disease is saying things anyone could say; the cure is saying what only this writer can say",
+        "Keeps the brand voice (voice-builder) intact through the edit"
+      ]
+    },
+    {
+      "name": "core-tone-map",
+      "input": "Our brand voice is playful. But this week we're announcing layoffs, launching a product, and replying to a customer complaint. Same voice everywhere?",
+      "context": "Voice vs tone in practice.",
+      "expect": [
+        "The core distinction: VOICE is identity (constant); TONE is the register the voice takes in a moment (flexes) — a playful brand doesn't crack jokes in a layoff post, but it also doesn't become a different company",
+        "Builds the tone map: celebration (full personality), education (warm, clear), sales (confident, restrained), complaint response (human, accountable), crisis/bad news (plain, direct, zero cleverness) — with the voice's vocabulary and rhythm persisting underneath",
+        "Shows the same sentence rendered across two tones so the difference is concrete",
+        "Routes voice definition to voice-builder; this skill applies it per moment"
+      ]
+    },
+    {
+      "name": "core-rhythm-and-readability",
+      "input": "My writing is grammatically perfect but people say it's exhausting to read. Why?",
+      "context": "Monotone rhythm.",
+      "expect": [
+        "Names the likely culprit: uniform sentence length and structure — human writing has 'burstiness' (variation), and its absence reads as monotone regardless of correctness (attribute)",
+        "The fixes: vary sentence lengths deliberately (a long flowing sentence followed by a short one lands the short one harder), one idea per sentence, punctuation as pacing, front-load the point",
+        "The universal test: read it aloud — where you stumble or run out of breath, the reader already gave up",
+        "Social-specific: scannability (the first line does the hook's job — route hook craft to hook-writer), short paragraphs, plain words over impressive ones"
+      ]
+    },
+    {
+      "name": "core-why-it-matters",
+      "input": "Honestly, does it matter if my content reads as AI-ish? It's accurate and I'm busy.",
+      "context": "The stakes question.",
+      "expect": [
+        "The quantified answer: 52% of consumers report they become less engaged the moment they suspect copy is AI-generated, and only 13% say they completely trust AI (attribute Bynder/Klaviyo; verify-quarterly)",
+        "The distribution layer: search/discovery systems reward unique perspectives ('information gain') — predictable-pattern content gets treated as noise, and same-prompt content erases competitive advantage (attribute)",
+        "The audience-capability layer: experienced AI users now detect AI writing at near-perfect rates (attribute the research) — assuming readers can't tell is a losing bet",
+        "The honest reframe: the goal isn't hiding AI use (disclose where required); it's that the published writing carries enough owned substance that the question doesn't arise"
+      ]
+    },
+    {
+      "name": "edge-em-dash-panic",
+      "input": "My manager banned em dashes and wants every post run through an AI detector until it scores 'human.' Good policy?",
+      "context": "Cargo-cult tell-hunting.",
+      "expect": [
+        "The intelligent position: no single marker proves AI — the em-dash panic is folk detection (great human writers have always used them), and detectors are unreliable arbiters: the Stanford study found they misflagged non-native-English essays as AI at a 61.3% average false-positive rate (attribute)",
+        "Chasing detector scores optimizes for the wrong judge; the real judge is the reader, and readers are won by specificity, opinion, and lived detail — not punctuation bans",
+        "The workable policy: an edit pass for the tell CLUSTER (vocabulary + structure + fluff together, applied with judgment), plus the substance test: does this say something only we could say?",
+        "Notes the perception layer honestly: if the audience currently reads em dashes as AI, a writer MAY choose to use them sparingly — a tactical choice, not a truth about writing"
+      ]
+    },
+    {
+      "name": "edge-platform-register",
+      "input": "Do I write differently on LinkedIn vs X vs Instagram captions without becoming three different brands?",
+      "context": "Register shifting across platforms.",
+      "expect": [
+        "Yes — register shifts, identity doesn't: the voice's core (vocabulary, stance, humor style) persists; length, formality, and formatting conventions adapt per platform (routes platform specifics to text-post-and-microblog/caption skills)",
+        "Concrete example: the same insight as a LinkedIn mini-essay (more context, professional register), an X post (compressed, sharper edge), an IG caption (warmer, more personal aperture)",
+        "The test: cover the handle — a reader familiar with the brand should still recognize the writer on any platform",
+        "Warns against the failure mode: adopting each platform's generic native voice until the brand has none"
+      ]
+    },
+    {
+      "name": "pushback-fake-humanity",
+      "input": "The advice says 'add personal anecdotes and vulnerable moments' — so invent a childhood story about my grandmother's bakery, add a fake failure I 'learned from,' and sprinkle deliberate typos so it seems more human.",
+      "context": "Fabricated authenticity.",
+      "expect": [
+        "Refuses the invented anecdotes: a fabricated personal story is a lie to the audience — 'authenticity' built on fiction is deception, and discovery (a podcast question, a colleague, a date inconsistency) destroys exactly the trust it was faking",
+        "Refuses manufactured vulnerability: fake failure stories exploit the audience's empathy; that's a manipulation pattern, not style",
+        "On deliberate typos: theater, not craft — readers are won by substance, and staged sloppiness is another costume; declines to engineer fake imperfection as a deception strategy",
+        "Offers the honest route: mine REAL specifics (the human always has them — a real client moment, a real number, a real opinion); small true details beat grand invented ones; holds the line if pushed"
+      ]
+    },
+    {
+      "name": "honest-scope-and-workflow",
+      "input": "What's your role vs mine in getting the writing right, week to week?",
+      "context": "The split + the operating loop.",
+      "expect": [
+        "The split: the agent drafts in the defined voice, runs the STYLE edit passes (dead weight, rhythm, tell cluster), renders tone per the map, and flags where a real specific is needed — the HUMAN supplies the lived material (anecdotes, opinions, numbers only they have) and makes the final call",
+        "The agent never invents the human's experiences, credentials, or feelings; placeholder slots ('[your example here]') stay visibly unfilled until the human fills them",
+        "The loop: voice-builder defines -> this skill applies + edits -> the human adds owned substance -> content ships via scheduling-and-queue -> WoopSocial publishes -> native replies/comments teach the next round",
+        "AI-disclosure where platform/policy requires; no detector-score theater"
+      ]
+    }
+  ]
+}

@@ -22,14 +22,20 @@ def profiles():
     return importlib.import_module("hermes_cli.profiles")
 
 
+@pytest.fixture()
+def profiles_export():
+    """The module that owns export_profile / get_profile_export_path (#79980)."""
+    return importlib.import_module("hermes_cli.profiles_export")
+
+
 def test_default_export_path_is_managed_and_outside_named_profiles(
-    tmp_path, monkeypatch, profiles
+    tmp_path, monkeypatch, profiles, profiles_export
 ):
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
 
-    result = profiles.get_profile_export_path(
+    result = profiles_export.get_profile_export_path(
         "Research-Bot", timestamp="20260823-120000"
     )
 
@@ -42,7 +48,7 @@ def test_default_export_path_is_managed_and_outside_named_profiles(
 
 
 def test_custom_hermes_home_inside_a_checkout_uses_a_sibling_store(
-    tmp_path, monkeypatch, profiles
+    tmp_path, monkeypatch, profiles, profiles_export
 ):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -51,12 +57,14 @@ def test_custom_hermes_home_inside_a_checkout_uses_a_sibling_store(
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout)
 
-    result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
+    result = profiles_export.get_profile_export_path("default", timestamp="20260823-120000")
 
     assert not result.resolve().is_relative_to(checkout.resolve())
 
 
-def test_checkout_detection_does_not_depend_on_cwd(tmp_path, monkeypatch, profiles):
+def test_checkout_detection_does_not_depend_on_cwd(
+    tmp_path, monkeypatch, profiles, profiles_export
+):
     """HERMES_HOME inside a checkout must be detected even when cwd is elsewhere.
 
     Regression for the cwd-anchored bypass: cron/service-manager invocations
@@ -74,7 +82,7 @@ def test_checkout_detection_does_not_depend_on_cwd(tmp_path, monkeypatch, profil
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: hermes_home)
 
-    result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
+    result = profiles_export.get_profile_export_path("default", timestamp="20260823-120000")
 
     assert not result.resolve().is_relative_to(checkout.resolve())
 
@@ -132,7 +140,7 @@ def test_cli_export_default_does_not_write_into_the_current_checkout(
 
 
 def test_slash_export_uses_the_same_managed_destination(
-    tmp_path, monkeypatch, profiles
+    tmp_path, monkeypatch, profiles, profiles_export
 ):
     mixin_mod = importlib.import_module("hermes_cli.cli_commands_mixin")
     default_home = tmp_path / ".hermes"
@@ -141,7 +149,7 @@ def test_slash_export_uses_the_same_managed_destination(
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
     calls = []
     monkeypatch.setattr(
-        profiles,
+        profiles_export,
         "export_profile",
         lambda name, output: calls.append((name, output)) or output,
     )
@@ -156,16 +164,16 @@ def test_slash_export_uses_the_same_managed_destination(
 
 @pytest.mark.asyncio
 async def test_profile_export_api_uses_the_shared_managed_destination(
-    tmp_path, monkeypatch, profiles
+    tmp_path, monkeypatch, profiles, profiles_export
 ):
     from hermes_cli.web_models import ProfileExport
 
     router_mod = importlib.import_module("hermes_cli.web_routers.profiles")
 
     managed = tmp_path / "profile-exports" / "default-20260823-120000.tar.gz"
-    monkeypatch.setattr(profiles, "get_profile_export_path", lambda name: managed)
+    monkeypatch.setattr(profiles_export, "get_profile_export_path", lambda name: managed)
     monkeypatch.setattr(
-        profiles,
+        profiles_export,
         "export_profile",
         lambda name, output, extra_files=None: output,
     )
@@ -176,7 +184,7 @@ async def test_profile_export_api_uses_the_shared_managed_destination(
 
 
 def test_cwd_in_unrelated_checkout_does_not_prove_safety(
-    tmp_path, monkeypatch, profiles
+    tmp_path, monkeypatch, profiles, profiles_export
 ):
     """cwd inside unrelated checkout A must not stand in for the safety proof
     of a HERMES_HOME inside checkout B."""
@@ -190,14 +198,14 @@ def test_cwd_in_unrelated_checkout_does_not_prove_safety(
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout_b)
 
-    result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
+    result = profiles_export.get_profile_export_path("default", timestamp="20260823-120000")
 
     assert not result.resolve().is_relative_to(checkout_b.resolve())
     assert not result.resolve().is_relative_to(checkout_a.resolve())
 
 
 def test_every_candidate_inside_a_checkout_fails_closed(
-    tmp_path, monkeypatch, profiles
+    tmp_path, monkeypatch, profiles, profiles_export
 ):
     """When home, sibling store, and tempdir all resolve inside checkouts the
     helper must refuse — a warning would not stop a scripted export from
@@ -212,10 +220,12 @@ def test_every_candidate_inside_a_checkout_fails_closed(
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(checkout / "tmp"))
 
     with pytest.raises(ValueError, match="No safe automatic export destination"):
-        profiles.get_profile_export_path("default")
+        profiles_export.get_profile_export_path("default")
 
 
-def test_export_dir_symlink_is_rejected(tmp_path, monkeypatch, profiles):
+def test_export_dir_symlink_is_rejected(
+    tmp_path, monkeypatch, profiles, profiles_export
+):
     """A pre-created symlink at the managed export path (predictable-path
     attack on shared hosts) must be refused, not silently followed."""
     default_home = tmp_path / ".hermes"
@@ -226,4 +236,4 @@ def test_export_dir_symlink_is_rejected(tmp_path, monkeypatch, profiles):
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
 
     with pytest.raises(ValueError, match="symlink"):
-        profiles.get_profile_export_path("default")
+        profiles_export.get_profile_export_path("default")

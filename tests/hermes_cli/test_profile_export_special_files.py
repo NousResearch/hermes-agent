@@ -15,7 +15,7 @@ import tarfile
 
 import pytest
 
-from hermes_cli.profiles import export_profile
+from hermes_cli.profiles_export import export_profile
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",

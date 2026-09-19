@@ -868,7 +868,8 @@ class CLICommandsMixin:
     # ---- /export, /import -----------------------------------------------------------------
     def _handle_export_command(self, command: str):
         """Handle /export [profile] [-o path] — export a profile to a shareable .tar.gz archive."""
-        from hermes_cli.profiles import export_profile, get_active_profile_name, get_profile_export_path
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles_export import export_profile, get_profile_export_path
         parts, output, ok = _take_flag(command.split()[1:], "-o")
         if not ok:
             return print("  Usage: /export [profile] [-o output.tar.gz]")
@@ -883,7 +884,8 @@ class CLICommandsMixin:
     def _handle_import_command(self, command: str):
         """Handle /import <archive.tar.gz> [--name <name>] — import a shared profile archive as a
         new profile."""
-        from hermes_cli.profiles import check_alias_collision, create_wrapper_script, import_profile
+        from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+        from hermes_cli.profiles_export import import_profile
         parts, name, ok = _take_flag(command.split()[1:], "--name")
         if not ok or not parts:
             return print("  Usage: /import <archive.tar.gz> [--name <name>]")

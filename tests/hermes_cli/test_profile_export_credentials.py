@@ -11,7 +11,7 @@ The live profile on disk must stay untouched.
 
 import tarfile
 
-from hermes_cli.profiles import export_profile
+from hermes_cli.profiles_export import export_profile
 
 # Long enough to match agent.redact prefix patterns (sk- + 10+ chars).
 _LEAKED_KEY = "sk-or-v1-reallyLongSecretKeyValue12345678"

@@ -36,8 +36,6 @@ from hermes_cli.profiles import (
     remove_wrapper_script,
     validate_alias_name,
     rename_profile,
-    export_profile,
-    import_profile,
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
@@ -45,6 +43,7 @@ from hermes_cli.profiles import (
     backfill_profile_envs,
     profiles_to_serve,
 )
+from hermes_cli.profiles_export import export_profile, import_profile
 from hermes_cli.config import DEFAULT_CONFIG
 
 

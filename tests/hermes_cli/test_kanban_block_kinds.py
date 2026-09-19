@@ -86,6 +86,53 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_reserved_block_reason_exempted_from_loop_detection(kanban_home: Path) -> None:
+    """A block reason that classifies as a reserved item (ADR, ruleset write,
+    Telegram handoff, ...) must re-block on unchanged facts without
+    decomposing: that repetition is correct "waiting on the owner" behaviour,
+    not a spin loop. The task stays blocked and an exemption event records
+    why, so the exemption is auditable rather than silent."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        reason = "Ruleset write only: flip strict mode on ruleset 20759088, reserved to Burak."
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", "reserved block must not route to triage"
+        assert task.block_recurrences == 2
+
+        loop_events = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+        assert not loop_events, "reserved block must not emit block_loop_detected"
+        exempt = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_exempted"]
+        assert exempt, "expected a block_loop_exempted event"
+        payload = exempt[-1].payload or {}
+        assert payload.get("recurrences") == 2
+        assert payload.get("reserved_signal")
+
+
+def test_reserved_exemption_does_not_survive_a_non_reserved_re_block(kanban_home: Path) -> None:
+    """The exemption is decided fresh each block: once the reason no longer
+    classifies as reserved, the same recurrence count still routes to
+    triage. A genuine loop must always be catchable regardless of history."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        reserved_reason = "Blocked on ruleset 20759088, reserved to Burak."
+        kb.block_task(conn, tid, reason=reserved_reason, kind="needs_input")
+        assert kb.get_task(conn, tid).status == "blocked"
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+
+        plain_reason = "still waiting on the same thing"
+        kb.block_task(conn, tid, reason=plain_reason, kind="needs_input")
+        task = kb.get_task(conn, tid)
+        assert task.status == "triage", "a non-reserved reason must still trip the loop breaker"
+        loop = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"][-1].payload
+        assert loop["recurrences"] == kb.BLOCK_RECURRENCE_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

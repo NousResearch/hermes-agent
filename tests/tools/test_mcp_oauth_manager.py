@@ -518,6 +518,40 @@ async def test_refresh_response_without_refresh_token_keeps_stored_one(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_refresh_response_recovers_persisted_refresh_token_when_current_tokens_lack_one(
+    tmp_path, monkeypatch
+):
+    """A non-rotating response recovers its token from durable storage (#109932)."""
+    from mcp.shared.auth import OAuthToken
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    persisted = OAuthToken(
+        access_token="at-persisted", token_type="Bearer", expires_in=3600,
+        refresh_token="rt-persisted"
+    )
+    await provider.context.storage.set_tokens(persisted)
+    provider.context.current_tokens = OAuthToken(
+        access_token="at-1", token_type="Bearer", expires_in=3600
+    )
+
+    assert await provider._handle_refresh_response(
+        _fake_response(
+            200,
+            "https://idp.example.com/oauth/token",
+            b'{"access_token": "at-2", "token_type": "Bearer", "expires_in": 3600}',
+        )
+    )
+
+    assert provider.context.current_tokens.refresh_token == "rt-persisted"
+    recovered = await provider.context.storage.get_tokens()
+    assert recovered is not None
+    assert recovered.refresh_token == "rt-persisted"
+
+
+@pytest.mark.asyncio
 async def test_refresh_response_with_new_refresh_token_rotates(tmp_path, monkeypatch):
     """A rotating AS's new refresh_token replaces the stored one (carry-forward fills gaps only)."""
     import json

@@ -512,6 +512,17 @@ def _requires_argument(args_hint: str) -> bool:
 
 _CMD_NAME_LIMIT = 32
 
+
+def _disambiguate_command_name(name: str, used: set[str]) -> str | None:
+    """31-char prefix + digit ``0``-``9`` not in *used*; ``None`` when exhausted."""
+    prefix = name[:_CMD_NAME_LIMIT - 1]
+    for digit in range(10):
+        candidate = f"{prefix}{digit}"
+        if candidate not in used:
+            return candidate
+    return None
+
+
 def _clamp_command_names(
     entries: Sequence[tuple[str, ...]],
     reserved: set[str],
@@ -519,10 +530,10 @@ def _clamp_command_names(
     """Enforce 32-char command name limit with collision avoidance.
 
     Both Telegram and Discord cap slash command names at 32 characters.
-    Names exceeding the limit are truncated.  If truncation creates a duplicate
-    (against *reserved* names or earlier entries in the same batch), the name is
-    shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
-    If all 10 digit slots are taken the entry is silently dropped.
+    Names exceeding the limit are truncated.  If a name collides with a
+    *reserved* name or an earlier entry in the same batch, it is shortened
+    to 31 chars and a digit ``0``-``9`` is appended to differentiate, and the
+    rename is logged.  If all 10 digit slots are taken the entry is dropped.
 
     Accepts tuples of any length >= 2.  Extra elements beyond ``(name, desc)``
     (e.g. ``cmd_key``) are passed through unchanged, so callers can attach
@@ -532,20 +543,21 @@ def _clamp_command_names(
     result: list[tuple] = []
     for entry in entries:
         name, desc, *extra = entry
+        original = name
         if len(name) > _CMD_NAME_LIMIT:
-            candidate = name[:_CMD_NAME_LIMIT]
-            if candidate in used:
-                prefix = name[:_CMD_NAME_LIMIT - 1]
-                for digit in range(10):
-                    candidate = f"{prefix}{digit}"
-                    if candidate not in used:
-                        break
-                else:
-                    # All 10 digit slots exhausted — skip entry
-                    continue
-            name = candidate
+            name = name[:_CMD_NAME_LIMIT]
         if name in used:
-            continue
+            renamed = _disambiguate_command_name(name, used)
+            if renamed is None:
+                # All 10 digit slots exhausted — skip entry
+                continue
+            logger.warning(
+                "Command name %r collides with an existing command; "
+                "registering it as %r instead.",
+                original,
+                renamed,
+            )
+            name = renamed
         used.add(name)
         result.append((name, desc, *extra))
     return result

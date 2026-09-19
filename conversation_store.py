@@ -32,6 +32,24 @@ class ConversationRevision:
     value: Any
 
 
+@dataclass(frozen=True)
+class ConversationMutationResult:
+    """Successful canonical mutation and the revision it produced."""
+
+    revision: ConversationRevision
+    affected_count: int = 0
+    message_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ConversationSnapshot:
+    """Provider-atomic state used to compute a fenced mutation."""
+
+    revision: ConversationRevision
+    conversation: dict[str, Any]
+    messages: tuple[dict[str, Any], ...] = ()
+
+
 class ConversationStore(ABC):
     """Exclusive canonical conversation-history provider."""
 
@@ -122,4 +140,35 @@ class ConversationStore(ABC):
         raise NotImplementedError
 
     def latest_message_preview(self, conversation_id: str) -> str:
+        raise NotImplementedError
+
+    # Phase 3: optimistic revision/CAS mutation contract.
+    def get_revision(self, conversation_id: str) -> ConversationRevision:
+        raise NotImplementedError
+
+    def snapshot(self, conversation_id: str, *, include_messages: bool = False) -> ConversationSnapshot:
+        raise NotImplementedError
+
+    def append_messages(self, conversation_id: str, messages, *, expected_revision: ConversationRevision):
+        raise NotImplementedError
+
+    def update_conversation(self, conversation_id: str, changes, *, expected_revision: ConversationRevision):
+        raise NotImplementedError
+
+    def replace_messages(
+        self, conversation_id: str, messages, *, expected_revision: ConversationRevision,
+        active_only: bool = False, archive_dropped: bool = False,
+    ):
+        raise NotImplementedError
+
+    def rewind_to_message(
+        self, conversation_id: str, message_id: int, *, expected_revision: ConversationRevision,
+        preserve_compaction_handoff: bool = False,
+    ):
+        raise NotImplementedError
+
+    def publish_compaction(
+        self, conversation_id: str, messages, *, expected_revision: ConversationRevision,
+        model_config_patch=None, tail_count: int = 0,
+    ):
         raise NotImplementedError

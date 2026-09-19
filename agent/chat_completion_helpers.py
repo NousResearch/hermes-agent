@@ -1744,6 +1744,66 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
     return False, "chat_completions"
 
 
+_FALLBACK_WIRES = frozenset({"chat_completions", "anthropic_messages", "codex_responses", "bedrock_converse"})
+
+
+def _fallback_api_mode_declared(provider: str, base_url: str, model: str) -> str:
+    """The wire protocol *provider* declares for itself, or "" for "no opinion".
+
+    Called from the tail of :func:`_fallback_api_mode_resolved`, i.e. only after every
+    URL- and provider-shaped check above it has declined — so the caller keeps
+    ``chat_completions`` unless one of these two authorities names another wire:
+
+    1. the provider's own ``config.yaml`` block. The primary path picks this up through
+       ``resolve_provider_full`` → ``resolve_user_provider``; the fallback path has no
+       equivalent, so a hand-written ``providers:`` entry declaring
+       ``transport: anthropic_messages`` is otherwise demoted to OpenAI wire.
+       ``transport`` is the key that counts — it is the only one ``resolve_user_provider``
+       reads, and the v12 writer emits only it. ``api_mode`` is accepted as the legacy
+       spelling older configs still carry, and either value is canonicalized exactly as
+       ``runtime_provider._parse_api_mode`` canonicalizes a configured mode.
+    2. :func:`hermes_cli.providers.determine_api_mode`` — the call the primary path makes
+       (``runtime_provider._fallback_api_mode``), which folds in host mandates plus the
+       registry / plugin-profile transport.
+
+    An explicit ``chat_completions`` is an answer, not an abstention, and stops the
+    registry from being consulted — same rule as :func:`_fallback_api_mode_hint`.
+    """
+    provider_key = (provider or "").strip().lower()
+    if provider_key:
+        try:
+            from hermes_cli import config_providers as _config_mod
+            from hermes_cli.config import load_config_readonly
+
+            configured = (load_config_readonly() or {}).get("providers") or {}
+            if isinstance(configured, dict):
+                for name, entry in configured.items():
+                    if str(name).strip().lower() != provider_key or not isinstance(entry, dict):
+                        continue
+                    declared = str(entry.get("transport") or entry.get("api_mode") or "").strip()
+                    canonical = _config_mod._canonical_api_mode(declared) if declared else ""
+                    if canonical in _FALLBACK_WIRES:
+                        return canonical
+                    break
+        except Exception:
+            logger.debug(
+                "Fallback api_mode: config lookup failed for %s",
+                provider, exc_info=True,
+            )
+    try:
+        from hermes_cli.providers import determine_api_mode
+
+        resolved = str(determine_api_mode(provider, base_url, model) or "").strip()
+    except Exception:
+        logger.debug(
+            "Fallback api_mode: determine_api_mode failed for %s",
+            provider, exc_info=True,
+        )
+        return ""
+    return resolved if resolved in _FALLBACK_WIRES and resolved != "chat_completions" else ""
+
+
+
 def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
     """Re-detect api_mode from provider / resolved base URL / model when the hint pass
     landed on the chat_completions default (never called for an explicit api_mode)."""
@@ -1772,7 +1832,13 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     host = base_url_hostname(fb_base_url)
     if fb_provider == "bedrock" or (host.startswith("bedrock-runtime.") and base_url_host_matches(fb_base_url, "amazonaws.com")):
         return "bedrock_converse"
-    return "chat_completions"
+    # Nothing above matched, so this is the bare default rather than a deliberate
+    # resolution. Ask the provider what wire it actually speaks before shipping
+    # OpenAI-wire traffic at an endpoint that may reject it outright. Without this a
+    # provider that works as the primary model silently degrades the moment it is
+    # demoted into the fallback chain: Volcengine Ark's coding plan declares
+    # anthropic_messages via its plugin profile, and /chat/completions on that host 404s.
+    return _fallback_api_mode_declared(fb_provider, fb_base_url, fb_model) or "chat_completions"
 
 
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:

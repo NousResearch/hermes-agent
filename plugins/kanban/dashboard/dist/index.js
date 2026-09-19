@@ -180,6 +180,28 @@
     archived: "hermes-kanban-dot-archived",
   };
 
+  // The card's GitHub PR (``pr_url`` from the backend, which reads the accepted
+  // completion contract or the newest run's ``metadata.published_pr``). Rendered
+  // as "#123" — the number is what an operator says out loud, the repo is on the
+  // other end of the link. ``stopPropagation`` keeps a click on the card chip
+  // from also opening the drawer behind it.
+  function prNumber(url) {
+    const match = /\/pull\/(\d+)/.exec(url || "");
+    return match ? "#" + match[1] : "PR";
+  }
+
+  function PrLink(props) {
+    if (!props.url) return null;
+    return h("a", {
+      className: cn("hermes-kanban-pr-link", props.className),
+      href: props.url,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      title: props.url,
+      onClick: function (e) { e.stopPropagation(); },
+    }, prNumber(props.url));
+  }
+
   function isDiagnosticEvent(kind) {
     return Object.prototype.hasOwnProperty.call(FALLBACK_DIAGNOSTIC_EVENT_LABELS, kind);
   }
@@ -3238,6 +3260,7 @@
                               ? tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.")
                               : "No profile assigned." },
                   tx(i18n, "unassigned", "unassigned")),
+            t.pr_url ? h(PrLink, { url: t.pr_url, className: "hermes-kanban-count" }) : null,
             t.comment_count > 0
               ? h("span", { className: "hermes-kanban-count",
                             title: `${t.comment_count} comment${t.comment_count === 1 ? "" : "s"} on this task` }, "💬 ", t.comment_count)
@@ -3998,6 +4021,9 @@
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        t.pr_url
+          ? h(MetaRow, { label: tx(i18n, "pullRequest", "PR"), value: h(PrLink, { url: t.pr_url }) })
+          : null,
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         h(ModelEditor, { task: t, onPatch: props.onPatch }),

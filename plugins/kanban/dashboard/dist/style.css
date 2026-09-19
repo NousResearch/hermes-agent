@@ -608,6 +608,18 @@
   align-items: center;
 }
 
+/* The card's PR: a link, in the same monospaced-ish register as the counts
+   beside it, underlined only on hover so a column of cards stays quiet. */
+.hermes-kanban-pr-link {
+  color: var(--color-muted-foreground);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.hermes-kanban-pr-link:hover {
+  color: var(--color-ring);
+  text-decoration: underline;
+}
+
 /* ---- Selection chrome ----------------------------------------------- */
 
 .hermes-kanban-card--selected :where(.hermes-kanban-card-content) {

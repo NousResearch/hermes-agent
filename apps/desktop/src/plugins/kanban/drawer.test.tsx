@@ -79,6 +79,28 @@ function openDrawer() {
   )
 }
 
+describe('pr link', () => {
+  const pr = 'https://github.com/acme/widgets/pull/123'
+
+  it('links the PR from the meta table, and opens it without opening the card', async () => {
+    detail = { ...legacyDetail, attachments: [], task: { ...legacyDetail.task, pr_url: pr } }
+    openDrawer()
+
+    const link = await screen.findByRole('link', { name: '#123' })
+    expect(link.getAttribute('href')).toBe(pr)
+    expect(screen.getByText(en.metaPr)).toBeTruthy()
+  })
+
+  it('shows no PR row when the card has no PR', async () => {
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+
+    expect(await screen.findByRole('heading', { name: legacyDetail.task.title })).toBeTruthy()
+    expect(screen.queryByText(en.metaPr)).toBeNull()
+    expect(screen.queryByRole('link', { name: /^#\d+$/ })).toBeNull()
+  })
+})
+
 describe('task attachment compatibility', () => {
   it.each([{}, { attachments: null }])(
     'keeps older task details usable without attachment controls (%j)',

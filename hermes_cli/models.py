@@ -543,7 +543,9 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    """Return every tool-capable OpenRouter model: the curated entries first (each keeping its
+    ``default``/``free`` description), then the rest of the live catalog so the picker is fully
+    searchable. Curation is a prioritization signal, not a filter — tool support is the filter."""
     # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
     # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
     from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
@@ -596,6 +598,18 @@ def fetch_openrouter_models(
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
+
+    # Append all remaining tool-capable models from the live catalog so the
+    # picker is searchable beyond the curated shortlist.  Curated models
+    # (already in ``curated``) are skipped; the rest keep their live order.
+    curated_ids = {mid for mid, _ in curated}
+    for mid, item in live_by_id.items():
+        if mid in curated_ids:
+            continue
+        if not _openrouter_model_supports_tools(item):
+            continue
+        desc = "free" if _openrouter_model_is_free(item.get("pricing")) else ""
+        curated.append((mid, desc))
 
     if not curated:
         return list(cached or fallback)
@@ -1036,7 +1050,13 @@ def _detection_candidates(name: str, current_provider: str):
         yield None
         return
 
-    # OpenRouter catalog (exact slug, then bare model part).
+    # OpenRouter catalog (exact slug, then bare model part). Never pull a session off a custom
+    # endpoint: with the full live catalog in the picker, bare names (``laguna-s-2.1``) collide with
+    # OpenRouter slugs, and the user's own endpoint is an explicit choice. Only this rung is skipped
+    # — an explicit ``vendor/model`` prefix naming a declared provider still resolves below.
+    _current = (current_provider or "").strip().lower()
+    if _current == "custom" or _current.startswith("custom:"):
+        return
     or_slug = _find_openrouter_slug(name)
     if or_slug:
         if current_provider == "openrouter" and or_slug == name:

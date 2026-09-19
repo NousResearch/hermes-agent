@@ -32,6 +32,7 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { LocalMessageComposer } from "@/components/LocalMessageComposer";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -1913,6 +1914,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
+        <div data-hermes-local-composer-column="true" className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
         <div
           ref={termWrapRef}
           className={cn(
@@ -2058,6 +2060,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </Button>
           )}
+        </div>
+        <LocalMessageComposer
+          key={JSON.stringify([scopedProfile ?? "", resumeParam ?? "", channel])}
+          connected={ptyState === "open"}
+          ended={ptyState === "ended"}
+          draftKey={`hermes.local-composer.v2.${JSON.stringify([scopedProfile ?? "", resumeParam ?? ""])}`}
+          onTerminalMode={() => termRef.current?.focus()}
+          socket={wsRef.current}
+        />
         </div>
 
         {!narrow && !chatPanelCollapsed && (

@@ -376,6 +376,9 @@ class PlatformConfig:
     typing_indicator: bool = True  # drives _keep_typing; False where unwanted (Slack setStatus blocks compose)
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
     typing_status_text: Optional[str] = None
+    # Opt-in per-platform lazy conversation boundary. ``None`` (and 0 in
+    # config.yaml) preserves durable conversations.
+    idle_new_conversation_minutes: Optional[int] = None
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
 
@@ -384,6 +387,8 @@ class PlatformConfig:
             "enabled": self.enabled, "extra": self.extra, "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
+            **({"idle_new_conversation_minutes": self.idle_new_conversation_minutes}
+               if self.idle_new_conversation_minutes is not None else {}),
             **({"typing_status_text": self.typing_status_text} if self.typing_status_text is not None else {}),
             **{k: v for k in ("token", "api_key") if (v := getattr(self, k))},
         }
@@ -398,6 +403,7 @@ class PlatformConfig:
     _TYPED_KEYS = frozenset({
         "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
         "gateway_restart_notification", "typing_indicator", "typing_status_text",
+        "idle_new_conversation_minutes",
     })
 
     @classmethod
@@ -430,6 +436,10 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion
+            idle_new_conversation_minutes=_coerce_optional_positive_int(
+                toplevel_or_extra("idle_new_conversation_minutes"),
+                "idle_new_conversation_minutes",
+            ),
             channel_overrides=channel_overrides,
             extra=extra,
         )

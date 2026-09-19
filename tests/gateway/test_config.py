@@ -103,6 +103,14 @@ class TestPlatformConfigRoundtrip:
         )
         assert restored.typing_status_text == "chasing yarn…"
 
+    def test_idle_new_conversation_minutes_is_opt_in_and_round_trips(self):
+        disabled = PlatformConfig.from_dict({"idle_new_conversation_minutes": 0})
+        assert disabled.idle_new_conversation_minutes is None
+
+        enabled = PlatformConfig.from_dict({"idle_new_conversation_minutes": "30"})
+        assert enabled.idle_new_conversation_minutes == 30
+        assert PlatformConfig.from_dict(enabled.to_dict()).idle_new_conversation_minutes == 30
+
 
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(

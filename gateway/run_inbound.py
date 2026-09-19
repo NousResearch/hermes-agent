@@ -253,6 +253,16 @@ class GatewayInboundMixin:
             return None
         return event, source, False
 
+    @staticmethod
+    def _hm_idle_boundary_goal_active(session_id: str) -> bool:
+        """Fail closed when checking whether a durable goal protects a session."""
+        try:
+            from hermes_cli.goals import GoalManager
+            return GoalManager(session_id=session_id).is_active()
+        except Exception as exc:
+            logger.warning("Idle boundary skipped: could not check goal for %s: %s", session_id, exc)
+            return True
+
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never
         running work or control traffic — recognized slash commands (incl. /pause off, the in-band
@@ -1293,6 +1303,21 @@ class GatewayInboundMixin:
             self._hm_evict_reaped_agent(_quick_key)
         if self._is_session_running(_quick_key):
             return await self._hm_handle_running_session_message(event, source, _quick_key)
+
+        # Lazy, opt-in idle boundaries deliberately run only on the next real
+        # inbound message.  Reuse /new so state cleanup, session hooks and
+        # delegation interruption remain identical to an explicit reset.
+        command = event.get_command()
+        if (
+            not is_internal
+            and command not in {"new", "reset"}
+            and await asyncio.to_thread(self.session_store.idle_boundary_due, source)
+        ):
+            current = await self.async_session_store.lookup_by_session_key(_quick_key)
+            if current is None or not await asyncio.to_thread(
+                self._hm_idle_boundary_goal_active, current.session_id
+            ):
+                await self._handle_reset_command(event)
 
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
         if _handled:

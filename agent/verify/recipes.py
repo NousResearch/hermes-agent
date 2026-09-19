@@ -138,6 +138,27 @@ def _script_runner(package_manager: str | None, entry: str) -> str:
     return _SCRIPT_RUNNERS.get(package_manager or "", "npm run {}").format(entry)
 
 
+def _shared_node_modules_target(root: Path) -> Path | None:
+    """Return the resolved target when ``root/node_modules`` is a symlink
+    pointing OUTSIDE ``root`` (e.g. a git-worktree checkout sharing an
+    install with its primary tree, ``ln -s ../primary/node_modules``),
+    else ``None``. Distinguishes the common worktree-sharing pattern from
+    an in-place directory, which is safe to reinstall into.
+    """
+    link = root / "node_modules"
+    try:
+        if not link.is_symlink():
+            return None
+        target = link.resolve()
+    except OSError:
+        return None
+    try:
+        target.relative_to(root.resolve())
+    except ValueError:
+        return target
+    return None
+
+
 def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
     raw_scripts = pkg.get("scripts")
     scripts: dict[str, str] = raw_scripts if isinstance(raw_scripts, dict) else {}
@@ -156,15 +177,29 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
         return _dedupe([_script_runner(package_manager, s) for s in names if scripts.get(s)])
 
     start_script = next((s for s in ("dev", "start") if scripts.get(s)), None)
+    install = _NODE_INSTALL.get(package_manager or "", "npm install")
+    # A worktree checkout whose node_modules is a symlink to a tree outside
+    # this root (typically the primary checkout, on another branch) shares
+    # that install with its siblings: running the install would mutate it
+    # from the wrong branch context. Suppress only the destructive install;
+    # build/test/start are unaffected.
+    shared_target = _shared_node_modules_target(root)
     return Recipe(
         name=label, kind=kind, start=runners(start_script)[0] if start_script else None,
         port=(_infer_port_from_command(scripts[start_script]) or default_port) if start_script else None,
-        bootstrap=[_NODE_INSTALL.get(package_manager or "", "npm install")],
+        bootstrap=[] if shared_target else [install],
         build=runners("build", "typecheck"), test=runners("test", "check", "lint"),
         evidence=_dedupe([
             "Detected package.json",
             f"Package manager: {package_manager}" if package_manager else None,
             f"Scripts: {', '.join(scripts) or '(none)'}",
+            (
+                f"node_modules is a symlink to {shared_target} (outside this "
+                "project root, e.g. a shared git-worktree install) — skipped "
+                f"'{install}' to avoid mutating the shared install"
+            )
+            if shared_target
+            else None,
         ]),
     )
 

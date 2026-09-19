@@ -1399,6 +1399,61 @@ def test_real_binding_drains_orphaned_scope_before_session_pop(
     assert failure is None, failure
 
 
+def test_finish_task_run_stays_fail_open_when_the_task_scope_was_already_popped(
+    real_binding_runtime,
+    caplog,
+):
+    """The finish-task wiring, exercised end to end through the public entry point.
+
+    `_finish_task` routes its scope pop through ``safe_pop_relay_scope``. The existing guard
+    pins that call site in the source, which protects against a silent swap back to the strict
+    helper but does not exercise the behaviour. This drives the real call path: a task whose
+    scope was already popped by an earlier drain/interrupt must finalize without the old
+    "task close failed" warning, and its cleanup must still run.
+
+    It uses the native binding because the fake cannot stand in here: the fake's
+    ``get_scope_stack()`` returns only the top handle, so ``_handle_still_on_stack`` returns
+    ``None`` for a stale handle and the tolerant helper re-raises — the fake cannot reach the
+    tolerated path at all.
+    """
+    import logging
+
+    session_id, task_id = "stale-handle-session", "stale-handle-task"
+    relay_shared_metrics.start_task_run(session_id=session_id, task_id=task_id, platform="cli")
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    session = runtime._task_sessions[(session_id, task_id)]
+    task = session.tasks[task_id]
+    assert task.handle is not None
+
+    # Simulate the earlier drain/interrupt: pop the task's scope for real, once.
+    relay_runtime.get_runtime().run_in_session(
+        session.relay_session, real_binding_runtime.scope.pop, task.handle
+    )
+
+    with caplog.at_level(logging.WARNING):
+        relay_shared_metrics.finish_task_run(
+            session_id=session_id,
+            task_id=task_id,
+            platform="cli",
+            result={"completed": True},
+        )
+
+    # Fail-open: finalization completed and the task was cleaned up.
+    assert task_id not in session.tasks
+    assert (session_id, task_id) not in runtime._task_sessions
+
+    # ...and the stale pop produced no close-failure warning, which is the whole point of
+    # routing this call site through the tolerant helper.
+    close_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "task close failed" in record.getMessage()
+    ]
+    assert close_warnings == [], close_warnings
+
+
 def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
     direct_runtime,
 ):

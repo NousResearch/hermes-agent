@@ -166,7 +166,12 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     await act(async () => {
       await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
     })
-    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
+    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'keep correction',
+      submission_ref: expect.any(String),
+      input_visibility: 'visible'
+    })
   })
 
   // #141644: a correction the owner refused before any agent saw it hands the words back (false)
@@ -211,7 +216,12 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'actually use Postgres' })
+    expect(calls[2]?.params).toEqual({
+      session_id: RECOVERED_SESSION_ID,
+      text: 'actually use Postgres',
+      submission_ref: expect.any(String),
+      input_visibility: 'visible'
+    })
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 

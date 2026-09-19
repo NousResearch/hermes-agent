@@ -66,14 +66,16 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     sockets[0].open()
     await connect
     const socket = sockets[0]
-    const params = { session_id: 's', text: 'hello', submission_ref: 'ref' }
+    const params = { session_id: 's', text: 'hello', submission_ref: 'ref', input_visibility: 'visible' }
     const legacy = client.request('session.redirect', params)
     expect(socket.lastRequest().params).not.toHaveProperty('submission_ref')
+    expect(socket.lastRequest().params).not.toHaveProperty('input_visibility')
     socket.serverFrame({ id: socket.lastRequest().id, result: { status: 'redirected' } })
     await legacy
     socket.serverFrame({ method: 'event', params: { type: 'gateway.ready', payload: { shared_session: { version: 1 } } } })
     const supported = client.request('session.redirect', params)
     expect(socket.lastRequest().params.submission_ref).toBe('ref')
+    expect(socket.lastRequest().params.input_visibility).toBe('visible')
     expect(params.submission_ref).toBe('ref')
     socket.serverFrame({ id: socket.lastRequest().id, result: { status: 'redirected' } })
     await supported

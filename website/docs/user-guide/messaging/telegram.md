@@ -180,6 +180,18 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Keep observed group chatter out of the model's context
+
+Observed context is injected by default. To record group chatter in the transcript without feeding it to the model, set `inject_observed_group_context: false`:
+
+```yaml
+telegram:
+  observe_unmentioned_group_messages: true
+  inject_observed_group_context: false
+```
+
+Observed group messages are still appended to the shared session transcript, but an addressed turn no longer replays them as an observed-context block, so the model only sees the message that actually addressed it. Default is `true` (previous behavior). This is a `config.yaml` setting with no environment variable; the gateway resolves it from the active profile's own config, so multiplexed profiles can each choose their own value.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

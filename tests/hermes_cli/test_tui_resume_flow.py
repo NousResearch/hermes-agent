@@ -285,3 +285,92 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
 
 
+
+
+def test_termux_fast_cli_launch_oneshot_forwards_worktree(monkeypatch, main_mod):
+    """-z with -w must forward worktree=True through the Termux fast path
+    too (#67458 — both dispatches used to drop the flag)."""
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--model", "gpt-test", "--provider", "openai", "-w"],
+    )
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda args: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    def _fake_exit(rc):
+        raise SystemExit(rc)
+
+    monkeypatch.setattr(main_mod.os, "_exit", _fake_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._try_termux_fast_cli_launch()
+
+    assert exc.value.code == 0
+    assert captured["worktree"] is True
+
+
+def test_main_top_level_oneshot_forwards_worktree(monkeypatch, main_mod):
+    """-z with -w must forward worktree=True to run_oneshot (#67458 — the
+    flag used to be accepted but silently dropped at this dispatch)."""
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "-z", "hello", "-w"])
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(
+            discover_plugins=lambda: None,
+            start_background_plugin_discovery=lambda: None,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    def _fake_exit(rc):
+        raise SystemExit(rc)
+
+    monkeypatch.setattr(main_mod.os, "_exit", _fake_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured["worktree"] is True

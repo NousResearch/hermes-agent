@@ -422,6 +422,18 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Absolute path for 'dir' or 'worktree' workspace. "
                 "Relative paths are rejected at dispatch."
         )),
+        "requires_repo_change": _prop("boolean", (
+                "Require the task's Git HEAD to advance from the commit "
+                "recorded when its workspace is dispatched."
+        )),
+        "requires_clean_worktree": _prop("boolean", (
+                "Require a clean checkout at completion. Defaults to true "
+                "for dedicated worktree tasks and false for shared dirs."
+        )),
+        "integration_target": _prop("string", (
+                "Optional Git ref (for example origin/main) that must contain "
+                "the completed commit before the task may close."
+        )),
         "project": _prop("string", (
                 "Optional project id or slug to link the task to. When "
                 "set, the task becomes a git worktree under the project's "

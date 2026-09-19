@@ -315,14 +315,21 @@ def _end_current_session(cli, reason: str) -> None:
         cli._session_db.end_session(cli.session_id, reason)
 
 
-def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:
+def _sync_agent_to_session(
+    cli, session_id: str, *, parent_session_id: str, reason: str, previous_messages: list | None = None,
+) -> None:
     """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
     per-session state, re-anchor the DB flush index, and notify memory providers with
     reset=False (their state stays valid and just targets the new id; parent keeps lineage)."""
     if not cli.agent:
         return
     cli.agent.session_id = session_id
-    cli.agent.reset_session_state()
+    cli.agent.reset_session_state(
+        previous_messages=(
+            list(cli.conversation_history) if previous_messages is None else previous_messages
+        ),
+        old_session_id=parent_session_id,
+    )
     if hasattr(cli.agent, "_last_flushed_db_idx"):
         cli.agent._last_flushed_db_idx = len(cli.conversation_history)
     if hasattr(cli.agent, "_todo_store"):
@@ -1299,6 +1306,7 @@ class CLICommandsMixin:
         if target_id == self.session_id:
             return _cp("  Already on that session.")
         old_session_id = self.session_id
+        old_conversation_history = list(self.conversation_history)
         _end_current_session(self, "resumed_other")
         self.session_id, self._resumed, self._pending_title = target_id, True, None
         _sync_process_session_id(target_id)
@@ -1309,7 +1317,10 @@ class CLICommandsMixin:
         self._resume_display_history = _without_session_meta(display_history)
         with suppress(Exception):  # re-open the target session so it's not marked as ended
             self._session_db.reopen_session(target_id)
-        _sync_agent_to_session(self, target_id, parent_session_id=old_session_id, reason="resume")
+        _sync_agent_to_session(
+            self, target_id, parent_session_id=old_session_id, reason="resume",
+            previous_messages=old_conversation_history,
+        )
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         from agent.context_compressor import is_user_originated_turn
         # Count only user-originated turns: legacy compaction handoffs are durable role=user rows

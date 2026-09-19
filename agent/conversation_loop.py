@@ -1525,6 +1525,27 @@ def _run_conversation_turn(
             should_review_memory=s._should_review_memory,
         )
 
+    # ── Opt-in dispatcher mode (delegation.auto_delegate) ────────────────
+    # When enabled, the whole turn is handed to a child agent before the main
+    # loop starts; the parent only receives the child's summary. Same
+    # turn-handoff pattern as the codex_app_server branch above — no message
+    # mutation, no system-prompt change, cache-safe. Returns None (and falls
+    # through to the normal loop) whenever the mode is off or delegation
+    # failed, so dispatcher mode never hard-fails a turn.
+    try:
+        from agent.auto_delegate import try_auto_delegate
+
+        _auto_result = try_auto_delegate(
+            agent,
+            user_message=s.user_message,
+            messages=s.messages,
+            effective_task_id=s.effective_task_id,
+        )
+        if _auto_result is not None:
+            return _auto_result
+    except Exception:
+        logger.debug("auto_delegate: pre-loop handoff skipped", exc_info=True)
+
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break

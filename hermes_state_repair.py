@@ -1300,6 +1300,95 @@ def _fsync_parent_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _table_fingerprints(conn: sqlite3.Connection) -> "Dict[str, Optional[tuple]]":
+    """(row count, content hash) per user table visible to *conn*.
+
+    Storage-order row scan: the snapshot is a page-level clone, so identical
+    pages hash identically, while any committed INSERT/UPDATE/DELETE anywhere
+    changes some page and thus the hash. None when the table cannot be fully
+    read (damage); sqlite_% engine internals are excluded.
+    """
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name NOT LIKE 'sqlite_%'").fetchall()]
+    fingerprints: "Dict[str, Optional[tuple]]" = {}
+    for table in tables:
+        quoted = '"%s"' % table.replace('"', '""')
+        try:
+            count = int(conn.execute(
+                "SELECT COUNT(*) FROM %s" % quoted).fetchone()[0])
+            digest = hashlib.sha256()
+            for row in conn.execute("SELECT * FROM %s" % quoted):
+                digest.update(repr(tuple(row)).encode("utf-8", "replace"))
+            fingerprints[table] = (count, digest.hexdigest())
+        except sqlite3.Error:
+            fingerprints[table] = None
+    return fingerprints
+
+
+def _live_table_fingerprints(db_path: Path) -> "Optional[Dict[str, Optional[tuple]]]":
+    """Best-effort fingerprints of the live file; None when unopenable."""
+    try:
+        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return None
+    try:
+        return _table_fingerprints(conn)
+    finally:
+        conn.close()
+
+
+def _refuse_on_snapshot_drift(snapshot_fingerprints, db_path) -> None:
+    """Snapshot-vs-live change guard across the rebuild window.
+
+    Any committed change to any table after the snapshot means os.replace
+    would revert a sibling commit, so refuse the swap. An unreadable live
+    messages table stays lenient (the salvage copy already proved parity
+    against its own source read, per _transcript_table_count); every other
+    difference -- changed rows, new tables, dropped tables -- fails closed.
+    """
+    live_fingerprints = _live_table_fingerprints(db_path)
+    if live_fingerprints is None:
+        return  # live file unopenable: nothing newer to protect
+    drifted = sorted(
+        name for name, snap in snapshot_fingerprints.items()
+        if name in live_fingerprints
+        and live_fingerprints[name] != snap
+        and not (name == "messages" and live_fingerprints[name] is None))
+    drifted += sorted(
+        name for name in snapshot_fingerprints
+        if name not in live_fingerprints)
+    drifted += sorted(
+        "new table %s" % name for name in live_fingerprints
+        if name not in snapshot_fingerprints)
+    if drifted:
+        raise sqlite3.DatabaseError(
+            "tables changed during rebuild (%s); refusing swap that would "
+            "revert a sibling commit" % "; ".join(drifted[:4]))
+
+
+def _tighten_scratch_permissions(tmp_path: Path) -> None:
+    """Best-effort 0600 on the scratch file: it holds full row contents but
+    inherits the process umask (0644 under 022). Never raises."""
+    if os.name == "nt":
+        return
+    with contextlib.suppress(OSError):
+        os.chmod(tmp_path, 0o600)
+
+
+def _restore_live_permissions(db_path: Path) -> None:
+    """Re-tighten state.db after the atomic swap: os.replace moved the
+    umask-permissioned scratch inode onto the live path. Honors
+    hermes_state._secure_state_db_files (chmod(2) on the path: never opens
+    the file, so live POSIX locks survive). Lazy import: hermes_state owns
+    the writer side and must not import this module at load time."""
+    if os.name == "nt":
+        return
+    from hermes_state import _secure_state_db_files
+    with contextlib.suppress(OSError):
+        _secure_state_db_files(db_path)
+
+
 def _rebuild_transcript_offline_locked(db_path: Path, report: "Dict[str, Any]") -> None:
     """Snapshot -> salvage messages -> verify -> atomic swap. Raises on any
     failure with the original file untouched (only the scratch tmp is ever
@@ -1311,6 +1400,7 @@ def _rebuild_transcript_offline_locked(db_path: Path, report: "Dict[str, Any]") 
         # Consistent page-level snapshot (folds committed WAL frames); the live
         # file is only ever read, never written, by this lane.
         _copy_database_snapshot(db_path, tmp_path)
+        _tighten_scratch_permissions(tmp_path)
         with _repair_conn(tmp_path) as conn:
             salvaged = _salvage_messages_table(conn)
             problems = [str(r[0]) for r in conn.execute("PRAGMA integrity_check").fetchall()
@@ -1319,12 +1409,15 @@ def _rebuild_transcript_offline_locked(db_path: Path, report: "Dict[str, Any]") 
                 raise sqlite3.DatabaseError(
                     "rebuilt copy still fails integrity_check (%s); refusing swap"
                     % "; ".join(problems[:3]))
+            snapshot_fingerprints = _table_fingerprints(conn)
         live_count = _transcript_table_count(db_path)
         if live_count is not None and live_count != salvaged:
             raise sqlite3.DatabaseError(
                 "messages row-count drifted during rebuild (%s live vs %s rebuilt); refusing swap"
                 % (live_count, salvaged))
+        _refuse_on_snapshot_drift(snapshot_fingerprints, db_path)
         os.replace(tmp_path, db_path)
+        _restore_live_permissions(db_path)
         _fsync_parent_dir(db_path)
         # The old generation's sidecars reference replaced pages: a stale -wal
         # replayed onto the swapped image is corruption, so drop them (open

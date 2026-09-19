@@ -785,3 +785,18 @@ def test_failed_initialization_does_not_register_duplicate_writer_handle(db, mon
         SessionDB(db_path=db.db_path)
 
     assert registered == []
+
+@pytest.mark.requires_wal
+def test_preswap_checked_out_reader_is_retired_not_repooled(db):
+    # A reader checked out before the transcript-rebuild swap must be closed
+    # on return, never repooled: it points at the replaced inode (stale rows).
+    with db._read_ctx() as conn:
+        assert conn is not None
+        stale = conn
+        db._retire_all_pooled_read_conns()
+    with pytest.raises(sqlite3.ProgrammingError):
+        stale.execute('SELECT 1')
+    assert db._read_pool.empty()
+    with db._read_ctx() as fresh:
+        assert fresh is not stale
+        assert fresh.execute('SELECT 1').fetchone()[0] == 1

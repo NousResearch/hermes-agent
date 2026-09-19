@@ -567,6 +567,10 @@ class SessionDB(
         # Set when close() begins; an in-flight reader then closes its own connection
         # instead of re-populating a pool nobody will drain again.
         self._read_conns_closed = False
+        # Pool generation: bumped whenever the underlying file is swapped out
+        # from under pooled readers (transcript-rebuild swap). A checkout from
+        # an older generation closes itself on return instead of repooling.
+        self._read_pool_generation = 0
         # Read-open failure backoff is a TIMESTAMP, not a sticky bool: the likeliest trigger
         # is transient EMFILE, and a permanent flag would demote every reader forever.
         self._read_open_failed_at = 0.0
@@ -844,6 +848,20 @@ class SessionDB(
             return None
         return conn
 
+    def _retire_all_pooled_read_conns(self) -> None:
+        """Drain idle readers and retire checked-out ones across a file swap.
+
+        A pre-swap checkout points at the replaced inode: handing it back to
+        the pool would serve stale rows, so the generation bump makes every
+        outstanding checkout close itself on return instead of repooling.
+        Callers hold self._lock (the swap window); the bump itself takes
+        self._read_conns_lock, matching _read_ctx's return path.
+        """
+        while self._evict_one_idle_read_conn():
+            pass
+        with self._read_conns_lock:
+            self._read_pool_generation += 1
+
     def _evict_one_idle_read_conn(self) -> bool:
         """Close one idle pooled connection (a peer on the same file wants its permit); never a live one."""
         try:
@@ -879,20 +897,24 @@ class SessionDB(
         degradation: slower beats EMFILE, which the supervisor cannot see."""
         conn = self._checkout_read_conn()
         if conn is not None:
+            with self._read_conns_lock:
+                generation = self._read_pool_generation
             try:
                 yield conn
             finally:
                 returned = False
                 with self._read_conns_lock:
-                    if not self._read_conns_closed:
+                    if (not self._read_conns_closed
+                            and generation == self._read_pool_generation):
                         try:
                             self._read_pool.put_nowait(conn)
                             returned = True
                         except queue.Full:
                             pass
                 if not returned:
-                    # close() drained the pool (or queue.Full: unreachable while
-                    # permits == maxsize, load-bearing if they drift): surplus.
+                    # close() drained the pool, a swap retired this generation
+                    # (or queue.Full: unreachable while permits == maxsize,
+                    # load-bearing if they drift): surplus.
                     self._close_read_conn(conn)
             return
         with self._lock:

@@ -15,10 +15,13 @@ Contract under test:
 """
 
 import hashlib
+import os
 import sqlite3
+import stat
 
 import pytest
 
+import hermes_state_repair
 from hermes_state import SessionDB, StateDbCorruptError
 from hermes_state_repair import repair_transcript_corruption_offline
 
@@ -268,3 +271,72 @@ class TestTranscriptWriteRepairHook:
             assert db.get_messages("sess-tcr")[-1]["content"] == "after-repair"
         finally:
             db.close()
+
+
+class TestRebuildChangeGuard:
+    def test_sibling_commit_to_other_table_after_snapshot_refuses_swap(
+        self, transcript_db, monkeypatch
+    ):
+        """A sibling commit to a non-messages table landing after the snapshot
+        must refuse the swap: os.replace would otherwise revert it.
+
+        Reproduces the finding on the messages-row-count-only final check:
+        only messages drift was compared, so a sessions-table commit made
+        between snapshot and swap was silently reverted.
+        """
+        damage = _corrupt_messages_index_page(transcript_db)
+        assert _damage_mentions_transcript(damage)
+
+        real_count = hermes_state_repair._transcript_table_count
+
+        def _count_with_sibling_commit(db_path):
+            # Sibling lands after the snapshot, before the final check.
+            sibling = sqlite3.connect(str(db_path))
+            try:
+                sibling.execute(
+                    "UPDATE sessions SET message_count = message_count + 100 "
+                    "WHERE id = 'sess-tcr'"
+                )
+                sibling.commit()
+            finally:
+                sibling.close()
+            return real_count(db_path)
+
+        monkeypatch.setattr(
+            hermes_state_repair, "_transcript_table_count", _count_with_sibling_commit
+        )
+
+        report = repair_transcript_corruption_offline(transcript_db)
+
+        assert report["repaired"] is False, report
+        assert report["error"], report
+        # The sibling commit survived: no swap reverted it.
+        conn = sqlite3.connect("file:%s?mode=ro" % transcript_db, uri=True)
+        try:
+            (count,) = conn.execute(
+                "SELECT message_count FROM sessions WHERE id = 'sess-tcr'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert count == 110
+
+
+class TestRebuildPermissions:
+    def test_rebuilt_db_preserves_0600_permissions(self, transcript_db):
+        """The scratch file inherits the umask (0644 under 022); os.replace
+        must not leave state.db world-readable. Reproduces the finding that
+        the swap dropped the 0600 tightening to 0644.
+        """
+        damage = _corrupt_messages_index_page(transcript_db)
+        assert _damage_mentions_transcript(damage)
+
+        os.chmod(transcript_db, 0o600)
+        old_umask = os.umask(0o022)
+        try:
+            report = repair_transcript_corruption_offline(transcript_db)
+        finally:
+            os.umask(old_umask)
+
+        assert report["repaired"] is True, report
+        assert _integrity_lines(transcript_db) == ["ok"]
+        assert stat.S_IMODE(os.stat(transcript_db).st_mode) == 0o600

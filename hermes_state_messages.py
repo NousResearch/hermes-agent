@@ -305,8 +305,7 @@ class SessionMessagesMixin:
             self._db_corrupt = False
             self._db_corrupt_reason = ""
             self._record_db_file_identity()
-            while self._evict_one_idle_read_conn():
-                pass
+            self._retire_all_pooled_read_conns()
         return self._execute_write(fn, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def append_message(

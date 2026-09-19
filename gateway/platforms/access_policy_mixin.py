@@ -39,8 +39,13 @@ class OwnAccessPolicyMixin:
         return ("GATEWAY_ALLOW_ALL_USERS", f"{self.ALLOW_ALL_ENV_PREFIX}_ALLOW_ALL_USERS")
 
     def _open_dm_opted_in(self) -> bool:
-        return any(str(get_scoped_secret(name, "") or "").strip().lower() in OPTIN_TRUTHY
-                   for name in self._allow_all_env_names())
+        if any(str(get_scoped_secret(name, "") or "").strip().lower() in OPTIN_TRUTHY
+               for name in self._allow_all_env_names()):
+            return True
+        gw_cfg = getattr(getattr(self, "runner", None), "config", None)
+        if gw_cfg and getattr(gw_cfg, "allow_all_users", False):
+            return True
+        return False
 
     def _entry_matches(self, entries: Iterable[str], target: str) -> bool:
         return target in entries

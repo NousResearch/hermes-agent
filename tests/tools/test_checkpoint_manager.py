@@ -135,6 +135,57 @@ class TestStoreInit:
         assert (legacies[0] / fake_repo.name).exists()
         assert (legacies[0] / fake_repo.name / "HEAD").exists()
 
+    def test_checkpoint_self_heals_store_missing_git_internals(
+        self, mgr, work_dir, checkpoint_base,
+    ):
+        assert mgr.ensure_checkpoint(str(work_dir), "before corruption") is True
+        store = _store_path(checkpoint_base)
+        shutil.rmtree(store / "objects")
+        shutil.rmtree(store / "refs")
+
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('after repair')\n")
+
+        assert mgr.ensure_checkpoint(str(work_dir), "after repair") is True
+        assert (store / "objects").is_dir()
+        assert (store / "refs").is_dir()
+        assert [c["reason"] for c in mgr.list_checkpoints(str(work_dir))] == [
+            "after repair",
+        ]
+
+    def test_reinitialization_preserves_project_and_index_metadata(
+        self, work_dir, checkpoint_base,
+    ):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        project_meta = store / "projects" / "preserve.json"
+        index_meta = store / "indexes" / "preserve"
+        project_meta.write_text('{"marker": "project"}\n')
+        index_meta.write_bytes(b"index-marker")
+        shutil.rmtree(store / "objects")
+        shutil.rmtree(store / "refs")
+
+        assert _init_store(store, str(work_dir)) is None
+
+        assert project_meta.read_text() == '{"marker": "project"}\n'
+        assert index_meta.read_bytes() == b"index-marker"
+        assert (store / "objects").is_dir()
+        assert (store / "refs").is_dir()
+
+    def test_valid_store_is_not_reinitialized(
+        self, work_dir, checkpoint_base,
+    ):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+
+        with patch(
+            "tools.checkpoint_manager.subprocess.run", wraps=subprocess.run,
+        ) as run:
+            assert _init_store(store, str(work_dir)) is None
+
+        commands = [call.args[0] for call in run.call_args_list]
+        assert ["git", "init", "--bare", str(store)] not in commands
+
 
 # =========================================================================
 # CheckpointManager — disabled

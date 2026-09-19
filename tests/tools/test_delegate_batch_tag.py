@@ -18,6 +18,9 @@ from tools.delegate_tool import _batch_prefix, _build_child_progress_callback, f
 def _fresh_ordinals(monkeypatch):
     # The ordinal table is bound in delegate_tool_progress (format_batch_tag's home).
     monkeypatch.setattr(dt_progress, "_BATCH_ORDINALS", {})
+    # Disable session children cap so batch attribution tests are not blocked
+    # by the session-total budget (tested separately in test_delegate.py).
+    monkeypatch.setattr(dt, "_get_max_children_per_session", lambda: 0)
 
 
 def test_format_batch_tag_assigns_stable_ordinals_per_batch():
@@ -95,7 +98,7 @@ def test_child_tree_prefix_without_batch_id_is_unchanged():
     assert parent._delegate_spinner.lines[0].startswith(" [1/3] ├─ 🔀 solo goal")
 
 
-def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch, tmp_path):
+def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch, tmp_path, _fresh_ordinals):
     """Two interleaved batches: every ✓ line names its own ``set N``."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()

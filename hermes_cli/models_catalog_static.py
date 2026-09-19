@@ -134,7 +134,36 @@ _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
 _MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"]
-_TENCENT_MODELS = ["hy4-preview", "hy3", "hy3-preview"]
+# Tencent TokenHub — Hy 系模型，tokenhub.tencentmaas.com。
+# hy3* / hy4-preview 都在这个目录；其中 hy3* 是 Hy Token Plan 专属。
+_TENCENT_HUB_MODELS = ["hy4-preview", "hy3", "hy3-preview"]
+# Tencent 通用 Token Plan — 见 https://cloud.tencent.com/document/product/1823/130060
+# 「通用 Token Plan 套餐 → 可用模型」。Model ID 必须全小写。
+# 实测（2026-09-19，OpenAI /plan/v3 与 Anthropic /plan/anthropic 两端）：下列 ID 全部 200。
+# 刻意不含：hy3*（Hy Token Plan 专属，通用套餐返回 20098 quota exhausted）、
+# kimi-k2.5 / kimi-k-2-5（服务端列出但稳定 20057 model engine error）。
+# glm-5 / glm-5.1 及别名 glm-5-0 / glm-5-1 平台公告 2026-10-09 下线，届时移除。
+_TENCENT_TOKENPLAN_MODELS = [
+    "tc-code-latest",                        # Auto: 算法自动路由
+    "deepseek-v4-flash-202605",              # DeepSeek-V4-Flash 正式版
+    "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4-flash",
+    "deepseek-v4-pro-202606",                # DeepSeek-V4-Pro 正式版
+    "deepseek/deepseek-v4-pro-0813",
+    "deepseek/deepseek-v4-pro",
+    "minimax-m2.7",                          # MiniMax-M2.7
+    "minimax-m-2-7",
+    "minimax-m3",                            # MiniMax-M3
+    "minimax-m-3-0",
+    "glm-5", "glm-5-0",                      # 2026-10-09 下线
+    "glm-5.1", "glm-5-1",                    # 2026-10-09 下线
+    "glm-5.2", "glm-5-2",
+    "glm-5.3", "glm-5-3",
+    "glm-5.3-flash",
+    "kimi-k2.7-code",                        # Kimi K2.7 Code
+    "kimi-k3",                               # Kimi K3
+    "hy4-preview",                           # 高峰时段限频，文档建议优先选其他模型
+]
 # Alibaba DashScope Coding platform (coding-intl): Qwen + third-party (GLM, Kimi, MiniMax, DeepSeek).
 # Classic DashScope keys should override DASHSCOPE_BASE_URL to
 # https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat) or /apps/anthropic.
@@ -210,8 +239,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "deepseek": ["deepseek-v4-pro", "deepseek-flash"],
     "xiaomi": ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"],
-    "tencent-tokenhub": list(_TENCENT_MODELS),
-    "tencent-tokenplan": list(_TENCENT_MODELS),
+    "tencent-tokenhub": list(_TENCENT_HUB_MODELS),
+    "tencent-tokenplan": list(_TENCENT_TOKENPLAN_MODELS),
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "gmi": [
         "zai-org/GLM-5.1-FP8", "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",

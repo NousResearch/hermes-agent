@@ -21,6 +21,7 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import re
 import sys
 import time
 import threading
@@ -425,6 +426,36 @@ def _session_scope() -> _SessionScope:
     )
 
 
+def _project_workspace_key(path: Optional[str]) -> Optional[str]:
+    """Return a profile-scoped, stable key for the registered project at *path*.
+
+    Project lookup is deliberately best-effort: an unbound session keeps the
+    existing task/session fallback.  The key contains only sanitized profile and
+    project slugs, never a filesystem path, so it is safe for backend identity
+    labels and remains unchanged when a command moves within a project.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return None
+    try:
+        from hermes_cli import projects_db
+        with projects_db.connect_closing() as conn:
+            project = projects_db.project_for_path(conn, path)
+        if project is None:
+            return None
+        profile = _current_session_profile()
+        if not profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                profile = get_active_profile_name()
+            except Exception:
+                profile = "default"
+        clean = lambda value: re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value or "default")).strip("-_") or "default"
+        return f"project:{clean(profile)}:{clean(project.slug)}"
+    except Exception as exc:  # project identity must never break terminal startup
+        logger.debug("Project workspace lookup failed: %s", exc)
+        return None
+
+
 def _docker_session_isolation_enabled() -> bool:
     """See :attr:`_SessionScope.docker_session_isolated` (used by the docker builder)."""
     return _session_scope().docker_session_isolated
@@ -454,6 +485,27 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     scope = _session_scope()
     if task_id and scope.session_isolated:
         return _resolve_container_alias(task_id)
+
+    # An explicit shared-container key is authoritative, including when the
+    # workspace is registered to a project. This preserves the opt-in contract
+    # for trusted profiles while project scoping remains the default.
+    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip() if scope.docker_profile_scoped else ""
+    if shared:
+        return f"shared:{shared}"
+
+    # Persistent non-local backends reuse one environment per registered project.
+    # Resolve the raw session cwd first so delegation and ACP workspace overrides
+    # are honored without consulting the shared container's mutable cwd.
+    if scope.persistent and scope.env_type != "local":
+        overrides = _task_env_overrides.get(task_id or "default", {})
+        workspace_path = overrides.get("cwd") or get_session_cwd(task_id)
+        if not workspace_path:
+            config = _get_env_config()
+            workspace_path = config.get("host_cwd") or config.get("cwd")
+        project_key = _project_workspace_key(workspace_path)
+        if project_key:
+            return project_key
+
     # Per-session isolation: when a session key is present (the WebUI streaming layer sets it per-session,
     # the gateway per-message via contextvars), scope the container to it so switching profiles can't reuse
     # a previous profile's SSHEnvironment and silently run commands on the wrong remote host. Subagents
@@ -464,11 +516,6 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # stay authoritative where they apply and this only covers the cases that would otherwise collapse to
     # the shared "default" key (notably SSH).
     session_key = _current_session_key()
-    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip() if scope.docker_profile_scoped else ""
-    if shared:
-        # Explicit opt-in: trusted profiles configuring the same terminal.docker_shared_container_key share
-        # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
-        return f"shared:{shared}"
     if not session_key:
         return "default"
     if not scope.docker_profile_scoped:

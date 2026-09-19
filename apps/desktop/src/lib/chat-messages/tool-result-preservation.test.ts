@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
+import { toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 import { upsertToolPart } from './tool-parts'
 import type { ChatMessagePart } from './types'
@@ -16,7 +17,6 @@ describe('live tool result evidence', () => {
       '[1,false]',
       0,
       false,
-      null,
       [],
       [1, false],
       { summary: 'original', output: 'ok' }
@@ -27,7 +27,7 @@ describe('live tool result evidence', () => {
 
       const parts = upsertToolPart(
         [],
-        { name: 'terminal', tool_id, result, summary: 'abbreviated', duration_s: 0 },
+        toolCompletePayload({ name: 'terminal', tool_id, result, summary: 'abbreviated', duration_s: 0 }),
         'complete',
         2
       )
@@ -42,7 +42,7 @@ describe('live tool result evidence', () => {
       expect(part.result).toBe(result)
       expect(part.toolResultMetadata).toMatchObject({ summary: 'abbreviated', duration_s: 0 })
 
-      const replayed = upsertToolPart(parts, { name: 'terminal', tool_id, message: 'completed' }, 'complete', 3)
+      const replayed = upsertToolPart(parts, toolCompletePayload({ name: 'terminal', tool_id }), 'complete', 3)
       expect((replayed[0] as typeof part).result).toBe(result)
 
       const runtime = fromThreadMessageLike(
@@ -53,7 +53,7 @@ describe('live tool result evidence', () => {
 
       const received = runtime.content[0] as typeof part
       expect(received.result).toEqual(result)
-      expect(received.toolResultMetadata).toMatchObject({ summary: 'abbreviated', message: 'completed' })
+      expect(received.toolResultMetadata).toMatchObject({ summary: 'abbreviated', duration_s: 0 })
 
       if (typeof result === 'object' && result && 'summary' in result) {
         expect((received.result as typeof result).summary).toBe(result.summary)
@@ -68,11 +68,11 @@ describe('live tool result evidence', () => {
       ['a', 'echo a'],
       ['b', 'echo b']
     ]) {
-      parts = upsertToolPart(parts, { name: 'terminal', tool_id, args: { command } }, 'running', 1)
+      parts = upsertToolPart(parts, toolStartPayload({ name: 'terminal', tool_id, args: { command } }), 'running', 1)
     }
 
-    parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'b', result: '' }, 'complete', 2)
-    parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'a', summary: 'done' }, 'complete', 3)
+    parts = upsertToolPart(parts, toolCompletePayload({ name: 'terminal', tool_id: 'b', result: '' }), 'complete', 2)
+    parts = upsertToolPart(parts, toolCompletePayload({ name: 'terminal', tool_id: 'a', summary: 'done' }), 'complete', 3)
     expect(parts).toHaveLength(2)
     const [missing, empty] = parts
 

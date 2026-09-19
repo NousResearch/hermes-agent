@@ -4,6 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $providerWaitSessions } from '@/store/provider-wait'
 import { clearAllSessionStates, dropSessionState } from '@/store/session-states'
+import {
+  errorPayload,
+  messageCompletePayload,
+  messageDeltaPayload,
+  reasoningDeltaPayload,
+  thinkingDeltaPayload,
+  toolStartPayload
+} from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -11,8 +19,10 @@ const SID = 'session-1'
 let stream: MessageStreamHarness
 
 function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K]) {
-  act(() => stream.handleEvent({ payload, session_id: SID, type }))
+  act(() => stream.emit(type, payload, SID))
 }
+
+const wait = (text: string) => emit('thinking.delta', thinkingDeltaPayload({ text }))
 
 describe('provider wait visibility', () => {
   beforeEach(async () => {
@@ -27,27 +37,30 @@ describe('provider wait visibility', () => {
   })
 
   it('surfaces explained waits but ignores generic spinner rewrites', () => {
-    emit('thinking.delta', { text: '⏳ waiting on local-model — 30s with no output yet' })
+    wait('⏳ waiting on local-model — 30s with no output yet')
     expect($providerWaitSessions.get()).toEqual({
       [SID]: '⏳ waiting on local-model — 30s with no output yet'
     })
 
-    emit('thinking.delta', { text: '◉_◉ cogitating...' })
+    wait('◉_◉ cogitating...')
     expect($providerWaitSessions.get()).toEqual({})
   })
 
-  it.each(['message.delta', 'reasoning.delta', 'tool.start', 'message.complete', 'error'] as const)(
-    'clears the wait when %s proves the turn progressed or ended',
-    type => {
-      emit('thinking.delta', { text: '⚠ no output from provider for 900s — reconnecting...' })
-      emit(type, type === 'tool.start' ? { name: 'terminal', tool_id: 'tool-1' } : { text: 'progress' })
+  it.each([
+    ['message.delta', messageDeltaPayload({ text: 'progress' })],
+    ['reasoning.delta', reasoningDeltaPayload({ text: 'progress' })],
+    ['tool.start', toolStartPayload({ name: 'terminal', tool_id: 'tool-1' })],
+    ['message.complete', messageCompletePayload({ text: 'progress' })],
+    ['error', errorPayload({ message: 'progress' })]
+  ] as const)('clears the wait when %s proves the turn progressed or ended', (type, payload) => {
+    wait('⚠ no output from provider for 900s — reconnecting...')
+    emit(type, payload)
 
-      expect($providerWaitSessions.get()).toEqual({})
-    }
-  )
+    expect($providerWaitSessions.get()).toEqual({})
+  })
 
   it('clears the wait when its runtime session is dropped', () => {
-    emit('thinking.delta', { text: '⏳ waiting on local-model — 30s with no output yet' })
+    wait('⏳ waiting on local-model — 30s with no output yet')
 
     dropSessionState(SID)
 
@@ -55,7 +68,7 @@ describe('provider wait visibility', () => {
   })
 
   it('clears every wait when gateway session state is reset', () => {
-    emit('thinking.delta', { text: '⏳ waiting on local-model — 30s with no output yet' })
+    wait('⏳ waiting on local-model — 30s with no output yet')
 
     clearAllSessionStates()
 

@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import { sessionInfoPayload } from '@/test/contract'
+import {
+  messageDeltaPayload,
+  reasoningDeltaPayload,
+  sessionInfoPayload,
+  statusUpdatePayload,
+  thinkingDeltaPayload,
+  toolStartPayload
+} from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -17,7 +24,7 @@ function mountStream() {
 }
 
 function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K]) {
-  act(() => stream.handleEvent({ payload, session_id: SID, type }))
+  act(() => stream.emit(type, payload, SID))
 }
 
 describe('useMessageStream compaction lifecycle', () => {
@@ -32,15 +39,15 @@ describe('useMessageStream compaction lifecycle', () => {
   })
 
   it.each([
-    ['message.delta', { text: 'resumed' }],
-    ['thinking.delta', { text: 'still working' }],
-    ['reasoning.delta', { text: 'thinking again' }],
-    ['tool.start', { name: 'terminal', tool_id: 'tool-1' }]
+    ['message.delta', messageDeltaPayload({ text: 'resumed' })],
+    ['thinking.delta', thinkingDeltaPayload({ text: 'still working' })],
+    ['reasoning.delta', reasoningDeltaPayload({ text: 'thinking again' })],
+    ['tool.start', toolStartPayload({ name: 'terminal', tool_id: 'tool-1' })]
   ] as const)('clears the stale compaction phase when %s resumes the turn', (type, payload) => {
     mountStream()
     setSessionCompacting(OTHER_SID, true)
 
-    emit('status.update', { kind: 'compacting' })
+    emit('status.update', statusUpdatePayload({ kind: 'compacting' }))
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true, [SID]: true })
 
     emit(type, payload)
@@ -52,8 +59,8 @@ describe('useMessageStream compaction lifecycle', () => {
     mountStream()
     setSessionCompacting(OTHER_SID, true)
 
-    emit('status.update', { kind: 'compacting' })
-    emit('status.update', { kind: 'compacted' })
+    emit('status.update', statusUpdatePayload({ kind: 'compacting' }))
+    emit('status.update', statusUpdatePayload({ kind: 'compacted' }))
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
   })
@@ -67,7 +74,7 @@ describe('useMessageStream compaction lifecycle', () => {
 
     stream = renderMessageStream(SID, { hydrateFromStoredSession, states })
 
-    emit('status.update', { kind: 'compacted' })
+    emit('status.update', statusUpdatePayload({ kind: 'compacted' }))
 
     expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, 'stored-1', SID)
   })
@@ -78,14 +85,14 @@ describe('useMessageStream compaction lifecycle', () => {
 
     stream = renderMessageStream(SID, { hydrateFromStoredSession, states })
 
-    emit('status.update', { kind: 'compacted' })
+    emit('status.update', statusUpdatePayload({ kind: 'compacted' }))
 
     expect(hydrateFromStoredSession).not.toHaveBeenCalled()
   })
 
   it('reconciles a reconnecting compaction only from trusted terminal server state', () => {
     mountStream()
-    emit('status.update', { kind: 'compacting' })
+    emit('status.update', statusUpdatePayload({ kind: 'compacting' }))
 
     // A running heartbeat is not terminal evidence and must not hide real work.
     emit('session.info', sessionInfoPayload({ running: true }))

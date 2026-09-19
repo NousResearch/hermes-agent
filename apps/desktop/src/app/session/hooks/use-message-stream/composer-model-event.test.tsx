@@ -52,7 +52,7 @@ describe('session.info does not clobber composer model selection', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: { cwd: '/tmp/project', model: 'deepseek-chat', provider: 'deepseek' },
+        payload: sessionInfoPayload({ cwd: '/tmp/project', model: 'deepseek-chat', provider: 'deepseek' }),
         type: 'session.info'
       })
     )

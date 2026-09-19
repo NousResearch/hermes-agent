@@ -6,6 +6,7 @@ import type { ClientSessionState } from '@/app/types'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionTodos } from '@/store/todos'
+import { messageCompletePayload, messageDeltaPayload, messageInterimPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -22,17 +23,29 @@ function mountStream() {
 const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
 
 const delta = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
+  act(() => stream.handleEvent({ payload: messageDeltaPayload({ text }), session_id: SID, type: 'message.delta' }))
 
 const interim = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
+  act(() =>
+    stream.handleEvent({
+      payload: messageInterimPayload({ already_streamed: true, text }),
+      session_id: SID,
+      type: 'message.interim'
+    })
+  )
 
 const complete = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.complete' }))
+  act(() =>
+    stream.handleEvent({ payload: messageCompletePayload({ text }), session_id: SID, type: 'message.complete' })
+  )
 
 const completePreviewed = (text: string) =>
   act(() =>
-    stream.handleEvent({ payload: { text, response_previewed: true }, session_id: SID, type: 'message.complete' })
+    stream.handleEvent({
+      payload: messageCompletePayload({ response_previewed: true, text }),
+      session_id: SID,
+      type: 'message.complete'
+    })
   )
 
 function getState(): ClientSessionState {
@@ -317,15 +330,21 @@ describe('useMessageStream interim text sealing', () => {
     await start()
 
     // No payload at all
-    await act(() => stream.handleEvent({ type: 'message.interim' } as GatewayEvent))
+    await act(() => stream.handleEvent({ type: 'message.interim' }))
     // Empty text
     await act(() =>
-      stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as GatewayEvent)
+      stream.handleEvent({ payload: messageInterimPayload({ text: '' }), session_id: SID, type: 'message.interim' })
     )
-    // Undefined text
-    await act(() =>
-      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as GatewayEvent)
-    )
+
+    // Undefined text — a frame the contract forbids, so the one field is forced
+    // past the type to prove the handler rejects it rather than throwing.
+    const malformed: GatewayEvent<'message.interim'> = {
+      payload: messageInterimPayload({ text: undefined as unknown as string }),
+      session_id: SID,
+      type: 'message.interim'
+    }
+
+    await act(() => stream.handleEvent(malformed))
 
     // Turn continues without finalizing or throwing
     expect(getState().busy).toBe(true)

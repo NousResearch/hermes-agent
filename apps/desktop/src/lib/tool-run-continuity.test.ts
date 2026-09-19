@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { isToolCallPart, type ToolCallLike } from '@/components/assistant-ui/tool/run-summary'
+import { toolCompletePayload } from '@/test/contract'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
@@ -85,7 +86,7 @@ function replayLive(steps: TurnStep[]): ChatMessage[] {
       case 'tool': {
         const bubble = openBubble()
 
-        bubble.parts = upsertToolPart(bubble.parts, { tool_id: step.id, name: step.name }, 'complete')
+        bubble.parts = upsertToolPart(bubble.parts, toolCompletePayload({ tool_id: step.id, name: step.name }), 'complete')
 
         break
       }

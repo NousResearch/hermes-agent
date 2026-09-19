@@ -1,7 +1,7 @@
+import type { NotificationShowPayload } from '@hermes/shared'
 import { beforeEach, expect, test } from 'vitest'
 
 import {
-  type AgentNoticePayload,
   clearAgentNotice,
   nativeNoticeInput,
   noticeAccent,
@@ -13,12 +13,14 @@ import {
 } from './agent-notices'
 import { $notifications, clearNotifications } from './notifications'
 
-function usage(overrides: Partial<AgentNoticePayload> = {}): AgentNoticePayload {
+function usage(overrides: Partial<NotificationShowPayload> = {}): NotificationShowPayload {
   return {
+    id: null,
     key: 'credits.usage',
     kind: 'sticky',
     level: 'info',
     text: "• You've used $110.00 of your $220.00 cap",
+    ttl_ms: null,
     ...overrides
   }
 }
@@ -31,8 +33,8 @@ beforeEach(() => {
 
 test('drops a notice with no text', () => {
   expect(noticeToToast(undefined)).toBeNull()
-  expect(noticeToToast({ text: '' })).toBeNull()
-  expect(noticeToToast({ text: '   ' })).toBeNull()
+  expect(noticeToToast(usage({ text: '' }))).toBeNull()
+  expect(noticeToToast(usage({ text: '   ' }))).toBeNull()
 })
 
 test('level maps to toast kind (warn → warning)', () => {
@@ -42,9 +44,8 @@ test('level maps to toast kind (warn → warning)', () => {
   expect(noticeToToast(usage({ level: 'success' }))?.kind).toBe('success')
 })
 
-test('unknown / missing level falls back to info', () => {
-  expect(noticeToToast({ text: 'x', level: 'bogus' })?.kind).toBe('info')
-  expect(noticeToToast({ text: 'x' })?.kind).toBe('info')
+test('the info level maps to an info toast', () => {
+  expect(noticeToToast(usage({ text: 'x' }))?.kind).toBe('info')
 })
 
 test('sticky notices never auto-dismiss', () => {
@@ -52,25 +53,27 @@ test('sticky notices never auto-dismiss', () => {
 })
 
 test('ttl notice carries its ttl_ms as the duration', () => {
-  const toast = noticeToToast({
-    key: 'credits.restored',
-    kind: 'ttl',
-    level: 'success',
-    text: '✓ restored',
-    ttl_ms: 8000
-  })
+  const toast = noticeToToast(
+    usage({
+      key: 'credits.restored',
+      kind: 'ttl',
+      level: 'success',
+      text: '✓ restored',
+      ttl_ms: 8000
+    })
+  )
 
   expect(toast?.durationMs).toBe(8000)
 })
 
 test('ttl notice without a usable ttl_ms defers to notify()’s default', () => {
-  expect(noticeToToast({ text: 'x', kind: 'ttl' })?.durationMs).toBeUndefined()
-  expect(noticeToToast({ text: 'x', kind: 'ttl', ttl_ms: 0 })?.durationMs).toBeUndefined()
+  expect(noticeToToast(usage({ text: 'x', kind: 'ttl' }))?.durationMs).toBeUndefined()
+  expect(noticeToToast(usage({ text: 'x', kind: 'ttl', ttl_ms: 0 }))?.durationMs).toBeUndefined()
 })
 
 test('the notice key is the toast id, falling back to id', () => {
   expect(noticeToToast(usage({ key: 'credits.usage' }))?.id).toBe('credits.usage')
-  expect(noticeToToast({ text: 'x', id: 'n1', key: undefined })?.id).toBe('n1')
+  expect(noticeToToast(usage({ text: 'x', id: 'n1', key: null }))?.id).toBe('n1')
 })
 
 test('the leading severity glyph is stripped from the toast message', () => {
@@ -84,17 +87,19 @@ test('the leading severity glyph is stripped from the toast message', () => {
 
 test('the trailing "· detail" is split off as a secondary meta line, not inlined', () => {
   // Detail-carrying notices split on the first ` · `.
-  const paused = noticeToToast({
-    key: 'credits.depleted',
-    level: 'error',
-    text: '✕ Credit access paused · run /topup to top up'
-  })
+  const paused = noticeToToast(
+    usage({
+      key: 'credits.depleted',
+      level: 'error',
+      text: '✕ Credit access paused · run /topup to top up'
+    })
+  )
 
   expect(paused?.message).toBe('Credit access paused')
   expect(paused?.meta).toBe('run /topup to top up')
 
   // grant_spent carries a `· detail` tail too.
-  const grant = noticeToToast({ key: 'credits.grant_spent', level: 'info', text: '• Grant spent · $12.00 top-up left' })
+  const grant = noticeToToast(usage({ key: 'credits.grant_spent', level: 'info', text: '• Grant spent · $12.00 top-up left' }))
   expect(grant?.message).toBe('Grant spent')
   expect(grant?.meta).toBe('$12.00 top-up left')
 
@@ -150,9 +155,9 @@ test('usage accent stays muted below 75%, then ramps orange → red', () => {
 })
 
 test('terminal credit states carry their own accent; others stay default', () => {
-  expect(noticeAccent({ key: 'credits.depleted', text: '✕ paused' })).toBe('var(--ui-red)')
-  expect(noticeAccent({ key: 'credits.restored', text: '✓ restored' })).toBe('var(--ui-green)')
-  expect(noticeAccent({ key: 'credits.grant_spent', text: '• Grant spent' })).toBeUndefined()
+  expect(noticeAccent(usage({ key: 'credits.depleted', text: '✕ paused' }))).toBe('var(--ui-red)')
+  expect(noticeAccent(usage({ key: 'credits.restored', text: '✓ restored' }))).toBe('var(--ui-green)')
+  expect(noticeAccent(usage({ key: 'credits.grant_spent', text: '• Grant spent' }))).toBeUndefined()
   expect(noticeAccent(undefined)).toBeUndefined()
 })
 
@@ -170,7 +175,7 @@ test('showAgentNotice renders a toast; empty text is a no-op', () => {
   expect($notifications.get()).toHaveLength(1)
   expect($notifications.get()[0]?.id).toBe('credits.usage')
 
-  showAgentNotice({ text: '' })
+  showAgentNotice(usage({ text: '' }))
   expect($notifications.get()).toHaveLength(1)
 })
 
@@ -187,7 +192,7 @@ test('re-emitting the same key replaces the toast instead of stacking (50→75�
 
 test('clearAgentNotice dismisses only the matching key', () => {
   showAgentNotice(usage())
-  showAgentNotice({ key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ paused' })
+  showAgentNotice(usage({ key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ paused' }))
   expect($notifications.get()).toHaveLength(2)
 
   clearAgentNotice('credits.usage')
@@ -204,13 +209,13 @@ test('clearAgentNotice dismisses only the matching key', () => {
 test('only credits.depleted and credits.restored map to a native notification', () => {
   expect(nativeNoticeInput(usage({ key: 'credits.usage' }), 'Credits')).toBeNull()
   expect(nativeNoticeInput(usage({ key: 'credits.grant_spent' }), 'Credits')).toBeNull()
-  expect(nativeNoticeInput({ text: 'x', key: undefined }, 'Credits')).toBeNull()
-  expect(nativeNoticeInput({ text: '', key: 'credits.depleted' }, 'Credits')).toBeNull()
+  expect(nativeNoticeInput(usage({ text: 'x', key: null }), 'Credits')).toBeNull()
+  expect(nativeNoticeInput(usage({ text: '', key: 'credits.depleted' }), 'Credits')).toBeNull()
 })
 
 test('the urgent pair maps to a global native input carrying the text as its body', () => {
   const depleted = nativeNoticeInput(
-    { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ Credit access paused · run /topup to top up' },
+    usage({ key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ Credit access paused · run /topup to top up' }),
     'Credits'
   )
 
@@ -222,7 +227,7 @@ test('the urgent pair maps to a global native input carrying the text as its bod
   })
 
   const restored = nativeNoticeInput(
-    { key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ Credit access restored', ttl_ms: 8000 },
+    usage({ key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ Credit access restored', ttl_ms: 8000 }),
     'Credits'
   )
 

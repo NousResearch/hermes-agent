@@ -24,11 +24,11 @@ import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { messageCompletePayload, messageDeltaPayload, toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 import { useMessageStream } from './index'
-import { messageCompletePayload, messageDeltaPayload, toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 const SID = 'steer-order-session'
 
@@ -150,7 +150,11 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
       session_id: SID,
       type: 'tool.start'
     })
-    emit({ payload: { name: 'terminal', result: 'ok', tool_id: 't1' }, session_id: SID, type: 'tool.complete' })
+    emit({
+      payload: toolCompletePayload({ name: 'terminal', result: 'ok', tool_id: 't1' }),
+      session_id: SID,
+      type: 'tool.complete'
+    })
 
     await steer('actually do it differently')
 
@@ -175,7 +179,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
 
     // Completion settles the post-steer bubble in place — order unchanged.
     emit({
-      payload: { text: 'rebuilt answer after the steer — done' },
+      payload: messageCompletePayload({ text: 'rebuilt answer after the steer — done' }),
       session_id: SID,
       type: 'message.complete'
     })

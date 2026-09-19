@@ -5,9 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $draftingToolSessions } from '@/store/tool-drafting'
+import {
+  errorPayload,
+  messageCompletePayload,
+  messageDeltaPayload,
+  reasoningDeltaPayload,
+  thinkingDeltaPayload,
+  toolCompletePayload,
+  toolGeneratingPayload,
+  toolStartPayload
+} from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
-import { messageDeltaPayload } from '@/test/contract'
 
 const SID = 'session-1'
 const OTHER_SID = 'session-2'
@@ -22,7 +31,7 @@ function mountStream() {
 }
 
 function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K], sessionId = SID) {
-  act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
+  act(() => stream.emit(type, payload, sessionId))
 }
 
 function draftedTool(sessionId = SID) {
@@ -45,7 +54,7 @@ describe('drafting-tool label lifecycle', () => {
   it('names the tool the model is drafting', () => {
     mountStream()
 
-    emit('tool.generating', { name: 'write_file' })
+    emit('tool.generating', toolGeneratingPayload({ name: 'write_file' }))
 
     expect(draftedTool()).toBe('write_file')
   })
@@ -55,16 +64,16 @@ describe('drafting-tool label lifecycle', () => {
   // retry drops a partial call, a guardrail-blocked tool skips the lifecycle
   // callbacks — and the name then sat on screen for the rest of the turn.
   it.each([
-    ['message.delta', { text: 'never mind' }],
-    ['reasoning.delta', { text: 'reconsidering' }],
-    ['thinking.delta', { text: 'reconsidering' }],
-    ['tool.start', { name: 'terminal', tool_id: 'tool-1' }],
-    ['tool.complete', { name: 'terminal', tool_id: 'tool-1' }],
-    ['message.complete', { text: 'done' }],
-    ['error', { message: 'boom' }]
+    ['message.delta', messageDeltaPayload({ text: 'never mind' })],
+    ['reasoning.delta', reasoningDeltaPayload({ text: 'reconsidering' })],
+    ['thinking.delta', thinkingDeltaPayload({ text: 'reconsidering' })],
+    ['tool.start', toolStartPayload({ name: 'terminal', tool_id: 'tool-1' })],
+    ['tool.complete', toolCompletePayload({ name: 'terminal', tool_id: 'tool-1' })],
+    ['message.complete', messageCompletePayload({ text: 'done' })],
+    ['error', errorPayload({ message: 'boom' })]
   ] as const)('retires the label when %s proves the model moved on', (type, payload) => {
     mountStream()
-    emit('tool.generating', { name: 'write_file' })
+    emit('tool.generating', toolGeneratingPayload({ name: 'write_file' }))
 
     emit(type, payload)
 
@@ -73,8 +82,8 @@ describe('drafting-tool label lifecycle', () => {
 
   it('leaves another session’s label alone', () => {
     mountStream()
-    emit('tool.generating', { name: 'patch' }, OTHER_SID)
-    emit('tool.generating', { name: 'write_file' })
+    emit('tool.generating', toolGeneratingPayload({ name: 'patch' }), OTHER_SID)
+    emit('tool.generating', toolGeneratingPayload({ name: 'write_file' }))
 
     emit('message.delta', messageDeltaPayload({ text: 'moving on' }))
 
@@ -87,7 +96,7 @@ describe('drafting-tool label lifecycle', () => {
     sessionStates.set(SID, { ...createClientSessionState(), interrupted: true })
     mountStream()
 
-    emit('tool.generating', { name: 'write_file' })
+    emit('tool.generating', toolGeneratingPayload({ name: 'write_file' }))
 
     expect(draftedTool()).toBeUndefined()
   })

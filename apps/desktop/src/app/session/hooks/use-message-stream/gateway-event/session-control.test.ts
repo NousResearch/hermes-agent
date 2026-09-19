@@ -22,7 +22,6 @@ function context(overrides: Partial<GatewayEventContext> = {}): GatewayEventCont
     fromActiveSource: () => true,
     isActiveEvent: true,
     occurredAt: 1_700_000_100,
-    payload: { control: SNAPSHOT } as GatewayEventContext['payload'],
     scheduleConfigRefresh: vi.fn(),
     sessionId: 'routed-session',
     ...overrides
@@ -54,7 +53,11 @@ describe('handleControlEvent', () => {
     expect(
       handleControlEvent(
         context({
-          payload: { control: { ...SNAPSHOT, updated_at: Number.POSITIVE_INFINITY } } as GatewayEventContext['payload']
+          event: {
+            payload: { control: { ...SNAPSHOT, updated_at: Number.POSITIVE_INFINITY } },
+            session_id: 'event-session',
+            type: 'session.control.update'
+          }
         })
       )
     ).toBe(true)

@@ -1,4 +1,11 @@
-import type { ClarifyBatch, ClarifyParams, ClarifyQuestion, ClarifySingle } from '@hermes/shared'
+import type {
+  ClarifyBatch,
+  ClarifyParams,
+  ClarifyQuestion,
+  ClarifySingle,
+  ToolCompletePayload,
+  ToolStartPayload
+} from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,6 +13,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { onScrollToBottomRequest } from '@/store/thread-scroll'
+import { toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -51,11 +59,11 @@ const batch = (questions: ClarifyQuestion[]): ClarifyBatch => ({
 const clarifyRequest = (requestId: string, params: ClarifyParams) =>
   act(() => void stream.handleRequest('clarify', params, requestId))
 
-const toolStart = (payload: Record<string, unknown>) =>
-  act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.start' }))
+const toolStart = (payload: Partial<ToolStartPayload>) =>
+  act(() => stream.handleEvent({ payload: toolStartPayload(payload), session_id: SID, type: 'tool.start' }))
 
-const toolComplete = (payload: Record<string, unknown>) =>
-  act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.complete' }))
+const toolComplete = (payload: Partial<ToolCompletePayload>) =>
+  act(() => stream.handleEvent({ payload: toolCompletePayload(payload), session_id: SID, type: 'tool.complete' }))
 
 const clarifyExpire = (requestId: string) =>
   act(() =>

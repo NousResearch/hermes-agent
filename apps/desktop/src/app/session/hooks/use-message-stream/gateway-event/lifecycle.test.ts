@@ -36,7 +36,6 @@ function setupReadyContext(fromActiveSource: boolean): GatewayEventContext {
     fromActiveSource: () => fromActiveSource,
     isActiveEvent: false,
     occurredAt: 1_700_000_100,
-    payload: payload as GatewayEventContext['payload'],
     scheduleConfigRefresh: vi.fn(),
     sessionId: null
   }

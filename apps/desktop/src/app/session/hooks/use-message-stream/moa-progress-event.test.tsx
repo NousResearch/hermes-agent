@@ -2,6 +2,8 @@ import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { moaPhasePayload, moaProgressPayload, moaReferencePayload } from '@/test/contract'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'session-1'
@@ -12,7 +14,7 @@ function mountStream() {
 }
 
 function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K]) {
-  act(() => stream.handleEvent({ payload, session_id: SID, type }))
+  act(() => stream.emit(type, payload, SID))
 }
 
 afterEach(() => {
@@ -25,8 +27,8 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
     mountStream()
 
     emit('message.start', {})
-    emit('moa.progress', { label: 'model-a', refs_done: 1, refs_total: 3 })
-    emit('moa.progress', { label: 'model-b', refs_done: 2, refs_total: 3 })
+    emit('moa.progress', moaProgressPayload({ label: 'model-a', refs_done: 1, refs_total: 3 }))
+    emit('moa.progress', moaProgressPayload({ label: 'model-b', refs_done: 2, refs_total: 3 }))
 
     const text = stream.reasoningText()
     expect(text).toContain('MoA refs 1/3 — model-a')
@@ -37,10 +39,10 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
     mountStream()
 
     emit('message.start', {})
-    emit('moa.progress', { label: 'stale', refs_done: 1, refs_total: 2 })
-    emit('moa.progress', { label: 'stale-2', refs_done: 2, refs_total: 2 })
+    emit('moa.progress', moaProgressPayload({ label: 'stale', refs_done: 1, refs_total: 2 }))
+    emit('moa.progress', moaProgressPayload({ label: 'stale-2', refs_done: 2, refs_total: 2 }))
     // A later turn's fan-out starts over at 1/N — old lines must not linger.
-    emit('moa.progress', { label: 'fresh', refs_done: 1, refs_total: 2 })
+    emit('moa.progress', moaProgressPayload({ label: 'fresh', refs_done: 1, refs_total: 2 }))
 
     const text = stream.reasoningText()
     expect(text).toContain('MoA refs 1/2 — fresh')
@@ -51,11 +53,11 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
     mountStream()
 
     emit('message.start', {})
-    emit('moa.progress', { label: 'model-a', refs_done: 1, refs_total: 1 })
-    emit('moa.phase', { aggregator: null, phase: 'reference', refs_done: 1, refs_total: 1 })
+    emit('moa.progress', moaProgressPayload({ label: 'model-a', refs_done: 1, refs_total: 1 }))
+    emit('moa.phase', moaPhasePayload({ aggregator: null, phase: 'reference', refs_done: 1, refs_total: 1 }))
     expect(stream.reasoningText()).not.toContain('aggregating')
 
-    emit('moa.phase', { aggregator: 'agg-model', phase: 'aggregator', refs_done: 1, refs_total: 1 })
+    emit('moa.phase', moaPhasePayload({ aggregator: 'agg-model', phase: 'aggregator', refs_done: 1, refs_total: 1 }))
     expect(stream.reasoningText()).toContain('MoA aggregating…')
   })
 
@@ -63,9 +65,9 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
     mountStream()
 
     emit('message.start', {})
-    emit('moa.progress', { label: 'model-a', refs_done: 1, refs_total: 1 })
-    emit('moa.phase', { aggregator: null, phase: 'aggregator', refs_done: 1, refs_total: 1 })
-    emit('moa.reference', { count: 1, index: 1, label: 'model-a', text: 'advice-a' })
+    emit('moa.progress', moaProgressPayload({ label: 'model-a', refs_done: 1, refs_total: 1 }))
+    emit('moa.phase', moaPhasePayload({ aggregator: null, phase: 'aggregator', refs_done: 1, refs_total: 1 }))
+    emit('moa.reference', moaReferencePayload({ count: 1, index: 1, label: 'model-a', text: 'advice-a' }))
 
     const text = stream.reasoningText()
     expect(text).toContain('Reference 1/1 — model-a')

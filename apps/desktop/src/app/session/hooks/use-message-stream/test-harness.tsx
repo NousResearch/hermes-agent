@@ -1,4 +1,4 @@
-import type { GatewayEvent, ServerRequestMap } from '@hermes/shared'
+import type { GatewayEvent, GatewayEventMap, GatewayEventName, ServerRequestMap } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
@@ -15,9 +15,31 @@ export interface MessageStreamHarnessOptions extends Partial<Parameters<typeof u
   states?: Map<string, ClientSessionState>
 }
 
+/** Build one `event` frame whose payload is typed by its `type`. Callers pass a
+ *  generated payload (see `@/test/contract` builders); this only wraps it in the
+ *  envelope. The single assertion is the one place TypeScript cannot resolve
+ *  the discriminated union for a still-generic `K` — the (type, payload) pair is
+ *  already checked against `GatewayEventMap` by the signature. */
+export function gatewayEvent<K extends GatewayEventName>(
+  type: K,
+  payload: GatewayEventMap[K],
+  sessionId?: string
+): GatewayEvent {
+  const frame: { payload: GatewayEventMap[K]; session_id?: string; type: K } = { payload, type }
+
+  if (sessionId !== undefined) {
+    frame.session_id = sessionId
+  }
+
+  return frame as GatewayEvent
+}
+
 export interface MessageStreamHarness {
   /** Feed a gateway event into the mounted hook. */
   handleEvent: (event: GatewayEvent) => void
+  /** Feed one typed event: `emit('tool.start', toolStartPayload({...}), sid)`.
+   *  The payload is checked against the generated shape for `type`. */
+  emit: <K extends GatewayEventName>(type: K, payload: GatewayEventMap[K], sessionId?: string) => void
   /** Feed a server→client request (clarify, approval, …) into the mounted hook;
    *  returns the `respond` spy so a test can assert the answer frame. */
   handleRequest: <M extends keyof ServerRequestMap>(
@@ -102,6 +124,13 @@ export function renderMessageStream(
       }
 
       dispatch(event)
+    },
+    emit: (type, payload, id = sessionId ?? undefined) => {
+      if (!dispatch) {
+        throw new Error('renderMessageStream: the hook never mounted')
+      }
+
+      dispatch(gatewayEvent(type, payload, id))
     },
     handleRequest: <M extends keyof ServerRequestMap>(
       method: M,

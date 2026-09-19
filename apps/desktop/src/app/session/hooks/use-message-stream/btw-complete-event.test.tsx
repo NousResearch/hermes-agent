@@ -2,6 +2,8 @@ import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { btwCompletePayload } from '@/test/contract'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'session-1'
@@ -14,7 +16,7 @@ function mountStream() {
 }
 
 function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K], sessionId = SID) {
-  act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
+  act(() => stream.emit(type, payload, sessionId))
 }
 
 function lastMessage(id = SID) {
@@ -34,7 +36,7 @@ describe('btw.complete event', () => {
   // #99065: prompt.btw delivers the answer here. The slash-worker route
   // printed it after the stdout capture window closed, so only the ack rendered.
   it('appends the answer to the originating session as a system message', () => {
-    emit('btw.complete', { task_id: 'btw_ab12cd', question: 'which file was that error in?', text: 'src/main.ts' })
+    emit('btw.complete', btwCompletePayload({ task_id: 'btw_ab12cd', question: 'which file was that error in?', text: 'src/main.ts' }))
 
     const message = lastMessage()
 
@@ -44,20 +46,20 @@ describe('btw.complete event', () => {
   })
 
   it('keeps another session untouched when the event targets this one', () => {
-    emit('btw.complete', { task_id: 'btw_1', text: 'for the other chat' }, OTHER_SID)
+    emit('btw.complete', btwCompletePayload({ task_id: 'btw_1', text: 'for the other chat' }), OTHER_SID)
 
     expect(lastMessage()).toBeUndefined()
     expect(stream.text(OTHER_SID)).toBe('[btw (btw_1)]\nfor the other chat')
   })
 
   it('omits the question and task-id header bits when the backend omits them', () => {
-    emit('btw.complete', { text: 'the answer' })
+    emit('btw.complete', btwCompletePayload({ text: 'the answer' }))
 
     expect(stream.text()).toBe('[btw]\nthe answer')
   })
 
   it('drops an empty completion instead of appending a blank line', () => {
-    emit('btw.complete', { task_id: 'btw_1', question: 'q', text: '   ' })
+    emit('btw.complete', btwCompletePayload({ task_id: 'btw_1', question: 'q', text: '   ' }))
 
     expect(lastMessage()).toBeUndefined()
   })

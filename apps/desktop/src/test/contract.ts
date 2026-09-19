@@ -5,16 +5,21 @@
 import type {
   AgentPluginRow,
   ApprovalParams,
+  BtwCompletePayload,
   ClarifyBatch,
   ClarifySingle,
   CommandsCatalogResult,
   ConnectorRow,
+  ErrorPayload,
   GoalSnapshot,
   HeartbeatSnapshot,
   InflightTurn,
   LoopSnapshot,
   MessageCompletePayload,
   MessageDeltaPayload,
+  MessageInterimPayload,
+  MoaPhasePayload,
+  MoaProgressPayload,
   MoaReferencePayload,
   ModelOptionProvider,
   ModelOptionsResult,
@@ -22,6 +27,9 @@ import type {
   PetInfoResult,
   ProcessEntry,
   PromptSubmitResult,
+  ReasoningDeltaPayload,
+  RequestCancelPayload,
+  ReviewSummaryPayload,
   SessionActiveItem,
   SessionCompressResult,
   SessionControlDispatch,
@@ -29,10 +37,14 @@ import type {
   SessionInfoPayload,
   SessionLiveInfo,
   SessionResumeResult,
+  SetupReadyPayload,
   SetupRuntimeCheckResult,
   SetupStatusResult,
+  StatusUpdatePayload,
+  ThinkingDeltaPayload,
   TodoItem,
   ToolCompletePayload,
+  ToolGeneratingPayload,
   ToolStartPayload,
   TranscriptMessage,
   Usage,
@@ -491,6 +503,90 @@ export const moaReferencePayload = (over: Partial<MoaReferencePayload> = {}): Mo
   text: '',
   index: null,
   count: null,
+  ...over
+})
+
+export const messageInterimPayload = (over: Partial<MessageInterimPayload> = {}): MessageInterimPayload => ({
+  text: '',
+  already_streamed: false,
+  ...over
+})
+
+export const thinkingDeltaPayload = (over: Partial<ThinkingDeltaPayload> = {}): ThinkingDeltaPayload => ({
+  text: '',
+  rendered: null,
+  verbose: null,
+  ...over
+})
+
+export const reasoningDeltaPayload = (over: Partial<ReasoningDeltaPayload> = {}): ReasoningDeltaPayload => ({
+  text: '',
+  rendered: null,
+  verbose: null,
+  ...over
+})
+
+export const statusUpdatePayload = (over: Partial<StatusUpdatePayload> = {}): StatusUpdatePayload => ({
+  kind: 'status',
+  text: '',
+  ...over
+})
+
+export const errorPayload = (over: Partial<ErrorPayload> = {}): ErrorPayload => ({
+  message: '',
+  ...over
+})
+
+export const btwCompletePayload = (over: Partial<BtwCompletePayload> = {}): BtwCompletePayload => ({
+  task_id: '',
+  question: '',
+  text: '',
+  ...over
+})
+
+export const toolGeneratingPayload = (over: Partial<ToolGeneratingPayload> = {}): ToolGeneratingPayload => ({
+  name: '',
+  ...over
+})
+
+export const requestCancelPayload = (over: Partial<RequestCancelPayload> = {}): RequestCancelPayload => ({
+  id: '',
+  method: 'approval',
+  reason: 'resolved',
+  ...over
+})
+
+export const reviewSummaryPayload = (over: Partial<ReviewSummaryPayload> = {}): ReviewSummaryPayload => ({
+  text: '',
+  ...over
+})
+
+export const moaProgressPayload = (over: Partial<MoaProgressPayload> = {}): MoaProgressPayload => ({
+  label: '',
+  refs_done: 0,
+  refs_total: 0,
+  ...over
+})
+
+export const moaPhasePayload = (over: Partial<MoaPhasePayload> = {}): MoaPhasePayload => ({
+  phase: '',
+  refs_done: null,
+  refs_total: null,
+  aggregator: null,
+  ...over
+})
+
+export const setupReadyPayload = (over: Partial<SetupReadyPayload> = {}): SetupReadyPayload => ({
+  provider_configured: false,
+  inference_provider: '',
+  free_tier: false,
+  has_identity: false,
+  other_providers: false,
+  error: '',
+  error_code: null,
+  retryable: null,
+  retry_after: null,
+  finished_at: 0,
   ...over
 })
 

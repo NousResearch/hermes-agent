@@ -119,6 +119,10 @@ describe('pendingClarifyToolPayload', () => {
       args: {
         questions: [{ choices: ['Yes', 'No'], question: 'Proceed?' }]
       },
+      args_text: null,
+      context: null,
+      name: 'clarify',
+      preview: null,
       tool_id: 'rid'
     })
   })

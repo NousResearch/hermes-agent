@@ -998,6 +998,43 @@ class TestInstallUvInternals:
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "uv")
             assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "uv")
 
+    def test_every_installer_subprocess_is_bounded(self, tmp_path):
+        """The standalone installer is a network operation; unbounded it can
+        hang ``hermes update`` forever (the risk the removed `uv self update`
+        timeout guarded).  Every subprocess it runs must carry the bound, on
+        the host branch this platform actually takes.
+        """
+        import hermes_cli.managed_uv as managed_uv
+
+        target = tmp_path / "uv" / _BIN_UV
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            managed_uv._install_uv(target)
+
+        assert mock_run.call_count >= 1, "the host installer branch must run a subprocess"
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("timeout") == managed_uv.UV_INSTALLER_TIMEOUT_SECONDS, (
+                f"unbounded installer subprocess: {call}"
+            )
+
+    def test_installer_timeout_is_a_failure_not_a_hang(self, tmp_path, monkeypatch):
+        """A timed-out installer must surface as a non-fatal failure: the
+        refresh reports False (stamp left stale so the next update retries)
+        rather than propagating out of ``hermes update``.
+        """
+        import subprocess as _subprocess
+
+        import hermes_cli.managed_uv as managed_uv
+
+        uv = tmp_path / "uv" / _BIN_UV
+        _make_executable(uv)
+        monkeypatch.setattr(managed_uv, "managed_uv_path", lambda: uv)
+        monkeypatch.setattr(
+            managed_uv, "_install_uv",
+            lambda *a, **k: (_ for _ in ()).throw(
+                _subprocess.TimeoutExpired("curl", managed_uv.UV_INSTALLER_TIMEOUT_SECONDS)),
+        )
+        assert managed_uv._refresh_managed_binary(str(uv)) is False
+
 
 class TestRuntimeRequestMinorLine:
     """The repair must request the CPython minor line, not the exact patch.

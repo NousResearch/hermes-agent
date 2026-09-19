@@ -1287,6 +1287,13 @@ def repair_vulnerable_runtime(
         _release_repair_lock(lock)
 
 
+# The standalone installer is a network operation (curl the script, then the
+# script downloads uv). Unbounded, an offline or black-holed host hangs
+# `hermes update` forever — the same risk the removed `uv self update`
+# timeout guarded. Generous enough for a slow ~30 MB download, but bounded.
+UV_INSTALLER_TIMEOUT_SECONDS = 300
+
+
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.
 
@@ -1298,6 +1305,11 @@ def _install_uv(target: Path) -> None:
     PATH / shell profiles on a fresh install (see install.sh and install.ps1
     for the same invariant).  Never drop ``UV_UNMANAGED_INSTALL`` on either
     platform.
+
+    Every subprocess is bounded by ``UV_INSTALLER_TIMEOUT_SECONDS``: callers
+    treat a failure as non-fatal (the old binary still works, the refresh
+    stamp stays stale so the next update retries), so a timeout degrades
+    cleanly instead of wedging the update.
     """
     system = platform.system()
     env = {
@@ -1324,8 +1336,9 @@ def _install_uv_posix(env: dict[str, str]) -> None:
     try:
         subprocess.run(
             ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
-            check=True, capture_output=True)
-        subprocess.run(["sh", installer_path], env=env, check=True, capture_output=True)
+            check=True, capture_output=True, timeout=UV_INSTALLER_TIMEOUT_SECONDS)
+        subprocess.run(["sh", installer_path], env=env, check=True, capture_output=True,
+                       timeout=UV_INSTALLER_TIMEOUT_SECONDS)
     finally:
         with contextlib.suppress(OSError):
             os.unlink(installer_path)
@@ -1336,7 +1349,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
     cmd = "irm https://astral.sh/uv/install.ps1 | iex"
     subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd], env=env, check=True,
-        capture_output=True)
+        capture_output=True, timeout=UV_INSTALLER_TIMEOUT_SECONDS)
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

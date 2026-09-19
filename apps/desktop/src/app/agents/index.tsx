@@ -23,6 +23,8 @@ import {
 
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
+import { useSubagentRosterReconciliation } from './use-subagent-roster-reconciliation'
+
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
 function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
@@ -81,6 +83,7 @@ interface AgentsViewProps {
 export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
+  useSubagentRosterReconciliation()
 
   // Aggregate every session, matching the status-bar indicator — a subagent
   // running in a background session must still be visible here, or the two

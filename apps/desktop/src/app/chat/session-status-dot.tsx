@@ -50,9 +50,11 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.sessionRunning
   },
-  // Hollow muted — a terminal(background=true) process outlived the turn. An
-  // outline reads as "still open" without claiming the model is working; a
-  // filled grey dot read as finished, the opposite of what this means.
+  // Hollow muted — a terminal(background=true) process (or delegated workers)
+  // outlived the turn. An outline reads as "still open" without claiming the
+  // model is working; a filled grey dot read as finished, the opposite of what
+  // this means. The row's arc carries the motion for this state, so the thread
+  // visibly keeps running while the work does.
   background: {
     ariaLabel: r => r.backgroundRunning,
     className: `${DOT_BASE} border border-(--ui-text-tertiary)`,

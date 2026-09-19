@@ -13,6 +13,7 @@ import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import type * as WindowsStore from '@/store/windows'
 
 import { ReorderableList, useSortableBindings } from './reorderable-list'
@@ -182,9 +183,24 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
 describe('SidebarSessionRow running arc', () => {
   afterEach(() => {
     clearAllSessionStates()
+    $subagentsBySession.set({})
   })
 
   const arc = (container: HTMLElement) => container.querySelector('.arc-row')
+
+  const runningSubagent = (): SubagentProgress => ({
+    filesRead: [],
+    filesWritten: [],
+    goal: 'do a thing',
+    id: 'sub-1',
+    parentId: null,
+    startedAt: 0,
+    status: 'running',
+    stream: [],
+    taskCount: 1,
+    taskIndex: 0,
+    updatedAt: 0
+  })
 
   it('paints no arc for a settled session', () => {
     const { container } = renderRow(makeSession({ title: 'Settled' }))
@@ -198,6 +214,24 @@ describe('SidebarSessionRow running arc', () => {
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
     expect(arc(container)).toBeTruthy()
+  })
+
+  // The turn that spawned the workers is over (busy false); the thread is still
+  // producing, so its row must keep animating — a motionless row read as done.
+  it('paints the arc while background workers outlive the turn, and drops it once they settle', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: false })
+
+    const { container } = renderRow(makeSession({ title: 'Delegating' }))
+
+    act(() => {
+      $subagentsBySession.set({ rt1: [runningSubagent()] })
+    })
+    expect(arc(container)).toBeTruthy()
+
+    act(() => {
+      $subagentsBySession.set({ rt1: [{ ...runningSubagent(), status: 'completed' }] })
+    })
+    expect(arc(container)).toBeNull()
   })
 
   // The row owns its status subscription so a turn starting repaints that row

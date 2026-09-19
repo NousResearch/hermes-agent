@@ -40,6 +40,23 @@ class ProviderTransport(ABC):
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize a raw provider response to NormalizedResponse (the only transport-layer return type)."""
 
+    def normalize_stream_delta(self, delta: Any) -> Any:
+        """Promote a provider's non-OpenAI streamed shape into ``delta.tool_calls``.
+
+        The request side has ``convert_messages``; this is its response-side twin,
+        and it exists for providers that stream a tool call on the LEGACY OpenAI
+        field pair (``delta.function_call``) instead of the modern indexed
+        ``delta.tool_calls`` fragments. The streaming assembler reads only
+        ``delta.tool_calls``, so such a call is dropped without this — the turn
+        degrades to prose with no error, which is how a whole transport can look
+        like it works while no tool ever runs.
+
+        Return the delta unchanged (default) or a ``SimpleNamespace`` carrying
+        ``tool_calls``. Callers must treat a returned delta as authoritative for
+        tool calls only; text still comes from the original object.
+        """
+        return delta
+
     def validate_response(self, response: Any) -> bool:
         """Optional structural validity check; default accepts everything."""
         return True

@@ -303,8 +303,12 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         provider, api_mode = "anthropic", "anthropic_messages"
     elif "api.kimi.com/coding" in base_lower:
         api_mode = "anthropic_messages"
-    # Explicit delegation.api_mode always wins over the URL heuristic.
-    if v["api_mode"] in _EXPLICIT_API_MODES:
+    # Explicit delegation.api_mode always wins over the URL heuristic. A plugin
+    # transport is named after its api_mode, so the registry answers for it —
+    # through a lazy module read that cannot re-enter provider discovery
+    # (``hermes_cli.providers.is_registered_api_mode``).
+    from hermes_cli.providers import is_registered_api_mode
+    if v["api_mode"] in _EXPLICIT_API_MODES or is_registered_api_mode(v["api_mode"]):
         api_mode = v["api_mode"]
 
     # Preserve the configured provider's request personality on an explicit endpoint.

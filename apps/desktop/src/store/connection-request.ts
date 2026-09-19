@@ -11,6 +11,8 @@ import type {
 import { atom, computed } from 'nanostores'
 
 import { $gateway } from './gateway'
+import { ambientRequestFor } from './session-gone-latch'
+import { requestForOwnedSession } from './session-states'
 
 export type { ConnectionSettleReason, ConnectionTargetAction, ConnectionTargetKind, ConnectionTargetState }
 
@@ -246,7 +248,17 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
     return false
   }
 
-  await $gateway.get()?.request('connection.respond', {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    return true
+  }
+
+  // Route through the session's actual owner connection, not the ambient primary: a card for a
+  // session on a secondary/registered connection (multi-profile, Bot Mode, the unified Sessions
+  // list) must land `connection.respond` on the backend that holds the operation, the same way
+  // `reissue()` on this card already dials `requestGatewayForAgent` by owner (#91684/#94640).
+  await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'connection.respond', {
     op_id: request.opId,
     result: outcome,
     session_id: request.sessionId

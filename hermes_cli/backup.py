@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -27,6 +28,7 @@ from utils import (
 )
 
 from hermes_cli.sizefmt import format_bytes as _format_size
+from hermes_cli.termination_guard import unwind_on_termination
 
 logger = logging.getLogger(__name__)
 
@@ -185,17 +187,159 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
         handle.close()
 
 
+# --- Staging artifacts of a backup run ---
+# Six spellings, all hidden by construction. The first, third and fourth carry the owning pid so a
+# later run can tell a leftover from a live peer (and only sweep the former); the rest are pid-less
+# and are reached by the age gate alone:
+#   .{name}.{pid}-{tid}.partial        (``_atomic_output_path``: the archive being written)
+#   .{name[:80]}.XXXXXX.partial        (``mkstemp`` in ``_extract_member_atomically``: pid-less)
+#   .{snap_id}.{pid}.partial           (quick-snapshot staging directory)
+#   .hermes-staged-db.{pid}-{tid}.*.db (``_STAGED_DB_PREFIX``: the SQLite copy beside the zip)
+#   .{name[:80]}.XXXXXX.dbimport       (``mkstemp`` in ``_import_db_member``: pid-less)
+#   .{db}.snap_restore                 (``_unlink_move_restore_db``'s fallback copy: pid-less)
+# The leading dot is part of the contract, not cosmetics: the sweeper runs on the *output
+# directory*, which is a user directory (``$HOME`` when ``--output`` is absent), and
+# ``hermes snapshot --label foo.partial`` publishes a visible ``<ts>-foo.partial`` directory. A
+# visible ``*.partial`` is therefore never an artifact of ours and is never removed.
+# A spelling is only collected where it can actually land: ``prune_stale_staging`` runs on the
+# backup output directory, on the snapshot root, on every import target directory, and in the
+# restore fallback that stages beside the live database. A spelling inside the gate that no call
+# site visits would stay uncovered for good.
+_STAGED_DB_PREFIX = ".hermes-staged-db."
+_PARTIAL_SUFFIX = ".partial"
+_DBIMPORT_SUFFIX = ".dbimport"
+_SNAP_RESTORE_SUFFIX = ".snap_restore"
+_PARTIAL_PID_RE = re.compile(r"\.(\d+)(?:-\d+)?\.partial$")
+_STAGED_DB_PID_RE = re.compile(r"^\.hermes-staged-db\.(\d+)-\d+\.")
+# Age gate for pid-less artifacts: long enough that no live run is ever mistaken for a leftover.
+_STALE_STAGING_GRACE_SECONDS = 6 * 60 * 60
+
+
+def _staging_kind(name: str) -> Optional[str]:
+    """One of our staging spellings (``"partial"``/``"dbimport"``/``"snap-restore"``/``"staged-db"``).
+
+    Only hidden names qualify (see the class list above). This is the guard that keeps the sweep
+    inside its own footprint: ``notes.partial``, ``archive.partial/`` and a published
+    ``<ts>-label.partial`` snapshot all fail it, so no rule below can ever reach them. The pid-less
+    spellings (``.dbimport`` from ``_import_db_member``, ``.snap_restore`` from the restore
+    fallback) are like the ``mkstemp`` one: the age gate is what reaches them.
+    """
+    if not name.startswith("."):
+        return None
+    if name.startswith(_STAGED_DB_PREFIX):
+        return "staged-db"
+    if name.endswith(_PARTIAL_SUFFIX):
+        return "partial"
+    if name.endswith(_DBIMPORT_SUFFIX):
+        return "dbimport"
+    if name.endswith(_SNAP_RESTORE_SUFFIX):
+        return "snap-restore"
+    return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """True when *pid* exists (or cannot be probed): never delete an artifact on doubt."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True  # EPERM / unprobeable: assume the owner is still running
+    return True
+
+
+def _is_stale_staging_artifact(path: Path) -> bool:
+    """True when *path* is the leftover of an aborted run, not a live peer's staging file.
+
+    Only the hidden staging spellings count: anything else is a user artifact (``notes.partial``,
+    ``archive.partial/``, a published snapshot whose label ends in ``.partial``) and is reported
+    ``False`` here, so no caller can delete it.
+    """
+    if _staging_kind(path.name) is None:
+        return False
+    match = _PARTIAL_PID_RE.search(path.name) or _STAGED_DB_PID_RE.match(path.name)
+    if match:
+        return not _pid_is_alive(int(match.group(1)))
+    # Pid-less names come from ``mkstemp``, which only ever creates files. An unattributable
+    # directory is left alone rather than removed recursively: no staging directory is pid-less
+    # (the snapshot class is ``.{snap_id}.{pid}.partial``).
+    if path.is_dir() and not path.is_symlink():
+        return False
+    try:
+        return time.time() - path.stat().st_mtime >= _STALE_STAGING_GRACE_SECONDS
+    except OSError:
+        return False
+
+
+def prune_stale_staging(directory: Path) -> int:
+    """Delete leftovers of aborted runs in *directory*; return the count removed.
+
+    A cap on residue: at most the current run's own staging files may survive, because the next run
+    collects the ones whose recorded pid is gone. Only this module's own hidden spellings are
+    candidates (``_staging_kind``) — *directory* is typically a user directory, and everything else
+    in it belongs to the user. Best effort: a directory that cannot be listed or an entry that
+    cannot be removed never fails the backup.
+    """
+    removed = 0
+    try:
+        with os.scandir(directory) as scan:
+            # Filter on the raw name before building a Path: a restore target directory holds
+            # thousands of files that are not ours, and on the import path this runs once per
+            # directory (see ``_sweep_restore_dir``), not once per member.
+            candidates = [Path(entry.path) for entry in scan if _staging_kind(entry.name) is not None]
+    except OSError:
+        return 0
+    for entry in candidates:
+        if not _is_stale_staging_artifact(entry):
+            continue
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+        except OSError:
+            continue
+        if not entry.exists():
+            removed += 1
+    if removed:
+        logger.info("backup phase=prune status=complete removed=%d directory=%s", removed, directory)
+    return removed
+
+
+def _sweep_restore_dir(directory: Path, swept: set) -> None:
+    """Sweep *directory* at most once per run, before the first member is staged into it.
+
+    ``hermes import`` publishes one member at a time and every member's staging lands in its own
+    parent directory, so the cap has to run there. Calling it per member would list the same
+    directory thousands of times (measured on this node: 29 ms per call on a 5k-entry directory,
+    i.e. minutes on a 73k-member backup); once per distinct directory the cost is proportional to
+    the number of directories, and every directory that receives staging has still been swept
+    before anything is written into it.
+    """
+    key = os.fspath(directory)
+    if key in swept:
+        return
+    swept.add(key)
+    prune_stale_staging(directory)
+
+
 @contextmanager
 def _atomic_output_path(final_path: Path):
     """Yield a hidden sibling path and publish it only after a clean close."""
     partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
     partial_path.unlink(missing_ok=True)
-    try:
-        yield partial_path
-        os.replace(partial_path, final_path)
-    except BaseException:
-        partial_path.unlink(missing_ok=True)
-        raise
+    # The guard makes SIGTERM/SIGHUP unwind through the handler below instead of killing the
+    # process outright: without it an interrupted backup left the hidden partial (and every byte
+    # it had written) next to the output, with nothing to collect it.
+    with unwind_on_termination():
+        try:
+            yield partial_path
+            os.replace(partial_path, final_path)
+        except BaseException:
+            partial_path.unlink(missing_ok=True)
+            raise
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -544,15 +688,27 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
                          "hold the database or its WAL open. Stop them and retry.", dst, holders)
             return False
         with offline_file_access(dst, what="unlink+move restore of"):
+            # The fallback copy is itself a hidden staging file beside the live database (the sixth
+            # spelling): sweep the directory first, so a copy stranded by an earlier abrupt death is
+            # collected, then keep this run's own copy from adding to the pile — the guard turns
+            # SIGTERM/SIGHUP into an unwind, so the ``finally`` below always runs.
+            prune_stale_staging(dst.parent)
             tmp = dst.parent / f".{dst.name}.snap_restore"
-            shutil.copy2(src, tmp)
-            dst.unlink(missing_ok=True)
-            # The snapshot owns no WAL, so any -wal/-shm here belongs to the DB just unlinked (a
-            # killed gateway leaves them — exactly when a restore runs); SQLite would replay that
-            # foreign WAL over the restored file: "malformed" or resurrected post-snapshot rows.
-            for _sidecar_suffix in ("-wal", "-shm", "-journal"):
-                dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
-            shutil.move(str(tmp), str(dst))
+            with unwind_on_termination():
+                try:
+                    shutil.copy2(src, tmp)
+                    dst.unlink(missing_ok=True)
+                    # The snapshot owns no WAL, so any -wal/-shm here belongs to the DB just
+                    # unlinked (a killed gateway leaves them — exactly when a restore runs); SQLite
+                    # would replay that foreign WAL over the restored file: "malformed" or
+                    # resurrected post-snapshot rows.
+                    for _sidecar_suffix in ("-wal", "-shm", "-journal"):
+                        dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
+                    shutil.move(str(tmp), str(dst))
+                finally:
+                    # A no-op once the move above succeeded; on any failure or signal it removes the
+                    # staged copy instead of leaving a second copy of the database in the home.
+                    tmp.unlink(missing_ok=True)
         return True
     except LiveConnectionError as exc2:
         logger.error("Refusing unlink+move restore of %s: %s Close the in-process "
@@ -568,7 +724,9 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
     Staged beside the output zip: /tmp may be a small tmpfs that cannot hold large databases.
     """
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
+    with tempfile.NamedTemporaryFile(
+            prefix=f"{_STAGED_DB_PREFIX}{os.getpid()}-{threading.get_ident()}.",
+            suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
         tmp_db = Path(tmp.name)
     try:
         if not _safe_copy_db(abs_path, tmp_db):
@@ -688,6 +846,8 @@ def run_backup(args) -> bool:
 def _run_backup_locked(args, hermes_root: Path) -> bool:
     """Write a full backup while the cross-process backup slot is held."""
     out_path = _resolve_backup_output_path(args.output)
+    # The lock is held: any earlier run's staging file here is a leftover, never a live peer.
+    prune_stale_staging(out_path.parent)
     scan_started = time.monotonic()
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
@@ -796,31 +956,38 @@ def _extract_member_atomically(
         # archive, so carrying elevated bits would hand the zip's author the identity an existing
         # setuid file runs as — and ``_external/`` publishes members anywhere under ``$HOME``.
         mode &= ~(stat.S_ISUID | stat.S_ISGID)
+    # Restore staging is the same artifact class as the backup partial: an interrupted import must
+    # not leave ``.<name>.XXXX.partial`` inside the user's Hermes home. The directory this staging
+    # file lands in (a restore target: any member's parent under the home, which no other call site
+    # of the sweep ever visits) is swept by the caller, once per directory — see
+    # ``_sweep_restore_dir``.
     # Truncate the stem: mkstemp adds ~16 chars and a member near NAME_MAX would otherwise fail.
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial")
-    try:
-        with os.fdopen(fd, "wb") as dst:
-            if mode is not None:
-                # Apply the mode BEFORE the replace so the target never transits through mkstemp's
-                # 0600 and the EXDEV/EBUSY ``copystat`` fallback copies the intended bits.
-                if hasattr(os, "fchmod"):  # Unix-only; Windows takes the path-based chmod
-                    os.fchmod(dst.fileno(), mode)
-                else:
-                    os.chmod(tmp_name, mode)
-            # Stream: a multi-gigabyte state.db member must not be held in memory in one piece.
-            with zf.open(member) as src:
-                shutil.copyfileobj(src, dst)
-            dst.flush()
-            os.fsync(dst.fileno())
-        real_path = Path(atomic_replace(tmp_name, target))
-        # Owner first, mode second (as ``atomic_yaml_write``): chown drops setuid/setgid and
-        # ``mode`` no longer carries them, so neither step can re-elevate the restored file.
-        _restore_file_owner(real_path, owner)
-        _restore_file_mode(real_path, mode)
-    except BaseException:
-        with suppress(OSError):
-            os.unlink(tmp_name)
-        raise
+    with unwind_on_termination():
+        try:
+            with os.fdopen(fd, "wb") as dst:
+                if mode is not None:
+                    # Apply the mode BEFORE the replace so the target never transits through
+                    # mkstemp's 0600 and the EXDEV/EBUSY ``copystat`` fallback copies the intended
+                    # bits.
+                    if hasattr(os, "fchmod"):  # Unix-only; Windows takes the path-based chmod
+                        os.fchmod(dst.fileno(), mode)
+                    else:
+                        os.chmod(tmp_name, mode)
+                # Stream: a multi-gigabyte state.db member must not be held in memory in one piece.
+                with zf.open(member) as src:
+                    shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+            real_path = Path(atomic_replace(tmp_name, target))
+            # Owner first, mode second (as ``atomic_yaml_write``): chown drops setuid/setgid and
+            # ``mode`` no longer carries them, so neither step can re-elevate the restored file.
+            _restore_file_owner(real_path, owner)
+            _restore_file_mode(real_path, mode)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(tmp_name)
+            raise
 
 
 def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
@@ -865,24 +1032,29 @@ def _import_db_member(
     # The database keeps its own mode/ownership: the bytes come from the archive, the file does not.
     mode = _preserve_file_mode(target)
     owner = _preserve_file_owner(target)
+    # The staging file lands next to the *live* database (the Hermes home), not in a backup output
+    # directory: that directory is swept by the caller, once per directory (``_sweep_restore_dir``),
+    # because no other call site of the sweep ever visits it and a SIGKILLed import would strand a
+    # hidden copy of the database (~a state.db in size) where nothing looks again.
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".dbimport")
-    try:
-        with os.fdopen(fd, "wb") as dst:
-            with zf.open(member) as src:  # stream: never hold a multi-GB state.db in memory
-                shutil.copyfileobj(src, dst)
-            dst.flush()
-            os.fsync(dst.fileno())
-        if not _safe_restore_db(Path(tmp_name), target):
-            raise OSError(
-                "live-safe restore refused or failed; the existing database was "
-                "left untouched. Stop the gateway/dashboard processes holding it "
-                "open and re-run the import."
-            )
-        _restore_file_owner(target, owner)
-        _restore_file_mode(target, mode)
-    finally:
-        with suppress(OSError):
-            os.unlink(tmp_name)
+    with unwind_on_termination():
+        try:
+            with os.fdopen(fd, "wb") as dst:
+                with zf.open(member) as src:  # stream: never hold a multi-GB state.db in memory
+                    shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+            if not _safe_restore_db(Path(tmp_name), target):
+                raise OSError(
+                    "live-safe restore refused or failed; the existing database was "
+                    "left untouched. Stop the gateway/dashboard processes holding it "
+                    "open and re-run the import."
+                )
+            _restore_file_owner(target, owner)
+            _restore_file_mode(target, mode)
+        finally:
+            with suppress(OSError):
+                os.unlink(tmp_name)
 
 
 def _confirm_import_overwrite(hermes_root: Path) -> bool:
@@ -915,6 +1087,10 @@ def _import_members(
     db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
     restored = restored_external = 0
     home_dir = Path.home().resolve()
+    # Directories that already received their once-per-run sweep (``_sweep_restore_dir``): every
+    # member's staging lands in its parent, and a 73k-member backup would otherwise list the same
+    # directory 73k times.
+    swept: set[str] = set()
     new_file_mode = default_new_file_mode()  # once: every member is published via mkstemp (0600)
     for member in members:
         # ``_external/`` members restore to their home-relative location (~/.honcho/config.json),
@@ -949,6 +1125,10 @@ def _import_members(
         else:
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
+                # The staging of this member is written beside its target: sweep that directory
+                # (once per run) before anything is staged into it, so a leftover of an aborted run
+                # is collected instead of accumulating next to the user's files.
+                _sweep_restore_dir(target.parent, swept)
                 if target.suffix == ".db":
                     # Count before the write: afterwards the dropped rows are gone.
                     before = _count_session_rows(target)
@@ -1238,30 +1418,41 @@ def _create_quick_snapshot_locked(
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name != "nt":
         os.chmod(root, 0o700)
+    # Same cap as the full backup: collect leftovers of runs that died without unwinding before
+    # adding this run's own staging directory.
+    prune_stale_staging(root)
     staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
-    manifest, failed_dbs, oversized_skipped = _copy_quick_snapshot_files(home, staging_dir, max_file_size)
-    if failed_dbs:
-        # Surface on stdout: a log-and-continue made a missing state.db backup look like a
-        # successful pre-update snapshot (#68474).
-        print(f"  ⚠ CRITICAL: could not snapshot DB file(s): {', '.join(failed_dbs)}\n"
-              f"  ⚠ If sessions disappear after the update, check {root}. {_snapshot_recovery_hint()}")
-        logger.error("Quick snapshot failed to capture DB file(s): %s", ", ".join(failed_dbs))
-    if not manifest:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        if failed_dbs:
-            # Distinguish "nothing to snapshot" from "state.db present but unreadable"
-            print(f"  ⚠ Snapshot aborted: no files captured (failed DBs: {', '.join(failed_dbs)})")
-        return None
-    meta = {
-        "id": snap_id, "timestamp": ts, "label": label, "file_count": len(manifest),
-        "total_size": sum(manifest.values()), "files": manifest,
-        "failed_dbs": failed_dbs, "oversized_skipped": oversized_skipped,
-    }
-    with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-    _secure_quick_snapshot_tree(root, staging_dir)
-    os.replace(staging_dir, root / snap_id)
+    # Everything below owns ``staging_dir``: the guard turns SIGTERM/SIGHUP into an unwind so it is
+    # removed instead of being stranded (the ``.{id}.{pid}.partial`` directory class).
+    with unwind_on_termination():
+        try:
+            manifest, failed_dbs, oversized_skipped = _copy_quick_snapshot_files(
+                home, staging_dir, max_file_size)
+            if failed_dbs:
+                # Surface on stdout: a log-and-continue made a missing state.db backup look like a
+                # successful pre-update snapshot (#68474).
+                print(f"  ⚠ CRITICAL: could not snapshot DB file(s): {', '.join(failed_dbs)}\n"
+                      f"  ⚠ If sessions disappear after the update, check {root}. {_snapshot_recovery_hint()}")
+                logger.error("Quick snapshot failed to capture DB file(s): %s", ", ".join(failed_dbs))
+            if not manifest:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                if failed_dbs:
+                    # Distinguish "nothing to snapshot" from "state.db present but unreadable"
+                    print(f"  ⚠ Snapshot aborted: no files captured (failed DBs: {', '.join(failed_dbs)})")
+                return None
+            meta = {
+                "id": snap_id, "timestamp": ts, "label": label, "file_count": len(manifest),
+                "total_size": sum(manifest.values()), "files": manifest,
+                "failed_dbs": failed_dbs, "oversized_skipped": oversized_skipped,
+            }
+            with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+            _secure_quick_snapshot_tree(root, staging_dir)
+            os.replace(staging_dir, root / snap_id)
+        except BaseException:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
     # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is
     # incomplete and the older one may hold the only recoverable database.

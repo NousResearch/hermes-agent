@@ -4,11 +4,13 @@ check routes through the real runtime contracts instead of a parallel scanner.""
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import shutil
 import socket
 import sys
 import tempfile
+import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -17,6 +19,22 @@ from typing import Any, Literal
 from unittest.mock import patch
 
 from hermes_constants import get_hermes_home
+from hermes_cli.termination_guard import unwind_on_termination
+
+logger = logging.getLogger(__name__)
+
+# Staging home of a doctor run: created under the temp dir, removed by the ExitStack. The prefix is
+# also the sweep key below.
+_DOCTOR_STAGING_PREFIX = "hermes-plugin-doctor-"
+# A candidate staging home is only swept when it is both this old AND held by no live process, so a
+# peer doctor still running against a very large plugin is never disturbed.
+_DOCTOR_STALE_SECONDS = 60 * 60
+# Ceiling on what one run may stage into the temp dir. Doctor copies the resolved directory
+# wholesale, so a path that merely *contains* a plugin (a repo with ``plugins/``, a home directory)
+# would otherwise write gigabytes — a full temp dir, and gigabytes stranded if the run is killed.
+# ``HERMES_PLUGIN_DOCTOR_MAX_STAGE_MB=0`` disables the cap.
+_DOCTOR_STAGE_BUDGET_ENV = "HERMES_PLUGIN_DOCTOR_MAX_STAGE_MB"
+_DOCTOR_STAGE_BUDGET_DEFAULT_MB = 2048
 
 
 class _DoctorLoadError(RuntimeError):
@@ -27,6 +45,96 @@ def _deny_network(*_args: Any, **_kwargs: Any) -> None:
     raise RuntimeError("network access is disabled while Plugin Doctor runs")
 
 
+def _staged_tree_bytes(path: Path) -> int:
+    """Bytes a wholesale staging copy of *path* would write (symlinks are not followed)."""
+    total = 0
+    for root, dirs, files in os.walk(path, followlinks=False):
+        dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(root, name))]
+        for name in files:
+            try:
+                total += os.stat(os.path.join(root, name), follow_symlinks=False).st_size
+            except OSError:
+                continue
+    return total
+
+
+def _staging_budget_bytes() -> int:
+    """Byte ceiling for one staging copy; 0 means no ceiling."""
+    raw = os.environ.get(_DOCTOR_STAGE_BUDGET_ENV, "").strip()
+    if raw:
+        try:
+            megabytes = int(float(raw))
+        except ValueError:
+            logger.warning(
+                "%s=%r is not a number; using the %d MB default",
+                _DOCTOR_STAGE_BUDGET_ENV, raw, _DOCTOR_STAGE_BUDGET_DEFAULT_MB)
+        else:
+            return max(0, megabytes) * 1024 * 1024
+    return _DOCTOR_STAGE_BUDGET_DEFAULT_MB * 1024 * 1024
+
+
+def _dir_in_use(path: Path) -> bool:
+    """True when a live process holds *path* (or something inside it) open.
+
+    Linux-only evidence: without ``/proc`` the caller's age gate alone decides. A directory that
+    cannot be attributed to a process must look *in use* only when the scan is inconclusive, so this
+    returns False on any other platform rather than blocking the sweep.
+    """
+    if not path.is_dir():
+        return False
+    proc = Path("/proc")
+    if not proc.is_dir():  # macOS / Windows: no cheap liveness probe
+        return False
+    target = str(path)
+    for pid_dir in proc.glob("[0-9]*"):
+        try:
+            handles = list((pid_dir / "fd").iterdir())
+        except OSError:
+            continue  # process gone or not ours: skip
+        for handle in handles:
+            try:
+                if os.readlink(handle).startswith(target):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _sweep_stale_doctor_homes(max_age_seconds: int = _DOCTOR_STALE_SECONDS) -> list[Path]:
+    """Remove staging homes left behind by a run that could not unwind; best effort.
+
+    A kill that no handler can intercept (SIGKILL, OOM, kernel panic) is the one case
+    ``TemporaryDirectory`` cannot cover, so the next run collects the residue: this is the cap that
+    keeps at most one dead staging home on disk. Bounded on purpose — a candidate must be BOTH older
+    than *max_age_seconds* and held by no live process, so a peer run is never disturbed.
+    """
+    removed: list[Path] = []
+    temp_root = Path(tempfile.gettempdir())
+    try:
+        candidates = sorted(temp_root.glob(f"{_DOCTOR_STAGING_PREFIX}*"))
+    except OSError:
+        return removed
+    now = time.time()
+    for candidate in candidates:
+        try:
+            if not candidate.is_dir() or candidate.is_symlink():
+                continue
+            if now - candidate.stat().st_mtime < max_age_seconds:
+                continue
+            if _dir_in_use(candidate):
+                continue
+            shutil.rmtree(candidate, ignore_errors=True)
+        except OSError:
+            continue
+        if not candidate.exists():
+            removed.append(candidate)
+    if removed:
+        logger.info(
+            "plugin doctor: removed %d stranded staging home(s): %s",
+            len(removed), ", ".join(str(path) for path in removed))
+    return removed
+
+
 @contextmanager
 def _doctor_runtime(plugin_path: Path):
     """Load one plugin through the real runtime and restore global state afterwards.
@@ -35,10 +143,22 @@ def _doctor_runtime(plugin_path: Path):
     HERMES_HOME with outbound socket connects blocked.
     """
     stack = ExitStack()
+    budget = _staging_budget_bytes()
+    if budget:
+        planned = _staged_tree_bytes(plugin_path)
+        if planned > budget:
+            raise _DoctorLoadError(
+                f"refusing to stage {planned / (1024 * 1024):.0f} MB from {plugin_path} into "
+                f"{tempfile.gettempdir()} (cap {budget // (1024 * 1024)} MB; set "
+                f"{_DOCTOR_STAGE_BUDGET_ENV}=0 to lift it): point Doctor at the plugin directory "
+                "itself instead of a directory that contains it")
     try:
-        # The temp dir enters the stack FIRST so any failure below (ENOSPC / KeyboardInterrupt in
-        # copytree) removes it instead of stranding a hermes-plugin-doctor-* directory.
-        home = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-")))
+        # The termination guard enters FIRST so ``stack.close()`` restores it last: SIGTERM/SIGHUP
+        # then unwinds through the same cleanup as an exception. The temp dir enters next so any
+        # failure below (ENOSPC / KeyboardInterrupt in copytree) removes it instead of stranding a
+        # hermes-plugin-doctor-* directory.
+        stack.enter_context(unwind_on_termination())
+        home = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=_DOCTOR_STAGING_PREFIX)))
         bundled = home / "bundled-plugins"
         plugins_root = home / "plugins"
         bundled.mkdir(parents=True)
@@ -281,6 +401,10 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
 
 def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
     """Validate one plugin through Hermes' real scanner and registration path."""
+    try:
+        _sweep_stale_doctor_homes()
+    except Exception:  # housekeeping must never break a validation run
+        logger.debug("plugin doctor: staging sweep failed", exc_info=True)
     try:
         path = resolve_plugin_path(target)
     except FileNotFoundError as exc:

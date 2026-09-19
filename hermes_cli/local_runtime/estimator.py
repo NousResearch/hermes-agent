@@ -71,6 +71,8 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
+    gpu_name: str = ""          # detected identity for shipped performance estimates
+    platform: str = ""          # sys.platform of the machine being priced
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:

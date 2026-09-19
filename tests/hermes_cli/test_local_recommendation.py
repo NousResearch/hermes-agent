@@ -118,6 +118,67 @@ def test_recommendation_decision_table(size_gb, kind, expected, expected_reason)
         assert (picked[0].id, picked[1]) == (expected, expected_reason)
 
 
+@pytest.mark.parametrize("gpu_name", [
+    "NVIDIA RTX Spark N1X",
+    "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+    "NVIDIA RTX Spark N1X (updated device description)",
+])
+@pytest.mark.parametrize("capacity", [24, 48, 256])
+def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monkeypatch, capacity, gpu_name):
+    import subprocess
+    import urllib.request
+
+    def no_io(*args, **kwargs):
+        raise AssertionError("calibration must use shipped data, not a runtime benchmark")
+
+    monkeypatch.setattr(subprocess, "run", no_io)
+    monkeypatch.setattr(urllib.request, "urlopen", no_io)
+    budget = _unified(capacity)
+    budget.gpu_name = gpu_name
+    budget.platform = "win32"
+    entry = next(e for e in CATALOG if e.id == "qwen3.8-27b")
+    assert predicted_decode_tok_s(entry, entry.variants[0], budget) >= PLEASANT_FLOOR_TOK_S
+    picked = recommended_entry(budget)
+    expected = {24: None, 48: "qwen3.8-27b", 256: "qwen3.8-flash-next"}[capacity]
+    assert (picked[0].id if picked else None) == expected
+
+
+@pytest.mark.parametrize("budget_changes, entry_changes, quant, backend, spilled", [
+    ({"gpu_name": ""}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"gpu_name": "NVIDIA Other Device"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"gpu_name": "NVIDIA RTX Spark N1X2"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"gpu_name": "NVIDIA RTX Spark N1X Pro"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"platform": "linux"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"uma": False}, {}, "UD-Q4_K_M", "cuda", False),
+    ({}, {}, "UD-Q4_K_M", "vulkan", False),
+    ({}, {}, "UD-Q4_K_M", "cpu", False),
+    ({}, {"mtp": False}, "UD-Q4_K_M", "cuda", False),
+    ({}, {"mtp_draft_depth": 3}, "UD-Q4_K_M", "cuda", False),
+    ({}, {}, "Q8_0", "cuda", False),
+    ({}, {}, "UD-Q4_K_M", "cuda", True),
+])
+def test_unmatched_or_spilled_profiles_keep_the_existing_estimate(
+        monkeypatch, budget_changes, entry_changes, quant, backend, spilled):
+    from dataclasses import replace
+    import subprocess
+    import urllib.request
+
+    budget = replace(_unified(48), gpu_name="NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+                     platform="win32")
+    budget = replace(budget, **budget_changes)
+    entry = replace(next(e for e in CATALOG if e.id == "qwen3.8-27b"), **entry_changes)
+    variant = replace(entry.variants[0], quant=quant)
+
+    def no_io(*args, **kwargs):
+        raise AssertionError("speed selection must be an offline lookup and arithmetic")
+
+    monkeypatch.setattr(subprocess, "run", no_io)
+    monkeypatch.setattr(urllib.request, "urlopen", no_io)
+    fallback = predicted_decode_tok_s(entry, variant, replace(budget, gpu_name=""),
+                                      spilled=spilled, backend=backend)
+    assert predicted_decode_tok_s(entry, variant, budget, spilled=spilled, backend=backend) == fallback
+
+
 # ── invariants behind the table (survive catalog changes) ──
 
 

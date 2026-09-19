@@ -30,6 +30,7 @@
       "mtp": true,
       "mtp_draft_depth": 2,
       "sampling": {
+        "chat-template-kwargs": "{\"reasoning_effort\":\"medium\"}",
         "temp": "1.0",
         "top-p": "0.95",
         "top-k": "20",

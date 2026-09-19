@@ -409,6 +409,10 @@ class GatewaySlashCommandsMixin(
                     # kanban.auto_subscribe_mode (legacy default: notify+wake —
                     # the passive message AND a wake of the destination agent).
                     delivery_mode=_kbn.auto_subscribe_delivery_mode(platform_str),
+                    # Side effect of card creation, not an explicit subscribe:
+                    # provenance 'auto' keeps the row on the auto_subscribe_mode
+                    # policy when the task's children inherit it.
+                    origin=_kbn.ORIGIN_AUTO,
                     delivery_metadata=delivery_metadata)
             finally:
                 conn.close()

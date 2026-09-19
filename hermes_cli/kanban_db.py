@@ -1060,6 +1060,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    origin TEXT,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -1464,12 +1465,26 @@ def _inherit_notify_subs(
     copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
     completions wake a fresh group session instead of the originating DM.
 
+    Delivery policy: auto-originated rows (``origin='auto'``) re-stamp
+    ``delivery_mode`` from ``kanban.auto_subscribe_mode`` when explicitly
+    configured — a pre-knob ``notify+wake`` sub must not leak passive pings
+    down the lineage (#108913). Explicit (``'user'``) and legacy (NULL) rows
+    copy verbatim.
+
     Omitting columns here silently degrades routing: a DM-originated child completion falls back to
     chat_type='group' and wakes a fresh group-scoped session instead of the originating DM (issue #73030).
     """
     parent_ids = tuple(dict.fromkeys(p for p in parents if p))
     if not parent_ids:
         return
+    try:
+        # Late import: kanban_db_notify sits above this module; the policy
+        # only matters at call time, and unreadable config fails open to the
+        # verbatim historical copy.
+        from hermes_cli.kanban_db_notify import configured_auto_subscribe_mode
+        configured_mode = configured_auto_subscribe_mode()
+    except Exception:
+        configured_mode = None
     row = conn.execute(
         "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (child_id,),
     ).fetchone()
@@ -1480,14 +1495,17 @@ def _inherit_notify_subs(
         INSERT OR IGNORE INTO kanban_notify_subs
             (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
              chat_type, notifier_profile, delivery_mode, delivery_metadata,
-             created_at, last_event_id)
+             origin, created_at, last_event_id)
         SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
                COALESCE(chat_type, 'dm'), notifier_profile,
-               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
+               CASE WHEN origin = 'auto' AND ? IS NOT NULL THEN ?
+                    ELSE COALESCE(delivery_mode, 'notify') END,
+               delivery_metadata, origin, ?, ?
           FROM kanban_notify_subs
          WHERE task_id IN ({placeholders})
         """,
-        (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
+        (child_id, configured_mode, configured_mode,
+         int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
     )
 
 

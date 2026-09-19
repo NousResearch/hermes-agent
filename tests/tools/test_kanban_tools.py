@@ -1107,6 +1107,9 @@ def test_create_auto_subscribe_mode_wake(monkeypatch, worker_env, tmp_path):
     subs = _sub_index(_list_subs_for_task(d["task_id"]))
     assert len(subs) == 1
     assert subs[0]["delivery_mode"] == "wake"
+    # Provenance 'auto': children inheriting this sub must follow the knob,
+    # not the stamped mode (test_kanban_notify covers the inherit side).
+    assert subs[0]["origin"] == "auto"
 
 
 def test_create_auto_subscribe_mode_invalid_falls_back(monkeypatch, worker_env, tmp_path):

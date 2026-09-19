@@ -1239,6 +1239,87 @@ def test_create_with_parents_inherits_delivery_metadata(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Inheritance x kanban.auto_subscribe_mode (#108913): auto-originated subs
+# follow the configured policy down the lineage (a pre-knob notify+wake sub
+# must not leak passive pings to every child); explicit ("user") and legacy
+# (NULL origin) rows are copied verbatim.
+# ---------------------------------------------------------------------------
+
+
+def test_inherit_auto_sub_follows_configured_mode(kanban_home):
+    """With kanban.auto_subscribe_mode=wake, an auto-originated parent sub
+    stamped notify+wake (e.g. created before the knob existed) inherits as
+    wake: no passive ping on child completion."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    (kanban_home / "config.yaml").write_text("kanban:\n  auto_subscribe_mode: wake\n")
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="weixin", chat_id="dm-1",
+            delivery_mode="notify+wake", origin=kbn.ORIGIN_AUTO,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "wake"
+    assert subs[0]["origin"] == "auto"
+
+
+def test_inherit_auto_sub_verbatim_when_knob_unset(kanban_home):
+    """No explicit kanban.auto_subscribe_mode: inheritance keeps the verbatim
+    historical copy — installs that never set the knob see no change."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="weixin", chat_id="dm-1",
+            delivery_mode="notify+wake", origin=kbn.ORIGIN_AUTO,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notify+wake"
+
+
+def test_inherit_never_rewrites_user_subs(kanban_home):
+    """The knob owns auto subs only: an explicitly subscribed chat inherited
+    into a child keeps its delivery_mode even with auto_subscribe_mode=wake."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    (kanban_home / "config.yaml").write_text("kanban:\n  auto_subscribe_mode: wake\n")
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="weixin", chat_id="dm-1",
+            delivery_mode="notify+wake", origin=kbn.ORIGIN_USER,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notify+wake"
+    assert subs[0]["origin"] == "user"
+
+
+# ---------------------------------------------------------------------------
 # Stale done-subscription GC (purge_stale_done_notify_subs)
 # ---------------------------------------------------------------------------
 

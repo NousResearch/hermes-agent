@@ -1059,7 +1059,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                and (sub["thread_id"] or "") == (target["thread_id"] or "")
                for sub in _kbn.list_notify_subs(conn, task_id)):
             return True
-        _kbn.add_notify_sub(conn, task_id=task_id, **target)
+        _kbn.add_notify_sub(conn, task_id=task_id, origin=_kbn.ORIGIN_AUTO, **target)
         return True
     except Exception as _exc:
         logger.warning(

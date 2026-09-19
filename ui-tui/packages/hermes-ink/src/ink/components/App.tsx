@@ -18,6 +18,7 @@ import {
   type ParsedMouse,
   parseMultipleKeypresses
 } from '../parse-keypress.js'
+import { offSignal, onSignal } from '../process-signals.js'
 import reconciler from '../reconciler.js'
 import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
@@ -681,10 +682,10 @@ export default class App extends PureComponent<Props, State> {
       }
 
       this.inputEmitter.emit('resume')
-      process.removeListener('SIGCONT', resumeHandler)
+      offSignal('SIGCONT', resumeHandler)
     }
 
-    process.on('SIGCONT', resumeHandler)
+    onSignal('SIGCONT', resumeHandler)
     process.kill(process.pid, 'SIGSTOP')
   }
 }

@@ -349,6 +349,128 @@ def test_normalize_gemini_base_url_guarantees_version_segment(configured, expect
     assert normalize_gemini_base_url(configured) == expected
 
 
+def test_disabled_express_surface_moves_the_client_to_the_studio_host():
+    """An ``AQ.`` key explicitly configured for the express surface whose project never enabled the
+    Vertex API is not a bad key: ``AQ.`` keys are issued for both surfaces, so the same request is
+    retried on the AI Studio host — once — and that host is kept for the remaining calls."""
+    from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL, GeminiNativeClient
+
+    posts = []
+    bodies = []
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            posts.append(url)
+            bodies.append(json)
+            if len(posts) == 1:
+                return DummyResponse(
+                    status_code=403,
+                    payload={
+                        "error": {
+                            "code": 403,
+                            "status": "PERMISSION_DENIED",
+                            "message": (
+                                "Agent Platform API has not been used in project 460724055171 before or "
+                                "it is disabled. Enable it by visiting https://console.developers.google.com/…"
+                            ),
+                        }
+                    },
+                )
+            return DummyResponse(
+                payload={
+                    "candidates": [{"content": {"parts": [{"text": "hello"}]}, "finishReason": "STOP"}],
+                    "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
+                }
+            )
+
+        def close(self):
+            return None
+
+    client = GeminiNativeClient(api_key="AQ.express-key", base_url=VERTEX_EXPRESS_BASE_URL, http_client=DummyHTTP())
+    response = client.chat.completions.create(
+        model="gemini-3.5-flash-lite",
+        messages=[{"role": "user", "content": "Hello"}],
+        tools=[{"type": "function", "function": {"name": "f", "description": "d", "parameters": {"type": "object", "properties": {"a": {"type": "string"}}}}}],
+    )
+
+    assert response.choices[0].message.content == "hello"
+    assert posts[0] == f"{VERTEX_EXPRESS_BASE_URL}/models/gemini-3.5-flash-lite:generateContent"
+    assert posts[1] == (
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+    # The retry is rebuilt for the other host's tool-schema dialect, not replayed as-is.
+    assert bodies[0]["tools"] != bodies[1]["tools"]
+
+    client.chat.completions.create(model="gemini-3.5-flash-lite", messages=[{"role": "user", "content": "Hello"}])
+    assert posts[2].startswith("https://generativelanguage.googleapis.com/v1beta/")
+
+    # The async wrapper delegates to this client, so it must report the host that answered.
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient
+
+    assert AsyncGeminiNativeClient(client).base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
+def test_disabled_express_surface_fallback_also_covers_streaming():
+    """Streaming restarts on the other host before the caller sees an event, so a fallback can never
+    surface as a half-delivered answer."""
+    from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, VERTEX_EXPRESS_BASE_URL
+
+    urls = []
+
+    def fake_stream(model, url, request, timeout):
+        urls.append(url)
+        if len(urls) == 1:
+            raise GeminiAPIError(
+                "Gemini HTTP 403 (PERMISSION_DENIED): Agent Platform API has not been used in project "
+                "460724055171 before or it is disabled",
+                code="gemini_http_403", status_code=403,
+            )
+        yield "chunk-1"
+
+    client = GeminiNativeClient(
+        api_key="AQ.express-key", base_url=VERTEX_EXPRESS_BASE_URL, http_client=SimpleNamespace(close=lambda: None),
+    )
+    client._stream_completion = fake_stream  # type: ignore[method-assign]
+
+    chunks = list(
+        client.chat.completions.create(
+            model="gemini-3.5-flash-lite", messages=[{"role": "user", "content": "Hello"}], stream=True,
+        )
+    )
+
+    assert chunks == ["chunk-1"]
+    assert urls[0].startswith("https://aiplatform.googleapis.com")
+    assert urls[1] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse"
+
+
+def test_403_that_is_not_service_disabled_is_raised_without_a_second_request():
+    """Only "this project never enabled the API" means try the other surface. An authentication or
+    permission 403 is about the key itself and must surface as-is — no second request."""
+    from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, VERTEX_EXPRESS_BASE_URL
+
+    posts = []
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            posts.append(url)
+            return DummyResponse(
+                status_code=403,
+                payload={"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "API key not valid. Please pass a valid API key."}},
+            )
+
+        def close(self):
+            return None
+
+    client = GeminiNativeClient(api_key="AQ.express-key", base_url=VERTEX_EXPRESS_BASE_URL, http_client=DummyHTTP())
+
+    with pytest.raises(GeminiAPIError):
+        client.chat.completions.create(model="gemini-3.5-flash-lite", messages=[{"role": "user", "content": "Hello"}])
+
+    assert len(posts) == 1
+    assert client.base_url.startswith("https://aiplatform.googleapis.com")
+
+
 def test_native_client_appends_v1beta_to_host_root_base_url():
     from agent.gemini_native_adapter import GeminiNativeClient
 

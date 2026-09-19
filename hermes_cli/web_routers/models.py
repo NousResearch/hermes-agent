@@ -68,7 +68,8 @@ def get_model_info(profile: Optional[str] = None):
             from agent.model_metadata import get_model_context_length
             # config_context_length=None: ignore the override — we want the auto value
             auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+                                                config_context_length=None,
+                                                api_mode=(model_cfg.get("api_mode") or "") if isinstance(model_cfg, dict) else "")
         except Exception:
             auto_ctx = 0
 

@@ -812,7 +812,7 @@ def resolve_display_context_length(
     model_info: Optional[ModelInfo] = None, custom_providers: list | None = None,
     config_context_length: int | None = None, configured_model: str | None = None,
     configured_provider: str | None = None,
-    configured_base_url: str | None = None) -> Optional[int]:
+    configured_base_url: str | None = None, *, api_mode: str = "") -> Optional[int]:
     """Context length to show in /model output.
 
     models.dev reports per-vendor context but provider-enforced limits can be lower (Codex OAuth
@@ -837,7 +837,7 @@ def resolve_display_context_length(
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
             model, base_url=base_url or "", api_key=api_key or "", provider=provider or None,
-            custom_providers=custom_providers, config_context_length=config_context_length)
+            custom_providers=custom_providers, config_context_length=config_context_length, api_mode=api_mode)
         if ctx:
             return int(ctx)
     except Exception:

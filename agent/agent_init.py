@@ -1845,7 +1845,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length, provider=agent.provider,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, api_mode=agent.api_mode,
         )
         # Per-model overrides BEFORE the initial update_model() so the first threshold
         # resolution already sees them.

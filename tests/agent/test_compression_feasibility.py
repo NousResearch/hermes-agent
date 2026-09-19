@@ -331,6 +331,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     mock_client = MagicMock()
     mock_client.base_url = "http://custom-endpoint:8080/v1"
     mock_client.api_key = "sk-custom"
+    mock_client.api_mode = ""
     mock_get_client.return_value = (mock_client, "custom/big-model")
 
     agent._emit_status = lambda msg: None
@@ -343,6 +344,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         config_context_length=1_000_000,
         provider="openrouter",
         custom_providers=[],
+        api_mode="",
     )
 
 
@@ -380,6 +382,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
     mock_client = MagicMock()
     mock_client.base_url = "http://custom-endpoint:8080/v1"
     mock_client.api_key = "sk-custom"
+    mock_client.api_mode = ""
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
@@ -414,6 +417,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         config_context_length=1_000_000,
         provider="",
         custom_providers=[],
+        api_mode="",
     )
 
 

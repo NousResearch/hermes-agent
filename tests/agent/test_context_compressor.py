@@ -46,6 +46,20 @@ def compressor():
         return c
 
 
+def test_codex_proxy_compressor_uses_oauth_window():
+    from agent.model_metadata import _CODEX_OAUTH_CONTEXT_FALLBACK
+
+    with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+         patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+         patch("agent.model_metadata._probe_local_context_length", return_value=None), \
+         patch("agent.model_metadata._query_ollama_api_show", return_value=None):
+        compressor = ContextCompressor(
+            model="gpt-6-astra", base_url="http://127.0.0.1:8317/v1",
+            provider="custom:codex-proxy", api_mode="codex_responses", quiet_mode=True,
+        )
+        assert compressor.context_length == _CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
+
+
 class TestSummarizeToolResultWebExtract:
     """Pre-compression pruning must survive web_extract calls whose ``urls`` are
     web_search result dicts ({"url"/"href": ...}), which models routinely forward

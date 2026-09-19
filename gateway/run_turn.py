@@ -652,6 +652,7 @@ class GatewayTurnMixin:
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
+                hs.api_mode = _hyg_runtime.get("api_mode") or ""
 
             if hs.config_context_length is not None:
                 try:
@@ -694,6 +695,7 @@ class GatewayTurnMixin:
         _hyg_context_length = await get_model_context_length_async(
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
+            api_mode=hs.api_mode,
         )
         _compress_token_threshold = int(_hyg_context_length * hs.threshold_pct)
         _warn_token_threshold = int(_hyg_context_length * 0.95)

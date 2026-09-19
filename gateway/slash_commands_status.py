@@ -408,7 +408,12 @@ class GatewayStatusCommandsMixin:
         if not context_length and model_name:
             from agent.model_metadata import get_model_context_length
             context_length = _int_value(
-                await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
+                await _quiet(lambda: asyncio.to_thread(
+                    get_model_context_length, model_name,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                ))
             )
         return used, context_length, model_name
 

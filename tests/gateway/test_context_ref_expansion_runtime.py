@@ -193,6 +193,44 @@ async def test_at_reference_ignores_global_context_for_runtime_route_override(mo
 
 
 @pytest.mark.asyncio
+async def test_codex_proxy_at_reference_uses_transport_context_window(tmp_path, monkeypatch):
+    """Admission and the async resolver must use the selected transport's catalog."""
+    import agent.context_references as refs
+    import agent.model_metadata as mm
+
+    model = "gpt-6-astra"
+    route = {
+        "provider": "custom:codex-proxy", "base_url": "http://127.0.0.1:8317/v1",
+        "api_key": "test-key", "api_mode": "codex_responses",
+    }
+    runner = _make_runner()
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"model": {"default": model}})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg=None: model)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: route)
+    for probe in ("get_cached_context_length", "_resolve_endpoint_context_length",
+                  "_probe_local_context_length", "_query_ollama_api_show"):
+        monkeypatch.setattr(mm, probe, lambda *a, **kw: None)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    (tmp_path / "note.txt").write_text("admitted file content", encoding="utf-8")
+    windows = []
+    preprocess = refs.preprocess_context_references_async
+
+    async def observe_admission(message, **kwargs):
+        windows.append(kwargs["context_length"])
+        return await preprocess(message, **kwargs)
+
+    monkeypatch.setattr(refs, "preprocess_context_references_async", observe_admission)
+    expanded = await runner._expand_inbound_context_references(
+        _source(), "test-session", "Inspect @file:note.txt",
+    )
+
+    assert windows == [mm._CODEX_OAUTH_CONTEXT_FALLBACK[model]]
+    assert windows[0] != mm.DEFAULT_CONTEXT_LENGTHS[model]
+    assert expanded is not None
+    assert "admitted file content" in expanded
+
+
+@pytest.mark.asyncio
 async def test_oversized_file_reference_reaches_gateway_as_tool_readable_path(
     tmp_path, monkeypatch
 ):

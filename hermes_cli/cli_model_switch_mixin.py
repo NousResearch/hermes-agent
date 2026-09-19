@@ -132,7 +132,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         ctx = resolve_display_context_length(
             result.new_model, result.target_provider,
             base_url=result.base_url or cli.base_url or "",
-            api_key=result.api_key or cli.api_key or "", model_info=mi,
+            api_key=result.api_key or cli.api_key or "", model_info=mi, api_mode=result.api_mode or "",
             config_context_length=getattr(agent, "_config_context_length", None) if agent else None,
             custom_providers=getattr(agent, "_custom_providers", None) if agent else None)
     except Exception:

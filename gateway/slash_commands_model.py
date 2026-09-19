@@ -284,7 +284,7 @@ class GatewayModelCommandsMixin:
         ctx_len = await resolve_display_context_length_async(
             result.new_model, result.target_provider,
             base_url=result.base_url or ctx.current_base_url or "",
-            api_key=result.api_key or ctx.current_api_key or "", model_info=mi,
+            api_key=result.api_key or ctx.current_api_key or "", model_info=mi, api_mode=result.api_mode or "",
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
             configured_model=model_cfg.get("default") or model_cfg.get("model"),
             configured_provider=model_cfg.get("provider"),

@@ -2270,6 +2270,7 @@ def _resolve_gateway_model_context(
         DEFAULT_CONTEXT_LENGTHS, DEFAULT_FALLBACK_CONTEXT, _longest_key_match, get_model_context_length)
     resolved_model = model or _resolve_gateway_model()
     config_context_length = provider = base_url = api_key = custom_providers = None
+    api_mode = ""
     configured_model = configured_provider = configured_base_url = None
 
     def _read_config() -> None:
@@ -2294,7 +2295,7 @@ def _resolve_gateway_model_context(
             custom_providers = data.get("custom_providers")
 
     def _read_runtime() -> None:
-        nonlocal provider, base_url, api_key
+        nonlocal provider, base_url, api_key, api_mode
         if route and route.get("base_url"):
             # A session route with its own endpoint (a /model switch) replaces the default runtime
             # read; a route without one (persisted / SessionDB / plain config) still resolves the
@@ -2302,11 +2303,13 @@ def _resolve_gateway_model_context(
             provider = route.get("provider") or provider
             base_url = route["base_url"]
             api_key = route.get("api_key")
+            api_mode = route.get("api_mode") or ""
             return
         runtime = _resolve_runtime_agent_kwargs()
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
+        api_mode = runtime.get("api_mode") or ""
 
     def _pin_still_applies() -> bool:
         # Drop a configured context_length pin when the effective route no longer matches (or on error).
@@ -2329,7 +2332,7 @@ def _resolve_gateway_model_context(
     context_length = get_model_context_length(
         resolved_model, base_url=base_url or "", api_key=api_key or "",
         config_context_length=config_context_length, provider=provider or "",
-        custom_providers=custom_providers)
+        custom_providers=custom_providers, api_mode=api_mode)
     fell_through = (context_length == DEFAULT_FALLBACK_CONTEXT
                     and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, str(resolved_model).lower()) is None)
     context_source = ("config" if config_context_length is not None
@@ -4059,6 +4062,7 @@ class GatewayRunner(
         base_url: Optional[str]
         api_key: Optional[str]
         data: Any
+        api_mode: str = ""
 
     @dataclasses.dataclass
     class _HygieneAttempt:

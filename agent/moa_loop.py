@@ -428,6 +428,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
     try:
         context_length = get_model_context_length(
             model=model, base_url=str(runtime.get("base_url") or ""), api_key=str(runtime.get("api_key") or ""), provider=provider,
+            api_mode=str(runtime.get("api_mode") or ""),
         )
     except Exception:
         logger.debug("MoA reference context-length resolution failed for %s", _slot_label(slot))

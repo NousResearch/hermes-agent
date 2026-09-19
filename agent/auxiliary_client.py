@@ -1616,6 +1616,8 @@ _AsyncAnthropicCompletionsAdapter = _AsyncCompletionsAdapter  # imported by test
 class CodexAuxiliaryClient:
     """OpenAI-client-compatible wrapper routing through the Codex Responses API (.api_key/.base_url for introspection)."""
 
+    api_mode = "codex_responses"
+
     def __init__(self, real_client: OpenAI, model: str):
         self._real_client = real_client
         self.chat = _ChatShim(_CodexCompletionsAdapter(real_client, model))
@@ -4206,12 +4208,14 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     return MINIMUM_CONTEXT_LENGTH if task == "compression" else None
 
 
-def _candidate_context_window(provider: str, model: str, base_url: str = "", api_key: str = "") -> Optional[int]:
+def _candidate_context_window(
+    provider: str, model: str, base_url: str = "", api_key: str = "", *, api_mode: str = "",
+) -> Optional[int]:
     """Best-effort context window for a fallback candidate; ``None`` = unknown (never raises; callers pass it through)."""
     if not model:
         return None
     try:
-        ctx = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider)
+        ctx = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider, api_mode=api_mode)
     except Exception as exc:
         logger.debug("Auxiliary fallback: could not resolve context window for %s/%s: %s", provider, model, exc)
         return None
@@ -4226,7 +4230,8 @@ def _context_too_small(
     if min_ctx is None:
         return None
     fb_ctx = _candidate_context_window(
-        provider, model, base_url=str(entry.get("base_url") or ""), api_key=_fallback_entry_api_key(entry) or "")
+        provider, model, base_url=str(entry.get("base_url") or ""), api_key=_fallback_entry_api_key(entry) or "",
+        api_mode=str(entry.get("api_mode") or entry.get("transport") or "").strip())
     if fb_ctx is None or fb_ctx >= min_ctx:
         return None
     if name_model:

@@ -2035,6 +2035,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
             aux_context = get_model_context_length(
                 aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
                 provider=_aux_provider, custom_providers=agent._custom_providers,
+                # The selected client owns the transport, including configured fallbacks.
+                api_mode=getattr(client, "api_mode", "") or "",
             )
         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:

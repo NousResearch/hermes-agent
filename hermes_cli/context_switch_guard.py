@@ -86,7 +86,7 @@ def merge_preflight_compression_warning(
         result.target_provider,
         base_url=result.base_url or getattr(agent, "base_url", "") or "",
         api_key=result.api_key or getattr(agent, "api_key", "") or "",
-        model_info=result.model_info,
+        model_info=result.model_info, api_mode=result.api_mode or "",
         custom_providers=custom_providers,
         config_context_length=config_context_length,
         configured_model=_or_agent(configured_model, "model"),

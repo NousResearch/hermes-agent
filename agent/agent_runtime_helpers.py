@@ -2099,7 +2099,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     try:
         new_context_length = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
-            config_context_length=effective_context_length, custom_providers=custom_providers,
+            config_context_length=effective_context_length, custom_providers=custom_providers, api_mode=agent.api_mode,
         )
         agent.context_compressor.update_model(
             model=agent.model,

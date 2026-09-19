@@ -1973,6 +1973,7 @@ def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Op
             return get_model_context_length(
                 agg_model, base_url=rt.get("base_url", "") or "", api_key=rt.get("api_key", "") or "",
                 provider=rt.get("provider") or agg_provider, custom_providers=custom_providers,
+                api_mode=rt.get("api_mode", "") or "",
             )
     except Exception:
         logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
@@ -2062,7 +2063,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
 
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
-    provider: str = "", custom_providers: list | None = None,
+    provider: str = "", custom_providers: list | None = None, *, api_mode: str = "",
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
     model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
@@ -2123,6 +2124,21 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, ctx)
             return ctx
+    # The declared wire protocol identifies Codex proxies even on generic custom URLs.
+    # Native routes retain their live catalog and opt-in variant handling.
+    # Config overrides above still win; do not persist this static OAuth fallback.
+    if (
+        api_mode == "codex_responses"
+        and _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url)
+    ):
+        lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model))
+        hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
+        if hit:
+            logger.info(
+                "Using Codex OAuth context length %s for model %r (codex_responses endpoint)",
+                f"{hit[1]:,}", model,
+            )
+            return hit[1]
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
     # report a provider-imposed limit (Copilot: 128k) rather than the window.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
@@ -2164,12 +2180,16 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
-async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None) -> int:
+async def get_model_context_length_async(
+    model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
+    provider: str = "", custom_providers: list | None = None, *, api_mode: str = "",
+) -> int:
     """get_model_context_length on a worker thread (its blocking HTTP would stall the event loop)."""
     import asyncio
     return await asyncio.to_thread(
         get_model_context_length, model, base_url=base_url, api_key=api_key,
-        config_context_length=config_context_length, provider=provider, custom_providers=custom_providers)
+        config_context_length=config_context_length, provider=provider, custom_providers=custom_providers,
+        api_mode=api_mode)
 
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul

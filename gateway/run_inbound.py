@@ -1645,7 +1645,7 @@ class GatewayInboundMixin:
         return await get_model_context_length_async(
             _msg_model, base_url=_msg_base_url, api_key=_msg_runtime.get("api_key") or "",
             config_context_length=_msg_config_ctx, provider=_msg_runtime.get("provider") or "",
-            custom_providers=_msg_custom_providers,
+            custom_providers=_msg_custom_providers, api_mode=_msg_runtime.get("api_mode") or "",
         )
 
     async def _expand_inbound_context_references(

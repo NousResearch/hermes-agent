@@ -454,6 +454,96 @@ class TestCodexOAuthContextLength:
 
 
 
+    def test_codex_responses_api_mode_uses_codex_oauth_window_on_custom_endpoint(self):
+        from agent.model_metadata import _CODEX_OAUTH_CONTEXT_FALLBACK
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+             patch("agent.model_metadata._probe_local_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None):
+            ctx = get_model_context_length(
+                "gpt-6-astra", base_url="http://127.0.0.1:8317/v1",
+                provider="custom:codex-proxy", api_mode="codex_responses",
+            )
+
+        assert ctx == _CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
+
+    @pytest.mark.parametrize("api_mode", ["", "chat_completions", "responses"])
+    def test_custom_endpoint_without_codex_api_mode_is_unchanged(self, api_mode):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+             patch("agent.model_metadata._probe_local_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None):
+            ctx = get_model_context_length(
+                "gpt-6-astra", base_url="http://127.0.0.1:8317/v1",
+                provider="custom:codex-proxy", api_mode=api_mode,
+            )
+
+        assert ctx == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
+
+    def test_explicit_context_length_override_beats_codex_api_mode(self):
+        assert get_model_context_length(
+            "gpt-6-astra", base_url="http://127.0.0.1:8317/v1",
+            provider="custom:codex-proxy", api_mode="codex_responses",
+            config_context_length=123456,
+        ) == 123456
+
+    @pytest.mark.parametrize("per_model", [False, True])
+    def test_custom_provider_context_override_beats_codex_api_mode(self, per_model):
+        base_url = "http://127.0.0.1:8317/v1"
+        entry: dict = {"name": "codex-proxy", "base_url": base_url}
+        if per_model:
+            entry["models"] = {"gpt-6-astra": {"context_length": 123456}}
+        else:
+            entry["context_length"] = 123456
+
+        assert get_model_context_length(
+            "gpt-6-astra", base_url=base_url, provider="custom:codex-proxy",
+            api_mode="codex_responses", custom_providers=[entry],
+        ) == 123456
+
+    @pytest.mark.parametrize("model", ["openai/GPT-6-ASTRA", "gpt-5.6-sol-2026-07-09"])
+    def test_codex_proxy_normalizes_catalog_slug(self, model):
+        from agent.model_metadata import _CODEX_OAUTH_CONTEXT_FALLBACK, _longest_key_match
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+             patch("agent.model_metadata._probe_local_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None):
+            ctx = get_model_context_length(
+                model, base_url="http://127.0.0.1:8317/v1",
+                provider="custom:codex-proxy", api_mode="codex_responses",
+            )
+
+        hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, model.lower())
+        assert hit is not None
+        assert ctx == hit[1]
+
+    def test_unknown_codex_proxy_model_retains_endpoint_metadata(self):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._resolve_endpoint_context_length", return_value=123456):
+            assert get_model_context_length(
+                "uncatalogued-model", base_url="http://127.0.0.1:8317/v1",
+                provider="custom:codex-proxy", api_mode="codex_responses",
+            ) == 123456
+
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-astra-900k"])
+    @pytest.mark.parametrize("advertised", [272_000, 372_000])
+    def test_native_codex_api_mode_preserves_live_catalog_and_variant(self, model, advertised):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "models": [{"slug": "gpt-6-astra", "context_window": advertised}]
+        }
+        route: dict = {"base_url": "https://chatgpt.com/backend-api/codex",
+                 "api_key": "test-oauth-token", "provider": "openai-codex"}
+        with patch("agent.model_metadata.requests.get", return_value=response), \
+             patch("agent.model_metadata.save_context_length"):
+            without_mode = get_model_context_length(model, **route)
+            with_mode = get_model_context_length(model, api_mode="codex_responses", **route)
+
+        assert with_mode == without_mode
+
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
         """Different OAuth tokens must not share entitlement-specific metadata."""
         from agent import model_metadata as mm

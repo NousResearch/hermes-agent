@@ -574,6 +574,7 @@ def _resolve_active_context_length() -> int:
         provider = str(model_cfg.get("provider") or "").strip()
         base_url = str(model_cfg.get("base_url") or "").strip()
         api_key = ""
+        api_mode = str(model_cfg.get("api_mode") or "")
         if provider:
             # Credential resolution failing (offline, no keys) degrades to a
             # provider+base_url-only lookup so static fallbacks still apply.
@@ -582,6 +583,7 @@ def _resolve_active_context_length() -> int:
                 rt = resolve_runtime_provider(requested=provider, target_model=model_id) or {}
                 base_url = str(rt.get("base_url") or base_url or "").strip()
                 api_key = str(rt.get("api_key") or "").strip()
+                api_mode = str(rt.get("api_mode") or api_mode)
             except Exception as rt_exc:
                 logger.debug("Runtime credential resolution failed for tool-search "
                              "context gate (provider=%s): %s — using config values only", provider, rt_exc)
@@ -593,7 +595,8 @@ def _resolve_active_context_length() -> int:
             except Exception:
                 pass
         return int(get_model_context_length(model_id, base_url=base_url, api_key=api_key,
-                                            config_context_length=config_ctx, provider=provider) or 0)
+                                            config_context_length=config_ctx, provider=provider,
+                                            api_mode=api_mode) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

@@ -44,5 +44,6 @@ def test_at_context_resolution_passes_active_provider():
         base_url="https://chatgpt.com/backend-api/codex",
         api_key="token",
         provider="openai-codex",
+        api_mode="",
         config_context_length=None,
     )

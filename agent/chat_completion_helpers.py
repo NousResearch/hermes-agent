@@ -1853,7 +1853,7 @@ def _update_fallback_context_compressor(agent) -> None:
         api_key=agent.api_key if isinstance(agent.api_key, str) else "",  # callable (Entra ID) → probes need str
         provider=agent.provider,
         config_context_length=getattr(agent, "_config_context_length", None),
-        custom_providers=getattr(agent, "_custom_providers", None),
+        custom_providers=getattr(agent, "_custom_providers", None), api_mode=agent.api_mode,
     )
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,

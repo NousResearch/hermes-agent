@@ -491,7 +491,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    turn_source=None, input_batch=None, turn_context=None
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -499,30 +500,39 @@ def _run_after_agent_ready(
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
-    if err:
-        # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
-        # the only way resume shows this to a disconnected client.
-        _emit_terminal_turn_error(
-            sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
-            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+    from tui_gateway.input_observation import state, project_inputs, record_outcome, publish_state
+    with state(session).control:
         with session["history_lock"]:
-            session["running"] = False
-            session["last_active"] = time.time()
-        _emit("session.info", sid, _session_info(session.get("agent"), session))
-        return
-    with session["history_lock"]:
-        if session.get("_turn_cancel_requested") or not session.get("running"):
-            session["running"] = False
-            _clear_inflight_turn(session)
-            # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, {"message": (
-                "Turn cancelled before the agent was ready"
-                if session.get("_turn_cancel_requested")
-                else "Session no longer running before the agent was ready")})
+            pending = session.get("inflight_turn") or {}
+            still_pending = input_batch is None or pending.get("input_batch") is input_batch
+            cancelled = session.get("_turn_cancel_requested") or not session.get("running") or not still_pending
+            if cancelled:
+                message = ("Turn cancelled before the agent was ready" if session.get("_turn_cancel_requested")
+                           else "Session no longer running before the agent was ready")
+                record_outcome(session, input_batch, "cancelled", reason="cancelled_before_start")
+                payload = {"message": message, **project_inputs(session, input_batch)}
+                if still_pending:
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+            elif err:
+                record_outcome(session, input_batch, "failed_before_start", reason="agent_init_failed")
+        if cancelled:
+            _emit("error", sid, payload)
+            publish_state(sid, session)
             return
-    _run_prompt_submit(
-        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        if err:
+            _emit_terminal_turn_error(
+                sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
+                error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+            with session["history_lock"]:
+                session["running"] = False
+                session["last_active"] = time.time()
+            publish_state(sid, session)
+            return
+        _run_prompt_submit(
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            terminal_callback=hosted_terminal_callback, turn_author=turn_author, turn_source=turn_source,
+            input_batch=input_batch, turn_context=turn_context)
 
 
 _TRUNCATION_PARAMS = (
@@ -530,13 +540,16 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind, input_batch=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
-    with _session_turn_admission(session) as admitted:
+    from tui_gateway.input_observation import state
+    with state(session).control, _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        if session.get("running"):
+            return None, None  # Retry busy handling after a competing idle claim.
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
@@ -558,6 +571,10 @@ def _lock_in_submit_turn(
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text, display_kind=display_kind)
+        session["inflight_turn"]["input"] = _display_turn_input(
+            text, "hidden" if params.get("display_kind") == "hidden" else None)
+        if input_batch:
+            session["inflight_turn"]["input_batch"] = input_batch
     return None, fields
 
 
@@ -632,6 +649,18 @@ def _(rid, params: dict) -> dict:
             return refusal
         if (t := current_transport()) is not None:
             _rebind_live_transport(sid, session, t)
+    from tui_gateway.turn_observation import connection_source
+    turn_source = connection_source(t) if not internal_hosted_submit else {"kind": "unknown"}
+    from tui_gateway.input_observation import new_input, reply_submission
+    with session["history_lock"]:
+        input_batch = new_input(session, text, params.get("submission_ref"))
+        from copy import deepcopy
+        reply_batch = deepcopy(input_batch)
+    turn_context = None
+    raw_rebind_ids = params.get("rebind_survivor_row_ids")
+    requested_rebind_ids = (
+        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
+        if isinstance(raw_rebind_ids, list) else None)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
@@ -639,42 +668,35 @@ def _(rid, params: dict) -> dict:
     # prompt in a queue whose drain already ran.
     while True:
         with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
+            busy = bool(session.get("running"))
+            if busy and internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
-        if has_truncation:
-            # A rewind/edit/restore/regenerate must land as a truncation, never as a
-            # steered correction or a plain follow-up queued to run after the live
-            # turn — either would silently drop the history cut the user asked for.
-            # Signal busy so the caller's own interrupt-then-retry loop (already
-            # built for exactly this race — see desktop's `runRewindSubmit`) waits
-            # for `running` to clear and resubmits with the truncation intact.
-            return _err(rid, 4009, "session busy")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
-        if busy_response is not None:
-            return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
-    requested_rebind_ids = (
-        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
-        if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
-    if err is not None:
-        return err
+        if busy:
+            if has_truncation:
+                return reply_submission(_err(rid, 4009, "session busy"), reply_batch, "unresolved")
+            busy_response = _handle_busy_submit(
+                rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+                turn_author=turn_author, turn_source=turn_source, display_kind=display_kind, input_batch=input_batch)
+            if busy_response is not None:
+                return busy_response
+            continue
+        err, survivor_fields = _lock_in_submit_turn(
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind, input_batch)
+        if err is not None:
+            return reply_submission(err, reply_batch, "unresolved")
+        if survivor_fields is not None:
+            break
     if turn_isolation:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata, turn_source=turn_source, input_batch=input_batch)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
-            return isolated_response
+            return reply_submission(isolated_response, reply_batch, "starting")
         # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
         # submit sends a request that is indistinguishable, field by field, from a real rewind — same
         # method, same shape, an in-range target — and the cut it asks for is a destructive
@@ -686,8 +708,13 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
+        turn_context = (session.get("inflight_turn") or {}).get("turn")
     if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
-        return err
+        from tui_gateway.input_observation import record_outcome, publish_state
+        with session["history_lock"]:
+            record_outcome(session, input_batch, "failed_before_start", reason="session_persistence_failed")
+        publish_state(sid, session)
+        return reply_submission(err, reply_batch, "unresolved")
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):
@@ -697,12 +724,13 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author, turn_source,
+            input_batch, turn_context),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    return reply_submission(_ok(rid, {"status": "streaming", **survivor_fields}), reply_batch, "starting")
 
 
 @method("clipboard.paste")

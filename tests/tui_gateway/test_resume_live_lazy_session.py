@@ -105,3 +105,21 @@ def test_live_reattach_reports_the_sessions_own_model_not_the_profile_default(li
     info = out["result"]["info"]
     assert (info["model"], info["provider"]) == expected
     assert info["lazy"] is True
+
+
+def test_unpersisted_resume_preserves_active_execution_in_its_profile(live_lazy_session):
+    sid, record = live_lazy_session
+    record["running"] = True
+    srv._start_inflight_turn(record, "private runbook")
+    turn = {"id": "execution", "source": {"kind": "unknown"}}
+    record["inflight_turn"].update(turn=turn, input=None)
+    srv._enqueue_prompt(record, "private follow-up", None, display_kind="hidden")
+    out = _resume({"profile": "ops", "session_id": record["session_key"], "omit_messages": True})["result"]
+    assert out["session_id"] == sid and out["running"]
+    assert out["inflight"]["turn"] == turn
+    assert out["inflight"]["user"] == "" and out["inflight"]["input"] is None
+    assert out["queued"]["input"] is None and out["queued"]["user"] == ""
+    assert out["queued"]["inputs"] == out["submission_state"]["queued"][0]["inputs"]
+    out["inflight"]["turn"]["source"]["kind"] = "mutated"
+    assert record["inflight_turn"]["turn"] == turn
+    assert _resume({"session_id": record["session_key"]})["error"]["code"] == 4007

@@ -6,12 +6,15 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 from __future__ import annotations
 
 from pydantic import Field
+from typing import Literal
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
                      Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
+from .observations import (InputOccurrence, InputObservation, InputSubmission, ProjectedInput,
+                           SubmissionState, TurnDescriptor)
 
 
 # ── shared live-session snapshot ──────────────────────────────────────────────────────────────
@@ -30,6 +33,12 @@ class InflightTurn(Result):
     """``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting
     client rebuilds its bubbles from."""
 
+    turn: TurnDescriptor | None = None
+    input: ProjectedInput | None = None
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
+    input_observations: list[InputObservation] | None = None
+    input_observations_complete: bool | None = None
     assistant: str = ""
     streaming: bool = False
     user: str = ""
@@ -45,6 +54,9 @@ class InflightTurn(Result):
 
 class QueuedPrompt(Result):
     user: str
+    input: ProjectedInput | None = None
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
 
 
 class TodoState(Result):
@@ -96,6 +108,7 @@ class LiveSessionSnapshot(Result):
     pending_connection: ConnectionRequestPayload | None = None
     todo_state: TodoState | None = None
     auto_continue: AutoContinue | None = None
+    submission_state: SubmissionState | None = None
 
 
 # ── session.create ────────────────────────────────────────────────────────────────────────────
@@ -608,11 +621,15 @@ class CorrectionStatus(WireEnum):
 
 class SessionCorrectionParams(SessionParams):
     text: str
+    submission_ref: JsonValue = None
+    input_visibility: JsonValue = None  # only explicit "visible" / "hidden" opt into observation
 
 
 class SessionCorrectionResult(Result):
-    status: CorrectionStatus
-    text: str
+    status: CorrectionStatus | Literal["streaming"]
+    text: str | None = None  # hidden input reuses prompt.submit
+    submission: InputSubmission | None = None
+    turn_isolation: bool | None = None
 
 
 method("session.steer", params=SessionCorrectionParams, result=SessionCorrectionResult,

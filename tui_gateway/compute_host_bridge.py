@@ -142,6 +142,36 @@ def _relay_compute_host_rpc(message: dict) -> bool:
         # on this process's stdio; fan it out to every connected client like a local broadcast.
         _broadcast_global_event(str(params.get("type") or ""), params.get("payload"))
         return True
+    kind = params.get("type") if isinstance(params, dict) else None
+    if kind:
+        from tui_gateway.input_observation import cached_snapshot
+        from tui_gateway.turn_observation import turn_scope
+        sid = str(params.get("session_id") or "")
+        session = _sessions.get(sid)
+        if session is not None:
+            payload = dict(params.get("payload") or {})
+            if kind == "session.info":
+                payload["submission_state"] = cached_snapshot(session)
+                params = {**params, "payload": payload}
+                message = {**message, "params": params}
+            observation = session.get("_turn_observation")
+            if params.get("turn"):
+                if observation is None or params["turn"].get("id") != observation.id:
+                    return False
+                with observation.gate:
+                    if not observation.owns_record() or observation.terminal:
+                        return False
+                    with session["history_lock"]:
+                        inflight = session.get("inflight_turn")
+                        if isinstance(inflight, dict):
+                            if kind == "message.start":
+                                inflight["input"] = payload.get("input")
+                            elif kind == "message.delta":
+                                _append_inflight_delta(session, payload.get("text"))
+                        if kind == "request.cancel" and _open_request_matches(session, payload.get("id")):
+                            session.pop("_compute_host_open_request", None)
+                    with turn_scope(observation):
+                        return _emit(kind, sid, payload)
     if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
@@ -260,15 +290,17 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     # Settlement of a turn whose session was closed mid-flight: the real lease was held for it.
     _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
-    if not frame.get("session_info_emitted"):
-        _emit("session.info", sid, info)
-    _drain_queued_prompt(rid, sid, session)
+    _emit("session.info", sid, info)
+    from tui_gateway.turn_observation import turn_scope
+    with turn_scope(None):
+        _drain_queued_prompt(rid, sid, session)
 
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
-    display_metadata: dict | None = None) -> dict:
+    display_metadata: dict | None = None,
+    turn_source: dict | None = None, input_batch: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
@@ -276,9 +308,20 @@ def _submit_prompt_to_compute_host(
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
+    from tui_gateway.turn_observation import make_turn, turn_scope
+    from tui_gateway.input_observation import new_input
     with session["history_lock"]:
+        input_batch = input_batch or new_input(session, text)
+        observation = make_turn(sid, session, turn_source, inputs=input_batch)
+        frame["turn_context"] = observation.wire()
+        frame["input_batch"] = input_batch
+        session["_turn_observation"] = observation
         session["_compute_host_turn_id"] = turn_id
         session.pop("_compute_host_activity_ns", None)
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
+        session["inflight_turn"].update(turn=observation.wire(), input=_display_turn_input(text, display_kind),
+                                        input_batch=input_batch)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure via the callback before re-raising;
@@ -289,7 +332,8 @@ def _submit_prompt_to_compute_host(
                     return
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
-            _on_compute_host_turn_done(rid, sid, session, done)
+            with turn_scope(observation):
+                _on_compute_host_turn_done(rid, sid, session, done)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:

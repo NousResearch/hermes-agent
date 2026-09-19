@@ -672,7 +672,9 @@ def write_json(obj: dict) -> bool:
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     _contracts.check_payload(event, payload)
+    from tui_gateway.turn_observation import stamp_turn
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+    stamp_turn(params, _sessions)
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
@@ -680,7 +682,8 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     from agent.notification_presentation import event_presentation_muted
     if event_presentation_muted(event, sid):
         return False
-    return write_json(_event_frame(event, sid, payload))
+    from tui_gateway.turn_observation import emit_observed
+    return emit_observed(event, sid, payload, lambda kind, key, data: write_json(_event_frame(kind, key, data)))
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
@@ -2299,6 +2302,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, t
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
+    from tui_gateway.input_observation import cached_snapshot
     sess = session or {}
     mirror = _metadata_mirror(session)
     cwd = _display_session_cwd(session)
@@ -2338,6 +2342,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     if reasoning_effort and reasoning_effort != "none":
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
     info: dict = {
+        "submission_state": cached_snapshot(sess),
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
@@ -3121,7 +3126,9 @@ def _live_session_payload(
     # (a hidden seed row is in ``history`` but never on the wire).
     messages = ([] if omit_messages else
                 _history_to_messages(history, profile_home=session.get("profile_home"), image_urls=inline_images))
+    from tui_gateway.input_observation import cached_snapshot
     payload = {
+        "submission_state": cached_snapshot(session),
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,
         "messages_omitted": omit_messages, "running": running, "turn_started_at": turn_started_at,
@@ -3609,6 +3616,7 @@ from . import (  # noqa: E402
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
+    methods_corrections as _methods_corrections,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
@@ -3623,7 +3631,7 @@ for _m in (
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
-    _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
+    _methods_browser_control, _methods_session, _methods_corrections, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,

@@ -122,7 +122,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
         "agent": agent,
         "history_lock": threading.Lock(),
         "running": True,
-        "queued_prompt": "later",
+        "queued_prompt": {"text": "later", "transport": None},
         "session_key": "session-key",
         "_run_thread": None,
     }
@@ -131,6 +131,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
     monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    monkeypatch.setattr(server, "profile_name_for_home", lambda _home: "default")
     response = server._methods["session.interrupt"](
         "stop", {"session_id": "ui-session"}
     )
@@ -1031,7 +1032,8 @@ def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monk
 
     assert result["running"] is True
     assert result["turn_started_at"] == active_turn["started_at"]
-    assert result == fixture
+    assert {key: result[key] for key in fixture} == fixture
+    assert result["submission_state"]["queued"] == []
 
 
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):

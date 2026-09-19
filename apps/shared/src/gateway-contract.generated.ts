@@ -1652,8 +1652,10 @@ export interface VaultItem {
   identifier?: string | null
   identifier_type?: string | null
   has_otp?: boolean | null
+  origin_match?: VaultOriginMatch | null
   backend: string
 }
+export type VaultOriginMatch = 'exact' | 'registrable_domain'
 export interface VaultSourcesResult {
   sources?: VaultSource[]
 }
@@ -1697,6 +1699,7 @@ export interface VaultAddParams {
   kind?: VaultKind | null
   label?: string | null
   origin?: string | null
+  origin_match?: VaultOriginMatch | null
   secret?: Record<string, unknown> | null
 }
 export type VaultKind = 'login' | 'payment' | 'address'

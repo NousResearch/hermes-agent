@@ -25,6 +25,7 @@ import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
@@ -35,6 +36,7 @@ from utils import atomic_write_bytes
 VAULT_KINDS = ("login", "payment", "address")
 
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
+ORIGIN_MATCH_MODES = ("exact", "registrable_domain")
 
 # Canonical secret-payload fields per non-login kind. Each maps to the WHATWG autocomplete token the
 # browser fill targets (agent/vault_login_classifier.py); the Desktop Add dialog and `hermes vault add`
@@ -150,6 +152,50 @@ def normalize_origin(url_or_origin: str) -> str:
     return f"{scheme}://{host}:{port}"
 
 
+@lru_cache(maxsize=1)
+def _psl_extractor():
+    from tldextract import TLDExtract
+
+    return TLDExtract(suffix_list_urls=(), include_psl_private_domains=True)
+
+
+def registrable_domain(url_or_origin: str) -> Optional[str]:
+    """Return the PSL registrable domain, including private suffix rules.
+
+    The extractor uses its packaged PSL snapshot and never performs a network fetch. Including
+    private suffixes is security-sensitive: unrelated ``*.github.io`` tenants must not share a
+    vault scope.
+    """
+    host = urlsplit(normalize_origin(url_or_origin)).hostname or ""
+    extracted = _psl_extractor()(host)
+    return extracted.top_domain_under_public_suffix or None
+
+
+def validate_registrable_origin(origin: str) -> str:
+    """Validate and return the eTLD+1 of an origin eligible for widened login matching."""
+    normalized = normalize_origin(origin)
+    if urlsplit(normalized).scheme != "https":
+        raise VaultError("registrable-domain matching requires an HTTPS origin")
+    domain = registrable_domain(normalized)
+    if not domain:
+        raise VaultError("registrable-domain matching requires a public-suffix domain")
+    return domain
+
+
+def origin_matches(saved_origin: str, page_origin: str, mode: str = "exact") -> bool:
+    """Whether ``page_origin`` is inside the item's explicitly selected origin scope."""
+    saved = normalize_origin(saved_origin)
+    page = normalize_origin(page_origin)
+    if mode == "exact":
+        return saved == page
+    if mode != "registrable_domain":
+        return False
+    if urlsplit(saved).scheme != "https" or urlsplit(page).scheme != "https":
+        return False
+    saved_domain = registrable_domain(saved)
+    return bool(saved_domain and saved_domain == registrable_domain(page))
+
+
 @dataclass(frozen=True)
 class VaultItemMeta:
     """Metadata-only view of a vault item. Never contains secret values.
@@ -167,9 +213,10 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    origin_match: str = "exact"
     # Every origin the password manager bound to this item (manager backends only;
-    # ``origin`` is the first/primary one). Fill matching stays exact-origin against
-    # this list — no wildcard or subdomain inference is ever derived from it.
+    # ``origin`` is the first/primary one). Manager matching stays exact-origin;
+    # local login items may explicitly opt into the origin_match scope above.
     allowed_origins: tuple = ()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -185,6 +232,8 @@ class VaultItemMeta:
             out["identifier_type"] = self.identifier_type
         if self.has_otp:
             out["has_otp"] = True
+        if self.origin_match != "exact":
+            out["origin_match"] = self.origin_match
         if len(self.allowed_origins) > 1:
             out["allowed_origins"] = list(self.allowed_origins)
         return out
@@ -300,6 +349,7 @@ class VaultStore:
         label: str,
         secret: Dict[str, Any],
         origin: Optional[str] = None,
+        origin_match: str = "exact",
     ) -> VaultItemMeta:
         """Add an item. ``secret`` is the sensitive payload (encrypted at rest).
 
@@ -312,6 +362,11 @@ class VaultStore:
         """
         if kind not in VAULT_KINDS:
             raise VaultError(f"unknown vault kind {kind!r} (expected one of {VAULT_KINDS})")
+        origin_match = (origin_match or "exact").strip().lower()
+        if origin_match not in ORIGIN_MATCH_MODES:
+            raise VaultError(f"origin_match must be one of {ORIGIN_MATCH_MODES}")
+        if origin_match != "exact" and kind != "login":
+            raise VaultError("registrable-domain matching is supported only for login items")
         label = (label or "").strip()
         if not label:
             raise VaultError("label is required")
@@ -323,6 +378,8 @@ class VaultStore:
             if not origin:
                 raise VaultError("origin is required for login items")
             norm_origin = normalize_origin(origin)
+            if origin_match == "registrable_domain":
+                validate_registrable_origin(norm_origin)
             id_type = secret.pop("identifier_type", None)
             if id_type not in LOGIN_IDENTIFIER_TYPES:
                 raise VaultError(
@@ -351,6 +408,7 @@ class VaultStore:
             "kind": kind,
             "label": label,
             "origin": norm_origin,
+            "origin_match": origin_match,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "identifier_type": identifier_type,
             "identifier": identifier,
@@ -414,6 +472,7 @@ class VaultStore:
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
             has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
+            origin_match=str(rec.get("origin_match") or "exact"),
         )
 
 

@@ -125,6 +125,9 @@ dependencies = [
   "websockets==15.0.1",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
+  # Credential-vault registrable-domain scopes use the packaged Public Suffix List snapshot.
+  # Runtime fetching is disabled so a fill decision never depends on network state.
+  "tldextract==5.3.2",
   "fastapi>=0.104.0,<1",
   # CIDR-aware forwarded_allow_ips requires uvicorn >=0.31.0.
   "uvicorn[standard]>=0.31.0,<1",

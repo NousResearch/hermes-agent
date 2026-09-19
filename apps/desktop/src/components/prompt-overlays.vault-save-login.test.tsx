@@ -56,6 +56,7 @@ it('answers the vault.save_login server request with identifier + password as on
   fireEvent.change(identifier, { target: { value: 'tek@acme.test' } })
   expect(submit.disabled).toBe(true)
   fireEvent.change(password, { target: { value: 'fixture-pw' } })
+  fireEvent.click(document.querySelector('#vault-save-registrable-domain')!)
   expect(submit.disabled).toBe(false)
   fireEvent.submit(password.closest('form')!)
 
@@ -63,7 +64,8 @@ it('answers the vault.save_login server request with identifier + password as on
   const [result] = respond.mock.calls[0] as [{ value: string }]
   expect(JSON.parse(result.value)).toEqual({
     identifier: 'tek@acme.test',
-    password: 'fixture-pw'
+    password: 'fixture-pw',
+    origin_match: 'registrable_domain'
   })
   expect(hasOpenServerRequest('req-s')).toBe(false)
   expect(ambient).not.toHaveBeenCalled()

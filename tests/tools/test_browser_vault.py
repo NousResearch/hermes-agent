@@ -45,7 +45,7 @@ def store(tmp_path):
     return VaultStore(base_dir=tmp_path / "vault")
 
 
-def _add_login(store, origin="https://example.com", password="s3cret-pw"):
+def _add_login(store, origin="https://example.com", password="s3cret-pw", origin_match="exact"):
     return store.add_item(
         kind="login",
         label="Example login",
@@ -56,6 +56,7 @@ def _add_login(store, origin="https://example.com", password="s3cret-pw"):
             "password": password,
             "origin": origin,
         },
+        origin_match=origin_match,
     )
 
 
@@ -143,6 +144,18 @@ class TestVaultStore:
         assert normalize_origin("http://site.test:80") == "http://site.test"
         with pytest.raises(VaultError):
             normalize_origin("example.com")
+
+    def test_registrable_domain_scope_uses_psl_and_requires_https(self, store):
+        from agent.vault_store import origin_matches
+
+        meta = _add_login(store, origin="https://shop.example.co.uk", origin_match="registrable_domain")
+        assert meta.to_dict()["origin_match"] == "registrable_domain"
+        assert origin_matches(meta.origin, "https://login.example.co.uk", meta.origin_match)
+        assert not origin_matches(meta.origin, "https://example.com", meta.origin_match)
+        assert not origin_matches(meta.origin, "http://login.example.co.uk", meta.origin_match)
+        assert not origin_matches("https://alice.github.io", "https://bob.github.io", meta.origin_match)
+        with pytest.raises(VaultError, match="HTTPS"):
+            _add_login(store, origin="http://example.com", origin_match="registrable_domain")
 
     def test_scrub_secret_from_text(self):
         secret = {"password": "hunter22x", "identifier": "me@x.io"}
@@ -301,6 +314,44 @@ class TestBrowserVaultTools:
         assert out["success"] is False
         assert "Refused" in out["error"]
         assert "s3cret-pw" not in json.dumps(out)
+
+    def test_explicit_registrable_domain_scope_fills_https_login_subdomain(self, store):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://naver.com", origin_match="registrable_domain")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 0,
+                     "label": "", "name": "pw", "type": "password"}]
+        secret_exprs = []
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None, url_accept=None):
+                assert origin == ""
+                assert accept == browser_vault_tool._TAB_PROBES["login"]
+                for url in ("https://evil.example/login", "https://nid.naver.com/nidlogin.login"):
+                    if url_accept is None or url_accept(url):
+                        return {"ok": True, "url": url}
+                return {"ok": False}
+
+        def fake_eval(_task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://nid.naver.com/nidlogin.login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_secret(_task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+            listed = json.loads(browser_vault_tool.browser_vault_list())
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert listed["items"][0]["origin_match"] == "registrable_domain"
+        assert out["success"] is True and out["origin"] == "https://nid.naver.com"
+        assert "https://nid.naver.com" in secret_exprs[0]
+        assert "s3cret-pw" not in raw
 
     @staticmethod
     def _manager_meta():

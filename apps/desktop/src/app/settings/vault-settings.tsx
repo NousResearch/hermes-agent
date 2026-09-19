@@ -63,6 +63,7 @@ interface VaultItem {
   identifier_type?: null | string
   backend?: VaultSourceName
   has_otp?: boolean
+  origin_match?: 'exact' | 'registrable_domain'
 }
 
 /** Add-dialog prefill from a deep link (`/settings?tab=vault&kind=…`). NEVER secrets. */
@@ -90,6 +91,7 @@ const EMPTY_FORM = {
   kind: 'login' as VaultKind,
   label: '',
   origin: '',
+  registrableDomain: false,
   identifierType: 'email' as IdentifierType,
   identifier: '',
   password: '',
@@ -312,7 +314,7 @@ export function VaultSettings() {
   const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
 
   const addMutation = useMutation({
-    mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {
+    mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string; origin_match?: string }) => {
       const secret = pendingSecret.current
       pendingSecret.current = null
 
@@ -357,6 +359,7 @@ export function VaultSettings() {
     addMutation.mutate({
       kind: form.kind,
       label: form.label.trim(),
+      ...(form.kind === 'login' && form.registrableDomain ? { origin_match: 'registrable_domain' } : {}),
       ...(origin ? { origin } : {})
     })
   }, [addMutation, form, v.labelRequired, v.loginFieldsRequired, v.originInvalid])
@@ -446,6 +449,7 @@ export function VaultSettings() {
             <span className="flex items-center gap-2">
               <span className="truncate">{item.label}</span>
               <Pill tone={item.kind === 'login' ? 'primary' : 'muted'}>{kindLabel(item.kind)}</Pill>
+              {item.origin_match === 'registrable_domain' && <Pill tone="muted">{v.registrableDomainBadge}</Pill>}
               {item.has_otp && <Pill tone="muted">{v.twoFactorBadge}</Pill>}
             </span>
           }
@@ -619,6 +623,22 @@ export function VaultSettings() {
                 value={form.origin}
               />
             </Field>
+
+            {form.kind === 'login' && (
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-(--ui-border) p-3">
+                <div>
+                  <label className="text-sm font-medium" htmlFor="vault-registrable-domain">
+                    {v.registrableDomainLabel}
+                  </label>
+                  <p className="text-xs text-muted-foreground">{v.registrableDomainHint}</p>
+                </div>
+                <Switch
+                  checked={form.registrableDomain}
+                  id="vault-registrable-domain"
+                  onCheckedChange={checked => setForm(f => ({ ...f, registrableDomain: checked }))}
+                />
+              </div>
+            )}
 
             {form.kind === 'login' && (
               <>

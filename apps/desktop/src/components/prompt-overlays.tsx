@@ -15,6 +15,7 @@ import {
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { LogView } from '@/components/ui/log-view'
+import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
@@ -370,11 +371,13 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
   const gateway = useStore($gateway)
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
+  const [registrableDomain, setRegistrableDomain] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     setIdentifier('')
     setPassword('')
+    setRegistrableDomain(false)
     setSubmitting(false)
   }, [request?.requestId])
 
@@ -433,7 +436,13 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
             event.preventDefault()
 
             if (canSave) {
-              void send(JSON.stringify({ identifier: identifier.trim(), password }))
+              void send(
+                JSON.stringify({
+                  identifier: identifier.trim(),
+                  password,
+                  ...(registrableDomain ? { origin_match: 'registrable_domain' } : {})
+                })
+              )
             }
           }}
         >
@@ -458,6 +467,19 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
               value={password}
             />
           </Field>
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-(--ui-border) p-3">
+            <div>
+              <label className="text-sm font-medium" htmlFor="vault-save-registrable-domain">
+                {copy.vaultSaveRegistrableDomain}
+              </label>
+              <p className="text-xs text-muted-foreground">{copy.vaultSaveRegistrableDomainHint}</p>
+            </div>
+            <Switch
+              checked={registrableDomain}
+              id="vault-save-registrable-domain"
+              onCheckedChange={setRegistrableDomain}
+            />
+          </div>
           <p className="text-xs text-muted-foreground">{copy.vaultSaveFootnote}</p>
           <DialogFooter>
             <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">

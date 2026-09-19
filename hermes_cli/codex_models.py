@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
 # OAuth backend actually accepts: the public API's "-pro" variants and the retired
-# gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there ("not supported
-# when using Codex with a ChatGPT account"), so listing them leaked dead picker choices. If
-# OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them up automatically.
+# gpt-5.3-codex / gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there
+# ("not supported when using Codex with a ChatGPT account"), so listing them leaked dead picker
+# choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
+# up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -23,7 +24,6 @@ DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
-    "gpt-5.3-codex",
     # Research preview exposed ONLY via the Codex OAuth backend for ChatGPT Pro subscribers —
     # not in the public API, so it stays out of the "openai" catalog in hermes_cli/models.py.
     # The backend reports ``supported_in_api: false`` for it; that flag describes API
@@ -42,12 +42,10 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
-    ("gpt-5.4", ("gpt-5.3-codex",)),
+    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini")),
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)
     # gates real availability by ChatGPT Pro entitlement.
-    ("gpt-5.3-codex-spark", ("gpt-5.3-codex",))]
+    ("gpt-5.3-codex-spark", ("gpt-5.4", "gpt-5.5"))]
 
 
 def _dedupe(model_ids) -> List[str]:

@@ -140,11 +140,11 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
         message = str(excinfo.value)
         assert "gpt-5.4" in message
-        assert "gpt-5.3-codex" in message
+        assert "gpt-5.3-codex" not in message
         assert "gpt-5.4-codex" in message
         assert "codex_ttfb_kill" in closes
         assert statuses, "expected a user-facing watchdog status"
-        assert any("gpt-5.4" in s and "gpt-5.3-codex" in s for s in statuses)
+        assert any("gpt-5.4" in s and "gpt-5.3-codex" not in s for s in statuses)
     finally:
         stop["flag"] = True
 

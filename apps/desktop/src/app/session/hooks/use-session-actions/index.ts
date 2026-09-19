@@ -1284,6 +1284,10 @@ export function useSessionActions({
               activated = await requestForSession<SessionResumeResult>('session.activate', {
                 session_id: cachedRuntimeId,
                 cols: 96,
+                // This reattach is usually an automatic reconnect after the socket dropped, not
+                // a surface the user changed. The live record keeps whatever source minted it,
+                // so name ours or a reconnect can leave the agent pinned to another surface.
+                source: 'desktop',
                 omit_messages: true
               })
             } catch (error) {

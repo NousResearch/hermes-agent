@@ -170,6 +170,10 @@ method("session.resume", params=SessionResumeParams, result=SessionResumeResult,
 class SessionActivateParams(SessionParams):
     cols: int | None = None  # sent by the desktop; the handler keeps the session's current width
     omit_messages: bool = False
+    # The surface reattaching after a transport drop. A live record keeps the source it was
+    # minted with, so a reconnect that omits this leaves a stale surface behind: the next agent
+    # build reads it and the model is told it runs somewhere it does not (#surface-reattach).
+    source: str | None = None
 
 
 class SessionActivateResult(LiveSessionSnapshot):

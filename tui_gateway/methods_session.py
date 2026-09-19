@@ -681,6 +681,27 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
+def _adopt_reattach_source(session: dict, source: object) -> None:
+    """Refresh a live record's surface when a client reattaches from a different one.
+
+    A record keeps the ``source`` it was minted with, and nothing else rewrites it. That is
+    correct while one client owns the session, but a reattach (``session.activate``, or a
+    ``session.resume`` that finds the session still live) can arrive from another surface —
+    typically an automatic reconnect after the WebSocket dropped, which is not a surface change
+    the user made. The stale value then outlives the client that set it: the next agent build
+    reads it via ``_session_source`` and ``platform_override`` pins the agent to a surface it is
+    not on, so the model is told it has capabilities (MEDIA: delivery, inline widgets) the live
+    renderer does not have, or is denied ones it does.
+
+    Only a non-empty, changed value is adopted: clients that never send ``source`` (older
+    desktops, the bot-room plumbing) must keep the record they created rather than be reset to
+    the env-resolved default.
+    """
+    incoming = str(source or "").strip()
+    if incoming and incoming != str(session.get("source") or "").strip():
+        session["source"] = incoming
+
+
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reattach an already-live session under the resume lock (held across the client-gone check,
     transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
@@ -693,6 +714,9 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
+    # Reuse skips the mint that would have carried this resume's surface into a fresh record, so
+    # adopt it here too — same reason as session.activate (see _adopt_reattach_source).
+    _adopt_reattach_source(session, _str_param(ctx.params, "source"))
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
                                     transport=current_transport() or _stdio_transport)
@@ -959,6 +983,7 @@ def _(rid, params: dict, session: dict) -> dict:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
         with session["history_lock"]:
+            _adopt_reattach_source(session, params.get("source"))
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))

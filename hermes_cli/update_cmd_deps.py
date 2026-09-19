@@ -823,6 +823,14 @@ def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
     we run from -> every launch is the shim so the marker would defer forever: hand the
     install to a child under the venv interpreter and exit 0.
 
+    Windows gateway resume: on the child hand-off path the parent must NOT resume gateways
+    before the child runs the dependency sync -- the child's strict quarantine of
+    ``hermes.exe`` fails while any process holds the shim, and the child's own pause sweep
+    force-kills whatever the parent just cold-started. Defer resume to the child (which
+    resumes after ``_sync_python_dependencies_after_pull``). The native-module self-lock
+    path (exit 2, marker recovery) keeps the existing resume: recovery is silent and a
+    resumed gateway is continuity, not a lock.
+
     See #88838, #89599.
     """
     from hermes_cli.update_cmd import _m
@@ -832,6 +840,9 @@ def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
         exit_code = 2
     elif _m()._reexec_dependency_sync_off_windows_shim():
         exit_code = 0
+        # Only the process that completes the install may resume the gateways.
+        if gateway_resume is not None:
+            gateway_resume["resume_needed"] = False
     else:
         return
     if gateway_resume is not None:

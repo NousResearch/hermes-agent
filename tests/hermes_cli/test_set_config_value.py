@@ -112,6 +112,13 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "script_timeout_seconds: 600" in _read_config(_isolated_hermes_home)
 
+    def test_gateway_run_status_ttl_is_recognized(self, _isolated_hermes_home, capsys):
+        """The /v1/runs terminal-status retention read by the API server is runtime config."""
+        set_config_value("gateway.api_server.run_status_ttl", "7200")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "run_status_ttl: 7200" in _read_config(_isolated_hermes_home)
+
     def test_memory_nudge_interval_is_recognized(self, _isolated_hermes_home, capsys):
         """The documented background-memory review interval is runtime config."""
         set_config_value("memory.nudge_interval", "0")

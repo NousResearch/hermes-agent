@@ -710,6 +710,7 @@ gateway:
     cors_origins: http://localhost:3000
     model_name: my-hermes
     max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
+    run_status_ttl: 3600      # seconds terminal /v1/runs status stays pollable
 ```
 
 `port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
@@ -717,6 +718,10 @@ gateway:
 ### Concurrent-run cap
 
 The API server limits how many agent runs may execute at once across the endpoints that start one directly: the OpenAI-compatible endpoints, the Runs endpoints, and the session-chat endpoints (`POST /api/sessions/{id}/chat` and its `/stream` variant, which carry cross-machine agent DMs). Cron-triggered runs (`POST /api/jobs/{id}/run`, `POST /api/cron/fire`) go through the cron scheduler and are governed by cron's own limits, not this cap. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
+
+### Run-status retention
+
+Terminal run records (`completed` / `failed` / `cancelled`) for `GET /v1/runs/{run_id}` are held in memory and expire after `gateway.api_server.run_status_ttl` seconds (default **3600**; unparseable or non-positive values fall back to the default). A poller whose interval exceeds the window gets **HTTP 404** `run_not_found` even though the run finished — the transcript itself is untouched at `/api/sessions/{run_id}/messages`. If your dispatch-to-poll latency sits near the default, raise `run_status_ttl`. The store is process-local: a server restart drops all pre-restart run records regardless of this value.
 
 ## Security Headers
 

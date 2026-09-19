@@ -814,20 +814,20 @@ class TestGateDefect1ClarifyErrors:
         """When session enumeration fails, the error appears in coverage and badge is red."""
         import tui_gateway.server as server_mod
 
-        original = server_mod._sessions
+        class _EnumerationBoom(dict):
+            """``.get`` still answers the profile-scope wrapper; enumeration raises."""
 
-        def boom():
-            raise TypeError("lock not acquired")
+            def items(self):
+                raise TypeError("lock not acquired")
 
-        # _sessions_lock.acquire on a non-lock-like object raises; replace _sessions
-        # with None so list(None.items()) raises TypeError
-        monkeypatch.setattr(server_mod, "_sessions", None)
-        try:
-            inbox = _result(server, "inbox.list")["inbox"]
-            assert inbox["badge"] == "red"
-            assert any("live-session enumeration failed" in e for e in inbox["coverage"]["errors"])
-        finally:
-            server_mod._sessions = original
+        # Break only the enumeration (list(_sessions.items())). The registry stays
+        # dict-shaped because the profile-scope wrapper resolves ``.get()`` first and
+        # a bare None would fail there instead of in the inbox path under test.
+        monkeypatch.setattr(server_mod, "_sessions", _EnumerationBoom())
+
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["badge"] == "red"
+        assert any("live-session enumeration failed" in e for e in inbox["coverage"]["errors"])
 
     def test_clarify_query_failure_surfaces_in_coverage(self, server, db, monkeypatch):
         """When open_requests() raises for a session, the error appears in coverage."""

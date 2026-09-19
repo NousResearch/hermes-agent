@@ -607,12 +607,18 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
     Liveness signal orthogonal to the PID check: a worker whose forked child
     (train loop, crawl) is stuck can still have a live Python process.
     Returns False if the task is not running or its claim expired.
+
+    ``metadata`` folds into the run row first-write-wins — this is where a worker
+    stamps ``worker_session_id``, the first moment both the session and the run row
+    exist. Liveness is the primary job, so a merge that raises is swallowed: a run
+    reclaimed for a missed beat is a far worse outcome than a missing session link.
     """
     now = int(time.time())
     with _kb.write_txn(conn):
@@ -631,6 +637,11 @@ def heartbeat_worker(
         )
         if run_id is not None:
             conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
+            try:
+                _kb._merge_run_metadata(conn, run_id, metadata, incoming_wins=False)
+            except Exception:
+                _kb._log.debug(
+                    "heartbeat metadata merge failed for run %s", run_id, exc_info=True)
         _kb._append_event(
             conn, task_id, "heartbeat",
             {"note": note} if note else None,

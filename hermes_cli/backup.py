@@ -90,10 +90,10 @@ _EXCLUDED_DIRS = {
 # a deeper directory of the same name (such as a skill's models/) is user data.
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"})
 
-# Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data
-# / Cookies. Root-scoped like models/ — a skill's own browser_profiles/ is user data. Backup-only:
+# Live Browser Use CLI and local-CDP profiles hold locked databases and browser credentials.
+# Root-scoped like models/ — a skill's same-named directory is user data. Backup-only:
 # do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
-_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", "chrome-debug"})
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
@@ -259,7 +259,11 @@ def _collect_memory_provider_external_paths() -> List[Path]:
 
 def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
-    if base.is_file() and not base.is_symlink():
+    # ``Path.is_file()`` and ``Path.is_dir()`` follow symlinks, so reject a declared link before
+    # either probe can turn external provider state into an archive candidate.
+    if base.is_symlink():
+        return []
+    if base.is_file():
         return [base]
     if not base.is_dir():
         return []

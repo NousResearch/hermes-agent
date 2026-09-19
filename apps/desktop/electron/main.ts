@@ -157,6 +157,8 @@ import {
   setLastUsedConnection,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
+  profileNameFromScope,
+  shouldRetryForcedLocalSpawn,
   shouldRetrySshInventory,
   updateEligibility,
   upsertConnection
@@ -11344,7 +11346,7 @@ async function ensureRegistryBackend(
     managedConnectionUpdateGate.assertCanDial(id, managedUpdateCorrelation)
   }
 
-  const profileKey = String(profile ?? '').trim() || 'default'
+  const profileKey = profileNameFromScope(profile)
   let resolvedRegistrySshConfig
   let registryEffectiveFingerprintPromise: null | Promise<string> = null
 
@@ -11439,7 +11441,7 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { passive, spawnPriority })
+      return ensureBackend(profileKey, { passive, spawnPriority })
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -11463,6 +11465,23 @@ async function ensureRegistryBackend(
     }
 
     assertNotPassiveSpawn(passive, localRoute.poolKey)
+
+    const profileExistsLocally =
+      profileKey.toLowerCase() === 'default' ||
+      directoryExists(path.join(HERMES_HOME, 'profiles', profileKey.toLowerCase()))
+
+    if (
+      !shouldRetryForcedLocalSpawn({
+        forceLocal: true,
+        message: `Profile "${profileKey.toLowerCase()}" no longer exists.`,
+        profileExistsLocally
+      })
+    ) {
+      assertLocalProfileCanStart(profileKey, profileDeletionGate, key =>
+        directoryExists(path.join(HERMES_HOME, 'profiles', key))
+      )
+    }
+
     await evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {

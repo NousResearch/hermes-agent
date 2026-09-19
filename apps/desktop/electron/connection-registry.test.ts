@@ -25,6 +25,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  profileNameFromScope,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
@@ -38,6 +39,7 @@ import {
   setLastUsedConnection,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
+  shouldRetryForcedLocalSpawn,
   shouldRetrySshInventory,
   uniqueLabel,
   updateEligibility,
@@ -881,6 +883,65 @@ test('rememberSshEnumeration: a bounced remote source keeps its last-known roste
     profiles: null,
     error: 'boom'
   })
+})
+
+test('profileNameFromScope: denormalizes pool scope keys and keeps bare names', () => {
+  assert.equal(profileNameFromScope('conn:local::default'), 'default')
+  assert.equal(profileNameFromScope('conn:xalis-0::auditor'), 'auditor')
+  assert.equal(profileNameFromScope('default'), 'default')
+  assert.equal(profileNameFromScope('auditor'), 'auditor')
+  assert.equal(profileNameFromScope(''), 'default')
+  assert.equal(profileNameFromScope('   '), 'default')
+})
+
+test('profileNameFromScope + resolveRegistryLocalRoute keeps the conn:local::<profile> pool key', () => {
+  const profile = profileNameFromScope('conn:local::selena')
+  const route = resolveRegistryLocalRoute(profile, { globalRemote: true })
+
+  assert.equal(profile, 'selena')
+  assert.equal(route.delegate, false)
+  assert.equal(route.poolKey, 'conn:local::selena')
+})
+
+test('shouldRetryForcedLocalSpawn: permanent missing-profile forced-local must not retry', () => {
+  assert.equal(
+    shouldRetryForcedLocalSpawn({
+      message: 'Profile "auditor" no longer exists.',
+      profileExistsLocally: false,
+      forceLocal: true
+    }),
+    false
+  )
+})
+
+test('shouldRetryForcedLocalSpawn: transient slot timeout still retries', () => {
+  assert.equal(
+    shouldRetryForcedLocalSpawn({
+      message: 'Local backend start for "auditor" timed out while waiting for a free slot.',
+      profileExistsLocally: true,
+      forceLocal: true
+    }),
+    true
+  )
+})
+
+test('shouldRetryForcedLocalSpawn: crash and ECONNRESET stay retryable', () => {
+  assert.equal(
+    shouldRetryForcedLocalSpawn({
+      message: 'ECONNRESET',
+      profileExistsLocally: true,
+      forceLocal: true
+    }),
+    true
+  )
+  assert.equal(
+    shouldRetryForcedLocalSpawn({
+      message: 'Profile "auditor" no longer exists.',
+      profileExistsLocally: false,
+      forceLocal: false
+    }),
+    true
+  )
 })
 
 test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retries', () => {

@@ -33,6 +33,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from hermes_constants import hermes_home_key
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -1347,8 +1348,73 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+# Historical behaviour, preserved as the defaults: keep 200 chars per string leaf, and only inspect
+# argument blobs longer than 500 chars. Both are now configurable so a user who writes large files
+# through tools is not silently truncated by compaction.
+_TOOL_ARG_HEAD_CHARS_DEFAULT = 200
+_TOOL_ARG_MIN_CHARS_DEFAULT = 500
+# Keyed by ``hermes_home_key()``, not one process-wide slot: under ``gateway.multiplex_profiles`` one
+# process serves every profile, and each routed turn reads config through its own context-local home.
+# A single slot would pin the launch profile's limits onto every other profile (same reason
+# ``tools/tool_output_limits.py`` keys its memo). See ``tests/tools/test_multiplex_tool_memo_scope.py``.
+_cached_tool_arg_limits: Dict[str, tuple[int, int]] = {}
+
+
+def _reset_tool_arg_limits_cache() -> None:
+    """Drop the cached limits — for tests, or after a config hot-reload."""
+    _cached_tool_arg_limits.clear()
+
+
+def get_tool_arg_truncation_limits() -> tuple[int, int]:
+    """Resolved ``(head_chars, min_chars)`` for tool-call argument shrinking; never raises.
+
+    * ``compression.tool_arg_head_chars`` — chars kept per string leaf. Absent/invalid keeps the
+      default ``200``. **A value ``<= 0`` disables argument shrinking entirely**, which is the way to
+      keep large ``write_file`` / ``execute_code`` / heredoc payloads intact through compaction.
+    * ``compression.tool_arg_min_chars`` — only argument blobs longer than this are inspected.
+
+    Cached per Hermes home (the pass runs once per message per compaction, so a config read per
+    message would be wasteful); ``_reset_tool_arg_limits_cache()`` forces a fresh read.
+    """
+    key = hermes_home_key()
+    cached = _cached_tool_arg_limits.get(key)
+    if cached is not None:
+        return cached
+    head_chars = _TOOL_ARG_HEAD_CHARS_DEFAULT
+    min_chars = _TOOL_ARG_MIN_CHARS_DEFAULT
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        section = cfg.get("compression") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            raw_head = section.get("tool_arg_head_chars")
+            if raw_head is not None:
+                try:
+                    head_chars = int(raw_head)
+                except (TypeError, ValueError):
+                    head_chars = _TOOL_ARG_HEAD_CHARS_DEFAULT
+            raw_min = section.get("tool_arg_min_chars")
+            if raw_min is not None:
+                try:
+                    min_chars = max(0, int(raw_min))
+                except (TypeError, ValueError):
+                    min_chars = _TOOL_ARG_MIN_CHARS_DEFAULT
+    except Exception:  # noqa: BLE001 — limits must never break compaction
+        pass
+    _cached_tool_arg_limits[key] = limits = (head_chars, min_chars)
+    return limits
+
+
+def _truncate_tool_call_args_json(args: str, head_chars: int | None = None) -> str:
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    ``head_chars`` is resolved from ``compression.tool_arg_head_chars`` when omitted; ``<= 0`` disables
+    the shrink so the payload passes through untouched.
+    """
+    if head_chars is None:
+        head_chars, _ = get_tool_arg_truncation_limits()
+    if head_chars <= 0:
+        return args
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
@@ -2819,14 +2885,22 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     @staticmethod
     def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid).
+
+        The head size and the "large" threshold come from ``compression.tool_arg_head_chars`` and
+        ``compression.tool_arg_min_chars``. A head of ``<= 0`` disables the pass, leaving payloads
+        (``write_file`` content, ``execute_code`` source, heredoc commands) intact through compaction.
+        """
+        head_chars, min_chars = get_tool_arg_truncation_limits()
+        if head_chars <= 0:
+            return False
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
         new_tcs = []
         for tc in msg["tool_calls"]:
             args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            new_args = _truncate_tool_call_args_json(args, head_chars) if len(args) > min_chars else args
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:
@@ -2937,7 +3011,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             for i in range(max(0, prune_boundary))
         )
         for i in range(max(0, prune_boundary)):
-            self._truncate_tool_call_args_at(result, i)
+            # Counted like pass (2): an argument-only change still prunes, and
+            # ``prune_tool_results_only`` returns the INPUT list when the count is 0 (its documented
+            # no-op contract), so an uncounted truncation silently discarded the configured shrink.
+            if self._truncate_tool_call_args_at(result, i):
+                pruned += 1
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.

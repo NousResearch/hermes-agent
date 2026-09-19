@@ -1088,6 +1088,13 @@ class TurnRunner:
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
         from gateway.run import _checkpoint_agent_kwargs
+        # This build re-reads compression config, and the gateway rebuilds in-process, so the
+        # memoized tool-arg limits must be dropped with it — otherwise a config edit that busts the
+        # agent cache (the tool_arg_* keys are in _CACHE_BUSTING_CONFIG_KEYS) would rebuild the
+        # compressor but leave the old limits active until a process restart.
+        with suppress(Exception):
+            from agent.context_compressor import _reset_tool_arg_limits_cache
+            _reset_tool_arg_limits_cache()
         ctx = self._ctx
         runner = self._runner
         src = ctx.source

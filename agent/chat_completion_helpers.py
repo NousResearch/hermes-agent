@@ -3424,11 +3424,14 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._log_stream_retry(kind="exhausted", error=e, attempt=max_retries + 1,
                 max_attempts=max_retries + 1, mid_tool_call=False, diag=self.clients.diag)
             # Empty stream: "connection failed" would send users chasing network issues.
-            _what = ("Provider returned malformed streaming data after" if _is_stream_parse_err
-                     else "Provider returned an empty response stream after" if _is_empty_stream
-                     else "Connection to provider failed after")
-            self.agent._buffer_diagnostic_status(
-                f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+            if _is_stream_parse_err or _is_empty_stream:
+                _what = ("Provider returned malformed streaming data after" if _is_stream_parse_err
+                         else "Provider returned an empty response stream after")
+                self.agent._buffer_diagnostic_status(
+                    f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+            else:
+                from agent.stream_diag import buffer_connect_exhausted_notice
+                buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
         else:
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)

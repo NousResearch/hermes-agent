@@ -534,6 +534,22 @@ class TestInertContextDemotions:
         assert sev[("redact.py", "dump_all_env")] == "medium"
         assert sev[("priv.py", "sudo_usage")] == "high"
 
+    def test_whole_literal_list_entry_vs_executed_literal(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["gate.py"] = (
+            "_READ_ONLY = frozenset({\n"
+            '    "id", "uname", "uptime", "free", "ps", "printenv",\n'
+            "})\n"
+            "DENY = [\"sudo\", \"rm\"]\n"
+        )
+        files["run.py"] = 'subprocess.run(["sudo", "-n", "true"])\nos.system("printenv")\n'
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sev = {(f.file, f.pattern_id): f.severity for f in result.findings}
+        assert sev[("gate.py", "dump_all_env")] == "medium"   # allowlist entry: a note
+        assert sev[("gate.py", "sudo_usage")] == "medium"     # denylist entry: a note
+        assert sev[("run.py", "sudo_usage")] == "high"        # argv passed to run(): executes
+        assert sev[("run.py", "dump_all_env")] == "high"      # os.system("printenv"): executes
+
     def test_base64_decode_to_text_filter_vs_interpreter(self, tmp_path):
         files = dict(BASE_FILES)
         files["scripts/open-pr.sh"] = "gh api repos/x/contents/y --jq .content | base64 -d | grep '^sha:'\n"

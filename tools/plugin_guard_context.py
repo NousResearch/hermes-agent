@@ -157,11 +157,13 @@ def is_base64_media(line: str) -> bool:
 
 # ── (5)/(6) alternation tokens inside string or regex literals in code ──────────────────────
 # ``sudo`` in ``/clarify|approval|sudo|secret/.test(value)`` classifies an event name; ``env|``
-# in ``re.compile(r"(?:api[_-]?key|…|env|headers)")`` is a redaction regex. The shape that is
-# inert is narrow: the word sits inside a quoted string or regex literal AND is an alternation
-# member (``|sudo|``, ``(sudo|``, ``|env|``). A command string such as ``"sudo apt install x"``
-# or ``"env | grep KEY"`` inside a ``subprocess.run(...)`` literal is how an attack is written
-# and never qualifies. Only word-shaped patterns are eligible.
+# in ``re.compile(r"(?:api[_-]?key|…|env|headers)")`` is a redaction regex; ``"printenv",`` in
+# ``_READ_ONLY_COMMANDS = frozenset({"pwd", "ls", …, "printenv"})`` is a denylist/allowlist entry.
+# The shape that is inert is narrow: the word sits inside a quoted string or regex literal AND is
+# either an alternation member (``|sudo|``, ``(sudo|``, ``|env|``) or the ENTIRE literal
+# (``"printenv"``, ``'sudo'``) on a line that executes nothing. A command string such as
+# ``"sudo apt install x"`` or ``"env | grep KEY"`` inside a ``subprocess.run(...)`` literal is how
+# an attack is written and never qualifies. Only word-shaped patterns are eligible.
 LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
@@ -176,18 +178,30 @@ def _is_alternation_member(line: str, start: int, end: int) -> bool:
     return before in "|(" or after in "|)"
 
 
+def _is_whole_literal(line: str, start: int, end: int, span: tuple[int, int]) -> bool:
+    """The token is the entire quoted content of the literal it sits in (``"printenv"``)."""
+    a, b = span
+    return start == a + 1 and end == b - 1 and line[a] in "\"'`" and not _EXEC_ON_LINE.search(line)
+
+
 def is_regex_alternation_token(finding: Finding, line: str) -> bool:
-    """Every occurrence of the finding's token sits inside a literal as an alternation member."""
+    """Every occurrence of the finding's token sits inside a literal as an alternation member
+    or as the whole literal (a list entry) on a line that executes nothing."""
     token = _PATTERN_TOKEN.get(finding.pattern_id)
     if token is None:
         return False
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(token.finditer(line))
-    return bool(hits) and all(
-        any(a <= h.start() and h.end() <= b for a, b in spans)
-        and " " not in h.group(0) and _is_alternation_member(line, h.start(), h.end())
-        for h in hits
-    )
+
+    def inert(h: "re.Match[str]") -> bool:
+        if " " in h.group(0):
+            return False
+        span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
+        if span is None:
+            return False
+        return _is_alternation_member(line, h.start(), h.end()) or _is_whole_literal(line, h.start(), h.end(), span)
+
+    return bool(hits) and all(inert(h) for h in hits)
 
 
 # ── (6) base64 decode piped to a non-interpreter ────────────────────────────────────────────

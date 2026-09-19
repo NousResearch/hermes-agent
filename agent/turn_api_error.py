@@ -373,6 +373,17 @@ def settle_unrecovered_error(
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
             retry_count = compression_attempts = 0
             return _verdict("break")
+        # Fallback first (above); only with nothing left to move to does the bounded auto-recovery
+        # ladder park the turn on a transient outage instead of ending it (#85426, #107307).
+        from agent.turn_recovery_autorecover import auto_recover_after_exhaustion
+        _ladder = auto_recover_after_exhaustion(
+            agent, api_error, classified, _retry, messages=messages,
+            conversation_history=conversation_history, api_call_count=api_call_count,
+        )
+        if _ladder is not None:
+            if _ladder["action"] == "continue":
+                retry_count = 0
+            return _verdict(_ladder["action"], _ladder.get("result"))
         return _verdict("return", max_retries_exhausted_result(
             agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,

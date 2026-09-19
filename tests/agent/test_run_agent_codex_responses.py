@@ -2958,6 +2958,31 @@ def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
     assert "attempt=2/2" in message
 
 
+def test_run_codex_stream_prestream_exhaustion_buffers_one_user_line_with_host_attempts_size(monkeypatch):
+    """#97548: when the pre-stream connect retries are spent the user gets ONE line naming the
+    endpoint host, the attempt count and the serialized request size (agent.log was the only place
+    those lived), and re-entering the stream call from the outer retry loop does not add a copy."""
+    import httpx
+    from openai import APIConnectionError
+
+    agent = _build_agent(monkeypatch)
+    body = b'{"model":"gpt-5-codex","input":"' + b"x" * (829 * 1024) + b'"}'
+    request = httpx.Request("POST", "https://api.example.com/backend-api/codex/responses", content=body)
+    agent.client = SimpleNamespace(responses=SimpleNamespace(
+        create=lambda **kwargs: _raise_prestream_transport_error(request)))
+
+    for _outer_retry in range(2):
+        with pytest.raises(APIConnectionError):
+            agent._run_codex_stream(_codex_request_kwargs())
+
+    lines = [str(msg) for _kind, msg in agent._retry_status_buffer]
+    assert len(lines) == 1, lines
+    assert "api.example.com" in lines[0]
+    assert "after 2 attempts" in lines[0]
+    assert f"request {round(len(body) / 1024)} KB" in lines[0]
+    assert "reject requests this large" in lines[0]
+
+
 def _codex_truncated_tool_call_response():
     """``status=incomplete`` (max_output_tokens) whose function_call item was cut mid-arguments
     and settled as ``completed`` — the self-hosted /v1/responses shape from #91770."""

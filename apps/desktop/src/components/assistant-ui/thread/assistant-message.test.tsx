@@ -5,7 +5,7 @@
 // AssistantMessage's action bar hide the button entirely when no handler is
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -170,15 +170,18 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
-  onBranchInNewChat
+  onBranchInNewChat,
+  onReload
 }: {
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
+  onReload?: () => Promise<void>
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [userMessage(), assistant],
     isRunning: false,
-    onNew: async () => {}
+    onNew: async () => {},
+    ...(onReload ? { onReload } : {})
   })
 
   return (
@@ -302,6 +305,66 @@ describe('code-keyed error card copy and actions', () => {
 
     expect(await screen.findByText("Hermes couldn't finish this reply")).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
+})
+
+describe('scheduled retry at the usage-limit reset (#98852)', () => {
+  const rateLimited = (resetsAt: number) =>
+    failedMessage(
+      { code: 'rate_limit', layer: 'provider', provider: 'openai', resetsAt, retryable: true },
+      'HTTP 429: {"error":{"message":"Rate limit reached"}}'
+    )
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('fires the same reload as Retry exactly once, at resets_at and not before', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+
+    const arm = await screen.findByRole('button', { name: /^Retry when the limit resets \(\d\d:\d\d\)$/ })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+
+    expect(screen.getByTestId('error-retry-scheduled').textContent).toMatch(/Retrying at \d\d:\d\d — in \d+m \d\ds/)
+    expect(screen.queryByRole('button', { name: /^Retry when the limit resets/ })).toBeNull()
+
+    await act(async () => vi.advanceTimersByTime(resetsAt * 1000 - Date.now() - 1_000))
+    expect(onReload).not.toHaveBeenCalled()
+
+    await act(async () => vi.advanceTimersByTime(1_000))
+    expect(onReload).toHaveBeenCalledTimes(1)
+
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it('never fires after Cancel or unmount, and hides the button once the reset has passed', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    const view = render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+    const armName = /^Retry when the limit resets/
+
+    fireEvent.click(await screen.findByRole('button', { name: armName }))
+    vi.useFakeTimers()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('error-retry-scheduled')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: armName }))
+    view.unmount()
+
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).not.toHaveBeenCalled()
+    vi.useRealTimers()
+
+    render(<Harness assistant={rateLimited(Math.floor(Date.now() / 1000) - 60)} onReload={onReload} />)
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: armName })).toBeNull()
   })
 })
 

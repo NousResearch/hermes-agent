@@ -31,14 +31,28 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
 
 _COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
 
+# A JS regex literal (``/<script[\s\S]*?<\/script>/gi``) matches markup, it cannot inject any: a
+# feed sanitiser that STRIPS script tags is the opposite of the move the rule refuses. Regex
+# literals are masked for the markup-shaped rules only; a ``<script`` inside a string literal is
+# still the payload of an ``innerHTML`` write and keeps firing. The lookbehind keeps division
+# (``a / b / c``) from reading as a literal.
+_REGEX_LITERAL = re.compile(r"(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[a-z]*")
+_MARKUP_RULES = frozenset({"script injection"})
+
+
+def _mask_regex_literals(source: str) -> str:
+    return _REGEX_LITERAL.sub(lambda m: " " * len(m.group(0)), source)
+
 
 def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:
     """Return ``[(rule, line)]`` for every forbidden construct in a plugin.js source."""
     stripped = _COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), source)
+    no_regex = _mask_regex_literals(stripped)
     findings: List[Tuple[str, int]] = []
     for rule, pattern in _FORBIDDEN:
-        for match in pattern.finditer(stripped):
-            findings.append((rule, stripped.count("\n", 0, match.start()) + 1))
+        haystack = no_regex if rule in _MARKUP_RULES else stripped
+        for match in pattern.finditer(haystack):
+            findings.append((rule, haystack.count("\n", 0, match.start()) + 1))
     return sorted(findings, key=lambda f: f[1])
 
 

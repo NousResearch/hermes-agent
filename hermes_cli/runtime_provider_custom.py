@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.secret_scope import get_secret_str
@@ -456,6 +456,29 @@ def _custom_runtime(rp, base_url: str, api_key: Any, api_mode: Optional[str], **
     """``custom`` runtime dict with URL-detected api_mode fallback and the no-auth placeholder."""
     return rp._runtime("custom", api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                        api_key or "no-key-required", **extra)
+
+
+# Aliases for direct REST APIs not modeled in PROVIDER_REGISTRY, so ``provider: openai`` (aux slots,
+# background review, curator, MoA slots, the main model) resolves to a working ``custom`` endpoint
+# instead of "Unknown provider" and a silent fall-back to the main model (#116055).
+_DIRECT_API_BASE_URLS: Dict[str, str] = {"openai": "https://api.openai.com/v1"}
+
+
+def expand_direct_api_alias(provider: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """``provider: openai`` → custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
+
+    The ONE normalization both aux paths (``agent.auxiliary_client`` and ``resolve_runtime_provider``)
+    apply, so the same ``auxiliary.<task>.provider`` value routes identically everywhere. A
+    ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url
+    and key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over
+    the public endpoint — sending the proxy key to api.openai.com 401s and then quarantines a valid key.
+    """
+    if not provider:
+        return provider, existing_base
+    target_base = _DIRECT_API_BASE_URLS.get(provider.strip().lower())
+    if target_base is None or _rp()._get_named_custom_provider(provider) is not None:
+        return provider, existing_base
+    return "custom", (existing_base or "").strip() or get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
 
 
 def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Optional[str],

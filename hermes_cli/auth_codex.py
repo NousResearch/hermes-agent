@@ -874,12 +874,14 @@ def _pool_codex_access_token() -> str:
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:
-    """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
+    """OpenAI Codex login: device code by default, browser PKCE when opted in (``--browser`` /
+    ``auth.codex_login_flow``). Tokens stored in ~/.hermes/auth.json."""
     from hermes_cli.auth import (
-        _codex_access_token_is_expiring, _codex_device_code_login, _import_codex_cli_tokens,
+        _codex_access_token_is_expiring, _import_codex_cli_tokens,
         _offer_existing_oauth_credentials, _print_login_success, _prompt_yes_no, _save_codex_tokens,
         _update_config_for_provider, resolve_codex_runtime_credentials)
-    del args, pconfig  # kept for parity with other provider login helpers
+    from hermes_cli.auth_codex_browser import codex_oauth_login
+    del pconfig  # kept for parity with other provider login helpers
     if not force_new_login:
         if _offer_existing_oauth_credentials(
             "openai-codex", resolve=resolve_codex_runtime_credentials,
@@ -901,12 +903,10 @@ def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool 
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
                 return
 
-    # Run a fresh device code flow — Hermes gets its own OAuth session
+    # Run a fresh OAuth flow — Hermes gets its own session (device code unless the user opted in
+    # to the browser flow).
     print()
-    print("Signing in to OpenAI Codex...")
-    print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
-    print()
-    creds = _codex_device_code_login()
+    creds = codex_oauth_login(args)
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
     config_path = _update_config_for_provider(
         "openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))

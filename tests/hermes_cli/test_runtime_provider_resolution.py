@@ -2133,3 +2133,33 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
 
     assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
+
+
+# ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────
+
+def test_openai_alias_resolves_identically_on_runtime_and_aux_client_paths(monkeypatch):
+    """background_review/curator/MoA (resolve_runtime_provider) and compression/vision/title
+    (_resolve_task_provider_model) must land on the same endpoint for the same aux block."""
+    from agent import auxiliary_client as aux
+    block = {"provider": "openai", "model": "review-model", "base_url": "https://gateway.example/v1", "api_key": "gw-key"}
+    monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: block if task == "background_review" else {})
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
+
+    aux_provider, aux_model, aux_base, aux_key, _ = aux._resolve_task_provider_model("background_review")
+    runtime = rp.resolve_runtime_provider(requested=block["provider"], target_model=block["model"],
+                                          explicit_api_key=block["api_key"], explicit_base_url=block["base_url"])
+
+    assert (aux_provider, aux_base, aux_key) == ("custom", "https://gateway.example/v1", "gw-key")
+    assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == (aux_provider, aux_base, aux_key)
+
+
+def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(monkeypatch):
+    """No aux base_url: the alias lands on OPENAI_BASE_URL (the proxy the key was issued for) and the
+    runtime path pairs OPENAI_API_KEY with it instead of sending a placeholder key to the proxy."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm-proxy.corp.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proxy-issued")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
+
+    runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
+
+    assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")

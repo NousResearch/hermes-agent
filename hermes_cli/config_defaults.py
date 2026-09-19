@@ -107,6 +107,12 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
+        # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
+        # more cycles (jittered 15/30/60/60/60s; a provider Retry-After wins up to 120s) with a
+        # visible "retrying automatically" countdown instead of ending the turn. Esc/interrupt stops
+        # the wait; auth/format/billing/policy errors never enter. 0 disables.
+        "auto_recovery_cycles": 5,
         # Seconds the Codex/Responses stream may keep reading after its terminal frame so the relay
         # finalizer can run. Relays that never close the SSE socket after response.completed would
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
@@ -1688,6 +1694,13 @@ DEFAULT_CONFIG = {
         # its own logins (`hermes auth add <provider>`). `hermes auth add openai-codex` still offers the import
         # interactively.
         "adopt_external_logins": True,
+        # How `hermes auth add openai-codex` / `hermes model` sign in to OpenAI Codex.
+        # "device_code" (default): open a URL, enter a code. "browser": authorization-code + PKCE on
+        # the loopback listener http://localhost:1455/auth/callback (the redirect OpenAI registered
+        # for the Codex client) — for organizations that disable the device-code grant. Falls back
+        # to device code when that port is busy. `hermes auth add openai-codex --browser` opts in
+        # for one login without changing this key.
+        "codex_login_flow": "device_code",
     },
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)

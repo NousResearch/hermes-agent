@@ -218,12 +218,25 @@ class _OAuthAddSpec:
 
     login: Callable[[Any], dict]
     token: Callable[[dict], str]
-    source: str
+    # Pool ``source`` string, or a callable deriving it from the login result when one provider
+    # offers several flows (Codex: device code vs browser PKCE).
+    source: str | Callable[[dict], str]
     fields: Callable[[dict, str], dict]
     activate_first: bool = False
     # OpenRouter's PKCE exchange mints a plain API key (no refresh pair), so its pool entry is an
     # ``api_key`` row that happens to come from a browser login.
     auth_type: str = AUTH_TYPE_OAUTH
+
+
+def _codex_login(args) -> dict:
+    from hermes_cli.auth_codex_browser import codex_oauth_login
+    return codex_oauth_login(args)
+
+
+def _codex_pool_source(creds: dict) -> str:
+    if creds.get("source") == "loopback_pkce":
+        return f"{SOURCE_MANUAL}:loopback_pkce"
+    return SOURCE_MANUAL_DEVICE_CODE
 
 
 _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
@@ -236,9 +249,9 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
             "expires_at_ms": creds.get("expires_at_ms"),
             "base_url": _provider_base_url(provider)}),
     "openai-codex": _OAuthAddSpec(
-        login=lambda args: auth_mod._codex_device_code_login(),
+        login=_codex_login,
         token=lambda creds: creds["tokens"]["access_token"],
-        source=SOURCE_MANUAL_DEVICE_CODE,
+        source=_codex_pool_source,
         fields=lambda creds, provider: {
             "refresh_token": creds["tokens"].get("refresh_token"),
             "base_url": creds.get("base_url"),
@@ -380,7 +393,11 @@ def auth_add_command(args) -> None:
         _unsuppress_provider_sources(provider)
 
     wanted_priority = getattr(args, "priority", None)
-    entry = _add_credential(args, provider, pool, requested_type)
+    try:
+        entry = _add_credential(args, provider, pool, requested_type)
+    except auth_mod.AuthError as exc:
+        # A denied / mismatched / timed-out OAuth login is a user-facing outcome, not a crash.
+        raise SystemExit(f"Login failed: {auth_mod.format_auth_error(exc)}") from exc
     if wanted_priority is not None:
         placed_pool = load_pool(provider)
         moved = placed_pool.move_entry(entry.id, int(wanted_priority))
@@ -406,7 +423,8 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
-        source=spec.source, access_token=token, **spec.fields(creds, provider))
+        source=spec.source(creds) if callable(spec.source) else spec.source,
+        access_token=token, **spec.fields(creds, provider))
     existing = pool.entries()
     entry = pool.add_entry(entry)
     # The first Codex/xAI credential becomes the active provider (as the old singleton save path

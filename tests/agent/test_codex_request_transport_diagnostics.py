@@ -52,6 +52,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
         provider="openai-codex",
         session_id="",
         _client_log_context=lambda: "",
+        _buffer_diagnostic_status=lambda message: None,
     )
 
     with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):

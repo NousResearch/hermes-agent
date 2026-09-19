@@ -161,6 +161,9 @@ export interface ClientSessionState {
   model: string
   provider: string
   reasoningEffort: string
+  /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
+   *  has stamped the current pick (so a clamp is never inferred client-side). */
+  reasoningEffortWire?: string
   serviceTier: string
   fast: boolean
   yolo: boolean

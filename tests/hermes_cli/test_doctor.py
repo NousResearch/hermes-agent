@@ -1887,3 +1887,20 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls == [["/usr/bin/docker", "version"]]
+
+
+def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypatch):
+    """A routed auxiliary.<task> block that the runtime resolver rejects is a doctor finding, not a
+    silent fall-back to the main model (#116055); a resolvable one is not flagged."""
+    import yaml
+    from hermes_cli import doctor_config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "background_review": {"provider": "no-such-provider", "model": "m"},
+        "compression": {"provider": "openai", "model": "gpt-x", "base_url": "https://gateway.example/v1", "api_key": "gw"},
+    }}))
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]

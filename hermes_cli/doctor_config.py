@@ -267,6 +267,33 @@ def _validate_model_config(config_path, issues: list) -> None:
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
 
 
+def _validate_auxiliary_config(config_path, issues: list) -> None:
+    """Resolve every routed ``auxiliary.<task>`` block through the real entry point the tasks use and report
+    the ones that fail — an unresolvable block otherwise silently runs the task on the main model (#116055)."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from utils import base_url_hostname
+    aux = read_user_config_raw(config_path).get("auxiliary")
+    routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
+              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+    ok = []
+    for task, block in sorted(routed.items()):
+        provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
+        try:
+            runtime = resolve_runtime_provider(requested=provider, target_model=model, explicit_api_key=api_key, explicit_base_url=base_url)
+        except Exception as exc:  # noqa: BLE001 — every resolver error is a finding here
+            _fail_and_issue(f"auxiliary.{task}.provider '{provider}' does not resolve", f"({str(exc).splitlines()[0]})",
+                            f"auxiliary.{task}.provider '{provider}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
+                            f"silently runs on the main model. Fix the provider name/credentials in auxiliary.{task}.", issues)
+            continue
+        if not runtime.get("api_key") and not runtime.get("command"):
+            check_warn(f"auxiliary.{task}.provider '{provider}' resolved without credentials", f"({runtime.get('provider')} @ {runtime.get('base_url')})")
+            continue
+        ok.append(f"{task}→{runtime.get('provider')}@{base_url_hostname(str(runtime.get('base_url') or '')) or '?'}")
+    if ok:
+        check_ok("auxiliary task routing resolves: " + ", ".join(ok))
+
+
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
@@ -276,6 +303,8 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
+        with warn_on_error("Could not validate auxiliary task routing"):
+            _validate_auxiliary_config(config_path, f.issues)
     elif (PROJECT_ROOT / 'cli-config.yaml').exists():
         check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:

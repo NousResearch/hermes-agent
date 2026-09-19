@@ -227,6 +227,34 @@ class TestLifecycle:
         assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == base
         assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == base
 
+    def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
+        """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
+        second ``thread/start``); when codex cannot hand it back the failure is typed and the NEXT
+        ensure_started() starts a fresh thread on the same handshaken client."""
+        from agent.transports.codex_app_server import CodexAppServerError
+        from agent.transports.codex_app_server_session import CodexThreadResumeError
+
+        client = FakeClient()
+        client._request_handler = lambda method, params: (
+            {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {"thread": {"id": "fresh-1"}})
+        s = make_session(client, resume_thread_id="stored-1", developer_instructions="SOUL")
+        assert s.ensure_started() == s.ensure_started() == "stored-1"
+        assert [m for m, _ in client.requests] == ["thread/resume"]
+        assert client.requests[0][1] == {"threadId": "stored-1", "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL"}
+
+        def refuse(method, params):
+            if method == "thread/resume":
+                raise CodexAppServerError(code=-32600, message=f"no rollout found for thread id {params['threadId']}")
+            return {"thread": {"id": "fresh-2"}}
+        client = FakeClient()
+        client._request_handler = refuse
+        s = make_session(client, resume_thread_id="gone-1")
+        with pytest.raises(CodexThreadResumeError) as exc_info:
+            s.ensure_started()
+        assert exc_info.value.thread_id == "gone-1"
+        assert s.ensure_started() == "fresh-2"
+        assert [m for m, _ in client.requests] == ["thread/resume", "thread/start"]
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

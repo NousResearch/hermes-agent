@@ -431,6 +431,23 @@ def _imagegen_backend_active(provider: dict, config: dict) -> bool:
         and not is_truthy_value(image_cfg.get("use_gateway"), default=False))
 
 
+def _web_row_env_ready(provider: dict) -> bool:
+    """True when a web picker row's declared env vars are all configured — no-key rows pass trivially.
+
+    Multiple rows can share one ``web_backend``: cloud Firecrawl (``FIRECRAWL_API_KEY``) and the
+    "Firecrawl Self-Hosted" setup row (``FIRECRAWL_API_URL``) both carry ``web_backend: firecrawl``.
+    Without this check, ``web.backend: firecrawl`` marks BOTH rows active and
+    ``_detect_active_provider_index`` defaults the picker to the Self-Hosted row even on cloud-key
+    installs, so the tools UI misidentifies the configured provider."""
+    if not (provider.get("env_vars") or []):
+        return True
+    try:
+        from hermes_cli.tools_config import _provider_env_ready
+        return bool(_provider_env_ready(provider))
+    except Exception:
+        return True
+
+
 # Non-managed active checks, evaluated in order; the first marker the row carries decides (see ``_has_marker``).
 # Default stt.provider is "local" — an unset key means Local Whisper.
 _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
@@ -438,7 +455,7 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("browser_provider", _browser_provider_active),
     ("browser_backend", _browser_backend_active),
-    ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c)),
+    ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c) and _web_row_env_ready(p)),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
 

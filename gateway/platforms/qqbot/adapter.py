@@ -63,6 +63,7 @@ class QQCloseError(Exception):
 from gateway.platforms.qqbot.constants import (
     API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
+    OPEN_WS_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS,
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
@@ -210,7 +211,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 timeout=30.0, follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
 
-            await self._open_gateway_ws(log_url=True)
+            await asyncio.wait_for(self._open_gateway_ws(log_url=True), timeout=OPEN_WS_TIMEOUT_SECONDS)
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
@@ -394,9 +395,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
                 await reconnect()
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                    self._mark_disconnected()
-                    return
+                    # NEVER retire the listener here: _mark_disconnected() clears _running, the next
+                    # while-check exits, and the channel is silently dead until a process restart.
+                    # Long outages (DNS blips) are the normal case — keep retrying with capped
+                    # backoff, like the weixin/wecom adapters do.
+                    logger.error(
+                        "[%s] %d consecutive reconnect attempts failed (QQCloseError); resetting "
+                        "backoff and continuing to retry", self._log_tag, MAX_RECONNECT_ATTEMPTS)
+                    backoff_idx = quick_disconnect_count = 0
+                    await asyncio.sleep(RATE_LIMIT_DELAY)
 
             except Exception as exc:
                 if not self._running:
@@ -406,9 +413,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
-                    return
+                    # Same rule as the QQCloseError branch: never exit the listener on a transient
+                    # outage (that silently kills the channel until a restart).
+                    logger.error(
+                        "[%s] %d consecutive reconnect attempts failed; resetting backoff and "
+                        "continuing to retry", self._log_tag, MAX_RECONNECT_ATTEMPTS)
+                    backoff_idx = quick_disconnect_count = 0
+                    await asyncio.sleep(RATE_LIMIT_DELAY)
                 await reconnect()
 
     async def _reconnect(self, backoff_idx: int) -> bool:
@@ -418,10 +429,20 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         self._heartbeat_interval = 30.0  # reset until Hello
         try:
-            await self._open_gateway_ws()
+            # Bounded open (token + gateway URL + ws_connect). Unbounded, a stalled open left the
+            # listener task parked forever: no "Reconnected", no "Reconnect failed", and no further
+            # attempt — the channel stayed deaf until the next process restart. See constants.py.
+            await asyncio.wait_for(self._open_gateway_ws(), timeout=OPEN_WS_TIMEOUT_SECONDS)
             self._mark_connected()
             logger.info("[%s] Reconnected", self._log_tag)
             return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Reconnect attempt %d timed out after %.0fs (gateway WS open stalled); "
+                "backing off and retrying", self._log_tag, backoff_idx + 1, OPEN_WS_TIMEOUT_SECONDS)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._close_ws(), timeout=10.0)
+            return False
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
             return False
@@ -435,7 +456,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             raise RuntimeError("WebSocket closed")
 
         while self._running and self._ws and not self._ws.closed:
-            msg = await self._ws.receive()
+            # Half-open guard: a peer that stops sending without a CLOSE frame leaves
+            # ``receive()`` parked forever (no exception, no reconnect). QQ answers every op1
+            # heartbeat with an op11 ACK, so this much silence means the socket is dead.
+            try:
+                msg = await asyncio.wait_for(
+                    self._ws.receive(),
+                    timeout=max(READ_TIMEOUT_SECONDS, 3.0 * self._heartbeat_interval))
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"no WebSocket frame for {max(READ_TIMEOUT_SECONDS, 3.0 * self._heartbeat_interval):.0f}s "
+                    "(dead connection)")
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)
                 if payload:

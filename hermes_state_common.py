@@ -497,6 +497,20 @@ CREATE TABLE IF NOT EXISTS conversation_generations (
     PRIMARY KEY (source, session_key)
 );
 
+-- Provider generation ids, one row per billed API call that reported one
+-- (OpenRouter ``gen-...``; enables exact back-sampling of GET
+-- /api/v1/generation for billed-cost reconciliation). Additive-only table;
+-- rides the sessions FK so ids cascade away with their session.
+CREATE TABLE IF NOT EXISTS generation_ids (
+    generation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    model TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_generation_ids_session ON generation_ids(session_id);
+
 -- Per-backend liveness heartbeat (#94895). Each serve / tui_gateway process
 -- registers a row at startup and refreshes ``last_heartbeat`` periodically.
 -- The startup orphan sweep (sessions.startup_orphan_reap) consults this

@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import estimate_usage_cost, extract_billed_cost, normalize_usage
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -99,6 +99,10 @@ def record_response_usage(
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)
+    # Billed cost primary: aggregators that invoice per response report the exact amount
+    # in usage.cost (OpenRouter). Recorded as actual_cost_usd in the ledger; the
+    # token-rate estimate below stays the fallback for providers without it.
+    billed_cost = extract_billed_cost(response.usage)
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.
     aggregator_usage = canonical_usage
@@ -201,11 +205,14 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    # billed= is the provider's exact invoice for this response (usage.cost). Appended
+    # last so existing prefix parsers keep matching.
+    _billed = f" billed={billed_cost:.6f}" if billed_cost is not None else ""
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
+        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",
         prompt_tokens, completion_tokens, total_tokens,
-        api_duration, _cache_pct, _ident,
+        api_duration, _cache_pct, _ident, _billed,
     )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
@@ -242,6 +249,12 @@ def record_response_usage(
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
+    if billed_cost is not None:
+        # The provider invoiced this exact response: actual wins over the estimate for
+        # both the session-level status and the ledger row (actual_cost_usd).
+        agent.session_cost_status = "actual"
+        agent.session_cost_source = "provider_cost_api"
+        agent.session_billed_cost_usd = getattr(agent, "session_billed_cost_usd", 0.0) + float(billed_cost)
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite
@@ -262,8 +275,9 @@ def record_response_usage(
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
                 estimated_cost_usd=_cost_delta,
-                cost_status=cost_result.status,
-                cost_source=cost_result.source,
+                actual_cost_usd=None if billed_cost is None else float(billed_cost),
+                cost_status=agent.session_cost_status,
+                cost_source=agent.session_cost_source,
                 billing_provider=agent.provider,
                 billing_base_url=agent.base_url,
                 billing_mode="subscription_included"
@@ -276,6 +290,14 @@ def record_response_usage(
                 "Token persistence failed (session=%s, tokens=%d): %s",
                 agent.session_id, total_tokens, e,
             )
+        # Generation id (OpenRouter gen-...): persisted for exact billed-cost back-sampling
+        # via GET /api/v1/generation. Best-effort — a lost id never breaks a turn.
+        if isinstance(_rid, str) and _rid:
+            try:
+                agent._session_db.record_generation_id(
+                    agent.session_id, _rid, model=agent.model, provider=agent.provider)
+            except Exception as e:
+                logger.debug("Generation id persistence failed (session=%s): %s", agent.session_id, e)
 
     if agent.verbose_logging:
         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

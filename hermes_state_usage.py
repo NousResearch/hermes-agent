@@ -311,7 +311,9 @@ class SessionUsageMixin:
         # model/provider *active at the time of that call*. Recording the per-call delta into
         # session_model_usage keyed by the live model preserves an accurate per-model breakdown regardless
         # of how many times the user switches. See #51607.
-        record_model_usage = (not absolute) and has_usage
+        # has_accounted_usage, not bare has_usage: a billed-cost-only delta (provider reported
+        # usage.cost but a proxy stripped the token fields) still attributes to its route.
+        record_model_usage = (not absolute) and has_accounted_usage
 
         def _do(conn):
             row = conn.execute(
@@ -370,6 +372,7 @@ class SessionUsageMixin:
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
         billing_base_url: Optional[str]=None, input_tokens: int=0, output_tokens: int=0, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
+        actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         api_call_count: int=1,
     ) -> None:
         """Record an auxiliary LLM call's usage (vision, compression, title generation, ...)
@@ -389,6 +392,26 @@ class SessionUsageMixin:
         # the placeholder stays repairable by the creator's upsert (_insert_session_row).
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
+
+    def record_generation_id(
+        self, session_id: str, generation_id: str, *, model: Optional[str]=None,
+        provider: Optional[str]=None, task: str="",
+    ) -> None:
+        """Persist a provider generation id (OpenRouter ``gen-...``) for one billed API
+        call, so GET /api/v1/generation can be back-sampled per response for billed-cost
+        reconciliation. Idempotent (``INSERT OR IGNORE`` keyed on the id); *task*
+        mirrors the aux-accounting dimension (``''`` = main loop). Caller wraps in
+        best-effort try/except — a lost id must never break a turn."""
+        if not session_id or not generation_id:
+            return
+        self._insert_session_row(session_id, "unknown")
+        def _do(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO generation_ids "
+                "(generation_id, session_id, model, provider, task, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (generation_id, session_id, model or "", provider or "", task or "", time.time()),
+            )
+        self._execute_write(_do)
 
     def auxiliary_usage_by_task(self, session_id: str) -> Dict[str, Dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

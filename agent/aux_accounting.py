@@ -64,13 +64,17 @@ def record_aux_usage(
         if raw_usage is None:
             return
 
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.usage_pricing import estimate_usage_cost, extract_billed_cost, normalize_usage
 
         usage = normalize_usage(raw_usage, provider=provider)
+        # Billed cost primary (usage.cost on aggregators): actual wins over the estimate.
+        # Extracted before the token gate so a cost-only response still records.
+        billed_cost = extract_billed_cost(raw_usage)
         if not (
             usage.input_tokens or usage.output_tokens
             or usage.cache_read_tokens or usage.cache_write_tokens
             or usage.reasoning_tokens
+            or billed_cost is not None
         ):
             return
         model = str(getattr(response, "model", "") or "") or "unknown"
@@ -86,7 +90,15 @@ def record_aux_usage(
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,
+            actual_cost_usd=None if billed_cost is None else float(billed_cost),
+            cost_status=None if billed_cost is None else "actual",
+            cost_source=None if billed_cost is None else "provider_cost_api",
         )
+        # Generation id for the aux call (same back-sampling value as the main loop's).
+        gid = getattr(response, "id", None)
+        if isinstance(gid, str) and gid:
+            session_db.record_generation_id(
+                session_id, gid, model=model, provider=provider, task=task)
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)
 

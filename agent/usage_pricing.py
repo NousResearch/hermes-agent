@@ -546,6 +546,28 @@ def normalize_usage(
     )
 
 
+def extract_billed_cost(response_usage: Any) -> Optional[Decimal]:
+    """Provider-reported billed cost for one response, when the API reports one.
+    OpenRouter's chat completions return ``usage.cost`` in USD (with the upstream
+    breakdown in ``usage.cost_details``). None when the provider does not bill per
+    response (most direct APIs) — callers then keep the token-rate estimate as the
+    authoritative figure. Reads dicts, attribute objects, and pydantic models that
+    park unknown fields in ``model_extra`` (the OpenAI SDK retains OpenRouter's
+    ``cost`` there on some versions). Negative or non-numeric values read as None.
+    """
+    if not response_usage:
+        return None
+    if isinstance(response_usage, dict):
+        value = response_usage.get("cost")
+    else:
+        value = getattr(response_usage, "cost", None)
+        if value is None:
+            extra = getattr(response_usage, "model_extra", None)
+            value = extra.get("cost") if isinstance(extra, dict) else None
+    cost = _to_decimal(value)
+    return None if cost is None or cost < _ZERO else cost
+
+
 def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 

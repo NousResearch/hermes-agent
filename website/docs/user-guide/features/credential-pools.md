@@ -194,8 +194,17 @@ others, then persists the new order to `auth.json`. The demoted entry stays heal
 exhausted, so it is never touched by the Codex quota-reset probe and there is nothing for
 `hermes auth reset` to clear; it is not refreshed on a timer, and it is still used once every
 credential ahead of it is benched.
-Sessions that already hold a credential keep it until they rotate; new sessions (and the next
-gateway start) follow the new order.
+The command increments the provider's pool policy generation. CLI and cached gateway sessions
+adopt the new preference at their next turn; a running turn keeps its current credential and client.
+Explicit account keys, leased child credentials, and the session's provider, model and endpoint
+remain authoritative. Failed reads or client construction keep the last working credential.
+
+External schedulers can use `CredentialPool.move_entry()` or
+`write_credential_pool(provider, entries, policy_update=True)` to publish an order or admission
+change. Routine token refresh, cooldown and round-robin writes do not increment the generation.
+Changing `credential_pool_strategies` also takes effect at the next turn. Diagnostic logs report
+`source=pool` and its generation, or `source=pinned_or_overridden` / `source=last_good`; they do
+not include account labels or tokens.
 
 ## Error Recovery
 

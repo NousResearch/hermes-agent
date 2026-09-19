@@ -61,7 +61,7 @@ def _entry(*, id: str, access_token: str, refresh_token: str, source: str) -> Po
 
 
 @pytest.fixture(autouse=True)
-def _fake_pool_store(monkeypatch):
+def _fake_pool_store(monkeypatch, tmp_path):
     """Back write/read_credential_pool with a shared in-memory dict.
 
     This stands in for ``~/.hermes/auth.json`` so the two "process-local"
@@ -69,15 +69,19 @@ def _fake_pool_store(monkeypatch):
     other's persisted writes (exactly what the real cross-process recovery
     path depends on), without touching the real filesystem.
     """
+    monkeypatch.setattr("agent.anthropic_credentials.claude_code_credentials_path",
+                        lambda: tmp_path / ".credentials.json")
     store: Dict[str, list] = {}
 
-    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None):
+    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None,
+               policy_update=False, expected_policy_generation=None):
         store[provider] = list(entries)
 
-    def _read(provider=None):
+    def _read(provider=None, *, include_generation=False):
         if provider is None:
             return dict(store)
-        return list(store.get(provider, []))
+        rows = list(store.get(provider, []))
+        return (rows, 0) if include_generation else rows
 
     monkeypatch.setattr("agent.credential_pool.write_credential_pool", _write)
     monkeypatch.setattr("agent.credential_pool.read_credential_pool", _read)

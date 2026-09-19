@@ -6,6 +6,7 @@ from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 
 import logging
+from contextlib import nullcontext
 import os
 import random
 import threading
@@ -797,6 +798,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
+        from hermes_constants import hermes_home_key
+        self._policy_home = hermes_home_key()
+        self._policy_generation = 0
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
         # design) still serializes its pool mutations; in-lock callers
@@ -921,15 +925,21 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         *,
         removed_ids: Optional[List[str]] = None,
         status_cleared_ids: Optional[List[str]] = None,
+        policy_update: bool = False,
     ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
-        with self._lock:
+        with self._lock, (_auth_store_lock() if policy_update else nullcontext()):
             write_credential_pool(
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
+                policy_update=policy_update,
+                expected_policy_generation=getattr(self, "_policy_generation", None),
             )
+            if policy_update:
+                from agent.credential_pool_policy import policy_generation
+                self._policy_generation = policy_generation(_load_auth_store(), self.provider)
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
         """``replace(entry, **updates)``, swap it into the pool, optionally persist."""
@@ -2734,9 +2744,12 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     return seed.result
 
 
-def load_pool(provider: str) -> CredentialPool:
+def load_pool(provider: str, *, policy_snapshot=None) -> CredentialPool:
     provider = (provider or "").strip().lower()
-    raw_entries = read_credential_pool(provider)
+    if policy_snapshot is None:
+        raw_entries, generation = read_credential_pool(provider, include_generation=True)
+    else:
+        raw_entries, generation = policy_snapshot
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
     changed = any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
@@ -2773,5 +2786,8 @@ def load_pool(provider: str) -> CredentialPool:
             provider,
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
             removed_ids=disk_ids - new_ids,
+            expected_policy_generation=generation,
         )
-    return CredentialPool(provider, entries)
+    pool = CredentialPool(provider, entries)
+    pool._policy_generation = generation
+    return pool

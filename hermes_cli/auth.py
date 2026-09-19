@@ -764,17 +764,25 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+def read_credential_pool(provider_id: Optional[str] = None, *, include_generation: bool = False):
     """Return the persisted credential pool of the ACTIVE store, or one provider slice.
+
+    ``include_generation`` returns (rows, generation) from the same file read,
+    without waiting on token-refresh writers.
 
     A named profile reads only its own ``auth.json``: credentials authenticated at the root are
     not inherited (#111724) — ``hermes -p <name> auth add <provider>`` gives the profile its own."""
-    pool = _load_auth_store().get("credential_pool")
+    store = _load_auth_store()
+    pool = store.get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
     if provider_id is None:
         return dict(pool)
     entries = pool.get(provider_id)
-    return list(entries) if isinstance(entries, list) else []
+    entries = list(entries) if isinstance(entries, list) else []
+    if include_generation:
+        from agent.credential_pool_policy import policy_generation
+        return entries, policy_generation(store, provider_id)
+    return entries
 
 
 _POOL_STATUS_FIELDS = (
@@ -840,8 +848,14 @@ def write_credential_pool(
     provider_id: str, entries: List[Dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
+    policy_update: bool = False,
+    expected_policy_generation: Optional[int] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
+
+    Operators/schedulers pass ``policy_update=True`` to publish an admission/order
+    change for the next idle turn. Runtime health/token writers pass the generation
+    they loaded so they cannot overwrite a newer operator policy.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
     disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
@@ -871,6 +885,12 @@ def write_credential_pool(
             disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        from agent.credential_pool_policy import policy_generation, preserve_newer_policy
+        generation = policy_generation(auth_store, provider_id)
+        if policy_update:
+            auth_store.setdefault("credential_pool_generations", {})[provider_id] = generation + 1
+        elif expected_policy_generation is not None and expected_policy_generation != generation:
+            merged = preserve_newer_policy(merged, existing_list)
         pool[provider_id] = merged
         return _save_auth_store(auth_store)
 

@@ -1023,6 +1023,8 @@ def _init_fallback_chain(agent, fallback_model):
     # request is recovered, so the key value alone can't attribute the failure.
     from agent.agent_runtime_helpers import sync_credential_pool_entry_id
     sync_credential_pool_entry_id(agent)
+    from agent.credential_pool_policy import bind_pool_policy
+    bind_pool_policy(agent)
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
     agent._fallback_chain = _fallback_entries(fallback_model)

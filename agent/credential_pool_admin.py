@@ -59,7 +59,7 @@ class CredentialPoolAdminMixin:
                 return None
             removed = self._entries.pop(index - 1)
             self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
-            self._persist(removed_ids=[removed.id])
+            self._persist(removed_ids=[removed.id], policy_update=True)
             if self._current_id == removed.id:
                 self._current_id = None
             return removed
@@ -78,7 +78,7 @@ class CredentialPoolAdminMixin:
             # Apply load-time ordering now so the reported position survives reload.
             _normalize_pool_priorities(self.provider, entries)
             self._entries = sorted(entries, key=lambda e: e.priority)
-            self._persist()
+            self._persist(policy_update=True)
             return self._find(lambda e: e.id == credential_id)
 
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
@@ -113,5 +113,5 @@ class CredentialPoolAdminMixin:
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            self._persist()
+            self._persist(policy_update=True)
             return entry

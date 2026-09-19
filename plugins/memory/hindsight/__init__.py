@@ -440,6 +440,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
+            {"key": "recall_exclude_tags", "description": "Comma-separated tags to EXCLUDE from recall, sent as Hindsight's tag_groups NOT filter. Use e.g. 'source:bot' to keep agent-to-agent turns out of normal recall while keeping untagged history intact. Empty disables. Requires hindsight-client >= 0.10.0.", "default": ""},
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
@@ -786,6 +787,9 @@ class HindsightMemoryProvider(MemoryProvider):
         """Recall knobs are pure config too (``{}`` yields the defaults)."""
         self._recall_tags = cfg.get("recall_tags") or None
         self._recall_tags_match = cfg.get("recall_tags_match", "any")
+        # Exclusion list -> Hindsight tag_groups ``not`` filter. Empty (the default)
+        # keeps the legacy tags/tags_match path byte-for-byte.
+        self._recall_exclude_tags = _normalize_retain_tags(cfg.get("recall_exclude_tags"))
         self._auto_recall = cfg.get("auto_recall", True)
         self._recall_sync = bool(cfg.get("recall_sync", False))
         self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
@@ -887,7 +891,21 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _recall(self, query: str) -> list:
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
-        if self._recall_tags:
+        if self._recall_exclude_tags:
+            # tag_groups (hindsight-client >= 0.10.0) is the only way to NEGATE a tag
+            # filter; the server takes it instead of tags/tags_match, so the two are
+            # mutually exclusive. ``any_strict`` inside the ``not`` is load-bearing:
+            # it matches only memories that actually carry the tag, so untagged
+            # memories (all history that predates tagging) stay recallable.
+            excluded = {"not": {"tags": self._recall_exclude_tags, "match": "any_strict"}}
+            if self._recall_tags:
+                kwargs["tag_groups"] = [{"and": [
+                    {"tags": _normalize_retain_tags(self._recall_tags), "match": self._recall_tags_match},
+                    excluded,
+                ]}]
+            else:
+                kwargs["tag_groups"] = [excluded]
+        elif self._recall_tags:
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types

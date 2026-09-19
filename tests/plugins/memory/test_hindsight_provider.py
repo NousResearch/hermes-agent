@@ -292,6 +292,7 @@ class TestConfig:
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
+        assert provider._recall_exclude_tags == []
         # Default recall narrowed to observation-only; world/experience are
         # aggregate facts that often crowd out concrete-event signal during
         # auto-recall. Users opt back in via the recall_types config key.
@@ -571,6 +572,94 @@ class TestToolHandlers:
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# recall_exclude_tags -> tag_groups NOT filter (hindsight-client >= 0.10.0)
+# ---------------------------------------------------------------------------
+
+
+class TestRecallExcludeTags:
+    """``recall_exclude_tags`` must be sent as Hindsight ``tag_groups`` (the server
+    takes it *instead of* ``tags``/``tags_match``); unset must leave the legacy
+    ``tags``/``tags_match`` path byte-for-byte intact."""
+
+    @staticmethod
+    def _capture_recall(p):
+        captured = {}
+
+        async def _recall(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(results=[SimpleNamespace(text="kept memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        return captured
+
+    def test_recall_exclude_tags_builds_not_group(self, provider_with_config):
+        p = provider_with_config(recall_exclude_tags="source:bot")
+        captured = self._capture_recall(p)
+
+        results = p._recall("hello")
+
+        assert results == [SimpleNamespace(text="kept memory")]
+        assert captured["tag_groups"] == [
+            {"not": {"tags": ["source:bot"], "match": "any_strict"}}
+        ]
+        # tag_groups and tags/tags_match are mutually exclusive on the wire.
+        assert "tags" not in captured
+        assert "tags_match" not in captured
+
+    def test_recall_exclude_plus_include_uses_and(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags=["project:hermes"],
+            recall_tags_match="all",
+            recall_exclude_tags="source:bot",
+        )
+        captured = self._capture_recall(p)
+
+        p._recall("hello")
+
+        assert captured["tag_groups"] == [
+            {"and": [
+                {"tags": ["project:hermes"], "match": "all"},
+                {"not": {"tags": ["source:bot"], "match": "any_strict"}},
+            ]}
+        ]
+        assert "tags" not in captured
+        assert "tags_match" not in captured
+
+    def test_recall_no_exclude_keeps_legacy_path(self, provider_with_config):
+        # Neither include nor exclude configured: nothing tag-related goes on the
+        # wire — in particular no tag_groups key appears (regression guard).
+        p = provider_with_config()
+        captured = self._capture_recall(p)
+
+        p._recall("hello")
+
+        assert "tag_groups" not in captured
+        assert "tags" not in captured
+        assert "tags_match" not in captured
+
+    def test_recall_include_only_still_uses_legacy_tags(self, provider_with_config):
+        # Exclude empty => include-only keeps the pre-existing tags/tags_match shape.
+        p = provider_with_config(recall_tags=["recall-tag"], recall_tags_match="any")
+        captured = self._capture_recall(p)
+
+        p._recall("hello")
+
+        assert captured["tags"] == ["recall-tag"]
+        assert captured["tags_match"] == "any"
+        assert "tag_groups" not in captured
+
+    def test_recall_exclude_empty_string_is_noop(self, provider_with_config):
+        p = provider_with_config(recall_exclude_tags="")
+        captured = self._capture_recall(p)
+
+        p._recall("hello")
+
+        assert "tag_groups" not in captured
+        assert "tags" not in captured
+        assert "tags_match" not in captured
 
 
 # ---------------------------------------------------------------------------
@@ -1353,6 +1442,7 @@ class TestConfigSchema:
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",
+            "recall_exclude_tags",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",

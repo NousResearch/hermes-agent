@@ -450,6 +450,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        # Groups-scoped override: keep reply-quotes out of noisy groups while DMs keep theirs.
+        _groups_mode = getattr(config, 'reply_to_mode_groups', None)
+        if _groups_mode is False:  # YAML 1.1 parses a bare `off` as False
+            _groups_mode = 'off'
+        self._reply_to_mode_groups: Optional[str] = (
+            _groups_mode if isinstance(_groups_mode, str) and _groups_mode else None)
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
         # Bot API 10.1 Rich Messages render what MarkdownV2 degrades (tables, task lists, <details>, block
         # math). Opt-in: current clients make rich messages hard to copy as plain text. rich_drafts is a
@@ -1390,7 +1396,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if private_dm_topic_send:
             should_thread = reply_to_source is not None and self._reply_to_mode != "off"
         else:
-            should_thread = self._should_thread_reply(reply_to_source, index)
+            should_thread = self._should_thread_reply(reply_to_source, index, chat_id)
         reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
         return private_dm_topic_send, dm_topic_reply_to_off, reply_to_id
 
@@ -3278,11 +3284,26 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot = None
         logger.info("[%s] Disconnected from Telegram", self.name)
 
-    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
-        """Whether this chunk (0 = first) should reply-thread to ``reply_to``, per reply_to_mode."""
+    @staticmethod
+    def _is_group_chat_id(chat_id: Any) -> bool:
+        """Telegram groups/supergroups/channels use negative ids; user DMs are positive."""
+        try:
+            return int(chat_id) < 0
+        except (TypeError, ValueError):
+            return False
+
+    def _reply_mode_for(self, chat_id: Any) -> str:
+        """Effective reply_to_mode for a chat — ``reply_to_mode_groups`` overrides in groups only."""
+        if self._reply_to_mode_groups and self._is_group_chat_id(chat_id):
+            return self._reply_to_mode_groups
+        return self._reply_to_mode
+
+    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int, chat_id: Any = None) -> bool:
+        """Whether this chunk (0 = first) should reply-thread to ``reply_to``, per reply_to_mode.
+        ``chat_id`` selects the groups-scoped override where one is configured."""
         if not reply_to:
             return False
-        mode = self._reply_to_mode
+        mode = self._reply_mode_for(chat_id) if chat_id is not None else self._reply_to_mode
         if mode == "off":
             return False
         if mode == "all":

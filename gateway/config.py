@@ -364,6 +364,19 @@ PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
 }
 
 
+def _coerce_reply_mode_override(value: Any) -> Optional[str]:
+    """Normalise a groups-scoped reply-mode override (``reply_to_mode_groups``).
+
+    YAML 1.1 parses a bare ``off`` as boolean ``False``; a user writing
+    ``reply_to_mode_groups: off`` means "off", not a silent no-op.
+    """
+    if value is None:
+        return None
+    if value is False:
+        return "off"
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
@@ -372,6 +385,7 @@ class PlatformConfig:
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
     reply_to_mode: str = "first"  # "off" never threads, "first" only the first chunk, "all" every chunk
+    reply_to_mode_groups: Optional[str] = None  # groups-only override (e.g. "off" in noisy groups); None = inherit reply_to_mode
     gateway_restart_notification: bool = True  # "♻️ Gateway online/restarted" pings; noise on end-user platforms
     typing_indicator: bool = True  # drives _keep_typing; False where unwanted (Slack setStatus blocks compose)
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
@@ -382,6 +396,7 @@ class PlatformConfig:
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "enabled": self.enabled, "extra": self.extra, "reply_to_mode": self.reply_to_mode,
+            **({"reply_to_mode_groups": self.reply_to_mode_groups} if self.reply_to_mode_groups is not None else {}),
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
             **({"typing_status_text": self.typing_status_text} if self.typing_status_text is not None else {}),
@@ -396,7 +411,7 @@ class PlatformConfig:
     # Keys consumed by typed fields; everything else at the top of a platform block is adapter
     # config and belongs in ``extra`` (see from_dict).
     _TYPED_KEYS = frozenset({
-        "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
+        "enabled", "token", "api_key", "home_channel", "reply_to_mode", "reply_to_mode_groups", "channel_overrides", "extra",
         "gateway_restart_notification", "typing_indicator", "typing_status_text",
     })
 
@@ -427,6 +442,7 @@ class PlatformConfig:
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
             reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode_groups=_coerce_reply_mode_override(data.get("reply_to_mode_groups")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

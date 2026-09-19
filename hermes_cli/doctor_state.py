@@ -330,12 +330,77 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_info(f"WAL file is {size // (1024*1024)} MB (normal for active sessions)")
 
 
+def _check_deleted_sidecars(f: Finding, should_fix: bool, state_db_path) -> None:
+    try:
+        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+        holders = list(iter_deleted_sqlite_sidecar_holders(state_db_path))
+        if not holders:
+            return
+        
+        check_warn(f"Deleted WAL/SHM file descriptors held by {len(holders)} processes", 
+                   f"(PIDs: {', '.join(str(p) for p, _ in holders)})")
+        
+        if not should_fix:
+            f.issues.append("Deleted SQLite sidecars held open — run 'hermes doctor --fix' to terminate them and repair.")
+            return
+
+        import os, time, signal, psutil
+        from hermes_state_repair import _exclusive_repair_db_guard
+        
+        safe_pids = []
+        for pid, _ in holders:
+            try:
+                proc = psutil.Process(pid)
+                cmd = " ".join(proc.cmdline()).lower()
+                name = proc.name().lower()
+                # Identity validation: only kill if it looks like Hermes, Python, or a dashboard
+                if "hermes" in cmd or "python" in name or "dashboard" in name:
+                    safe_pids.append(pid)
+                else:
+                    check_warn(f"PID {pid} holds a deleted sidecar but doesn't look like a Hermes process ({name}).", "Skipping termination.")
+            except psutil.NoSuchProcess:
+                pass
+
+        for pid in safe_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        
+        # wait up to 4s
+        for _ in range(40):
+            holders = list(iter_deleted_sqlite_sidecar_holders(state_db_path))
+            if not holders:
+                break
+            time.sleep(0.1)
+            
+        for pid, _ in holders:
+            if pid in safe_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                
+        check_ok("Terminated processes holding deleted sidecars.")
+        f.fixed += 1
+        
+        with warn_on_error("Failed to checkpoint after clearing holders"):
+            with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
+                if guard is not None:
+                    guard.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    check_ok("Executed offline WAL checkpoint after remediation.")
+                
+    except Exception as e:
+        check_warn("Failed to check for deleted sidecar holders", f"({e})")
+
+
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
     state_db_path = HERMES_HOME / "state.db"
     if state_db_path.exists():
+        _check_deleted_sidecars(f, should_fix, state_db_path)
         _state_db_health(f, should_fix, state_db_path, _DHH)
         _state_db_stats(f.issues, state_db_path)
     else:

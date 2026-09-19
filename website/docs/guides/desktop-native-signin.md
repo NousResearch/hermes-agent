@@ -118,6 +118,11 @@ The relevant endpoints (all public, pre-auth bootstrap, same as the existing
 - `POST /auth/native/token` — exchanges the loopback code + verifier for tokens
 - `POST /auth/native/refresh` — rotates tokens from the app's refresh token
 
+By default `/auth/native/authorize` only accepts a loopback `redirect_uri`, which a mobile
+client (iOS/Android) can't provide. Operators who want to support a native mobile client can
+allowlist a custom URL scheme via `dashboard.native_redirect_schemes` — see [Native apps with
+custom URL schemes](../user-guide/features/web-dashboard.md#native-apps-with-custom-url-schemes).
+
 ## See also
 
 - [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — the loopback-callback

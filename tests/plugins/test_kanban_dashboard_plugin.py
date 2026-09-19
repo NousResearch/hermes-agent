@@ -1278,3 +1278,48 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic severity tokens stay theme-overridable
+# ---------------------------------------------------------------------------
+
+
+def test_diag_severity_tokens_are_declared_at_root_not_on_elements():
+    """Diagnostic severity colors must remain reachable by host theme overrides.
+
+    The dashboard theme engine writes custom properties as inline style on
+    ``<html>`` (``web/src/themes/context.tsx``). Custom properties declared on
+    the consuming elements themselves always beat that inherited value, which
+    is exactly how #115118 made the severity palette un-themeable: the three
+    tokens were pinned on ``.hermes-kanban-diag`` & friends. They must be
+    declared at ``:root`` (inline style still wins the cascade over a
+    stylesheet ``:root`` rule) so a theme override inherits down to every
+    consuming surface, with the stylesheet rule providing the default.
+    """
+    import re
+
+    repo_root = Path(__file__).resolve().parents[2]
+    css_path = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    css = css_path.read_text(encoding="utf-8")
+
+    for prop in (
+        "--hermes-diag-warning",
+        "--hermes-diag-error",
+        "--hermes-diag-critical",
+    ):
+        declarations = re.findall(rf"{re.escape(prop)}\s*:", css)
+        assert len(declarations) == 1, (
+            f"{prop} should be declared exactly once (at :root), found {len(declarations)}"
+        )
+
+    # The single declaration block must be :root, not a consuming-element selector.
+    root_block = re.search(r":root\s*\{[^}]*--hermes-diag-warning", css)
+    assert root_block is not None, "severity tokens must be declared in a :root block"
+
+    element_block = re.search(
+        r"\.hermes-kanban-[a-z-]+[^{]*\{[^}]*--hermes-diag-(?:warning|error|critical)\s*:",
+        css,
+    )
+    assert element_block is None, (
+        "severity tokens must not be declared on consuming elements — an element-level "
+        "declaration always beats the <html> inline custom properties the theme engine writes"
+    )

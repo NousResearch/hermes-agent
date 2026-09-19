@@ -1353,11 +1353,10 @@
 /* ---------------------------------------------------------------------- */
 
 /* Severity token variables so every diagnostic-coloured surface uses the */
-/* same palette. */
-.hermes-kanban-diag,
-.hermes-kanban-attention,
-.hermes-kanban-warning-badge,
-.hermes-kanban-attention-row {
+/* same palette. Declared at :root (not on the consuming elements) so the  */
+/* dashboard theme engine's <html> inline custom properties win the        */
+/* cascade and the palette stays theme-overridable.                        */
+:root {
   --hermes-diag-warning: #ff9e3b;
   --hermes-diag-error:   #ff6b3d;
   --hermes-diag-critical: #ff4d4d;

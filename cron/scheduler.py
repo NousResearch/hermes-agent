@@ -2351,6 +2351,12 @@ def run_job(
             from cron.unreachable_retry import is_model_unreachable_failure
             if is_model_unreachable_failure(e, agent):
                 job["_model_unreachable"] = True
+            # Provider usage window closed for a known duration (cron/quota_hold.py): flag it so the
+            # bookkeeping tail parks the job past the window instead of re-firing into it (#89376).
+            from cron.quota_hold import hold_seconds_from_failure
+            _hold_s = hold_seconds_from_failure(e)
+            if _hold_s:
+                job["_quota_hold_seconds"] = _hold_s
         except Exception:  # classification must never mask the real failure
             logger.debug("Job '%s': unreachable-failure classification failed", job_id)
         # No audit row when we failed before the agent existed; the audit write must never raise.
@@ -2648,8 +2654,11 @@ def _compose_run_delivery(
                 job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
             ) + _failure_streak_nudge(job)
         else:
+            from cron.quota_hold import hold_notice
             deliver_content = (
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
+                # The one alert on entering a provider-window hold says so (#89376).
+                + hold_notice(job, job.get("_quota_hold_seconds"))
             )
     return deliver_content, blocked_config, blocked_config_silent, incident_acked, failure_incident_id
 
@@ -2846,6 +2855,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
         # (cron/unreachable_retry.py) inside the same fenced store write.
         mark_kwargs["model_unreachable"] = True
+    _hold_s = job.pop("_quota_hold_seconds", None)
+    if not d.success and _hold_s:
+        # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
+        mark_kwargs["quota_hold_seconds"] = _hold_s
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:

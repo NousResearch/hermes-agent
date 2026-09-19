@@ -447,6 +447,22 @@ cron:
   retry_unreachable: false   # default true; disables the automatic re-runs
 ```
 
+### Holding a job through a closed provider usage window
+
+The mirror case: the provider says exactly how long it will stay closed. When
+the scheduler resolves a subscription provider (currently the OpenAI Codex
+usage probe) and the provider reports its usage limit exhausted with a
+`retry after <N>s` hint (often many hours), and the whole fallback chain is
+unavailable, re-firing a sub-hourly job into that window is guaranteed to fail
+identically on every tick — and to alert every time. A 429 the model API
+returns mid-run is not held this way; it is retried on the normal cadence.
+
+Instead, the scheduler **parks the job**: the one failure alert says the
+window is closed and that the job is held, `next_run_at` moves to the first
+scheduled occurrence after the window (`quota_hold_until` on the job record),
+and nothing fires or alerts until then. Any run that reaches the model clears
+the hold. One-shot jobs are not held.
+
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 
 A recurring job that keeps failing with the *same* error alerts you **once**,

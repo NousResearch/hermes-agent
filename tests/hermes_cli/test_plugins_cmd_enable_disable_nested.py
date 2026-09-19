@@ -142,9 +142,11 @@ class TestEnableDisableNested:
 
 
 class TestEnableToolOverrideConsent:
-    """Enabling a non-bundled plugin must surface a consent decision about the
-    privileged ``allow_tool_override`` capability, and persist the operator's
-    choice under ``plugins.entries.<key>.allow_tool_override``."""
+    """Enabling a non-bundled plugin persists an explicit ``allow_tool_override``
+    choice under ``plugins.entries.<key>.allow_tool_override``. With no flag the
+    grant stays silently unset — the loader reads the missing key as denied, so
+    the posture stays fail-closed without prompting for a grant the plugin has
+    no route to express (#116286, #29249)."""
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -154,21 +156,74 @@ class TestEnableToolOverrideConsent:
     @patch("hermes_cli.plugins_cmd._save_enabled_set")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_interactive_eof_defaults_to_deny(
+    def test_no_flag_and_no_capabilities_is_silent_no_grant(
         self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
         mock_user, mock_bundled, nested_plugin_env,
     ):
-        """Non-interactive stdin (EOFError) must fail closed to deny."""
+        """A plugin whose manifest declares no capabilities has no route to
+        ``register_tool(..., override=True)``: enabling it with no flag must
+        neither prompt nor write a grant key — the unset key is read as denied."""
         from hermes_cli.plugins_cmd import cmd_enable
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        with patch("rich.console.Console.input", side_effect=EOFError):
+        # disk-cleanup's manifest declares no capabilities.
+        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
             cmd_enable("disk-cleanup")
 
+        mock_set_flag.assert_not_called()
+
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_explicit_flag_still_writes_the_grant(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        """``--allow-tool-override`` keeps writing the explicit choice so an
+        operator can still pre-authorize (or pre-deny) without any prompt."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        cmd_enable("disk-cleanup", allow_tool_override=True)
+
         mock_set_flag.assert_called_once_with(
-            "disk-cleanup", "allow_tool_override", False
+            "disk-cleanup", "allow_tool_override", True
         )
+
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._run_capability_consent")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_declared_capabilities_still_run_consent(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
+        mock_set_flag, mock_consent, mock_user, mock_bundled, tmp_path,
+    ):
+        """A plugin that DOES declare capabilities keeps the consent screen as
+        the canonical grant path; with no flag the legacy key stays unwritten."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        _make_plugin_dir(tmp_path, "cap-plugin", {
+            "name": "cap-plugin", "version": "1.0.0",
+            "capabilities": ["tools.override"],
+        })
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        cmd_enable("cap-plugin")
+
+        mock_consent.assert_called_once()
+        mock_set_flag.assert_not_called()
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

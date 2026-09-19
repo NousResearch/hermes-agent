@@ -1087,8 +1087,11 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
-    Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
-    tri-state: ``True``/``False`` skip the prompt, ``None`` asks. Bundled plugins are trusted.
+    Non-bundled plugins with declared capabilities get the capability consent
+    screen; the legacy ``allow_tool_override`` key is only written from an
+    explicit ``--allow-tool-override``/``--no-allow-tool-override`` flag — with
+    no flag the grant stays silently unset, which the loader reads as denied.
+    Bundled plugins are trusted.
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -1127,15 +1130,16 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         return
     _install_python_dependencies_for_key(key, console)
     # When the manifest declares capabilities the consent screen is the canonical grant path
-    # (it covers tools.override too); the legacy prompt then only runs on an explicit flag.
-    # See #64228.
+    # (it covers tools.override too); the legacy allow_tool_override key is only ever written
+    # from an explicit flag. With no flag — and nothing declared to seek the grant through —
+    # the enable stays silent: the unset key already reads as denied, and prompting would ask
+    # a plugin that declares no capabilities to justify a grant it has no route to express.
+    # See #64228, #116286.
     declared_caps = _declared_capabilities_for_key(key)
     if declared_caps:
         _run_capability_consent(console, key, declared_caps, context="enable")
-        if allow_tool_override is not None:
-            _resolve_tool_override_grant(console, key, allow_tool_override)
-        return
-    _resolve_tool_override_grant(console, key, allow_tool_override)
+    if allow_tool_override is not None:
+        _resolve_tool_override_grant(console, key, allow_tool_override)
 
 
 # ── Capability consent flow ──────────────────────────────────────────────────
@@ -1256,17 +1260,16 @@ def cmd_capabilities(name: Optional[str] = None) -> None:
 
 
 def _resolve_tool_override_grant(console, key: str, allow_tool_override: Optional[bool]) -> None:
-    """Resolve and persist the ``allow_tool_override`` grant for a plugin."""
+    """Persist an explicitly requested ``allow_tool_override`` choice for a plugin.
+
+    ``None`` (no flag on the command line) is a silent no-grant: the key stays
+    unset, which the loader already reads as denied, so nothing is persisted
+    and no prompt fires — a plugin that declares no capabilities has no route
+    to ``register_tool(..., override=True)`` to ask about in the first place
+    (#116286).
+    """
     if allow_tool_override is None:
-        # Default NO: a blind Enter or a non-interactive stdin denies safely.
-        allow_tool_override = _ask_yes(
-            "[yellow]Allow this plugin to replace built-in tools "
-            "(e.g. shell_exec, write_file)?[/yellow]\n"
-            "  This is a privileged capability: an override can intercept "
-            "everything the agent routes through that tool.\n"
-            "  Grant it? [y/N] ",
-            console.input,
-        )
+        return
     _set_plugin_entry_flag(key, "allow_tool_override", allow_tool_override)
     if allow_tool_override:
         console.print(

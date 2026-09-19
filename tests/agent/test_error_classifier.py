@@ -922,6 +922,55 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_compress is False
 
+    def test_openai_regex_lookaround_rejection_strips_pattern_and_retries(self):
+        """Strict OpenAI-compatible endpoints reject ``pattern`` lookaround with a 400 (#42631).
+        Driven through the production path (classifier → ``recover_after_classification``):
+        the lookaround ``pattern`` must be stripped from ``agent.tools`` and the turn retried."""
+        from agent.turn_recovery import recover_after_classification
+        from agent.turn_retry_state import TurnRetryState
+
+        class _Agent:
+            log_prefix = ""
+            api_mode = "chat_completions"
+            provider = "custom"
+            model = "gpt-5.5"
+            base_url = "http://relay.example/v1"
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "send",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"email": {"type": "string", "pattern": r"^(?!no-reply).+@.+$"}},
+                    },
+                },
+            }]
+
+            def _recover_with_credential_pool(self, **kwargs):
+                return False, False
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        e = MockAPIError(
+            "Invalid JSON schema: regex lookaround is not supported. Found at $.properties.email.pattern.",
+            status_code=400,
+        )
+        classified = classify_api_error(e, provider="custom", model="gpt-5.5")
+        assert classified.reason == FailoverReason.llama_cpp_grammar_pattern
+        agent = _Agent()
+        retry_now, _ = recover_after_classification(
+            agent, e, classified, TurnRetryState(),
+            status_code=400, error_context=None, messages=[], api_messages=[],
+        )
+        assert retry_now is True
+        assert "pattern" not in agent.tools[0]["function"]["parameters"]["properties"]["email"]
+        # A generic schema 400 without the lookaround sentence stays a plain client error.
+        other = classify_api_error(
+            MockAPIError("Invalid JSON schema: regex syntax error in pattern", status_code=400), provider="custom"
+        )
+        assert other.reason != FailoverReason.llama_cpp_grammar_pattern
+
     def test_qwen_apply_prompt_template_no_user_query_not_llama_cpp_grammar(self):
         """Local engines wrap Qwen raise_exception as applyPromptTemplate 400.
 

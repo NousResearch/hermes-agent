@@ -70,21 +70,12 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
 import { PluginsTab } from './plugins-tab'
-import { $skillsSortDesc, $toolsetsSortDesc } from './store'
+import { $skillsSortDesc, $toolsetsSortDesc, SKILLS_QUERY_KEY, TOOLSETS_QUERY_KEY } from './store'
 
 // 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
 // Skills tab now (EmbeddedHubPicker below the installed list). Legacy
 // `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
 const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'plugins'] as const
-
-// Skills + toolsets live in the RQ cache so switching tabs/pages paints the
-// cached lists instantly (no reload flash) and mount only fires a deduped
-// background refetch. A profile swap globally invalidates (see store/profile),
-// so these plain keys refetch against the new backend automatically.
-// Both are extended with the Capabilities scope key at the call sites so every
-// scoped profile keeps its own cached copy (prefix invalidations still match).
-const SKILLS_QUERY_KEY = ['skills-list'] as const
-const TOOLSETS_QUERY_KEY = ['toolsets-list'] as const
 
 // Per-tool call counts come from a 365-day message scan — heavy, and purely
 // cosmetic (Toolsets usage badges). Cache the result module-wide with a TTL so

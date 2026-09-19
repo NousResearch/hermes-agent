@@ -87,6 +87,7 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   Reflect.deleteProperty(window, 'hermesDesktop')
+  Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
 })
 
 describe('DesktopInstallOverlay first-run setup', () => {
@@ -572,5 +573,37 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
     expect(screen.queryByText('Hermes needs a one-time install')).toBeNull()
+  })
+
+  it('renders and copies live installer logs without terminal control sequences', async () => {
+    const desktop = installDesktopMock(bootstrapState({ active: true }))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    render(<DesktopInstallOverlay />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    act(() => {
+      desktop.emitBootstrapEvent({ type: 'log', stage: 'install', stream: 'stdout', line: '\u001b[32mDownload ✓\u001b[0m' })
+      desktop.emitBootstrapEvent({ type: 'log', stage: 'install', stream: 'stdout', line: '\u001b[2K\u001b[1GProgress 100%' })
+      desktop.emitBootstrapEvent({ type: 'log', stage: 'install', stream: 'stdout', line: '\u001b]0;Hermes installer\u0007Ready — café' })
+      desktop.emitBootstrapEvent({ type: 'failed', error: 'install failed' })
+    })
+
+    expect(await screen.findByText('Download ✓')).toBeTruthy()
+    expect(screen.getByText('Progress 100%')).toBeTruthy()
+    expect(screen.getByText('Ready — café')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Copy output'))
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        'Error: install failed\n\n[install] Download ✓\n[install] Progress 100%\n[install] Ready — café'
+      )
+    })
   })
 })

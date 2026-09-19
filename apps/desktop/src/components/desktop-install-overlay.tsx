@@ -1,3 +1,4 @@
+import { stripAnsi } from '@hermes/shared/ansi'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
@@ -161,6 +162,10 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err || 'Unknown error')
 }
 
+function sanitizeBootstrapState(state: DesktopBootstrapState): DesktopBootstrapState {
+  return { ...state, log: state.log.map(entry => ({ ...entry, line: stripAnsi(entry.line) })) }
+}
+
 /** Split "lead sentence\nDetails: raw" into [lead, raw]; no marker → [text, null]. */
 export function splitFailureDetails(text: string | null): [string, string | null] {
   const value = (text ?? '').trim()
@@ -249,7 +254,12 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   }
 
   if (ev.type === 'log') {
-    const next = state.log.concat({ ts: Date.now(), stage: ev.stage ?? null, line: ev.line, stream: ev.stream })
+    const next = state.log.concat({
+      ts: Date.now(),
+      stage: ev.stage ?? null,
+      line: stripAnsi(ev.line),
+      stream: ev.stream
+    })
 
     while (next.length > 500) {
       next.shift()
@@ -325,7 +335,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       .getBootstrapState()
       .then(snapshot => {
         if (!cancelled && snapshot) {
-          setState(snapshot)
+          setState(sanitizeBootstrapState(snapshot))
         }
       })
       .catch(() => {

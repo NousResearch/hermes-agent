@@ -43,10 +43,11 @@ def _run(sub_args: SimpleNamespace) -> str:
 
 
 class TestHooksList:
-    def test_empty_config(self, tmp_path):
+    def test_empty_config_shows_resolved_allowlist_path(self, tmp_path):
         with patch("hermes_cli.config.load_config", return_value={}):
             out = _run(SimpleNamespace(hooks_action="list"))
         assert "No shell hooks or outbound webhooks configured" in out
+        assert str(shell_hooks.allowlist_path()) in out
 
     def test_shows_configured_and_consent_status(self, tmp_path):
         script = _hook_script(
@@ -155,6 +156,12 @@ class TestHooksRevoke:
 
 
 class TestHooksDoctor:
+    def test_empty_config_shows_resolved_allowlist_path(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            out = _run(SimpleNamespace(hooks_action="doctor"))
+
+        assert "No shell hooks configured — nothing to check." in out
+        assert str(shell_hooks.allowlist_path()) in out
 
 
     def test_flags_mtime_drift(self, tmp_path, monkeypatch):

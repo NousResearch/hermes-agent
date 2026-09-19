@@ -154,7 +154,12 @@ class MemoryProvider(ABC):
         return {}
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """End-of-session extraction; fires only at real session boundaries, never per-turn."""
+        """End-of-session extraction; fires only at real session boundaries, never per-turn.
+
+        Extraction writes durable knowledge, so the writer must not also be its judge:
+        route candidate entries through :func:`agent.memory_verification.verify_candidates`
+        (writer-isolated, fail closed — the verifier never sees this writer's reasoning)
+        before persisting them. See #112102."""
 
     def on_session_switch(
         self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, rewound: bool = False, **kwargs,

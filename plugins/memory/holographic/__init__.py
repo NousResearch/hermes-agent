@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -103,6 +103,12 @@ class HolographicMemoryProvider(MemoryProvider):
         self._config = config or _load_plugin_config()
         self._store = self._retriever = None
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
+        # Writer-isolated consolidation gate (#112102): the callable that screens extracted
+        # candidates before they reach the store (see agent.memory_verification). A host that
+        # wired none leaves both at their defaults — ``consolidation_verification`` then resolves
+        # the ``memory.verify_consolidation`` switch from config at gate time.
+        self.consolidation_verifier: Optional[Any] = None
+        self.consolidation_verification: Optional[bool] = None
 
     @property
     def name(self) -> str:
@@ -232,7 +238,7 @@ class HolographicMemoryProvider(MemoryProvider):
         # compactor's own output as a fact. A merge-into-tail row holds genuine prior user text BEFORE
         # _MERGED_SUMMARY_DELIMITER (after the header) and the summary AFTER it — harvest only that segment.
         from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, is_compaction_summary_message  # heavy; lazy
-        extracted = 0
+        candidates: list = []
         for msg in messages:
             content = msg.get("content", "") if msg.get("role") == "user" else None
             pre = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].removeprefix(_MERGED_PRIOR_CONTEXT_HEADER).strip() \
@@ -245,13 +251,35 @@ class HolographicMemoryProvider(MemoryProvider):
                 continue
             for patterns, category in _EXTRACT_CATEGORIES:
                 if any(p.search(content) for p in patterns):
-                    try:
-                        self._store.add_fact(content[:400], category=category)
-                        extracted += 1
-                    except Exception:
-                        pass
+                    candidates.append({"content": content[:400], "target": "memory", "category": category})
+        # The extractor does not get to persist its own proposals: nothing reaches the store
+        # until the writer-isolated gate approves it (#112102). Gate off (the default) approves
+        # everything, so extraction behaves exactly as before.
+        extracted = 0
+        for candidate in self._verified_candidates(candidates):
+            try:
+                self._store.add_fact(candidate["content"], category=candidate["category"])
+                extracted += 1
+            except Exception:
+                pass
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)
+
+    def _verified_candidates(self, candidates: list) -> list:
+        """Screen extracted candidates through ``agent.memory_verification`` (issue #112102).
+
+        The verifier sees only the projected candidate (content/target/category) — never the
+        writer's reasoning — and a candidate it does not explicitly approve is dropped; a
+        missing, refusing or raising verifier drops it too. Disabled by default via
+        ``memory.verify_consolidation``.
+        """
+        from agent.memory_verification import verify_candidates  # lazy: keeps plugin import light
+        approved, dropped = verify_candidates(
+            candidates, self.consolidation_verifier, enabled=self.consolidation_verification)
+        if dropped:
+            logger.info("Dropped %d unverified memory candidate(s): %s",
+                        len(dropped), "; ".join(reason for _, reason in dropped)[:200])
+        return approved
 
 def register(ctx) -> None:
     """Register the holographic memory provider with the plugin system."""

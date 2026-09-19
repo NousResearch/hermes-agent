@@ -137,3 +137,54 @@ def test_helper_detects_prefix_metadata_and_merged_forms():
     )
     assert not is_compaction_summary_message(_user(DECISION_MSG))
     assert not is_compaction_summary_message(_user(""))
+
+
+# ---------------------------------------------------------------------------
+# #112102 — the extraction → store step goes through the writer-isolated gate
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_still_writes_extracted_facts(tmp_path):
+    """Protection face: the gate is OFF by default, so extraction persists exactly
+    as before (no verifier configured, no candidate dropped)."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(DECISION_MSG)])
+    facts = _fact_contents(provider)
+    assert len(facts) == 1 and DECISION_MSG[:40] in facts[0]
+    provider.shutdown()
+
+
+def test_enabled_gate_drops_unapproved_extraction(tmp_path):
+    """With the gate on and the verifier refusing, the extraction never reaches the store."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.consolidation_verification = True
+    provider.consolidation_verifier = lambda view, evidence: False
+    provider.on_session_end([_user(DECISION_MSG)])
+    assert _fact_contents(provider) == []
+    provider.shutdown()
+
+
+def test_enabled_gate_persists_approved_extraction(tmp_path):
+    """An approval still stores the fact, and the verifier sees only the projected
+    candidate (content/target/category) — never the writer's private state."""
+    seen = []
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.consolidation_verification = True
+    provider.consolidation_verifier = lambda view, evidence: (seen.append((view, evidence)), True)[1]
+    provider.on_session_end([_user(DECISION_MSG)])
+    facts = _fact_contents(provider)
+    assert len(facts) == 1 and DECISION_MSG[:40] in facts[0]
+    assert len(seen) == 1
+    view, evidence = seen[0]
+    assert view.content == DECISION_MSG[:400] and view.category == "project"
+    assert not hasattr(view, "reasoning") and evidence == ()
+    provider.shutdown()
+
+
+def test_enabled_gate_without_verifier_writes_nothing(tmp_path):
+    """Fail closed: opting in without a verifier must not fall back to unchecked writes."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.consolidation_verification = True
+    provider.on_session_end([_user(DECISION_MSG)])
+    assert _fact_contents(provider) == []
+    provider.shutdown()

@@ -1243,6 +1243,12 @@ DEFAULT_CONFIG = {
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
         "write_approval": False,
+        # Writer-isolated verification of consolidation (#112102): an extracted candidate entry is
+        # stored only when an isolated verifier — which sees the candidate and objective evidence,
+        # but never the writer's reasoning or the session transcript — approves it. False = current
+        # behaviour (extraction persists directly). Enabling it without wiring a verifier stores
+        # nothing (fail closed), so this is opt-in and never a silent write path.
+        "verify_consolidation": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.

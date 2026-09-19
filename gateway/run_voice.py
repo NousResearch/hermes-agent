@@ -137,7 +137,7 @@ class GatewayVoiceMixin:
         return raw.guild.id if getattr(raw, "guild", None) else None  # regular message
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
         guild_id = self._get_guild_id(event)
@@ -178,7 +178,7 @@ class GatewayVoiceMixin:
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect.")
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and hasattr(adapter, "leave_voice_channel")
                 and hasattr(adapter, "is_in_voice_channel")
@@ -299,7 +299,7 @@ class GatewayVoiceMixin:
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
@@ -363,7 +363,7 @@ class GatewayVoiceMixin:
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)

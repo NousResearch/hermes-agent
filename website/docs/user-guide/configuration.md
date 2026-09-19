@@ -89,8 +89,24 @@ limit.
 
 ## Database Settings
 
-The `database:` section controls how Hermes opens its SQLite state database
-(`state.db`), which stores sessions, messages, and gateway routing:
+The `database:` section selects SQLite (the default) or PostgreSQL 17 or later for
+sessions, messages, gateway delivery state, cron runtime ledgers, and Kanban rows.
+PostgreSQL requires the optional `postgres` install extra and
+`HERMES_DATABASE_URL` in the profile's `.env`:
+
+```yaml
+database:
+  backend: postgres
+  schema: hermes_personal
+```
+
+Kanban is shared across profiles, so it reads this setting and `.env` from the
+shared Hermes root. It creates an isolated schema for every board. Files such as
+cron job definitions, Kanban workspaces, attachment bytes, and worker logs remain
+on the filesystem.
+
+SQLite-specific durability settings remain available when `backend` is omitted or
+set to `sqlite`:
 
 ```yaml
 database:

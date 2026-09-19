@@ -89,13 +89,13 @@ after changing backend settings so existing shared handles can close.
 
 This backend stores sessions, messages, model usage, conversation generations,
 routing, compression/turn leases, async delegations, gateway delivery obligations,
-optional Telegram topic bindings, and cron's execution, incident, delivery, and
-notepad tables. History, resume, search, analytics, profile session readers,
-gateway delivery recovery, and cron commands retain their existing APIs and field
-names. Kanban and other application stores retain their existing SQLite storage.
-Cron job definitions, output files, scripts, and scheduler lock files remain in the
-profile filesystem. Local profile files are still required; this setting does not
-make an entire deployment stateless.
+optional Telegram topic bindings, cron's execution, incident, delivery, and
+notepad tables, and the shared Kanban board tables. History, resume, search,
+analytics, profile session readers, gateway delivery recovery, cron commands, and
+Kanban commands retain their existing APIs and field names. Cron job definitions,
+output files, scripts, scheduler lock files, Kanban workspaces, attachment bytes,
+worker logs, and board metadata remain in the filesystem. Local files are still
+required; this setting does not make an entire deployment stateless.
 
 PostgreSQL delivery and cron execution owners use a process token and an expiring
 lease because a PID cannot establish whether a process on another container host
@@ -151,6 +151,20 @@ The destination cron tables must be empty. An interrupted execution or delivery
 has no live PostgreSQL lease after migration, so normal startup recovery marks its
 outcome `unknown` instead of repeating possible side effects.
 
+To copy a Kanban board, keep its dispatcher and workers stopped and run:
+
+```bash
+python scripts/migrate_kanban_sqlite_to_postgres.py /path/to/kanban.db \
+  --kanban-home /path/to/destination/hermes-root \
+  --board default
+```
+
+The shared Hermes root owns Kanban's database configuration because named profiles
+coordinate through the same boards. Each board receives its own derived PostgreSQL
+schema. The migration upgrades a private SQLite snapshot, copies all board tables
+inside one PostgreSQL transaction, resets identity sequences, validates counts,
+and refuses a non-empty target. The original SQLite file is unchanged.
+
 ### Test the backend
 
 The normal suite needs no PostgreSQL server. Backend integration tests opt in
@@ -163,6 +177,7 @@ or its driver is unavailable.
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_state/test_postgres_*.py
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/gateway/test_postgres_delivery_ledger.py
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/cron/test_postgres_cron_stores.py
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_cli/test_postgres_kanban.py
 ```
 
 ### Desktop profile isolation and compaction generations

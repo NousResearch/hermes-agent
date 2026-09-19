@@ -17,6 +17,7 @@ from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+from tools.terminal_tool_config import _tenv_bool
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +78,14 @@ class SSHEnvironment(BaseEnvironment):
             self._sync_manager = None
             return
         self._remote_home = self._detect_remote_home()
-        self._ensure_remote_dirs()
-        self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
-            upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
-            bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
-        self._sync_manager.sync(force=True)
+        self._sync_manager = None
+        if _tenv_bool("TERMINAL_FILE_SYNC_ENABLED", "true") and _tenv_bool("TERMINAL_SSH_FILE_SYNC_ENABLED", "true"):
+            self._ensure_remote_dirs()
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+            self._sync_manager.sync(force=True)
         self.init_session()
 
     def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:

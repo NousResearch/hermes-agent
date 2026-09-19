@@ -1916,6 +1916,7 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "file_sync_enabled": "TERMINAL_FILE_SYNC_ENABLED",
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}
     for _cfg_key, _env_var in _terminal_env_map.items():
         if _cfg_key not in _terminal_cfg:

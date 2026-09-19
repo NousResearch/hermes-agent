@@ -29,6 +29,25 @@ def _sanitize_surrogates(text: str) -> str:
     return _SURROGATE_RE.sub('\ufffd', text)
 
 
+# OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
+# (``multi_tool_use.parallel``, a shell command a weak model put in ``name``) 400s every later
+# request on a strict endpoint (#51944).
+_VALID_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
+    """Coerce a *replayed* tool/function name to ``^[A-Za-z0-9_-]{1,64}$``. Valid names are returned
+    as-is (identity — prompt-cache safe); invalid runs collapse to ``_`` and the result is cut at 64;
+    empty/all-invalid → ``fallback``. Deterministic, so the same stored name always renders the same
+    bytes. Never apply to live tool definitions (schema names must match the dispatch registry)."""
+    if not isinstance(name, str):
+        return fallback
+    if _VALID_TOOL_NAME_RE.fullmatch(name):
+        return name
+    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip("_")
+    return coerced[:64] or fallback
+
+
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
     return text.encode('ascii', errors='ignore').decode('ascii')
@@ -93,6 +112,19 @@ _sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrog
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
 _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
+
+
+def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
+    """Outbound-request chokepoint for every built kwargs dict (main loop and iteration summary).
+
+    Tool descriptions, extra_body and kwargs strings can carry invalid code points that
+    providers reject with a non-retryable 400 (#50959); one in-place walk makes the whole
+    payload json.dumps()-safe. The ASCII strip is opt-in via the recovery flag set after an
+    ASCII-codec rejection.
+    """
+    _sanitize_structure_surrogates(api_kwargs)
+    if agent._force_ascii_payload:
+        _sanitize_structure_non_ascii(api_kwargs)
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
@@ -197,6 +229,32 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+# finish_reason wire normalization. Some OpenAI-compatible gateways fronting
+# Gemini backends emit the native uppercase reasons (STOP, MAX_TOKENS); every
+# downstream comparison uses the lowercase OpenAI literals, so an uppercase
+# reason silently skips stop handling and length recovery. Single owner —
+# call at wire intake (transport normalize_response, stream chunk capture),
+# never re-fold at comparison sites.
+_FINISH_REASON_ALIASES = {
+    "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
+    "end": "stop",  # some gateways' clean-completion spelling
+    "function_call": "tool_calls",  # OpenAI legacy pre-tools spelling
+}
+
+
+def normalize_finish_reason(raw: Any) -> Any:
+    """Fold a wire ``finish_reason`` to the lowercase OpenAI contract value.
+
+    Non-string and empty values pass through unchanged (callers keep their
+    ``or "stop"`` defaults and the Poolside int-reason path); contract values
+    are returned byte-identical.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    lowered = raw.lower()
+    return _FINISH_REASON_ALIASES.get(lowered, lowered)
+
+
 def serialized_messages_bytes(messages: list) -> int:
     """Exact serialized byte size of ``messages`` (HTTP 413 is a BYTE-size error the token
     estimator, pricing images flat, cannot score). Non-serializable values fall back to
@@ -287,9 +345,10 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
 __all__ = [
     "_SURROGATE_RE", "close_interrupted_tool_sequence",
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+    "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_sanitize_structure_non_ascii",
+    "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
     "tool_result_id_variants", "uniquify_tool_call_ids",

@@ -866,6 +866,23 @@ class TestSecondaryProfileConfigHandling:
         assert "Failed to start adapters for profile 'bad'" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_single_profile_start_clears_inherited_served_profiles(self, monkeypatch, tmp_path):
+        """``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+        ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
+        kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
+        import json
+        from gateway.status import read_runtime_status
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps(
+            {"pid": 1, "gateway_state": "stopped", "served_profiles": ["default", "coder"]}))
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+
+        assert await runner._start_secondary_profile_adapters() == 0
+        assert read_runtime_status(tmp_path / "gateway_state.json")["served_profiles"] == []
+
+    @pytest.mark.asyncio
     async def test_multiplexer_propagates_security_config_error(self, monkeypatch):
         from pathlib import Path
         from gateway.config import GatewayConfig

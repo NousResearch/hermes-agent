@@ -259,12 +259,29 @@ export async function scanVenvBlockers(
 // Internal helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
-/** Resolve the venv python path.  Returns null if the file does not exist. */
+/** Resolve the supported venv directory, preserving legacy ``venv`` precedence. */
+export function resolveVenvDir(updateRoot: string): string {
+  for (const name of ['venv', '.venv']) {
+    const candidate = path.join(updateRoot, name)
+
+    try {
+      if (fs.statSync(candidate).isDirectory()) {
+        return candidate
+      }
+    } catch {
+      // Try the other supported layout, then retain the legacy path for diagnostics.
+    }
+  }
+
+  return path.join(updateRoot, 'venv')
+}
+
+/** Resolve the venv python path. Returns null if the selected runtime is missing. */
 export function resolveVenvPython(updateRoot: string): string | null {
   const isWindows = process.platform === 'win32'
   const pythonName = isWindows ? 'python.exe' : 'python3'
   const scriptsDir = isWindows ? 'Scripts' : 'bin'
-  const candidate = path.join(updateRoot, 'venv', scriptsDir, pythonName)
+  const candidate = path.join(resolveVenvDir(updateRoot), scriptsDir, pythonName)
 
   try {
     fs.accessSync(candidate)

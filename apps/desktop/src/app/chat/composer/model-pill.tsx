@@ -129,9 +129,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">
-          {formatModelPillLabel(currentModel, { fastMode })}
-        </span>
+        <span className="truncate">{formatModelPillLabel(currentModel, { fastMode })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

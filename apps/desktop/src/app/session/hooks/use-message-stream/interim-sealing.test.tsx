@@ -319,7 +319,9 @@ describe('useMessageStream interim text sealing', () => {
     // No payload at all
     await act(() => stream.handleEvent({ type: 'message.interim' } as GatewayEvent))
     // Empty text
-    await act(() => stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as GatewayEvent))
+    await act(() =>
+      stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as GatewayEvent)
+    )
     // Undefined text
     await act(() =>
       stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as GatewayEvent)

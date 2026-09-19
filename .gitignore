@@ -137,6 +137,7 @@ website/static/api/skills-meta.json
 # plugins.json + plugins-meta.json are build artifacts emitted by
 # website/scripts/extract-plugins.py during prebuild (Plugin Catalog page).
 website/static/api/plugins.json
+website/static/api/plugin-stars.json
 website/static/api/plugin-catalog.json
 website/static/api/plugins-meta.json
 # automation-blueprints-index.json is a build artifact emitted by
@@ -166,6 +167,81 @@ docs/superpowers/*
 # ignore it so `hermes update`'s `git stash push --include-untracked` does not
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
+
+# Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
+# with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): every root-level
+# SQLite store (state.db, kanban.db, response_store.db, ...) with its
+# WAL/SHM/journal sidecars and every dot-suffixed `<db>.db.*` runtime artifact
+# (retired-WAL capture dirs, quarantine/repair/rebuild/maintenance/init/dispatch
+# lock files, the repair-attempts ledger, malformed-backup copies — a swept lock
+# path is re-created on a new inode and a second exclusive flock succeeds while
+# the first holder is still live, #112974), the legacy transcripts,
+# the cron job store (jobs.json), its lock/heartbeat/output files and all three
+# cron SQLite stores (executions/deliveries/notepad, WAL-mode like the root
+# ones), gateway lock/pid/state files and per-launch markers, cache/spill
+# directories, and the profile's own config/credential/
+# memory/profile/pairing roots, the pre-update backups (the very copies a
+# swept state.db is restored from) and the secret vault are Hermes-managed
+# runtime state, never code changes. (`*-snapshots/` above already covers state-snapshots/.)
+# Ignore them so `hermes update`'s `git stash push --include-untracked` cannot
+# sweep the live state.db/-wal into the stash and unlink it under the running
+# gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
+# the checkout, where the `.hermes/` rule above already applies.
+/*.db
+/*.db-wal
+/*.db-shm
+/*.db-journal
+/*.db.*
+/gateway/discord_message_recovery.db*
+/sessions/
+/browser-profile/
+/cron/*.db
+/cron/*.db-wal
+/cron/*.db-shm
+/cron/*.db-journal
+/cron/*.db.*
+/cron/jobs.json
+/cron/.jobs.lock
+/cron/ticker_heartbeat
+/cron/output/
+/cron.pid
+/gateway.lock
+/gateway.pid
+/gateway_state.json
+/gateway-starts.log
+/processes.json
+/.update_check
+/.clean_shutdown
+/active_profile
+/.hermes_history
+/slack_tokens.json
+/hook_outputs/
+/hooks/
+/cache/
+/checkpoints/
+/pending_messages/
+/plugin-data/
+/kanban/
+/config.yaml
+/auth.json
+/auth.lock
+/auth/
+/.anthropic_oauth.json
+/google_token.json
+/google_oauth_pending.json
+/webhook_subscriptions.json
+/channel_directory.json
+/channel_aliases.json
+/feishu_comment_pairing.json
+/memories/
+/profiles/
+/credentials/
+/mcp-tokens/
+/pairing/
+/platforms/
+/backups/
+/vault.key
+/vault.json.enc
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/

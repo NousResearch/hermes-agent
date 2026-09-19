@@ -21,7 +21,7 @@ Modify or debug s6 services in the Hermes Docker image.
 | License | MIT |
 | Platforms | linux |
 | Tags | `docker`, `s6`, `supervision`, `gateway`, `profiles` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 

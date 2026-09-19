@@ -82,6 +82,7 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
@@ -496,6 +497,18 @@ def parse_feishu_post_payload(
         )
         if row_text:
             parts.append(row_text)
+    for entry in resolved.get("files", []) or []:
+        if (
+            not isinstance(entry, dict)
+            or _to_boolean(entry.get("is_folder"))
+            or not str(entry.get("file_key", "")).strip()
+        ):
+            continue
+        placeholder = _render_post_element(
+            {**entry, "tag": "file"}, image_keys, media_refs, mentions_map,
+        )
+        if placeholder:
+            parts.append(placeholder)
     return FeishuPostParseResult(
         text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT, image_keys=image_keys, media_refs=media_refs,
     )
@@ -530,7 +543,12 @@ def _to_post_payload(candidate: Any) -> Dict[str, Any]:
     content = candidate.get("content")
     if not isinstance(content, list):
         return {}
-    return {"title": str(candidate.get("title", "") or ""), "content": content}
+    files = candidate.get("files")
+    return {
+        "title": str(candidate.get("title", "") or ""),
+        "content": content,
+        "files": files if isinstance(files, list) else [],
+    }
 
 
 _STATIC_POST_TAGS = {"br": "\n", "hr": "\n\n---\n\n", "divider": "\n\n---\n\n"}
@@ -582,11 +600,15 @@ def _render_post_element(
         file_key = str(element.get("file_key", "")).strip()
         names = (str(element.get(k, "")).strip() for k in ("file_name", "title", "text"))
         file_name = next((n for n in names if n), "")
-        if file_key:
+        placeholder = f"[Attachment: {file_name}]" if file_name else "[Attachment]"
+        if not file_key:
+            return placeholder
+        if not any(ref.file_key == file_key for ref in media_refs):
             media_refs.append(FeishuPostMediaRef(
                 file_key=file_key, file_name=file_name, resource_type=tag if tag in {"audio", "video"} else "file",
             ))
-        return f"[Attachment: {file_name}]" if file_name else "[Attachment]"
+            return placeholder
+        return ""
     if tag in {"emotion", "emoji"}:
         label = str(element.get("text", "")).strip() or str(element.get("emoji_type", "")).strip()
         return f":{_escape_markdown_text(label)}:" if label else "[Emoji]"
@@ -1043,6 +1065,40 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
         _dispatch_connect.__wrapped__ = real_connect
         _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
         ws_client_module.websockets.connect = _dispatch_connect
+
+        original_receive_loop = ws_client_module.Client._receive_message_loop
+
+        async def _receive_message_loop_exit_notify(self: Any) -> None:
+            # The SDK schedules this coroutine right after the websocket handshake succeeded, so its
+            # entry is the only in-thread proof that a (re)built link is actually up.
+            on_link_up = getattr(_ws_isolation_state, "on_link_up", None)
+            if on_link_up is not None:
+                on_link_up()
+            try:
+                await original_receive_loop(self)
+            except Exception:
+                # ``Client.start()`` parks in ``run_until_complete(_select())``, which only returns
+                # when this worker loop stops, and the receive loop runs as a bare ``create_task``
+                # whose exception nobody retrieves — so every unrecoverable exit (reconnect ladder
+                # disabled, or its ``ClientException``/``ServerUnreachableException`` re-raise)
+                # left a deaf-but-ESTABLISHED socket whose executor future never completed and the
+                # supervisor never rebuilt (#113662). Log the root cause here and stop the loop so
+                # ``start()`` raises, the future completes and ``_supervise_websocket_thread`` fires.
+                # A *normal* return means the SDK's own ladder already reconnected (it scheduled a
+                # fresh receive loop) and must NOT stop the loop. Deliberate disconnects nil
+                # ``_ws_client`` first, so the supervisor exits without restarting.
+                adapter = getattr(_ws_isolation_state, "adapter", None)
+                if adapter is None or getattr(adapter, "_running", True):
+                    logger.exception(
+                        "[Feishu] lark WS receive loop died; stopping the worker "
+                        "loop so the supervisor can rebuild"
+                    )
+                else:
+                    # ``disconnect()`` sent the CLOSE frame itself: the loop ending here is expected.
+                    logger.debug("[Feishu] lark WS receive loop ended during disconnect", exc_info=True)
+                asyncio.get_running_loop().stop()
+
+        ws_client_module.Client._receive_message_loop = _receive_message_loop_exit_notify
         _WS_ISOLATION_INSTALLED = True
 
 
@@ -1061,6 +1117,10 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
             if adapter._ws_ping_interval is not None:
                 setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
+            # SDK observer (lark-oapi ``Client.on_reconnecting``, fired first thing in ``_reconnect()``):
+            # on the live link ``_auto_reconnect`` is on, so the ladder runs *inside* the receive loop
+            # and the thread never dies — without this the supervisor's ``retrying`` is never published.
+            setattr(ws_client, "on_reconnecting", _on_reconnecting)
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
@@ -1069,9 +1129,24 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         for key, value in (("ping_interval", adapter._ws_ping_interval), ("ping_timeout", adapter._ws_ping_timeout))
         if value is not None
     }
+    adapter_loop = adapter._loop
+
+    def _on_reconnecting() -> None:
+        if adapter_loop is not None and not adapter_loop.is_closed():
+            adapter_loop.call_soon_threadsafe(adapter._ws_link_retrying, ws_client)
+
+    def _on_link_up() -> None:
+        # Fired on the WS thread when the SDK scheduled a receive loop (handshake done); hop to the
+        # adapter loop so the ``connected`` re-stamp after a supervisor rebuild runs where the adapter's
+        # state lives.
+        if adapter_loop is not None and not adapter_loop.is_closed():
+            adapter_loop.call_soon_threadsafe(adapter._ws_link_up, ws_client)
+
     _install_lark_ws_isolation(ws_client_module)
     _ws_isolation_state.loop = loop
     _ws_isolation_state.connect_kwargs = connect_overrides
+    _ws_isolation_state.on_link_up = _on_link_up
+    _ws_isolation_state.adapter = adapter
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1090,6 +1165,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     finally:
         _ws_isolation_state.loop = None
         _ws_isolation_state.connect_kwargs = None
+        _ws_isolation_state.on_link_up = None
+        _ws_isolation_state.adapter = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
@@ -1293,7 +1370,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
         # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
         # See #86905.
-        allow_bots = str(_get_scoped_secret("FEISHU_ALLOW_BOTS", "") or extra.get("allow_bots") or "none").strip().lower()
+        allow_bots = str(_extra_or_secret("allow_bots", "FEISHU_ALLOW_BOTS", "none") or "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1382,9 +1459,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return executor
 
     async def _run_blocking(self, func, *args):
-        """Run a blocking Feishu SDK call on the adapter-owned thread pool."""
+        """Run a blocking Feishu SDK call on the adapter-owned thread pool.
+
+        ``copy_context().run`` mirrors ``asyncio.to_thread``: the worker sees the caller's
+        profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._get_sdk_executor(), func, *args)
+        return await loop.run_in_executor(
+            self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
 
     def _shutdown_sdk_executor(self) -> None:
         """Stop the adapter-owned SDK executor without touching the loop default."""
@@ -1644,7 +1726,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
-    _EA_REASON_LABEL = "**Reason:** "
+    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
@@ -1662,7 +1744,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 _card_button(label, style or "default",
                              {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
-            card = _card("⚠️ Command Approval Required", "orange", prompt.text, actions=actions)
+            card = _card(f"⚠️ {EA_HEADER_TEXT}", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
@@ -1849,7 +1931,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return await super().send_animation(
                 chat_id=chat_id, animation_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
-        degraded_caption = f"[GIF downgraded to file]\n{caption}" if caption else "[GIF downgraded to file]"
+        degraded_caption = self.warning_text(
+            f"[GIF downgraded to file]\n{caption}" if caption else "[GIF downgraded to file]", caption)
         return await self.send_document(
             chat_id=chat_id, file_path=file_path, file_name=file_name, caption=degraded_caption,
             reply_to=reply_to, metadata=metadata,
@@ -1992,6 +2075,8 @@ class FeishuAdapter(BasePlatformAdapter):
         reason = self._admit(sender, message)
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
+            if reason == "group_policy_rejected":
+                self._warn_once_empty_allowlist_deny(getattr(message, "chat_id", "") or "")
             return
         await self._process_inbound_message(
             data=data, message=message, sender_id=getattr(sender, "sender_id", None),
@@ -2489,7 +2574,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
-        text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
+        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -2503,7 +2588,10 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Only a native ``thread_id`` marks a topic. ``root_id`` is present on every quoted reply
+        # too, so using it as a fallback (#19711) turned ordinary quote replies into topic
+        # sessions and pushed the bot's answer into a fresh thread (#20548).
+        thread_id = getattr(message, "thread_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None) or None
@@ -2536,6 +2624,7 @@ class FeishuAdapter(BasePlatformAdapter):
         normalized = MessageEvent(
             text=text, message_type=inbound_type, source=source, raw_message=data,
             message_id=message_id, media_urls=media_urls, media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
@@ -2578,6 +2667,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
+        existing.media_text_inlined.extend(event.media_text_inlined)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
         existing.timestamp = event.timestamp
@@ -2838,6 +2928,9 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         existing.text = next_text
+        existing.media_urls.extend(event.media_urls)
+        existing.media_types.extend(event.media_types)
+        existing.media_text_inlined.extend(event.media_text_inlined)
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp
         if event.message_id:
@@ -2872,7 +2965,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _extract_message_content(
         self, message: Any
-    ) -> tuple[str, MessageType, List[str], List[str], List[FeishuMentionRef]]:
+    ) -> tuple[str, MessageType, List[str], List[str], List[bool], List[FeishuMentionRef]]:
         raw_content = getattr(message, "content", "") or ""
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
@@ -2883,13 +2976,17 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
-        if (
-            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
-            and len(media_urls) == 1
-            and normalized.preferred_message_type in {"document", "audio"}
-        ):
-            text = await self._maybe_extract_text_document(media_urls[0], media_types[0]) or text
-        return text, inbound_type, media_urls, media_types, list(normalized.mentions)
+        media_text_inlined: List[bool] = []
+        inlined_parts: List[str] = []
+        for media_url, media_type in zip(media_urls, media_types):
+            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            media_text_inlined.append(bool(extracted))
+            if extracted:
+                inlined_parts.append(extracted)
+        if inlined_parts:
+            extracted_text = "\n\n".join(inlined_parts)
+            text = f"{text}\n\n{extracted_text}" if text else extracted_text
+        return text, inbound_type, media_urls, media_types, media_text_inlined, list(normalized.mentions)
 
     async def _download_feishu_message_resources(
         self, *, message_id: str, normalized: FeishuNormalizedMessage,
@@ -3276,6 +3373,26 @@ class FeishuAdapter(BasePlatformAdapter):
             return "group_policy_rejected"
         return None
 
+    # Class default so the first drop after construction is the one that warns.
+    _warned_empty_allowlist_deny = False
+
+    def _warn_once_empty_allowlist_deny(self, chat_id: str) -> None:
+        """One WARNING when group traffic dies on the untouched allowlist default (#111420).
+
+        The policy read is scoped per profile on purpose — never inherit another profile's
+        FEISHU_GROUP_POLICY here; only make the resulting deny visible above DEBUG.
+        """
+        if self._warned_empty_allowlist_deny:
+            return
+        from plugins.platforms.feishu.feishu_admission_diagnostics import empty_allowlist_drop_warning
+        text = empty_allowlist_drop_warning(
+            chat_id=chat_id, group_rules=self._group_rules,
+            default_group_policy=self._default_group_policy, allowed_group_users=self._allowed_group_users,
+        )
+        if text:
+            self._warned_empty_allowlist_deny = True
+            logger.warning(text)
+
     def _require_mention_for(self, chat_id: str) -> bool:
         rule = self._group_rules.get(chat_id) if chat_id else None
         if rule and rule.require_mention is not None:
@@ -3421,7 +3538,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _persist_seen_message_ids(self) -> None:
         try:
-            self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(self._dedup_state_path.parent)
             with self._dedup_lock:
                 recent = self._seen_message_order[-self._dedup_cache_size:]
                 # Save as {msg_id: timestamp} so TTL filtering works across restarts.
@@ -3441,10 +3559,12 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._seen_message_order) > self._dedup_cache_size:
                 self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
         # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
-        # offload the flush. The lock keeps flushes in mutation order (the snapshot inside the
-        # worker is taken under _dedup_lock, but the write itself is not).
+        # offload the flush onto the adapter-owned pool: the loop's default executor may already
+        # be torn down by a dead background loop, which used to wedge every inbound message in
+        # the dedup gate (#111020). The lock keeps flushes in mutation order (the snapshot
+        # inside the worker is taken under _dedup_lock, but the write itself is not).
         async with self._dedup_persist_lock_or_create():
-            await asyncio.to_thread(self._persist_seen_message_ids)
+            await self._run_blocking(self._persist_seen_message_ids)
         return False
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
@@ -3573,7 +3693,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             from lark_oapi.api.im.v1 import ListMessageRequest
             request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
-            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            response = await self._run_blocking(self._client.im.v1.message.list, request)
             if self._response_succeeded(response):
                 items = getattr(getattr(response, "data", None), "items", None)
                 if items and len(items) > 0:
@@ -3681,6 +3801,11 @@ class FeishuAdapter(BasePlatformAdapter):
             if ws_future is not last_dead:
                 logger.error("[Feishu] WebSocket client thread exited unexpectedly; restarting in %.0fs", backoff)
                 last_dead = ws_future
+                # Still running, link unproven: ``connected`` stays wrong until ``_ws_link_up`` re-stamps it.
+                self._write_runtime_status_safe(
+                    "ws_link_lost", platform_state="retrying", error_code=None,
+                    error_message="Feishu websocket link lost; rebuilding",
+                )
             await asyncio.sleep(backoff)
             if not self._running:
                 return
@@ -3690,6 +3815,19 @@ class FeishuAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[Feishu] WebSocket restart failed (retrying): %s", exc)
                 backoff = min(backoff * 2, 60.0)
+
+    def _ws_link_up(self, ws_client: Any) -> None:
+        """WS thread reports its link is up (SDK receive loop scheduled); re-stamp ``connected`` after a rebuild."""
+        if self._running and self._ws_client is ws_client:
+            self._mark_connected()
+
+    def _ws_link_retrying(self, ws_client: Any) -> None:
+        """WS thread reports the SDK's own reconnect ladder started; ``_ws_link_up`` re-stamps ``connected``."""
+        if self._running and self._ws_client is ws_client:
+            self._write_runtime_status_safe(
+                "ws_link_lost", platform_state="retrying", error_code=None,
+                error_message="Feishu websocket link lost; reconnecting",
+            )
 
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
@@ -3715,7 +3853,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # thread has an empty context = launch profile. connect() runs inside the profile scope
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
         self._ws_future = loop.run_in_executor(
-            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+            self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
@@ -4095,7 +4233,8 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
     else:
         print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
+        from hermes_cli.managed_uv import pip_install_hint
+        print(f"  Tip: {pip_install_hint('qrcode')}  to display a scannable QR code here next time")
     print()
     result = _poll_registration(
         device_code=begin["device_code"], interval=begin["interval"],

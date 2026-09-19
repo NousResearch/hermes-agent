@@ -173,13 +173,23 @@ describe('ThemeProvider --dt-primary-solid preset parity', () => {
     [0, 2, 4].map(i => parseInt(hex.replace(/^#/, '').slice(i, i + 2), 16)) as [number, number, number]
 
   const rgbToHex = (rgb: [number, number, number]) =>
-    `#${rgb.map(n => Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, '0')).join('')}`
+    `#${rgb
+      .map(n =>
+        Math.round(Math.min(255, Math.max(0, n)))
+          .toString(16)
+          .padStart(2, '0')
+      )
+      .join('')}`
 
   const oldMix = (a: string, b: string, amount: number) => {
     const ar = hexToRgb(a)
     const br = hexToRgb(b)
 
-    return rgbToHex([ar[0] + (br[0] - ar[0]) * amount, ar[1] + (br[1] - ar[1]) * amount, ar[2] + (br[2] - ar[2]) * amount])
+    return rgbToHex([
+      ar[0] + (br[0] - ar[0]) * amount,
+      ar[1] + (br[1] - ar[1]) * amount,
+      ar[2] + (br[2] - ar[2]) * amount
+    ])
   }
 
   const linearize = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
@@ -231,7 +241,9 @@ describe('ThemeProvider --dt-primary-solid preset parity', () => {
     return null
   }
 
-  const cases = BUILTIN_THEME_LIST.flatMap(theme => (['light', 'dark'] as const).map(mode => [theme.name, mode] as const))
+  const cases = BUILTIN_THEME_LIST.flatMap(theme =>
+    (['light', 'dark'] as const).map(mode => [theme.name, mode] as const)
+  )
 
   it.each(cases)('%s/%s keeps the pre-refactor loud fill', (name, mode) => {
     render(

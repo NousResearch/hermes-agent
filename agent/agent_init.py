@@ -587,6 +587,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # skills.auto_load rendered ONCE per agent: every rebuild (model switch, compression,
+    # static-prefix restoration) reuses these exact bytes instead of re-reading config/skills.
+    "_auto_load_skills_resolved": False,
+    "_auto_load_skills_result": ("", [], []),
     # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
     # probed once per session and replayed on every rebuild, so a moving repo can't push the
     # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
@@ -721,7 +725,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token() if _is_native_anthropic else None) or ""
+    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -755,9 +759,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
 def _init_moa_client(agent, api_key):
     """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import build_moa_facade
-    agent.api_mode = "chat_completions"
-
+    from agent.moa_loop import bind_moa_runtime
     # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
     # shows each reference's answer before the aggregator acts. Display-only; shared with
     # fallback-restore so a restored facade keeps emitting.
@@ -767,10 +769,7 @@ def _init_moa_client(agent, api_key):
     # facade emits "moa.reference", "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
     # through the same callback the tool lifecycle uses. Best-effort and cache-safe — display-only events,
     # they never touch the message history. See #53802.
-    agent.client = build_moa_facade(agent, agent.model)
-    agent._client_kwargs = {}
-    agent.api_key = api_key or "moa-virtual-provider"
-    agent.base_url = "moa://local"
+    bind_moa_runtime(agent, agent.model, api_key)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
 
@@ -796,14 +795,6 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     if agent.provider == "copilot-acp":
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
-    # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless
-    # placeholder): send an empty Authorization header to override the SDK's "Bearer <key>".
-    with suppress(Exception):
-        from hermes_cli.models import (
-            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        )
-        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            client_kwargs["default_headers"] = opencode_zen_free_headers()
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)
@@ -818,11 +809,12 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     return client_kwargs
 
 
-def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str, Any]:
+def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
     Falls through to the init-time fallback chain, then raises with the missing-key /
-    no-provider diagnostic.
+    no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
+    already bound and there is no OpenAI client to construct.
     """
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
@@ -852,32 +844,28 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
             continue
         if _fb_client is not None:
+            agent._fallback_activated = True
+            if str(_fb["provider"]).strip().lower() == "moa":
+                # The chokepoint handed back the preset's aggregator client, which only proves the
+                # preset resolves and its aggregator has credentials. A MoA entry means the preset
+                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, _fb["model"])
+                return None
             agent.provider = _fb["provider"]
             agent.model = _fb_model or _fb["model"]
-            agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
-        # Use the provider's real env var name (alibaba → DASHSCOPE_API_KEY).
-        _env_hint = f"{_explicit.upper()}_API_KEY"
-        with suppress(Exception):
-            from hermes_cli.auth import PROVIDER_REGISTRY
-            _pcfg = PROVIDER_REGISTRY.get(_explicit)
-            if _pcfg and _pcfg.api_key_env_vars:
-                _env_hint = _pcfg.api_key_env_vars[0]
-        raise RuntimeError(
-            f"Provider '{_explicit}' is set in config.yaml but no API key "
-            f"was found. Set the {_env_hint} environment "
-            f"variable, or switch to a different provider with `hermes model`."
-        )
+        from agent.auxiliary_unavailable import missing_provider_credentials_message
+        raise RuntimeError(missing_provider_credentials_message(_explicit))
+    from hermes_constants import profile_cli_selector
+    _sel = profile_cli_selector()
     raise RuntimeError(
-        "No LLM provider configured. Run `hermes model` to "
-        "select a provider, or run `hermes setup` for first-time "
+        f"No LLM provider configured. Run `hermes {_sel}model` to "
+        f"select a provider, or run `hermes {_sel}setup` for first-time "
         "configuration."
     )
-
-
-_FINE_GRAINED_BETA = "fine-grained-tool-streaming-2025-05-14"
 
 
 def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
@@ -885,12 +873,14 @@ def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
     OpenRouter Claude beta header → model.default_headers → custom-provider TLS/extra_headers."""
     # Fine-grained tool streaming for Claude on OpenRouter: without the beta header
     # Anthropic buffers the whole tool call and OpenRouter's proxy times out.
+    from agent.anthropic_adapter import _TOOL_STREAMING_BETA
+
     _effective_base = str(client_kwargs.get("base_url", "")).lower()
     if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
         headers = client_kwargs.get("default_headers") or {}
         existing_beta = headers.get("x-anthropic-beta", "")
-        if _FINE_GRAINED_BETA not in existing_beta:
-            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _FINE_GRAINED_BETA)))
+        if _TOOL_STREAMING_BETA not in existing_beta:
+            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _TOOL_STREAMING_BETA)))
             client_kwargs["default_headers"] = headers
     # model.default_headers override provider/SDK defaults (WAFs rejecting SDK headers).
     agent._apply_user_default_headers()
@@ -916,6 +906,10 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+        if client_kwargs is None:  # init-time fallback bound the MoA facade
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+            return
     from hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"
@@ -940,7 +934,9 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             print(f"🤖 AI Agent initialized with model: {agent.model}")
             if base_url:
                 print(f"🔗 Using custom base URL: {base_url}")
-            _print_key_banner(client_kwargs.get("api_key", "none"), "API key", warn_missing=True)
+            from gateway.warning_notifications import warning_notifications_enabled
+            _print_key_banner(client_kwargs.get("api_key", "none"), "API key",
+                              warn_missing=warning_notifications_enabled(agent.platform))
     except Exception as e:
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
@@ -1063,12 +1059,18 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
+    from agent.oneshot_footprint import prune_oneshot_tools
+    agent.tools = prune_oneshot_tools(agent.tools or [])
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
+    # expose kanban_show interactively, and children/cron runs inherit the env var, without
+    # owning a task.
+    from agent.delegation_context import owned_kanban_task
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
     )
     if agent.quiet_mode:
         return
@@ -1082,7 +1084,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         requirements = model_tools.check_toolset_requirements()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
-            print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+            agent._safe_print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}", diagnostic=True)
     else:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
     if agent.save_trajectories:
@@ -1201,7 +1203,8 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
         "session_id": agent.session_id,
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
-        "agent_context": "primary",
+        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
+        "agent_context": platform if platform in ("cron", "subagent") else "primary",
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -1212,12 +1215,17 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
             _st = agent._session_db.get_session_title(agent.session_id)
             if _st:
                 kwargs["session_title"] = _st
+                _source = agent._session_db.get_session_title_source(agent.session_id)
+                if _source:
+                    kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:
             kwargs[_ident] = _val
+    if agent.session_cwd:
+        kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
@@ -1275,6 +1283,11 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
+                if _mp is None:
+                    # The provider left core for the catalog (or was never installed): fetch it once.
+                    from hermes_cli.memory_provider_migration import recover_at_startup
+                    if recover_at_startup(_mem_provider_name):
+                        _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
@@ -1327,6 +1340,13 @@ def _apply_agent_section(agent, _agent_cfg):
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # Responses `text.verbosity`: "" / unknown value = not sent (never flips the provider default).
+    _verbosity = str(_agent_section.get("text_verbosity") or "").strip().lower()
+    if _verbosity and _verbosity not in {"low", "medium", "high"}:
+        logger.warning("Unknown agent.text_verbosity %r; expected low, medium or high — ignoring", _verbosity)
+        _verbosity = ""
+    agent.text_verbosity = _verbosity or None
+
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (
@@ -1352,6 +1372,12 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+    # Bounded post-exhaustion auto-recovery cycles once retries AND the fallback chain are spent
+    # on a transient outage (agent/turn_recovery_autorecover.py). 0 disables the ladder.
+    try:
+        agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
+    except (TypeError, ValueError):
+        agent._auto_recovery_cycles = 5
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
@@ -1502,12 +1528,23 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
 
 def _warn_invalid_config_int(
     what: str, value: Any, requirement: str, fallback: str, print_fallback: str = "",
+    agent: Any = None,
 ) -> None:
     """Log + stderr-print an invalid integer config value (``print_fallback``: user-facing
-    wording where it differs from the log line)."""
+    wording where it differs from the log line). The print is an automatic diagnostic and
+    honors the warning-notification policy; the log line never does."""
     _ra().logger.warning(
         "Invalid %s: %r — %s. Falling back to %s.", what, value, requirement, fallback,
     )
+    from gateway.warning_notifications import warning_notifications_enabled
+    try:
+        if not warning_notifications_enabled(
+            getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
+            getattr(agent, "_notification_config", None),
+        ):
+            return
+    except Exception:
+        pass
     print(
         f"\n⚠ Invalid {what}: {value!r}\n"
         f"  {requirement[0].upper() + requirement[1:]}.\n"
@@ -1661,6 +1698,7 @@ def _warn_invalid_custom_provider_context_length(agent, _custom_providers) -> No
             _warn_invalid_config_int(
                 f"context_length for model {agent.model!r} in custom_providers",
                 _cp_ctx, _CTX_LEN_REQUIREMENT, "auto-detection", "auto-detected context window",
+                agent=agent,
             )
         return
 
@@ -1688,7 +1726,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
             _warn_invalid_config_int(
                 "model.context_length in config.yaml", _config_context_length,
                 "must be a plain integer (e.g. 256000, not '256K')",
-                "auto-detection", "auto-detected context window",
+                "auto-detection", "auto-detected context window", agent=agent,
             )
             _config_context_length = None
 
@@ -1725,6 +1763,9 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     # Persisted for switch_model / fallback AFTER the custom_providers branch (per-model overrides).
     agent._config_context_length = _config_context_length
+    if _config_context_length is not None:
+        from agent.context_pin import warn_once_on_pin_disagreement
+        warn_once_on_pin_disagreement(agent.model, agent.base_url or "", _config_context_length)
 
     _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(_config_context_length)
     if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
@@ -1872,6 +1913,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     agent.compression_checkpoint_required = cs.checkpoint_required
+    from agent.conversation_compression import _warn_checkpoint_required_without_capable_provider
+    _warn_checkpoint_required_without_capable_provider(agent)
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native
     agent.codex_responses_compact_threshold = cs.codex_responses_compact_threshold
@@ -1888,6 +1931,11 @@ def _enforce_minimum_context(agent):
     # Reject windows below the 64K floor needed for reliable tool-calling; an explicit
     # positive model.context_length on LM Studio is allowed below the floor.
     _ctx = getattr(agent.context_compressor, "context_length", 0)
+    # A local Ollama server serves num_ctx, not the GGUF's advertised window: a Modelfile or
+    # model.ollama_num_ctx at 64K+ is a usable window even when the metadata says 40K (#100437).
+    # Only a local endpoint can honour num_ctx, so a stale override never admits a hosted model.
+    if agent._ollama_num_ctx and agent.base_url and is_local_endpoint(agent.base_url):
+        _ctx = max(_ctx or 0, agent._ollama_num_ctx)
     _allow_lmstudio_explicit_below_floor = (
         str(agent.provider or "").strip().lower() == "lmstudio"
         and isinstance(agent._config_context_length, int)
@@ -1895,14 +1943,28 @@ def _enforce_minimum_context(agent):
         and agent._config_context_length > 0
     )
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
+        floor_k = MINIMUM_CONTEXT_LENGTH // 1000
+        if agent.base_url and is_local_endpoint(agent.base_url):
+            # Any OpenAI-compatible local server (llama.cpp, vLLM, Ollama, ...) — the window is the
+            # server's runtime setting, not the model's; never assume Ollama here (#87075).
+            remedy = (
+                f"Your local server is serving a {_ctx:,}-token window.  Start it with at least "
+                f"{floor_k}K context (llama.cpp: -c {MINIMUM_CONTEXT_LENGTH}; vLLM: --max-model-len; "
+                f"Ollama: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} or a Modelfile num_ctx), "
+                f"or set model.ollama_num_ctx in config.yaml to the window it really serves "
+                f"(at least {floor_k}K)."
+            )
+        else:
+            remedy = (
+                f"Choose a model with at least {floor_k}K context.  If your server "
+                f"reports a window smaller than the model's true window, set "
+                f"model.context_length in config.yaml to the real value "
+                f"(this must be at least {floor_k}K)."
+            )
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-            f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
-            f"reports a window smaller than the model's true window, set "
-            f"model.context_length in config.yaml to the real value "
-            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
+            f"by Hermes Agent.  {remedy}"
         )
 
 
@@ -1995,7 +2057,7 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
             if _detected and _detected > 0:
                 agent._ollama_num_ctx = _detected
         except Exception as exc:
-            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
+            _ra().logger.debug("Local server num_ctx detection failed: %s", exc)
     # Cap auto-detected num_ctx to the explicit context_length (GGUF metadata can advertise
     # 256K+ and Ollama would allocate that much VRAM); never override an explicit num_ctx.
     if (
@@ -2010,10 +2072,15 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
         )
         agent._ollama_num_ctx = _config_context_length
     if agent._ollama_num_ctx and not agent.quiet_mode:
+        # Name the real source: a config override is honoured on any local server, /api/show is Ollama-only.
         _ra().logger.info(
-            "Ollama num_ctx: will request %d tokens (model max from /api/show)",
+            "Local server num_ctx: will request %d tokens (%s)",
             agent._ollama_num_ctx,
+            "model.ollama_num_ctx" if _override is not None else "model max from Ollama /api/show",
         )
+
+
+def _clamp_compressor_to_ollama_num_ctx(agent):
     # Recalibrate the compressor to the served window: every request runs at num_ctx, so a
     # trigger derived from the probed model window could sit above it and never fire.
     # A config that sets only model.ollama_num_ctx (without model.context_length) previously left the
@@ -2057,13 +2124,15 @@ def _emit_compression_summary(agent, cs):
             # The active engine's own threshold — a plugin's differs from cs.threshold.
             _pct = getattr(_cc, "threshold_percent", cs.threshold)
             _cap = getattr(_cc, "threshold_tokens_cap", None)
-            _cap_note = f" (capped at {_cap:,} tokens)" if _cap and _cap > 0 else ""
+            # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
+            _cap_binds = bool(_cap) and _cap > 0 and _cc.threshold_tokens == min(_cap, _cc.context_length)
+            _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
             print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
         # Gateway users get the same text via _compression_warning on turn 1.
         if _autoraise_notice:
-            print(_autoraise_notice)
+            agent._safe_print(_autoraise_notice, diagnostic=True)
 
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.
@@ -2163,7 +2232,7 @@ _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-    "read_window_below_callback", "setup_mcp_callback", "tour_callback",
+    "read_window_below_callback", "connection_callback", "tour_callback",
     "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
@@ -2186,7 +2255,7 @@ def init_agent(
     thinking_callback: callable = None, reasoning_callback: callable = None,
     clarify_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
-    read_window_below_callback: callable = None, setup_mcp_callback: callable = None,
+    read_window_below_callback: callable = None, connection_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None, status_callback: callable = None,
@@ -2204,13 +2273,15 @@ def init_agent(
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
     Non-obvious parameters:
       max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
       requested_provider: provider identity before runtime canonicalization.
+      cwd: logical session workspace, available to memory providers during construction;
+        None or empty leaves the runtime cwd resolver unpinned.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
@@ -2226,6 +2297,7 @@ def init_agent(
         setattr(agent, _name, _params[_name])
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
+    agent.session_cwd = cwd or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's
@@ -2299,11 +2371,12 @@ def init_agent(
         agent, _agent_cfg, base_url
     )
     _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
+    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
     _init_usage_state(agent)
-    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
+    _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)
 

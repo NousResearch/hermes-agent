@@ -2,7 +2,7 @@
 sidebar_position: 13
 sidebar_label: "Plugin Catalog"
 title: "Plugin Catalog"
-description: "Browse and install reviewed, SHA-pinned Hermes plugins from the curated catalog"
+description: "Give Hermes new powers with reviewed plugins you can install in one click"
 ---
 
 # Plugin Catalog
@@ -14,9 +14,10 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
-Browse it visually at **[/docs/plugins](/plugins)** — search, tier filters
-(Official / Community), capability chips, and copyable install commands for
-every entry.
+Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
+category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
+Models), with search, tier filters (Official / Community), capability chips, and
+copyable install commands for every entry.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -35,11 +36,14 @@ directory of the hermes-agent repository, declaring:
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `tier` | `official` (maintained by NousResearch) or `community` |
+| `category` | Browse shelf: `desktop` (default), `memory`, `platform`, `web`, `tools`, `voice`, `automation`, `models` or `general` |
 | `maintainer` | Who owns the plugin |
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
 | `platforms` | OS restrictions, empty = all (optional) |
 | `docs_url` | External documentation link (optional) |
+| `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
+| `image` | Banner image for the catalog card, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |
 
 ## Trust model
 
@@ -51,6 +55,19 @@ The catalog is designed so you know exactly what you're installing:
 - **Exact SHA pins.** Entries pin a specific commit, not a branch. A plugin
   author pushing new code to their repo does **not** change what the catalog
   installs — updating the pin requires another reviewed PR.
+- **Scanned at admission, trusted at install.** Admission CI runs the same
+  security scanner the installer runs (`hermes plugins validate` includes a
+  `security scan` check): a `dangerous` verdict fails the entry, `caution`
+  findings are listed for the reviewer. Because the reviewer saw them, a
+  catalog install checked out at exactly the pinned SHA does not stop to ask
+  about `caution` again; `dangerous` still blocks, and anything installed from
+  a raw URL or at another revision gets the normal prompt.
+- **Desktop plugins stay inside the SDK.** A plugin's `desktop/plugin.js` runs
+  inside the Desktop app with the app's own authority, so listed ones may only
+  use the plugin SDK: no patching of built-in prototypes, no `eval`, no
+  importing the app's own bundle chunks or remote scripts. Admission refuses
+  these (`desktop surface` check) so a marketplace install cannot quietly
+  rewire the app around you.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.
@@ -123,7 +140,9 @@ The docs build publishes the catalog as one JSON document
 (`https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json`).
 `search`/`install`/`update` fetch it at most every six hours and cache it under
 `~/.hermes/cache/`, so new entries and removals reach installed clients without
-updating Hermes. Offline, the copy shipped with your checkout is used. Removals
+updating Hermes. Offline, the copy shipped with your checkout is used (a failed
+fetch is remembered for a minute, so `plugins list` and the dashboard's Plugins
+page pay at most one connection timeout, not one per installed plugin). Removals
 from the in-tree list and the live list are always both enforced.
 
 ### Custom git URLs are different
@@ -146,20 +165,28 @@ The full checklist lives in the
 in short, an entry must be:
 
 1. **Owner-submitted** — the PR author owns or maintains the plugin repo.
+   Maintainers also add batches of community plugins from a reviewed sweep
+   (each pin validated and scanned at the pinned commit); if yours was swept
+   in and you want it changed or removed, open a PR on your entry.
 2. **A public repository** — the `repo` URL is publicly cloneable.
 3. **Released** — the repo has real releases/tags, not just a default branch.
 4. **Passing validation** — the catalog validation GitHub Action is green on
    the PR (schema, SHA format, reachability).
-5. **Pinned to settled code** — the pinned SHA is at least **2 weeks old**, so
-   the catalog never points at code pushed moments before review.
+5. **Not self-updating** — the catalog build must not download and replace
+   its own files; the pinned SHA is the only update path (a SHA-bump PR plus
+   `hermes plugins update <name>`).
 
 Pin updates (bumping `sha` to a newer commit) follow the same PR + review
-process.
+process; bump `version` in the same PR so the label users see matches the
+code. Installed plugins compare their recorded sha against the live pin:
+`hermes plugins list --json` reports `update_available`, the Desktop Plugins
+tab shows an **Update to 1.4.0** button, and `hermes plugins update <name>`
+checks out exactly the new pin.
 
 ## See also
 
 - [Plugins](plugins.md) — the plugin system itself: manifest format, enabling,
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
-- [Build a Hermes Plugin](/developer-guide/plugins) — write your own
+- [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
 - [Plugin Catalog page](/plugins) — the browsable catalog

@@ -103,6 +103,9 @@ def test_timeout_and_interrupt_early_results():
     assert admission.lease is None
     assert admission.early_result["failed"] is True
     assert admission.early_result["error"] == "session_turn_lease_timeout:s1"
+    # Stamped so UI descriptors show "session busy" instead of code="unknown".
+    assert admission.early_result["failure_reason"] == "session_busy"
+    assert admission.early_result["failure_retryable"] is True
     assert admission.early_result["messages"] == [{"role": "user", "content": "x"}]
 
     agent = _agent(_Db(acquired=False), _interrupt_requested=True, _interrupt_message="stop")
@@ -231,7 +234,7 @@ def test_history_gap_before_later_local_append_preserves_cached_objects(durable_
     local = [{"role": "user", "content": "later desktop request"},
              {"role": "assistant", "content": "later desktop answer"}]
     # Real flush synchronizes committed row IDs onto the original live dicts.
-    _db_flush_write(agent, copy.deepcopy(local), local)
+    _db_flush_write(agent, copy.deepcopy(local), local, [*history, *local])
     history += local
     before = copy.deepcopy(history)
     admission = _admit(agent, history)
@@ -391,7 +394,7 @@ def test_resume_outside_lease_fails_closed(durable_history):
 
 def test_native_desktop_resume_then_normal_tool_flush_remains_anchored(durable_history):
     from agent.replay_cleanup import sanitize_replay_history
-    from tests.run_agent.test_cross_process_turn_lease import _flush_agent
+    from tests.agent.test_cross_process_turn_lease import _flush_agent
 
     db, agent, _ = durable_history
     history, _ = db.get_resume_conversations("s1")
@@ -423,7 +426,7 @@ def test_native_desktop_resume_then_normal_tool_flush_remains_anchored(durable_h
 
 
 def test_caller_seed_marked_persisted_without_row_id_is_not_inferred(durable_history):
-    from tests.run_agent.test_cross_process_turn_lease import _flush_agent
+    from tests.agent.test_cross_process_turn_lease import _flush_agent
 
     db, agent, history = durable_history
     seed = {"role": "developer", "content": "caller-only seed"}

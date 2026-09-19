@@ -28,6 +28,49 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     return None
 
 
+def effective_runtime_provider(
+    entry: dict[str, Any] | None, runtime: dict[str, Any] | None
+) -> str:
+    """Provider identity to persist/display for a resolved fallback entry.
+
+    ``resolve_runtime_provider`` returns the bare billing class ``"custom"``
+    for every named ``providers:`` / ``custom_providers:`` entry; the entry's
+    configured id only survives in ``requested_provider``. Fallback resolvers
+    that persist ``runtime["provider"]`` as the agent identity therefore label
+    sessions/billing rows ``custom`` instead of the configured provider name —
+    while the manual ``/model`` switch path correctly persists the named id
+    (#98739). Same class as the delegation fix in ``tools/delegate_tool.py``.
+
+    Returns the entry's requested identity when the resolved provider is the
+    bare ``custom`` class; a genuinely ad-hoc endpoint (requested provider IS
+    ``custom``) keeps the bare class unchanged.
+    """
+    runtime = runtime or {}
+    resolved = str(runtime.get("provider") or "").strip()
+    if resolved.lower() != "custom":
+        return resolved
+    requested = str(
+        runtime.get("requested_provider")
+        or (entry or {}).get("provider")
+        or ""
+    ).strip()
+    if requested and requested.lower() != "custom":
+        return requested
+    return resolved
+
+
+def pre_agent_fallback_notice(
+    primary_provider: Any, primary_model: Any, fallback_provider: Any, fallback_model: Any
+) -> str:
+    """User-visible one-shot line for a provider switch made during credential resolution, before
+    any AIAgent exists (#74349). Shared by the messaging gateway, the TUI/Desktop gateway and cron
+    so the three pre-agent fallback paths cannot drift in wording."""
+    primary_desc = "/".join(str(p).strip() for p in (primary_provider, primary_model) if p) or "primary"
+    fallback_desc = "/".join(str(p).strip() for p in (fallback_provider, fallback_model) if p) or "fallback"
+    return f"⚠️ Provider fallback: {primary_desc} unavailable; using {fallback_desc} for this response."
+
+
+
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
     entries: list[dict[str, Any]] = []

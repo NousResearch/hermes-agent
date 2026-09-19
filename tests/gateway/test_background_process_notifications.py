@@ -161,6 +161,62 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("launching_turn_busy", [True, False])
+async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
+    monkeypatch, tmp_path, launching_turn_busy
+):
+    """#112033: with notify_on_complete the agent reports the result itself, so the chat gets no
+    separate receipt — except while the launching turn is still running, when the injection only
+    queues a follow-up and the concise receipt is the only thing the user would see."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    adapter._active_sessions = {watcher["session_key"]: asyncio.Event()} if launching_turn_busy else {}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_awaited_once()
+    if launching_turn_busy:
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
+    else:
+        adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_process_watcher_schedules_on_live_loop_only(monkeypatch, tmp_path):
+    """#112033: a watcher registered mid-turn starts on the gateway loop at once while the gateway
+    serves; before/after that the caller keeps it for the startup / post-turn drain."""
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    started = []
+
+    async def _fake_watcher(watcher):
+        started.append(watcher["session_id"])
+    runner._run_process_watcher = _fake_watcher
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    runner._running = False
+    assert runner.arm_process_watcher({"session_id": "proc_early"}) is False
+
+    runner._running = True
+    assert runner.arm_process_watcher({"session_id": "proc_live"}) is True
+    await asyncio.sleep(0.05)
+    assert started == ["proc_live"]
+
+
+@pytest.mark.asyncio
 async def test_consumed_completion_skips_raw_notification_without_agent_notify(
     monkeypatch, tmp_path
 ):
@@ -404,8 +460,9 @@ class TestConciseFormatter:
         text = _format_concise_process_notification(
             "proc_abc", "make build", 2, out,
         )
-        assert text.startswith("❌ Background task failed (exit 2)")
-        assert "Traceback: boom" in text
+        assert text.startswith("❌ Background task failed")
+        assert "exit 2" in text and "Traceback: boom" in text
+        assert "rerun" in text
         # Only a short tail, not the whole output
         assert "line0" not in text
 
@@ -472,7 +529,7 @@ async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
 
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("❌ Background task failed (exit 128)")
+    assert sent_text.startswith("❌ Background task failed") and "exit 128" in sent_text
     assert "fatal: repo not found" in sent_text
 
 
@@ -769,3 +826,35 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
+    """#54266: the chat-facing watcher messages (final in all/result/error, interim in all) carry a
+    status header and the (ANSI-stripped) output, never the internal ``proc_*`` id or the bracketed
+    ``[Background process …~ …]`` debug wrapper. Full output stays available via the process tool."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n", exited=False, exit_code=None,
+                              command="make -j8 all", started_at=None)
+    done = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n\x1b[31mlinker error\x1b[0m\n", exited=True,
+                           exit_code=2, command="make -j8 all", started_at=None)
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([running, done]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict(session_id="proc_deadbeef"))
+
+    sent = [call.args[1] for call in adapter.send.await_args_list]
+    assert len(sent) == 2
+    interim, final = sent
+    assert interim.startswith("⏳ Background task still running") and "step 1 ok" in interim
+    assert final.startswith("❌ Background task failed") and "exit 2" in final and "linker error" in final
+    for text in sent:
+        assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
+        assert "\x1b[" not in text
+        assert "make -j8 all" in text

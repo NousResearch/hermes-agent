@@ -8,7 +8,7 @@ import platform
 import shutil
 import subprocess
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_probe_run, windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -18,6 +18,7 @@ logger = logging.getLogger("tools.environments.local")
 _bash_starts_cache: dict[str, bool] = {}
 _bash_probe_details_cache: dict[str, str] = {}
 _mandatory_aslr_enabled_cache: "bool | None" = None
+_BASH_PROBE_TIMEOUT = 15.0
 
 # External ``true`` and ``cat`` are intentional: a builtin-only ``exit 0`` probe
 # misses Git-for-Windows fork/spawn failures under system-wide Mandatory ASLR.
@@ -87,14 +88,23 @@ def _bash_starts(bash: str) -> bool:
     if bash in _bash_starts_cache:
         return _bash_starts_cache[bash]
     try:
-        result = subprocess.run(
+        # bounded_probe_run, not subprocess.run: on Windows run()'s post-timeout cleanup is an
+        # unbounded communicate(), and the MSYS children of the probe (true/cat) can outlive the
+        # killed bash holding the pipe write ends — the ACP host then wedged for minutes (#73403).
+        # The probe's tree is killed and the drain bounded, so a slow host fails the probe fast
+        # and _find_bash falls through to its last-resort candidate instead of hanging.
+        # stdin=DEVNULL (inside bounded_probe_run) is also what keeps the probe off the ACP
+        # host's stdin pipe: cygwin init's handle_to_fn/NtQueryObject stalls ~22 s on a pipe
+        # file object with a read pending on it, and the host's stdin reader always has one
+        # (@Aaaarminn's strace on #73403). stderr stays captured: the Mandatory-ASLR
+        # remediation keys off bash's dofork:/child_copy: text.
+        result = bounded_probe_run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=15, creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
-            stdin=subprocess.DEVNULL)  # #78820: never hand the TUI gateway's stdin pipe to MSYS bash
-        ok = result.returncode == 0
+            timeout=_BASH_PROBE_TIMEOUT, raise_on_spawn_failure=True)
+        ok = result is not None and result.returncode == 0
         if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            combined = (f"{result.stdout or ''}{result.stderr or ''}".strip() if result is not None
+                        else f"probe timed out after {_BASH_PROBE_TIMEOUT:g}s")
             _bash_probe_details_cache[bash] = combined[:2000]
             logger.debug("bash probe failed for %s: %s", bash, combined[:200])
     except Exception as exc:

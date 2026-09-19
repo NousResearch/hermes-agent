@@ -14,7 +14,13 @@ import type {
   StatusResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import {
+  capabilityScoped,
+  hermesApi,
+  type ProfileScope,
+  profileScoped,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from './client'
 
 export function getStatus(): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
@@ -156,8 +162,8 @@ export function validateProviderCredential(
   key: string,
   value: string,
   apiKey?: string
-): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
-  return hermesApi<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
+): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[]; resolved_base_url?: string }> {
+  return hermesApi<{ ok: boolean; reachable: boolean; message: string; models?: string[]; resolved_base_url?: string }>({
     ...profileScoped(),
     path: '/api/providers/validate',
     method: 'POST',

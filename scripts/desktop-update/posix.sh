@@ -629,7 +629,7 @@ tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
 # ── self-tests: no update, touch nothing ────────────────────────────────────
 if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   # Runs the REAL heal + invoke selection against --install-root and reports;
-  # tests/test_desktop_update_tcc_heal.py drives the state matrix through it.
+  # tests/scripts/desktop_update/test_desktop_update_tcc_heal.py drives the state matrix through it.
   trap - EXIT
   tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || true
   tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"

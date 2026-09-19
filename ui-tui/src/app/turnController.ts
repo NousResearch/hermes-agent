@@ -578,7 +578,9 @@ class TurnController {
     // `display.final_response_markdown: render` because raw ANSI escapes
     // pass through into the React tree.  Prefer raw text and fall back
     // only when the gateway elected not to send any (#16391).
-    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
+    // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
+    const wireText = typeof payload.text === 'string' ? payload.text : undefined
+    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     // Only dedupe segments AFTER the interim boundary — interim-sealed
     // segments are preserved even if the final text includes them.
@@ -675,7 +677,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -813,7 +815,13 @@ class TurnController {
     this.publishToolState()
   }
 
-  recordInlineDiffToolComplete(diffText: string, toolId: string, fallbackName?: string, duration?: number, resultText?: string) {
+  recordInlineDiffToolComplete(
+    diffText: string,
+    toolId: string,
+    fallbackName?: string,
+    duration?: number,
+    resultText?: string
+  ) {
     if (this.interrupted) {
       return
     }
@@ -825,7 +833,13 @@ class TurnController {
 
   // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
   // a failed tool surfaces through its result text, so every trail line renders as non-error.
-  private completeTool(toolId: string, fallbackName?: string, summary?: string, duration?: number, resultText?: string) {
+  private completeTool(
+    toolId: string,
+    fallbackName?: string,
+    summary?: string,
+    duration?: number,
+    resultText?: string
+  ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
@@ -994,12 +1008,12 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
-        delegationId: p.delegation_id,
+        delegationId: p.delegation_id ?? undefined,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
         index: p.task_index,
-        model: p.model,
+        model: p.model ?? undefined,
         notes: [],
         parentId: p.parent_id ?? null,
         startedAt: Date.now(),
@@ -1008,7 +1022,7 @@ class TurnController {
         thinking: [],
         toolCount: p.tool_count ?? 0,
         tools: [],
-        toolsets: p.toolsets
+        toolsets: p.toolsets ?? undefined
       }
 
       // Map snake_case payload keys onto camelCase state.  Only overwrite

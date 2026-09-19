@@ -259,7 +259,15 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
           {probeStatus === 'error' ? (
             <div className="flex items-start gap-2 text-sm text-destructive">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{probe?.error || copy.probeError}</span>
+              <div className="min-w-0">
+                <span>{copy.probeError}</span>
+                {probe?.error ? (
+                  <details className="mt-1 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer select-none">{copy.probeErrorDetails}</summary>
+                    <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">{probe.error}</pre>
+                  </details>
+                ) : null}
+              </div>
             </div>
           ) : null}
 

@@ -198,12 +198,13 @@ def _xai_api_key_path():
 
 
 def _tts_xai_step(config: dict) -> str:
-    """xAI TTS auth. Order: existing OAuth tokens (free for SuperGrok) > existing
-    XAI_API_KEY > offer both paths — xAI TTS works with OAuth bearer tokens too."""
-    if _xai_oauth_logged_in_for_setup():
+    """xAI TTS auth. Order: existing XAI_API_KEY > existing OAuth tokens > offer both
+    paths — matches runtime, where an explicit key wins over the subscription OAuth
+    bearer (which 403s on metered /v1/tts). See #87045, #113727."""
+    if _setup.get_env_value("XAI_API_KEY"):
+        _setup.print_success("xAI TTS will use your existing XAI_API_KEY (preferred over xAI Grok OAuth)")
+    elif _xai_oauth_logged_in_for_setup():
         _setup.print_success("xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) credentials")
-    elif _setup.get_env_value("XAI_API_KEY"):
-        _setup.print_success("xAI TTS will use your existing XAI_API_KEY")
     else:
         print()
         choice_idx = _setup.prompt_choice(

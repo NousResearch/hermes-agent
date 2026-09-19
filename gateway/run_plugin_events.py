@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import dataclasses
 import logging
 import threading
 from collections import OrderedDict
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session_identity import replace_source
 
 logger = logging.getLogger("gateway.run")
 
@@ -162,7 +162,7 @@ class GatewayPluginEventsMixin:
         if recovery_state == "conflict":
             return "busy", None, None
 
-        source = dataclasses.replace(entry.origin)
+        source = replace_source(self._restored_source(entry))
         if self._session_key_for_source(source) != system_event.session_key:
             return "route_mismatch", None, None
         source_profile = str(getattr(source, "profile", None) or "").strip()
@@ -207,7 +207,7 @@ class GatewayPluginEventsMixin:
             return "session_mismatch", None, None
 
         try:
-            authorized = self._is_user_authorized(
+            authorized = self._is_user_authorized_for_source(
                 source, allow_adapter_delegation=False
             )
         except Exception:
@@ -215,7 +215,7 @@ class GatewayPluginEventsMixin:
         if not authorized:
             return "unauthorized", None, None
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return "route_mismatch", None, None
         return None, entry, source
@@ -274,7 +274,7 @@ class GatewayPluginEventsMixin:
             gateway_system_event=system_event,
             gateway_event_receipt=receipt,
         )
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter is None:
             resolve_gateway_event_receipt(
                 receipt, "route_mismatch", event=system_event
@@ -306,7 +306,7 @@ class GatewayPluginEventsMixin:
         tokens = self._set_session_env(context)
         try:
             prompt = self._pinned_session_context_prompt(context, False, key)
-            self._bind_adapter_run_generation(self._adapter_for_source(source), key, generation)
+            self._bind_adapter_run_generation(self._delivery_adapter_for(source), key, generation)
             return self._PreparedTurn(
                 history, prompt, event.text, None, None, "internal_notification",
                 entry.session_id, event.gateway_system_event.receipt_id,

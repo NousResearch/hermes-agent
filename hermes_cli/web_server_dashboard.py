@@ -153,11 +153,15 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
+        # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
+        initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
+            f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
             f"</script>"
         )
         if prefix:
@@ -540,21 +544,28 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
     for plugins_root, source in _dashboard_plugin_search_dirs():
-        if not plugins_root.is_dir():
+        try:
+            if not plugins_root.is_dir():
+                continue
+            with os.scandir(plugins_root) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        except OSError as exc:
+            _log.warning("Skipping unreadable dashboard plugin root %s: %s", plugins_root, exc)
             continue
-        with os.scandir(plugins_root) as scan:
-            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
         for child in children:
             manifest_file = child / "dashboard" / "manifest.json"
-            if not child.is_dir() or not manifest_file.exists():
-                continue
             try:
+                if not child.is_dir() or not manifest_file.exists():
+                    continue
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
                 seen_names.add(name)
                 plugins.append(_dashboard_plugin_entry(data, name, child / "dashboard", source))
+            except OSError as exc:
+                _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
+                continue
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue
@@ -668,6 +679,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _read_manifest as _read_plugin_manifest_at,
     )
     from hermes_cli.plugins_cmd_catalog import removed_annotation
+    from hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -676,6 +688,10 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     hidden_plugins: list = cfg_get(load_config(), "dashboard", "hidden_plugins", default=[]) or []
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
+
+    # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    removed_entries = resolved_removed_entries()
 
     for name, version, description, source, dir_str, key in _discover_all_plugins():
         # Both the path-derived key (nested category plugins) and the bare manifest name
@@ -709,7 +725,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
-            "removed_reason": removed_annotation(name, dir_str),
+            "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
 
     agent_names = {r["name"] for r in rows}

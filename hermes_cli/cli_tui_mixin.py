@@ -93,6 +93,20 @@ def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
     return [(i, w) for i, label in enumerate(items) for w in wrap(label, width, subsequent_indent=indent)]
 
 
+def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
+    """Wrap ``label``, then prefix the rows with ``first_prefix`` / ``indent``.
+
+    The prefix is applied *after* wrapping on purpose. Folding it into the
+    string handed to the wrapper charges those columns against the label's own
+    width budget — so a selected row wraps one line early and strands the ``❯``
+    cursor on a row of its own — and whitespace-trimming wrappers drop the
+    leading indent entirely, leaving long unselected labels flush against the
+    panel border, out of alignment with every other row.
+    """
+    rows = wrap(label, width)
+    return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
+
+
 class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
@@ -595,7 +609,12 @@ class CLITuiMixin:
         """
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
-        inner_text_width = max(8, box_width - 6)
+        # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
+        # body width. Keep the wrap budget in sync with it and reserve the
+        # leading cell for the cursor/indent applied below, rather than the old
+        # blanket ``- 6`` which wrapped long labels two columns early.
+        inner_text_width = max(8, box_width - 2)
+        label_width = max(8, inner_text_width - max(2, len(indent)))
         selected = state.get("selected", 0)
         try:
             from prompt_toolkit.application import get_app
@@ -612,8 +631,13 @@ class CLITuiMixin:
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
-            prefix = '❯ ' if idx == selected else '  '
-            for wrapped in _wrap_panel_text(prefix + labels[idx], inner_text_width, subsequent_indent=indent):
+            # The cursor cell is always two columns wide, so unselected rows get two spaces
+            # regardless of ``indent`` (the palette's continuation indent is four) — otherwise
+            # the selected label starts two columns left of its neighbours.
+            lead = '❯ ' if idx == selected else '  '
+            for wrapped in _prefix_wrapped_rows(
+                _wrap_panel_text, labels[idx], label_width, lead, indent
+            ):
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()
@@ -636,6 +660,18 @@ class CLITuiMixin:
             hint = (
                 f"Current: {state.get('current_model', 'unknown')} "
                 f"on {state.get('current_provider', 'unknown')}")
+        elif state.get("stage") == "reasoning":
+            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            result = state.get("switch_result")
+            picked = getattr(result, "new_model", "") or "model"
+            title = f"⚙ Model Picker — Reasoning effort for {picked}"
+            rc = self.reasoning_config
+            current = ("none" if isinstance(rc, dict) and rc.get("enabled") is False
+                       else (rc or {}).get("effort", "medium") if isinstance(rc, dict) else "medium")
+            choices = [f"{label}  ← current" if value == current else label
+                       for value, label in _picker_reasoning_rows()]
+            choices += ["← Back", "Cancel"]
+            hint = "Applies with the model switch (same scope) — Enter to choose"
         else:
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
@@ -1166,6 +1202,9 @@ class CLITuiMixin:
             return
         if state.get("stage") == "provider":
             max_idx = len(state.get("providers") or [])
+        elif state.get("stage") == "reasoning":
+            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            max_idx = len(_picker_reasoning_rows()) + 1  # + Back + Cancel
         else:
             # +1 for "← Back" and Cancel over the filtered visible rows.
             _fp = state.get("_filtered_pairs")
@@ -1186,10 +1225,14 @@ class CLITuiMixin:
         st["_scroll_offset"] = 0
 
     def _tui_model_picker_escape(self, event):
-        """ESC clears an active filter first, else closes the picker."""
+        """ESC clears an active filter first, else steps back from the effort stage, else closes."""
         st = self._model_picker_state
         if st and st.get("stage") == "model" and (st.get("filter") or ""):
             self._tui_set_filter(st, "")
+            event.app.invalidate()
+            return
+        if st and st.get("stage") == "reasoning":
+            st.update(stage="model", selected=0, _scroll_offset=0, switch_result=None)
             event.app.invalidate()
             return
         self._close_model_picker()
@@ -1799,8 +1842,9 @@ class CLITuiMixin:
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
+        from utils import file_signature
         _cfg_path = _get_config_path()
-        self._config_mtime: float = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
+        self._config_sig: tuple | None = file_signature(_cfg_path.stat()) if _cfg_path.exists() else None
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 

@@ -48,39 +48,37 @@ def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
     assert _default_workers() == 8
 
 
-def test_compute_host_routes_clarify_response_to_child_pending_registry(monkeypatch):
-    """Interactive answers are handled in the process that owns `_pending`."""
+def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monkeypatch):
+    """The child owns the server request's wait: a relayed client response frame resolves it in-process,
+    and a relayed ``clarify.lock`` is answered with that method's result for the parent to ack."""
+    from tui_gateway import server_requests
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "host-clarify"
     server._sessions[sid] = {"history_lock": threading.Lock()}
-    calls = []
-    monkeypatch.setitem(
-        server._methods,
-        "clarify.respond",
-        lambda rid, params: calls.append((rid, dict(params))) or {"result": {"status": "ok"}},
-    )
+    req = server_requests.ServerRequest(sid, "clarify", {"question": "?"})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    locks = []
+    monkeypatch.setitem(server._methods, "clarify.lock",
+                        lambda rid, params: locks.append((rid, dict(params))) or {"result": {"status": "ok", "remaining": []}})
 
     try:
-        host._handle_respond(
-            {
-                "sid": sid,
-                "request_id": "relay-response",
-                "params": {"request_id": "clarify-request", "answer": "yes"},
-            }
-        )
-        assert calls == [("relay-response", {"request_id": "clarify-request", "answer": "yes"})]
+        host._handle_respond({"sid": sid, "request_id": "relay-lock",
+                              "params": {"lock": {"request_id": req.id, "question_id": "q0", "answer": "a"}}})
+        assert locks == [("relay-lock", {"request_id": req.id, "question_id": "q0", "answer": "a"})]
+        assert _json_lines(out)[-1]["response"] == {"result": {"status": "ok", "remaining": []}}
+
+        host._handle_respond({"sid": sid, "request_id": "relay-response",
+                              "params": {"frame": {"jsonrpc": "2.0", "id": req.id, "result": {"answer": "yes"}}}})
+        assert req.answered and req.result == {"answer": "yes"} and req.event.is_set()
         frame = _json_lines(out)[-1]
-        assert frame == {
-            "type": "respond.ack",
-            "sid": sid,
-            "request_id": "relay-response",
-            "response": {"result": {"status": "ok"}},
-            "host_ns": frame["host_ns"],
-        }
+        assert frame["type"] == "respond.ack" and frame["response"]["result"] == {"status": "ok"}
     finally:
         server._sessions.pop(sid, None)
+        server_requests.reset_for_tests()
         host.close()
+
 
 def test_mutator_route_table_matches_prd_inventory():
     assert MUTATOR_ROUTE_TABLE == {

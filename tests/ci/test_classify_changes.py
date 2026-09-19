@@ -101,8 +101,12 @@ CASES = {
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
     # Cross-language contract JSON under apps/: the pytest that pins it against
     # the Python side must run even when nothing else in the PR is Python.
-    "gateway-events contract JSON → python + frontend": (
-        ["apps/shared/src/gateway-events.json"],
+    "generated gateway contract → python + frontend": (
+        ["apps/shared/src/gateway-contract.generated.ts"],
+        _lanes(python=True, frontend=True),
+    ),
+    "gateway OpenRPC document → python + frontend": (
+        ["apps/shared/src/gateway-contract.openrpc.json"],
         _lanes(python=True, frontend=True),
     ),
     "desktop slash-registry JSON → python + frontend": (
@@ -170,7 +174,7 @@ CASES = {
         _lanes(python=True, frontend=True, desktop_updater=True),
     ),
     "desktop-update test → desktop_updater": (
-        ["tests/test_desktop_update_windows_progress.py"],
+        ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
         _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
     ),
     "updater-process.ts → desktop_updater": (
@@ -380,14 +384,14 @@ def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(
             args[0],
             0,
-            stdout="scripts/install.sh\ntests/test_install_sh_node_deps_workspaces.py\n",
+            stdout="scripts/install.sh\ntests/scripts/install/test_install_sh_node_deps_workspaces.py\n",
             stderr="",
         )
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
     assert pull_request_changed_files() == [
         "scripts/install.sh",
-        "tests/test_install_sh_node_deps_workspaces.py",
+        "tests/scripts/install/test_install_sh_node_deps_workspaces.py",
     ]
 
 
@@ -408,7 +412,7 @@ def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, caps
     monkeypatch.setattr(
         _mod,
         "pull_request_changed_files",
-        lambda: ["scripts/install.sh", "tests/test_install_sh_node_deps_workspaces.py"],
+        lambda: ["scripts/install.sh", "tests/scripts/install/test_install_sh_node_deps_workspaces.py"],
     )
     monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)

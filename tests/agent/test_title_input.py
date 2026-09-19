@@ -36,11 +36,26 @@ def test_title_input_override_is_optional_and_history_is_unchanged(monkeypatch, 
         assert title.call_args.kwargs["conversation_history"] is messages
 
 
+@pytest.mark.parametrize("override, expected", [(None, "attachment"), ("Original question", "Original question")])
+def test_title_override_preserves_upstream_paste_preview(monkeypatch, override, expected):
+    agent = SimpleNamespace(_session_db=Mock(), session_id="test", _session_db_created=True)
+    messages = [{"role": "user", "content": "attachment",
+                 "display_metadata": {"title_preview": "pasted topic"}}]
+    original = deepcopy(messages)
+    title = Mock()
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", title)
+    _maybe_title_session_at_turn_start(agent, messages, override)
+    assert title.call_args.args[2] == expected
+    assert title.call_args.kwargs["title_preview"] == "pasted topic"
+    assert title.call_args.kwargs["conversation_history"] is messages
+    assert messages == original
+
+
 @pytest.mark.parametrize("text, titleable", [("/help", True), ("[CONTEXT COMPACTION] synthetic handoff", False)])
 def test_title_override_preserves_existing_control_message_eligibility(monkeypatch, text, titleable):
     agent = SimpleNamespace(_session_db=Mock(), session_id="test", _session_db_created=True)
     start = Mock()
-    monkeypatch.setattr("agent.title_generator.threading", SimpleNamespace(Thread=start))
+    monkeypatch.setattr("agent.memory_provider.spawn_context_thread", start)
 
     _maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "injected context"}], text)
 

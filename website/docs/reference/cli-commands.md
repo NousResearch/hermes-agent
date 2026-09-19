@@ -902,12 +902,17 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--live]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--live` | Run real backend probes, including MCP connections and tool discovery. |
+
+The **MCP Servers** section checks `mcp_servers` in the active profile's `config.yaml`: entry shape, command resolution using the server's effective `PATH`, declared environment values, and HTTP URLs and headers. It skips disabled servers and reports fields to fix without printing configured values. This section does not start servers, connect to them, or change their configuration, including with `--fix`.
+
+Use `hermes doctor --live` when you also want to check MCP connections and tool discovery. Live probes can start configured commands and make network requests.
 
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 

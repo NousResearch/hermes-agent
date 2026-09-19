@@ -20,6 +20,12 @@ import { Thread } from '.'
 
 const requestFreshSession = vi.hoisted(() => vi.fn())
 const startManualProviderOAuth = vi.hoisted(() => vi.fn())
+const requestModelMenuToggle = vi.hoisted(() => vi.fn<() => boolean>(() => true))
+
+vi.mock('@/app/chat/composer/focus', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestModelMenuToggle: () => requestModelMenuToggle()
+}))
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -42,6 +48,7 @@ afterEach(() => {
   cleanup()
   requestFreshSession.mockClear()
   startManualProviderOAuth.mockClear()
+  requestModelMenuToggle.mockReset().mockReturnValue(true)
 })
 
 function userMessage(): ThreadMessage {
@@ -326,6 +333,44 @@ describe('rejected API key recovery', () => {
 
     screen.getByRole('button', { name: 'Update API key' }).click()
     await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=keys&key=OPENAI_API_KEY$/))
+  })
+})
+
+describe('switch provider on a live session (#95066)', () => {
+  const billingFailure = () =>
+    failedMessage({ code: 'billing', layer: 'billing', provider: 'openai-codex', retryable: false }, 'HTTP 429: quota')
+
+  it('opens the live session model menu instead of leaving the chat for Settings', async () => {
+    render(
+      <MemoryRouter>
+        <LocationProbe />
+        <Harness assistant={billingFailure()} />
+      </MemoryRouter>
+    )
+
+    const button = await screen.findByRole('button', { name: 'Switch provider' })
+    const before = screen.getByTestId('location').textContent
+
+    button.click()
+
+    expect(requestModelMenuToggle).toHaveBeenCalledTimes(1)
+    // Still on the chat: the pick lands on THIS session through model.switch.
+    expect(screen.getByTestId('location').textContent).toBe(before)
+  })
+
+  it('falls back to Settings → Models only when no chat surface is on screen', async () => {
+    requestModelMenuToggle.mockReturnValue(false)
+    render(
+      <MemoryRouter>
+        <LocationProbe />
+        <Harness assistant={billingFailure()} />
+      </MemoryRouter>
+    )
+
+    ;(await screen.findByRole('button', { name: 'Switch provider' })).click()
+
+    expect(requestModelMenuToggle).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=config:model$/))
   })
 })
 

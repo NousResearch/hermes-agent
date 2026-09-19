@@ -183,7 +183,9 @@ export interface ErrorRecoveryPlan {
   signInAgain: boolean
   /** Open the free-tier sign-in dialog (free_tier_* codes): signing in is free and lifts the refusal. */
   signInFreeTier: boolean
-  /** Settings → Models deep link. */
+  /** Open the live session model menu (switches THIS session via
+   *  model.switch); Settings → Models deep link fallback when no chat surface
+   *  is on screen. */
   switchProvider: boolean
 }
 

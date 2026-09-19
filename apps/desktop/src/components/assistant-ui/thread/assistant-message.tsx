@@ -11,6 +11,7 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useContext, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
+import { requestModelMenuToggle } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
@@ -554,6 +555,32 @@ const SettingsLinkAction: FC<{ icon?: ReactNode; label: string; to: string }> = 
   )
 }
 
+// "Switch provider" for a provider/endpoint/auth/billing failure: opens the
+// composer pill's LIVE model menu, whose picks go through `model.switch` on
+// this session (use-model-menu-controller.ts) — the same menu the
+// `composer.modelPicker` hotkey toggles. Settings → Models only changes the
+// default for NEW sessions, so it is the fallback for when no chat surface is
+// on screen (requestModelMenuToggle returns false), not the first stop.
+// Targeting follows requestModelMenuToggle: the pane under the pointer, else
+// the active composer — a click on this card puts the pointer in its own pane.
+const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
+  const navigate = useNavigate()
+
+  const switchProvider = useCallback(() => {
+    triggerHaptic('selection')
+
+    if (!requestModelMenuToggle()) {
+      navigate(`${SETTINGS_ROUTE}?tab=config:model`)
+    }
+  }, [navigate])
+
+  return (
+    <button className="aui-error-action" onClick={switchProvider} type="button">
+      {label}
+    </button>
+  )
+}
+
 // Settings → Keys deep link for a rejected API key: `?tab=keys` plus
 // `&key=<ENV>` when the descriptor names the env var (keys-settings.tsx
 // scrolls to and expands that row). Older backends omit `api_key_env`; the
@@ -788,9 +815,7 @@ const ErrorRecoveryActions: FC = () => {
           </button>
         </ActionBarPrimitive.Reload>
       )}
-      {plan.switchProvider && inRouter && (
-        <SettingsLinkAction label={copy.errorSwitchProvider} to={`${SETTINGS_ROUTE}?tab=config:model`} />
-      )}
+      {plan.switchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
       {localFolders && (
         <button className="aui-error-action" onClick={() => void openLogs()} type="button">
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}

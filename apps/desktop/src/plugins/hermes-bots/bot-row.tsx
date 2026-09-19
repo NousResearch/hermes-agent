@@ -18,6 +18,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
+  DisclosureCaret,
   haptic,
   host,
   queryClient,
@@ -31,6 +32,7 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { $expandedBotSessions, BotSessionList, toggleBotSessions } from './bot-session-list'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -231,6 +233,10 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const sections = useValue($botSections)
   const dragging = useValue($draggingBot) === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
+  // The conversation list is collapsed until it is asked for, so this read is
+  // the only thing a row nobody expands pays for it.
+  const sessionsExpanded = useValue($expandedBotSessions).has(rosterKey)
+  const sessionsLabel = `${sessionsExpanded ? 'Hide' : 'Show'} conversations with ${displayName(bot, meta)}`
 
   const row = (
     <RowButton
@@ -318,7 +324,31 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild>
+        {/* The caret sits BESIDE the row button, not inside it: a button
+            cannot nest a button, and the row's own click must keep opening
+            the canonical Bot Chat. It is absolutely placed over the row's
+            trailing corner, so a row nobody expands keeps its exact width. */}
+        <div className="group/botrow relative w-full min-w-0">
+          {row}
+          <button
+            aria-expanded={sessionsExpanded}
+            aria-label={sessionsLabel}
+            className={cn(
+              'absolute right-1 top-1/2 z-1 flex size-5 -translate-y-1/2 items-center justify-center rounded-[4px] bg-(--ui-sidebar-surface-background) text-(--ui-text-tertiary) transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/botrow:opacity-100',
+              sessionsExpanded ? 'opacity-100' : 'opacity-0'
+            )}
+            onClick={() => {
+              haptic('selection')
+              toggleBotSessions(rosterKey)
+            }}
+            type="button"
+          >
+            <DisclosureCaret open={sessionsExpanded} />
+          </button>
+          {sessionsExpanded ? <BotSessionList bot={bot} /> : null}
+        </div>
+      </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
         <ContextMenuSeparator />

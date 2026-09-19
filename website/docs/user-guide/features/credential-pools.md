@@ -37,6 +37,10 @@ Your request
   → 401 auth expired?
       → Try refreshing the token (OAuth)
       → Refresh failed → rotate to next pool key
+  → HTTP 200 but `response.status: failed` (ChatGPT/Codex reports usage limits this way)?
+      → Same rules as above, keyed on the embedded error code/message:
+        quota/billing/auth → pool rotation first, provider fallback only once the pool is exhausted;
+        content-policy and other failures → no rotation
   → Success → continue normally
 ```
 

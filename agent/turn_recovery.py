@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -1239,6 +1239,46 @@ def compute_error_backoff(
     return wait_time
 
 
+def _codex_soft_failure_error(response: Any) -> Dict[str, Any]:
+    """``response.error`` of a Codex ``failed``/``cancelled`` Response as ``{"code", "message"}``
+    (the SDK types it as ``ResponseError``; the raw-SSE assembler keeps the dict); ``{}`` when absent."""
+    error_obj = getattr(response, "error", None)
+    if not error_obj:
+        return {}
+    if isinstance(error_obj, dict):
+        fields = error_obj
+    elif hasattr(error_obj, "code") or hasattr(error_obj, "message"):
+        fields = {"code": getattr(error_obj, "code", None), "message": getattr(error_obj, "message", None)}
+    else:
+        fields = {"message": str(error_obj)}
+    return {k: v for k, v in fields.items() if isinstance(v, str) and v.strip()}
+
+
+class _CodexSoftFailure(Exception):
+    """A Codex HTTP-200 ``status=failed`` Response reshaped so ``classify_api_error`` and
+    ``extract_api_error_context`` read ``response.error`` exactly like an SDK error body."""
+
+    def __init__(self, error: Dict[str, Any]) -> None:
+        super().__init__(error.get("message") or "")
+        self.body = {"error": error}
+
+
+def classify_codex_soft_failure(agent: Any, response: Any) -> Tuple[Any, Dict[str, Any]]:
+    """``(classified, error_context)`` for a Codex ``failed``/``cancelled`` Response, or
+    ``(None, {})`` when it is not one. The SDK never raises on these HTTP-200 soft failures,
+    so this is the only place their quota/billing/auth semantics reach the credential pool."""
+    if agent.api_mode != "codex_responses":
+        return None, {}
+    if str(getattr(response, "status", "") or "").strip().lower() not in {"failed", "cancelled"}:
+        return None, {}
+    exc = _CodexSoftFailure(_codex_soft_failure_error(response))
+    classified = classify_api_error(
+        exc, provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+        base_url=str(getattr(agent, "base_url", "") or ""), api_key=getattr(agent, "api_key", None),
+    )
+    return classified, agent._extract_api_error_context(exc)
+
+
 def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]:
     """Validate the raw provider response via the transport; ``(response_invalid,
     error_details)``. A Codex ``failed``/``cancelled`` status (e.g. quota exhaustion) is
@@ -1251,11 +1291,9 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
     if agent.api_mode == "codex_responses":
         _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
         if _codex_resp_status in {"failed", "cancelled"}:
-            _codex_error_obj = getattr(response, "error", None)
             _codex_error_msg = (
-                _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
-                else str(_codex_error_obj) if _codex_error_obj
-                else f"Responses API returned status '{_codex_resp_status}'"
+                _codex_soft_failure_error(response).get("message")
+                or f"Responses API returned status '{_codex_resp_status}'"
             )
             logger.warning(
                 "Codex response status='%s' (error=%s). Routing to fallback. %s",
@@ -1301,7 +1339,8 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
     provider_name = "Unknown"
     _has_error = bool(response and hasattr(response, 'error') and response.error)
     if _has_error:
-        error_msg = str(response.error)
+        # A typed ``ResponseError`` stringifies as its repr; show the provider's message.
+        error_msg = _codex_soft_failure_error(response).get("message") or str(response.error)
         if hasattr(response.error, 'metadata') and response.error.metadata:
             provider_name = response.error.metadata.get('provider_name', 'Unknown')
     elif response and hasattr(response, 'message') and response.message:

@@ -210,6 +210,7 @@ FALLBACK_FORWARD_TEXT = "[Merged forward message]"
 FALLBACK_SHARE_CHAT_TEXT = "[Shared chat]"
 FALLBACK_INTERACTIVE_TEXT = "[Interactive message]"
 FALLBACK_IMAGE_TEXT = "[Image]"
+FALLBACK_LOCATION_TEXT = "[Location]"
 FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 # --- Post/card parsing helpers ---
 _PREFERRED_LOCALES = ("zh_cn", "en_us")
@@ -697,6 +698,8 @@ def normalize_feishu_message(
         return _normalize_share_chat_message(payload)
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
+    if normalized_type in {"location", "share_location"}:
+        return _normalize_location_message(payload, raw_content)
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
 
 
@@ -744,6 +747,114 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
         raw_type=message_type,
         text_content="\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT,
         relation_kind="interactive", metadata={"title": title, "actions": actions},
+    )
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    """Best-effort float coercion for Feishu's stringified numeric fields.
+
+    Feishu sends location longitude/latitude as strings; reject empty strings
+    and values that fail to parse rather than silently returning 0.0 (which
+    would be a valid coordinate and poison downstream reverse-geocoding).
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    # WGS84 sanity band: -180..180 lng, -90..90 lat. Anything outside is
+    # almost certainly a parse artefact; let the caller decide.
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+def _normalize_location_message(
+    payload: Dict[str, Any], raw_content: str = "",
+) -> FeishuNormalizedMessage:
+    """Normalize a Feishu ``location`` (a.k.a. ``share_location``) message.
+
+    Feishu sends ``message_type="location"`` with ``content`` JSON of shape
+    ``{"name": "xx省xx市", "longitude": "xxx.xxx", "latitude": "xxx.xxx"}``;
+    some clients send ``{"location_name": ..., "address": ..., ...}`` and
+    older clients wrap everything under ``{"share_location": {...}}``. We
+    accept all three shapes plus the lark-cli convertlib pre-rendered
+    ``"[Location: <name>]"`` string so the POI name survives even when the
+    SDK has already flattened the payload to human-readable text.
+
+    Coordinates are string-encoded; the ``name`` is free-text (POI name or
+    address) and may be empty. We forward the raw coordinate system (WGS84
+    by Feishu convention) without conversion — downstream code may apply
+    GCJ02 conversion if needed before reverse-geocoding.
+    """
+    # Nested ``{"share_location": {...}}`` wrapper (legacy client format).
+    if (
+        isinstance(payload, dict)
+        and "share_location" in payload
+        and isinstance(payload.get("share_location"), dict)
+        and not any(k in payload for k in ("longitude", "latitude", "name", "location_name"))
+    ):
+        payload = payload.get("share_location") or {}
+
+    # Accept both Feishu's modern field set (``name``) and the historical
+    # ``location_name`` / ``address`` aliases; ``address`` is preferred
+    # when ``location_name`` is absent so reverse-geocoding has more context.
+    name = _first_text_field(
+        payload, "name", "location_name", "address",
+        deep=("name", "location_name", "address"),
+    )
+    address = _first_text_field(payload, "address", deep=("address",))
+    longitude = _coerce_float(payload.get("longitude"))
+    latitude = _coerce_float(payload.get("latitude"))
+    precision = _coerce_float(payload.get("precision"))
+
+    # lark-cli convertlib flattens incoming location messages to
+    # ``"[Location: <name>]"`` *before* they reach us, dropping every other
+    # field. Recover the name from that bracket-wrapped string so the POI
+    # isn't lost — coordinates have already been discarded upstream and
+    # there is no way to recover them at this layer.
+    if not name and raw_content:
+        stripped = raw_content.strip()
+        if stripped.startswith("[Location:") and stripped.endswith("]"):
+            name = stripped[len("[Location:"):-1].strip() or None
+        elif stripped == "[Location]" or stripped == "[User shared a location]":
+            name = None
+
+    lines: List[str] = []
+    if name:
+        lines.append(f"Location: {name}")
+    if address and address != name:
+        lines.append(f"Address: {address}")
+    if longitude is not None and latitude is not None:
+        lines.append(f"Longitude: {longitude}")
+        lines.append(f"Latitude: {latitude}")
+    elif longitude is not None or latitude is not None:
+        # Partial coordinate — surface what we have rather than dropping
+        # the whole message, but flag the partial state in metadata.
+        if longitude is not None:
+            lines.append(f"Longitude: {longitude}")
+        if latitude is not None:
+            lines.append(f"Latitude: {latitude}")
+    if precision is not None:
+        lines.append(f"Precision (m): {precision}")
+    text = "\n".join(lines).strip() or FALLBACK_LOCATION_TEXT
+    return FeishuNormalizedMessage(
+        raw_type="location",
+        text_content=text,
+        relation_kind="location",
+        metadata={
+            "name": name or None,
+            "address": address or None,
+            "longitude": longitude,
+            "latitude": latitude,
+            "precision": precision,
+            "partial": (longitude is None) != (latitude is None),
+            "source": "convertlib" if name and not longitude and not latitude and raw_content else "raw",
+        },
     )
 
 

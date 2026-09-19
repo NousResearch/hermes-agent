@@ -2750,3 +2750,222 @@ class TestChatLockEviction(unittest.TestCase):
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
 
+
+class TestFeishuLocationNormalization(unittest.TestCase):
+    """Feishu ``location`` messages carry ``name`` (address/POI) plus
+    string-encoded ``longitude``/``latitude``. We forward them as plain text
+    plus structured metadata so downstream code can reverse-geocode without
+    reparsing the original payload."""
+
+    def test_complete_payload_has_name_and_floated_coordinates(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps(
+                {"name": "北京西站", "longitude": "116.321895", "latitude": "39.894879"}
+            ),
+        )
+        self.assertEqual(normalized.raw_type, "location")
+        self.assertEqual(normalized.relation_kind, "location")
+        self.assertIn("Location: 北京西站", normalized.text_content)
+        self.assertIn("Longitude: 116.321895", normalized.text_content)
+        self.assertIn("Latitude: 39.894879", normalized.text_content)
+        self.assertEqual(normalized.metadata["name"], "北京西站")
+        self.assertEqual(normalized.metadata["longitude"], 116.321895)
+        self.assertEqual(normalized.metadata["latitude"], 39.894879)
+        self.assertFalse(normalized.metadata["partial"])
+
+    def test_name_only_payload_keeps_address_without_coordinates(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({"name": "天安门广场"}),
+        )
+        self.assertEqual(normalized.text_content, "Location: 天安门广场")
+        self.assertIsNone(normalized.metadata["longitude"])
+        self.assertIsNone(normalized.metadata["latitude"])
+        self.assertFalse(normalized.metadata["partial"])
+
+    def test_coordinates_only_payload_keeps_coords_without_address(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({"longitude": "116.40", "latitude": "39.90"}),
+        )
+        self.assertEqual(normalized.text_content, "Longitude: 116.4\nLatitude: 39.9")
+        self.assertIsNone(normalized.metadata["name"])
+        self.assertEqual(normalized.metadata["longitude"], 116.4)
+        self.assertEqual(normalized.metadata["latitude"], 39.9)
+        self.assertFalse(normalized.metadata["partial"])
+
+    def test_partial_coordinates_are_marked_in_metadata(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({"longitude": "116.40"}),
+        )
+        self.assertEqual(normalized.text_content, "Longitude: 116.4")
+        self.assertIsNone(normalized.metadata["latitude"])
+        self.assertTrue(normalized.metadata["partial"])
+
+    def test_empty_or_garbage_payload_falls_back_to_placeholder(self):
+        from plugins.platforms.feishu.adapter import (
+            FALLBACK_LOCATION_TEXT,
+            normalize_feishu_message,
+        )
+
+        # Empty strings everywhere
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({"name": "", "longitude": "", "latitude": ""}),
+        )
+        self.assertEqual(normalized.text_content, FALLBACK_LOCATION_TEXT)
+        self.assertIsNone(normalized.metadata["longitude"])
+        self.assertIsNone(normalized.metadata["latitude"])
+        self.assertFalse(normalized.metadata["partial"])
+
+        # Non-numeric coordinate — must not silently become 0.0 (a real
+        # coordinate, which would poison reverse-geocoding downstream).
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({"longitude": "abc", "latitude": "39.9"}),
+        )
+        self.assertEqual(normalized.metadata["longitude"], None)
+        self.assertEqual(normalized.metadata["latitude"], 39.9)
+        self.assertTrue(normalized.metadata["partial"])
+
+    def test_numeric_and_scientific_notation_are_accepted(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        # Some clients send coordinates as native JSON numbers instead of
+        # strings — accept that too.
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps(
+                {"name": "深圳北站", "longitude": 114.0291, "latitude": 22.6097}
+            ),
+        )
+        self.assertEqual(normalized.metadata["longitude"], 114.0291)
+        self.assertEqual(normalized.metadata["latitude"], 22.6097)
+
+        # Scientific notation is a valid stringified number; accept it.
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({"longitude": "1e2"}),
+        )
+        self.assertEqual(normalized.metadata["longitude"], 100.0)
+
+    def test_infinity_and_nan_are_rejected(self):
+        from plugins.platforms.feishu.adapter import _coerce_float
+
+        # NaN and ±inf are not real coordinates; must be rejected so they
+        # cannot poison downstream arithmetic.
+        self.assertIsNone(_coerce_float("inf"))
+        self.assertIsNone(_coerce_float("-inf"))
+        self.assertIsNone(_coerce_float("nan"))
+        # Boolean is an int subclass in Python but not a sensible coordinate.
+        self.assertIsNone(_coerce_float(True))
+        self.assertIsNone(_coerce_float(False))
+        # Empty / whitespace / None
+        self.assertIsNone(_coerce_float(""))
+        self.assertIsNone(_coerce_float("   "))
+        self.assertIsNone(_coerce_float(None))
+        # Non-numeric strings
+        self.assertIsNone(_coerce_float("abc"))
+        self.assertIsNone(_coerce_float("11.40x"))
+
+    def test_unknown_message_types_still_fall_through(self):
+        """The location branch must not catch message types it shouldn't own."""
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        # An empty location payload with explicit message_type validation.
+        normalized = normalize_feishu_message(
+            message_type="unknown_type", raw_content=json.dumps({"foo": "bar"})
+        )
+        self.assertEqual(normalized.raw_type, "unknown_type")
+        self.assertEqual(normalized.text_content, "")
+
+    def test_convertlib_bracketed_string_recovers_name(self):
+        """lark-cli convertlib pre-renders location messages to
+        ``"[Location: <name>]"`` before the adapter sees them, dropping all
+        other fields. The adapter must still surface the POI name so the
+        agent can at least mention the place the user was at."""
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            # This is exactly what the convertlib hook produces — raw JSON
+            # is already gone at this point; we only get the bracket string.
+            raw_content="[Location: 北京厦航嘉年华酒店内]",
+        )
+        self.assertEqual(normalized.raw_type, "location")
+        self.assertEqual(normalized.metadata["name"], "北京厦航嘉年华酒店内")
+        self.assertIn("Location: 北京厦航嘉年华酒店内", normalized.text_content)
+        self.assertIsNone(normalized.metadata["longitude"])
+        self.assertIsNone(normalized.metadata["latitude"])
+        # No coordinates were available upstream; metadata flags convertlib
+        # as the source so downstream code can decide whether to ask the
+        # user to share again with precise coordinates.
+        self.assertEqual(normalized.metadata["source"], "convertlib")
+
+    def test_share_location_alias_is_accepted(self):
+        """Historical clients send ``message_type="share_location"``."""
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="share_location",
+            raw_content=json.dumps(
+                {
+                    "location_name": "深圳湾万象城",
+                    "address": "广东省深圳市南山区科苑南路2888号",
+                    "longitude": "113.943",
+                    "latitude": "22.527",
+                    "precision": 50,
+                }
+            ),
+        )
+        self.assertEqual(normalized.raw_type, "location")
+        self.assertEqual(normalized.metadata["name"], "深圳湾万象城")
+        self.assertEqual(normalized.metadata["address"], "广东省深圳市南山区科苑南路2888号")
+        self.assertEqual(normalized.metadata["longitude"], 113.943)
+        self.assertEqual(normalized.metadata["latitude"], 22.527)
+        self.assertEqual(normalized.metadata["precision"], 50.0)
+        self.assertIn("深圳湾万象城", normalized.text_content)
+        self.assertIn("Longitude: 113.943", normalized.text_content)
+        self.assertIn("Precision (m): 50.0", normalized.text_content)
+
+    def test_nested_share_location_wrapper_is_unwrapped(self):
+        """Older Feishu clients wrap the payload under ``{"share_location": {...}}``."""
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps(
+                {
+                    "share_location": {
+                        "location_name": "上海外滩",
+                        "longitude": "121.490",
+                        "latitude": "31.237",
+                    }
+                }
+            ),
+        )
+        self.assertEqual(normalized.metadata["name"], "上海外滩")
+        self.assertEqual(normalized.metadata["longitude"], 121.49)
+        self.assertEqual(normalized.metadata["latitude"], 31.237)
+        self.assertIn("Location: 上海外滩", normalized.text_content)
+
+    def test_legacy_share_location_alias_with_convertlib_string(self):
+        """Belt-and-suspenders: ``share_location`` alias + convertlib string."""
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="share_location",
+            raw_content="[Location: 北京西站]",
+        )
+        self.assertEqual(normalized.metadata["name"], "北京西站")
+

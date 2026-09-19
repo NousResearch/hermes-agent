@@ -323,6 +323,7 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    job_env: Optional[dict[str, str]] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -332,7 +333,8 @@ def _run_job_script(
     Args: script_path: Path to the script. Relative paths are resolved against HERMES_HOME/scripts/.
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
-    instead of the scripts-dir parent. See #69396.
+    instead of the scripts-dir parent. See #69396. ``job_env`` is an explicit scheduler-owned overlay
+    applied only to the child process after interpreter-specific environment adjustments.
     """
     path, err = _resolve_script_path(script_path)
     if path is None:
@@ -362,6 +364,8 @@ def _run_job_script(
         # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        if job_env:
+            env.update(job_env)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -440,11 +444,19 @@ def _run_job_script_with_claim_heartbeat(
     the stale-claim TTL; without a heartbeat another scheduler would re-dispatch the one-shot.
     Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    job_env = None
+    if bool(job.get("no_agent")):
+        job_env = {
+            "HERMES_CRON_JOB_ID": str(job.get("id") or ""),
+            "HERMES_CRON_OCCURRENCE_AT": str(job.get("next_run_at") or ""),
+        }
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(
+            script_path, workdir=workdir, cancel_event=cancel_event, job_env=job_env)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -462,10 +474,12 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(
+            script_path, workdir=workdir, cancel_event=cancel_event, job_env=job_env)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(
+            script_path, workdir=workdir, cancel_event=cancel_event, job_env=job_env)
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.

@@ -263,56 +263,25 @@ When asked to auto-fix CI, follow this loop:
 
 ## 6. Merging
 
-**With gh:**
+**You do not merge your own PRs.** Not with `gh pr merge`, and not with a curl
+`PUT /pulls/N/merge` either — reaching around the editor to do the same thing by hand is
+the same defect under another name, and worse, because nothing records that it happened.
 
-```bash
-# Squash merge + delete branch (cleanest for feature branches)
-gh pr merge --squash --delete-branch
+The person or process that reviews a PR is the one who merges it. An agent that merges
+its own work has removed the one review gate standing between the change and `main` —
+the review becomes theatre, because the actor who wanted the outcome is the one reading
+the verdict.
 
-# Enable auto-merge (merges when all checks pass)
-gh pr merge --auto --squash --delete-branch
-```
+What you do instead, when your PR is ready:
 
-**With git + curl:**
+1. Make sure CI is green and the review artifact is posted (Sections 4–5).
+2. Report the PR as ready in the place your workflow tracks work — a human, or a merge
+   process that runs outside your context, merges from there.
+3. If it does not merge, it will say why — read that reason rather than merging by hand.
 
-```bash
-PR_NUMBER=<number>
-
-# Merge the PR via API (squash)
-curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER/merge \
-  -d "{
-    \"merge_method\": \"squash\",
-    \"commit_title\": \"feat: add user authentication (#$PR_NUMBER)\"
-  }"
-
-# Delete the remote branch after merge
-BRANCH=$(git branch --show-current)
-git push origin --delete $BRANCH
-
-# Switch back to main locally
-git checkout main && git pull origin main
-git branch -d $BRANCH
-```
-
-Merge methods: `"merge"` (merge commit), `"squash"`, `"rebase"`
-
-### Enable Auto-Merge (curl)
-
-```bash
-# Auto-merge requires the repo to have it enabled in settings.
-# This uses the GraphQL API since REST doesn't support auto-merge.
-PR_NODE_ID=$(curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
-  | python -c "import sys,json; print(json.load(sys.stdin)['node_id'])")
-
-curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  https://api.github.com/graphql \
-  -d "{\"query\": \"mutation { enablePullRequestAutoMerge(input: {pullRequestId: \\\"$PR_NODE_ID\\\", mergeMethod: SQUASH}) { clientMutationId } }\"}"
-```
+**Auto-merge** is likewise not yours to enable. It is a repository setting (`repo edit`),
+and it changes how merges happen on that repo going forward. Ask the operator if a repo
+needs it.
 
 ## 7. Complete Workflow Example
 

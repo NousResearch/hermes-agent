@@ -498,6 +498,17 @@ _REFERENCE_POLL_INTERVAL_S = 5.0
 _INTERRUPTED_REFERENCE_NOTE = "[skipped: interrupted by user]"
 
 
+def _touch_reference_activity(agent: Any, description: str) -> None:
+    """Best-effort owner liveness update, independent of optional display hooks."""
+    touch = getattr(agent, "_touch_activity", None)
+    if not callable(touch):
+        return
+    try:
+        touch(description)
+    except Exception:  # pragma: no cover - activity persistence must not break MoA
+        logger.debug("MoA reference activity update failed", exc_info=True)
+
+
 def _placeholder_output(slot: dict[str, Any], note: str) -> tuple[str, str, Any]:
     """A reference-output tuple for a slot that was not (fully) run: zero accounting."""
     return _slot_label(slot), note, _RefAccounting(CanonicalUsage())
@@ -564,6 +575,7 @@ def _run_references_parallel(
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
     try:
+        _touch_reference_activity(agent, f"MoA reference fan-out started ({total} advisors)")
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
                 results[idx] = _placeholder_output(slot, "[skipped: MoA presets cannot recursively reference MoA]")
@@ -582,6 +594,10 @@ def _run_references_parallel(
                 idx = futures[future]
                 results[idx] = future.result()
                 completed += 1
+                _touch_reference_activity(
+                    agent,
+                    f"MoA reference progress ({completed}/{total} advisors): {_slot_label(reference_models[idx])}",
+                )
                 if progress_callback is not None:
                     try:
                         progress_callback(completed, total, _slot_label(reference_models[idx]))
@@ -593,6 +609,8 @@ def _run_references_parallel(
                 break
     finally:
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        boundary = "interrupted" if interrupted else "complete"
+        _touch_reference_activity(agent, f"MoA reference fan-out {boundary} ({completed}/{total} advisors)")
 
     return [r for r in results if r is not None]
 

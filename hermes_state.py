@@ -824,6 +824,15 @@ class SessionDB(
                 "locked writer connection", _READ_POOL_MAX, self.db_path,
             )
             return None
+        # A failed peer may have entered backoff while this thread waited to
+        # acquire the final permit. Re-check under the same lock that publishes
+        # failures so this permit cannot start a new open in that window.
+        with self._read_conns_lock:
+            failed_at = self._read_open_failed_at
+            backing_off = failed_at and time.monotonic() - failed_at < _READ_OPEN_RETRY_SECONDS
+            if self._read_conns_closed or backing_off:
+                self._read_budget.release()
+                return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:
             conn = self._connect_read_only(timeout=5.0)
@@ -836,10 +845,14 @@ class SessionDB(
             # path by one slot forever. (Not _close_read_conn: callers release their own permit.)
             if conn is not None:
                 self._close_conn_logged(conn, "partially-opened read conn")
-            self._read_budget.release()
             if not isinstance(exc, sqlite3.Error):
+                self._read_budget.release()
                 raise
             with self._read_conns_lock:
+                # Publish the backoff while returning the permit: otherwise a
+                # concurrent opener that already passed the first check can
+                # consume it and start another failing open before this stamp.
+                self._read_budget.release()
                 self._read_open_failed_at = time.monotonic()
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
             return None

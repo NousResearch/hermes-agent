@@ -369,6 +369,92 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
 
 
 @pytest.mark.requires_wal
+def test_failed_open_starts_backoff_before_released_permits_are_reused(db, monkeypatch):
+    """A concurrent opener must observe a failed open before using its permit.
+
+    Regression for #110603.  The failed opener releases the last permit while
+    waiting to record its backoff stamp.  A peer that already passed the first
+    backoff check must re-check after acquiring that permit instead of opening
+    during the backoff window.
+    """
+    import sqlite3 as _sqlite3
+
+    from hermes_state import _READ_POOL_MAX
+
+    first_opened = threading.Event()
+    allow_first_failure = threading.Event()
+    racer_ready_to_acquire = threading.Event()
+    allow_racer_acquire = threading.Event()
+    racer_opened = threading.Event()
+    call_lock = threading.Lock()
+    calls = 0
+
+    def fail_open(timeout):
+        nonlocal calls
+        with call_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            first_opened.set()
+            assert allow_first_failure.wait(timeout=5)
+        else:
+            racer_opened.set()
+        raise _sqlite3.OperationalError("simulated open failure")
+
+    original_connect_read_only = db._connect_read_only
+    original_acquire = db._read_budget.acquire
+
+    def acquire(requester):
+        if threading.current_thread().name == "backoff-racer":
+            racer_ready_to_acquire.set()
+            assert allow_racer_acquire.wait(timeout=5)
+        return original_acquire(requester)
+
+    monkeypatch.setattr(db, "_connect_read_only", fail_open)
+    monkeypatch.setattr(db._read_budget, "acquire", acquire)
+    held = [db._read_budget.acquire(db) for _ in range(_READ_POOL_MAX - 1)]
+    assert all(held), "the test must leave exactly one permit for the failing opener"
+    first = threading.Thread(target=db._get_read_conn, name="failed-opener")
+    racer = threading.Thread(target=db._get_read_conn, name="backoff-racer")
+    try:
+        first.start()
+        assert first_opened.wait(timeout=5)
+        racer.start()
+        assert racer_ready_to_acquire.wait(timeout=5)
+
+        # Hold the timestamp update after its permit is released.  The racer
+        # has already cleared the initial check and can consume that permit.
+        with db._read_conns_lock:
+            allow_first_failure.set()
+            allow_racer_acquire.set()
+            assert not racer_opened.wait(timeout=1), (
+                "a racer opened after a concurrent failure released its permit "
+                "but before backoff was recorded"
+            )
+
+        first.join(timeout=5)
+        racer.join(timeout=5)
+        assert not first.is_alive() and not racer.is_alive()
+        assert db._read_open_failed_at > 0
+
+        # The failed opener and the post-acquire backoff check must both
+        # return their permits, so the one unreserved slot opens again once
+        # the transient backoff expires.
+        monkeypatch.setattr(db, "_connect_read_only", original_connect_read_only)
+        db._read_open_failed_at = 0.0
+        recovered = db._get_read_conn()
+        assert recovered is not None, "failed opens or backoff stranded the permit"
+        db._close_read_conn(recovered)
+    finally:
+        allow_first_failure.set()
+        allow_racer_acquire.set()
+        first.join(timeout=5)
+        racer.join(timeout=5)
+        for _ in held:
+            db._read_budget.release()
+
+
+@pytest.mark.requires_wal
 def test_close_returns_every_permit(db):
     """close() must release the permits its drained connections held."""
     from hermes_state import _READ_POOL_MAX

@@ -192,6 +192,36 @@ one WARNING at the first seam it reaches, never keyed into `agent:main`. Copy a
 source with `session_identity.replace_source`, not `dataclasses.replace`, or the
 copy loses its transport and identity.
 
+## Intake vs delivery: which bot acts on an event
+
+Two runner seams answer the two questions a multiplexed gateway keeps
+conflating (`gateway/authz_mixin.py`):
+
+- `_intake_adapter_for(source)` — the bot that **received** the event. Live
+  provenance only: the transport ref `build_source` pinned, the process-level
+  relay adapter for relay-delivered events, or the adapter currently
+  registered for the identity's `transport_profile` after a reconnect. It
+  gates intake policy (Slack ignored channels, relay fronting, re-dispatch of
+  a queued live event) and returns `None` for a source with no live
+  provenance — nothing may re-admit a restored row on a guessed bot.
+- `_delivery_adapter_for(source)` — the bot that **answers**: sends, edits,
+  typing, progress, pickers, pending-message slots. The receiving bot whenever
+  it is known; otherwise the unique owner of `(platform, runtime_profile)` —
+  a secondary's own adapter, the primary for a shared-bot satellite, and
+  `None` for a secondary whose bot is disconnected (it never borrows the
+  default bot).
+
+| Topology | Runtime (`runtime_profile`, key namespace, home) | Intake | Delivery |
+| --- | --- | --- | --- |
+| Per-credential bot, no route | The bot's own profile | Owner adapter | Owner adapter |
+| Shared credential → satellite via `profile_routes` | Routed profile | Receiving (shared) adapter | Receiving adapter; after a restart the satellite still drains through the primary |
+| Shared bot → a profile that owns its own bot | Routed profile | Receiving adapter | Receiving adapter — the conversation stays with the bot the user wrote to |
+| Secondary-owned bot → `default` (`bot_profile: <secondary>`) | `default` (`agent:main`, default home) | Receiving (secondary) adapter | Receiving adapter |
+| Restored / synthetic source, no live provenance | Stored `source.profile` | **None** (fail closed) | Unique owner of `(platform, runtime)`, else `None` |
+
+Outside multiplexing there is one adapter per platform, so both seams return
+it. `tests/gateway/test_multiplex_transport_matrix.py` asserts every row.
+
 ## Control plane
 
 Desktop plugins reach the gateway only through the ws JSON-RPC door, so

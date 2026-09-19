@@ -149,6 +149,21 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   next to the identity; extend the object. `transport_profile` ≠ `runtime_profile` is normal
   (shared bot → routed satellite). A source copy goes through `session_identity.replace_source`
   so the identity travels with it (`_apply_topic_recovery` does).
+- **Intake vs delivery adapter.** `authz_mixin.py::_intake_adapter_for(source)` is the bot that
+  RECEIVED the event (live transport ref → relay socket → identity's `transport_profile`); it gates
+  intake policy (ignored channels, relay fronting, re-dispatch of a still-live event) and fails
+  closed to `None` for a source with no live provenance. `_delivery_adapter_for(source)` is the bot
+  that ANSWERS — the receiving bot whenever known, else the unique owner of `(platform,
+  runtime_profile)` via `_adapters_for_profile`. Never read `self.adapters[platform]` for a source;
+  never add a third resolver. The matrix (`tests/gateway/test_multiplex_transport_matrix.py`):
+
+  | Topology | runtime | intake | delivery |
+  |---|---|---|---|
+  | per-credential bot, no route | owner | owner adapter | owner adapter |
+  | shared credential → satellite (`profile_routes`) | routed | receiving adapter | receiving adapter (`_is_shared_bot_satellite` after restart) |
+  | shared bot → profile that owns its own bot | routed | receiving adapter | receiving adapter (conversation continuity; #70625's "routed bot" reading was not adopted) |
+  | secondary-owned bot → `default` (`bot_profile`) | default (`agent:main`) | receiving adapter | receiving adapter |
+  | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`; a disconnected secondary → `None`, never the default bot |
 - **Token locks.** An adapter that connects with a unique credential (bot token, API key) calls
   `acquire_scoped_lock()` from `gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
   in `disconnect()`/`stop()`, so two profiles cannot share one credential. Canonical:

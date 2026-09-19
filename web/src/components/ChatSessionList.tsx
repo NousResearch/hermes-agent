@@ -30,9 +30,12 @@ import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
+const SESSION_REFRESH_MS = 20_000;
 interface ChatSessionListProps {
   /** Active resume target (the session currently shown in the terminal). */
   activeSessionId: string | null;
+  /** Whether the Chat route is visible and should refresh its session list. */
+  isActive?: boolean;
   /** Management profile from the dashboard switcher — scopes the listing. */
   profile?: string;
   className?: string;
@@ -57,6 +60,7 @@ function rowLabel(session: SessionInfo, untitled: string): string {
 
 export function ChatSessionList({
   activeSessionId,
+  isActive = true,
   profile,
   className,
   onPicked,
@@ -99,16 +103,30 @@ export function ChatSessionList({
       });
   }, [scopeKey]);
 
+  const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
+
   useEffect(() => {
+    if (!isActive) return;
     // Dashboard data surfaces fetch from an effect on mount + scope change;
     // keep this local and explicit until the shared lint profile is updated
     // for async loaders (matches FilesPage).
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     // `reloadNonce` is a manual refetch trigger (Refresh button / row pick).
-  }, [load, reloadNonce]);
+  }, [isActive, load, reloadNonce]);
 
-  const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
+  useEffect(() => {
+    if (!isActive) return;
+    const interval = window.setInterval(reload, SESSION_REFRESH_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") reload();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [isActive, reload]);
 
   // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
   // the terminal is a no-op (avoids a needless PTY teardown).

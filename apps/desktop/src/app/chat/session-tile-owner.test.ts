@@ -4,7 +4,7 @@ import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/se
 import type { SessionTile } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { tileOwnerRoute } from './session-tile-owner'
+import { ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
 
 const row = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
 
@@ -67,5 +67,53 @@ describe('tileOwnerRoute', () => {
   it('is undefined for an untagged session, preserving ambient routing', () => {
     expect(tileOwnerRoute([], [row({ id: 's1' })], 's1')).toBeUndefined()
     expect(tileOwnerRoute([], [], 'missing')).toBeUndefined()
+  })
+})
+
+describe('ownerRouteKey', () => {
+  it('encodes a route into a stable scalar identity', () => {
+    expect(ownerRouteKey({ connectionId: 'local', profile: 'default' })).toBe('local\u0000default\u0000')
+  })
+
+  it('returns the same key across calls for identical fields (reference stability)', () => {
+    const a = ownerRouteKey({ connectionId: 'local', profile: 'tech-review', targetProfile: 'tech-review' })
+    const b = ownerRouteKey({ connectionId: 'local', profile: 'tech-review', targetProfile: 'tech-review' })
+
+    expect(a).toBe(b)
+  })
+
+  it('distinguishes a targetProfile from a bare profile', () => {
+    expect(ownerRouteKey({ connectionId: 'local', profile: 'default' })).not.toBe(
+      ownerRouteKey({ connectionId: 'local', profile: 'default', targetProfile: 'tech-review' })
+    )
+  })
+
+  it('returns null for an unresolved route', () => {
+    expect(ownerRouteKey(undefined)).toBeNull()
+  })
+})
+
+describe('tileOwnerRoute key stability under session-list churn', () => {
+  it('keeps the current tile key when an UNRELATED row changes (sessions.changed tick)', () => {
+    const tiles = [tile({ storedSessionId: 'mine' })]
+    const mine = { connection_id: 'local', id: 'mine', profile: 'default' }
+    // The only difference is an unrelated row's last_active moving — exactly
+    // what a sessions.changed broadcast republishes for every profile.
+    const rowsBefore: SessionInfo[] = [row({ id: 'other-session', last_active: 100 }), row(mine)]
+    const rowsAfter: SessionInfo[] = [row({ id: 'other-session', last_active: 9_999 }), row(mine)]
+
+    expect(ownerRouteKey(tileOwnerRoute(tiles, rowsBefore, 'mine'))).toBe(
+      ownerRouteKey(tileOwnerRoute(tiles, rowsAfter, 'mine'))
+    )
+  })
+
+  it('changes the key when THIS tile owner actually re-homes', () => {
+    const tiles = [tile({ storedSessionId: 'mine' })]
+
+    expect(
+      ownerRouteKey(tileOwnerRoute(tiles, [row({ connection_id: 'local', id: 'mine', profile: 'default' })], 'mine'))
+    ).not.toBe(
+      ownerRouteKey(tileOwnerRoute(tiles, [row({ connection_id: 'remote', id: 'mine', profile: 'default' })], 'mine'))
+    )
   })
 })

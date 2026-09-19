@@ -3610,6 +3610,23 @@ def request_review(
             conn, task_id, outcome="review_requested", status="review",
             summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
         )
+        # Record declared artifacts as attachments so the reviewer can access them.
+        _staged: list[str] = []
+        if metadata and metadata.get("artifacts"):
+            from time import time as _now
+            import shutil
+            _att_dir = task_attachments_dir(task_id)
+            for art_path in metadata["artifacts"]:
+                p = Path(art_path)
+                if p.is_file():
+                    _att_dir.mkdir(parents=True, exist_ok=True)
+                    _dest = _att_dir / p.name
+                    shutil.copy2(str(p), str(_dest))
+                    _insert_completion_attachment(
+                        conn, task_id, filename=p.name, stored_path=str(_dest),
+                        size=_dest.stat().st_size, created_at=int(_now()),
+                    )
+                    _staged.append(str(_dest))
         _append_event(
             conn,
             task_id,
@@ -3618,6 +3635,7 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "artifacts": _staged or metadata.get("artifacts") if metadata else None,
             },
             run_id=run_id,
         )

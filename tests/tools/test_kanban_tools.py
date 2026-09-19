@@ -61,6 +61,7 @@ def worker_env(monkeypatch, tmp_path):
     profiles_root = home / "profiles"
     for profile in ("peer", "qa"):
         (profiles_root / profile).mkdir(parents=True)
+        (profiles_root / profile / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -1034,6 +1035,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
     (home / "profiles" / "peer").mkdir(parents=True)
+    (home / "profiles" / "peer" / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
     (home / "config.yaml").write_text(
         "kanban:\n  auto_subscribe_on_create: false\n"
     )

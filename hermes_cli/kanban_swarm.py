@@ -110,6 +110,8 @@ def create_swarm(
     workers: Iterable[SwarmWorkerSpec],
     verifier_assignee: str,
     synthesizer_assignee: str,
+    verifier_skills: Optional[list[str]] = None,
+    synthesizer_skills: Optional[list[str]] = None,
     root_title: Optional[str] = None,
     verifier_title: str = "Verify swarm outputs",
     synthesizer_title: str = "Synthesize swarm outputs",
@@ -126,7 +128,8 @@ def create_swarm(
     with kb.write_txn(conn):
         created = _create_swarm_uncommitted(
             conn, goal=goal, workers=workers, verifier_assignee=verifier_assignee,
-            synthesizer_assignee=synthesizer_assignee, root_title=root_title,
+            synthesizer_assignee=synthesizer_assignee, verifier_skills=verifier_skills,
+            synthesizer_skills=synthesizer_skills, root_title=root_title,
             verifier_title=verifier_title, synthesizer_title=synthesizer_title, tenant=tenant,
             created_by=created_by, workspace_kind=workspace_kind, workspace_path=workspace_path,
             priority=priority, idempotency_key=idempotency_key,
@@ -164,7 +167,10 @@ def create_swarm(
 
 def _create_swarm_uncommitted(
     conn: sqlite3.Connection, *, goal: str, workers: Iterable[SwarmWorkerSpec],
-    verifier_assignee: str, synthesizer_assignee: str, root_title: Optional[str],
+    verifier_assignee: str, synthesizer_assignee: str,
+    verifier_skills: Optional[list[str]] = None,
+    synthesizer_skills: Optional[list[str]] = None,
+    root_title: Optional[str] = None,
     verifier_title: str, synthesizer_title: str, tenant: Optional[str], created_by: str,
     workspace_kind: Optional[str], workspace_path: Optional[str], priority: int, idempotency_key: Optional[str],
 ) -> SwarmCreated:
@@ -235,7 +241,7 @@ def _create_swarm_uncommitted(
         assignee=verifier_assignee,
         parents=worker_ids,
         priority=priority,
-        skills=["requesting-code-review"],
+        skills=verifier_skills,
         **common,
     )
     synthesizer = kb.create_task(
@@ -249,7 +255,7 @@ def _create_swarm_uncommitted(
         assignee=synthesizer_assignee,
         parents=[verifier],
         priority=priority,
-        skills=["humanizer"],
+        skills=synthesizer_skills,
         **common,
     )
 

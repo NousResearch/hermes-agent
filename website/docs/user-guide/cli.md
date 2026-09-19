@@ -468,6 +468,8 @@ display:
 
 This is useful on narrow terminals or when tool arguments contain very long file paths.
 
+Built-in tools show their primary argument (the command, path or query). MCP, connector and plugin tools have no curated argument, so their preview lists the call's arguments as `key: value` pairs (for example `title: Fix login, teamId: ENG`); narration-only arguments such as `description` are dropped and credential-shaped values are masked. The same cap applies.
+
 ## Session Management
 
 ### Resuming Sessions

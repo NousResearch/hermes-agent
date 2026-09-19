@@ -121,6 +121,24 @@ class TestBuildToolPreview:
         finally:
             set_tool_preview_max_len(0)
 
+    def test_uncurated_tool_gets_signature_preview(self):
+        """MCP/connector/plugin tools have no curated key: render ``key: value`` pairs (nested
+        values inline, narration keys dropped) instead of nothing, so a progress row says
+        *which* issue is being created rather than a bare tool name."""
+        preview = build_tool_preview(
+            "mcp__linear__create_issue",
+            {"title": "Fix login", "meta": {"team": "ENG", "labels": ["bug", "p1"]}, "description": "I will file it"},
+            max_len=0,
+        )
+        assert preview == "title: Fix login, meta: (team: ENG, labels: [bug, p1])"
+        assert build_tool_preview("mcp__x__y", {"description": "only narration"}) is None
+
+    def test_signature_preview_redacts_credential_args_and_respects_cap(self):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz012345"
+        preview = build_tool_preview("mcp__gh__auth", {"repo": "x/y", "token": secret}, max_len=0)
+        assert secret not in preview and preview.startswith("repo: x/y, token: ")
+        assert len(build_tool_preview("mcp__gh__auth", {"repo": "x" * 80}, max_len=12)) <= 12
+
 
 class TestPrepareToolPreview:
     def test_recovers_and_describes_truncated_url(self):

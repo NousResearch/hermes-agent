@@ -359,6 +359,30 @@ _PRIMARY_ARGS = {
     "skill_manage": "name",
 }
 _FALLBACK_PREVIEW_KEYS = ("query", "text", "command", "path", "name", "prompt", "code", "goal")
+# Argument keys carrying the model's narration rather than the call's payload.
+_NARRATION_ARG_KEYS = frozenset({"description", "explanation", "reason", "thought"})
+
+
+def _format_arg_value(value: Any) -> str:
+    if isinstance(value, str):
+        return _oneline(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_format_arg_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "(" + ", ".join(f"{k}: {_format_arg_value(v)}" for k, v in value.items()) + ")"
+    return str(value)
+
+
+def _signature_preview(args: dict, max_len: int) -> str | None:
+    """``key: value, key: value`` for tools with no curated preview (MCP, connector and
+    plugin tools): a bare tool name says nothing about *which* issue is being created or
+    *which* page searched. Narration keys are dropped and the result passes through the
+    secret redactor so an ``api_key`` argument never reaches a progress row."""
+    entries = [(k, v) for k, v in args.items() if str(k).lower() not in _NARRATION_ARG_KEYS and v is not None]
+    if not entries:
+        return None
+    text = redact_sensitive_text(", ".join(f"{k}: {_format_arg_value(v)}" for k, v in entries), force=True)
+    return _tail_trunc(text, max_len) or None
 
 
 def _delegate_action_preview(args: dict) -> str | None:
@@ -463,7 +487,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         return builder(args, max_len)
     key = _PRIMARY_ARGS.get(tool_name) or next((k for k in _FALLBACK_PREVIEW_KEYS if k in args), None)
     if not key or key not in args:
-        return None
+        return _signature_preview(args, max_len)
     value = args[key]
     preview = _oneline(str((value[0] if value else "") if isinstance(value, list) else value))
     return _tail_trunc(preview, max_len) if preview else None

@@ -58,6 +58,31 @@ def _wire_model_identity(model: Any) -> Optional[str]:
 # Codex/Harmony tool-call serialization leaked into assistant text (no structured function_call).
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
 
+# Codex-CLI-style shell call leaked as assistant text (``{"cmd": "..."}`` closing the message, scalar siblings only).
+# Only classified as a leak when the previous line is an action lead-in ("Creating the script now.") — a bare or
+# explained JSON object is a legitimate answer and must stay a final response.
+_SHELL_JSON_LEAK_PATTERN = re.compile(
+    r'(?:^|\n)\s*\{\s*"cmd"\s*:\s*"(?:\\.|[^"\\])*"'
+    r'(?:\s*,\s*"[A-Za-z_][\w-]*"\s*:\s*(?:"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?))*\s*\}\s*$',
+)
+_ACTION_VERBS = r"creat(?:e|ing)|writ(?:e|ing)|runn?(?:ing)?|execut(?:e|ing)|check(?:ing)?|verif(?:y|ying)|updat(?:e|ing)|install(?:ing)?|edit(?:ing)?|mak(?:e|ing)"
+_SHELL_JSON_LEAK_LEADIN_PATTERN = re.compile(
+    rf"^(?:(?:next|first|then|okay|ok|alright)\b[\s,—–-]*)?(?:sure,\s*)?(?:now\s+)?"
+    rf"(?:let\s+me\s+|i(?:'|’)?ll\s+|i\s+will\s+|i(?:'|’)?m\s+|i\s+am\s+)?(?:{_ACTION_VERBS})\b",
+    re.IGNORECASE,
+)
+
+
+def _leaked_tool_call_text(text: str) -> bool:
+    """True when assistant text carries a tool call the model failed to emit as a structured ``function_call``."""
+    if _TOOL_CALL_LEAK_PATTERN.search(text):
+        return True
+    match = _SHELL_JSON_LEAK_PATTERN.search(text)
+    if not match:
+        return False
+    lead_in = text[:match.start()].strip().splitlines()
+    return bool(lead_in) and bool(_SHELL_JSON_LEAK_LEADIN_PATTERN.search(lead_in[-1].strip()))
+
 # The Codex backend rejects literal Harmony wire tokens (``invalid_prompt: Request
 # blocked.``). Fullwidth bars survive format-character stripping and stay legible.
 _HARMONY_CONTROL_TOKEN_RE = re.compile(r"<\|(start|end|channel|message|constrain|return|call)\|>")
@@ -1118,8 +1143,9 @@ def _normalize_codex_response(
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
-    # (``to=functions.foo {json}``). Treat as incomplete so the continuation re-elicits a real call; clear the garbage.
-    leaked_tool_call_text = bool(final_text and not tool_calls and _TOOL_CALL_LEAK_PATTERN.search(final_text))
+    # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
+    # continuation re-elicits a real call; clear the garbage.
+    leaked_tool_call_text = bool(final_text and not tool_calls and _leaked_tool_call_text(final_text))
     if leaked_tool_call_text:
         logger.warning(
             "Codex response contains leaked tool-call text in assistant content (no structured function_call "
@@ -1145,7 +1171,9 @@ def _normalize_codex_response(
         content=final_text, tool_calls=tool_calls,
         reasoning="\n\n".join(reasoning_parts).strip() if reasoning_parts else None,
         reasoning_content=None, reasoning_details=None,
-        codex_reasoning_items=scan.reasoning_items_raw or None, codex_message_items=scan.message_items_raw or None,
+        codex_reasoning_items=scan.reasoning_items_raw or None,
+        # Leaked text must not be replayed as a completed assistant message on the continuation.
+        codex_message_items=None if leaked_tool_call_text else (scan.message_items_raw or None),
     )
     # Reasoning-only: for Codex/xAI/GitHub, status=completed means "still thinking" → incomplete so the continuation
     # retries. Other backends trust response.status — forcing incomplete there stalls for minutes on a final state.

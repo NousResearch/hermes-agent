@@ -756,6 +756,50 @@ def test_format_responses_error_message_only():
     assert _format_responses_error(err, "failed") == "Upstream model unavailable"
 
 
+def _final_text_response(text):
+    return SimpleNamespace(
+        status="completed", incomplete_details=None, output_text=text,
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed", id="msg_1",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )],
+    )
+
+
+@pytest.mark.parametrize("text", [
+    'Creating the PowerShell script now.\n{"cmd": "mkdir -p /c/Temp && cat > /c/Temp/x.ps1 <<\'EOF\'"}',
+    'Sure, let me run the tests.\n{"cmd": "pytest -q", "workdir": "/repo", "timeout": 120}',
+    'Next, I\'ll create the script.\n{"cmd": "cat > x.sh"}',
+    'Okay — running the tests.\n{"cmd": "pytest -q"}',
+    "Calling tool now to=functions.terminal {\"command\": \"ls\"}",
+])
+def test_normalize_codex_response_treats_leaked_tool_call_text_as_incomplete(text):
+    """#56920: Codex-CLI shell JSON (or Harmony ``to=functions``) leaked as assistant text is a failed tool call,
+    not a final answer — classify incomplete so the continuation re-elicits a structured ``function_call``, and
+    drop the message items so the leak is never replayed as a completed assistant turn."""
+    assistant_message, finish_reason = _normalize_codex_response(_final_text_response(text), issuer_kind="codex_backend")
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.tool_calls == []
+    assert assistant_message.codex_message_items is None
+
+
+@pytest.mark.parametrize("text", [
+    'Here is the JSON payload the CLI expects:\n{"cmd": "mkdir -p /c/Temp"}',
+    '{"cmd": "ls"}',
+    'Creating the file now.\n{"cmd": "ls"}\nDone — the file is in place.',
+])
+def test_normalize_codex_response_keeps_legitimate_cmd_json_answer(text):
+    """#56920 false-positive guard: ``{"cmd": ...}`` without an action lead-in, or not closing the message,
+    is an answer about JSON and stays a completed response with its replay items intact."""
+    assistant_message, finish_reason = _normalize_codex_response(_final_text_response(text), issuer_kind="codex_backend")
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == text
+    assert assistant_message.codex_message_items
+
+
 def test_normalize_codex_response_failed_includes_code_in_error():
     """Regression: response_status == 'failed' should surface the error
     code, not just the message. Used to leak a bare 'Slow down' string

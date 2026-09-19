@@ -297,9 +297,9 @@ class TestEnsureUv:
             mock_install.assert_called_once()
 
     def test_dead_managed_launcher_is_reinstalled(self, tmp_path):
-        """A managed uv that exists, is executable, and exits non-zero (a relocated shim a pre-fix
+        """A managed uv that exists, is executable, and exits non-zero (a relocated shim an earlier
         installer copied in) must be replaced, not handed out."""
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        uv = tmp_path / "uv" / _UV_BINARY_NAME
         uv.parent.mkdir(parents=True)
         uv.write_text("#!/bin/sh\necho 'launcher target missing' >&2\nexit 1\n", encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IEXEC)

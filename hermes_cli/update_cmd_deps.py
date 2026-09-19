@@ -651,7 +651,7 @@ def _update_node_dependencies() -> list[str]:
     print("→ Updating Node.js dependencies...")
     install_args = [
         "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
-        "--workspace", "ui-tui", "--workspace", "web",
+        "--workspace", "ui-tui", "--workspace", "ui-tui/packages/hermes-ink", "--workspace", "web",
         # Root devDependencies (shared ESLint config) would otherwise be pruned by the
         # scoped install; apps/desktop stays excluded since it is never named above.
         "--include-workspace-root"]

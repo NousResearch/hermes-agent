@@ -68,6 +68,7 @@ def _phase(desktop_dir):
         seen["lock_owner"] = int(update_lock.update_marker_path().read_text().split()[0])
     except OSError:
         seen["lock_owner"] = None
+    seen["own_pid"] = os.getpid()
     seen["env_left"] = [k for k in (update_handoff.SHIM_PARENT_PID_ENV, update_handoff.GATEWAY_RESUME_ENV) if k in os.environ]
     raise Stop
 
@@ -128,7 +129,10 @@ def test_update_child_outwaits_shim_parent_then_owns_the_lock_and_the_resume_tok
     assert child.returncode == 0, err
     seen = json.loads(out.strip().splitlines()[-1])
     assert seen["parent_status"] in ("gone", psutil.STATUS_ZOMBIE), seen
-    assert seen["lock_owner"] == child.pid, seen  # its own claim, not the departed parent's
+    # Its own claim, not the departed parent's. Compare against the interpreter's own pid: on
+    # Windows a uv venv's Scripts\python.exe is a trampoline, so Popen.pid is the launcher and
+    # the process that ran cmd_update is its child (wine2e run 35429725262).
+    assert seen["lock_owner"] == seen["own_pid"] != parent.pid, seen
     assert seen["paused"] == 0 and seen["registered"] == token, seen
     assert seen["env_left"] == [] and seen["marker_after"] is False, seen
 

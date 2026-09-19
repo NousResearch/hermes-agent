@@ -189,6 +189,128 @@ describe('annotateInPage overlay', () => {
     api.teardown()
   })
 
+  it('redacts secret attributes on descendants, not only on the picked node', async () => {
+    const section = document.createElement('section')
+    const child = document.createElement('button')
+    child.setAttribute('data-api-key', 'sk-live-nested')
+    child.textContent = 'Pay'
+    section.appendChild(child)
+    document.body.appendChild(section)
+    section.getBoundingClientRect = () => ({
+      bottom: 60,
+      height: 50,
+      left: 0,
+      right: 200,
+      toJSON: () => ({}),
+      top: 10,
+      width: 200,
+      x: 0,
+      y: 10
+    })
+    document.elementFromPoint = () => section
+
+    const api = annotateInPage(document)
+    api.install()
+    const pending = api.wait()
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
+
+    const event = await pending
+
+    expect(event.type).toBe('pick-element')
+
+    if (event.type === 'pick-element') {
+      expect(event.identity.html).not.toContain('sk-live-nested')
+      expect(event.identity.html).toContain('[redacted]')
+      expect(event.identity.html).toContain('Pay')
+    }
+
+    api.teardown()
+  })
+
+  it('redacts a typed password that never became a value attribute', async () => {
+    const wrap = document.createElement('div')
+    const input = document.createElement('input')
+    input.type = 'password'
+    input.value = 'typed-secret-999'
+    wrap.appendChild(input)
+    document.body.appendChild(wrap)
+    wrap.getBoundingClientRect = () => ({
+      bottom: 60,
+      height: 50,
+      left: 0,
+      right: 200,
+      toJSON: () => ({}),
+      top: 10,
+      width: 200,
+      x: 0,
+      y: 10
+    })
+    document.elementFromPoint = () => wrap
+
+    const api = annotateInPage(document)
+    api.install()
+    const pending = api.wait()
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
+
+    const event = await pending
+
+    expect(event.type).toBe('pick-element')
+
+    if (event.type === 'pick-element') {
+      expect(event.identity.html).not.toContain('typed-secret-999')
+      expect(event.identity.html).toContain('[redacted]')
+    }
+
+    api.teardown()
+  })
+
+  it('redacts a secret textarea body and does not leak it as Target text', async () => {
+    const form = document.createElement('form')
+    const area = document.createElement('textarea')
+    area.name = 'id_token'
+    area.value = 'BEGIN PRIVATE KEY'
+    form.appendChild(area)
+    document.body.appendChild(form)
+    form.getBoundingClientRect = () => ({
+      bottom: 60,
+      height: 50,
+      left: 0,
+      right: 200,
+      toJSON: () => ({}),
+      top: 10,
+      width: 200,
+      x: 0,
+      y: 10
+    })
+    document.elementFromPoint = () => form
+
+    const api = annotateInPage(document)
+    api.install()
+    const pending = api.wait()
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
+
+    const event = await pending
+
+    expect(event.type).toBe('pick-element')
+
+    if (event.type === 'pick-element') {
+      expect(event.identity.html).not.toContain('BEGIN PRIVATE KEY')
+      expect(event.identity.text).not.toContain('BEGIN PRIVATE KEY')
+      expect(event.identity.html).toContain('[redacted]')
+    }
+
+    api.teardown()
+  })
+
   it('budgets the markup so one comment cannot paste a whole section', async () => {
     const section = document.createElement('section')
     section.innerHTML = '<p>filler filler filler</p>'.repeat(200)

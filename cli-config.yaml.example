@@ -1095,6 +1095,13 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Query-relevance rerank of `hermes skills search` merged results (TypeSafe Jev Score).
+  # Off by default: trust-sorted merge is kept and no network call is made. When enabled,
+  # candidates are scored 0-10 against the query and stably re-ordered before the limit
+  # cut; any scorer failure fails open to trust order. Key: TYPESAFE_API_KEY in ~/.hermes/.env.
+  # hub_relevance_rerank:
+  #   enabled: false
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

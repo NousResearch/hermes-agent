@@ -664,6 +664,21 @@ Browse, search, install, and manage skills from online registries, `skills.sh`, 
 
 Unfiltered searches (CLI, TUI, and the dashboard) are answered from a cached centralized index that covers the external registries. That index is rebuilt periodically, so when it has no match for your query Hermes also asks `skills.sh`, ClawHub, LobeHub and well-known endpoints directly — a skill published minutes ago still shows up. That extra pass gets at most 8 seconds of the search budget, so a slow registry cannot turn a miss into a long wait. Custom GitHub taps are not part of that fallback (search them with `--source github`, or via the index once it catches up), and provider filters such as `--source nvidia` do not trigger it (those registries carry no provider data).
 
+Merged results are ordered by source trust (official first), so within one
+trust rank the order reflects whichever source answered first. To order by
+query relevance instead, enable the optional relevance rerank: every merged
+candidate is scored 0–10 against the query with a TypeSafe Jev Score call
+before the result limit is applied, so the cut drops the least-relevant
+hits. It is off by default (no extra network call), fails open to trust
+order when the scorer is unreachable, and needs `TYPESAFE_API_KEY` in
+`~/.hermes/.env`:
+
+```yaml
+skills:
+  hub_relevance_rerank:
+    enabled: true
+```
+
 ### Common commands
 
 ```bash

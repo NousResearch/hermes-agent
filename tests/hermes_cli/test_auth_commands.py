@@ -116,6 +116,141 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+def test_auth_add_colliding_configured_provider_uses_custom_namespace(tmp_path, monkeypatch):
+    """A providers.openrouter custom endpoint cannot share the built-in OpenRouter pool."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({
+            "providers": {
+                "openrouter": {
+                    "name": "openrouter",
+                    "base_url": "https://relay.example.test/v1",
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "custom:openrouter"
+        auth_type = "api-key"
+        api_key = "relay-key"
+        label = "relay"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["credential_pool"]["custom:openrouter"][0]["access_token"] == "relay-key"
+    assert not payload["credential_pool"].get("openrouter")
+
+
+def test_auth_add_colliding_display_alias_canonicalizes_custom_pool(tmp_path, monkeypatch):
+    """custom:<display-name> for providers.openrouter writes custom:openrouter."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({
+            "providers": {
+                "openrouter": {
+                    "name": "Private Relay",
+                    "base_url": "https://relay.example.test/v1",
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "custom:private-relay"
+        auth_type = "api-key"
+        api_key = "relay-key"
+        label = "relay"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["credential_pool"]["custom:openrouter"][0]["access_token"] == "relay-key"
+    assert "custom:private-relay" not in payload["credential_pool"]
+
+
+def test_auth_add_colliding_alias_merges_legacy_same_route_pool(tmp_path, monkeypatch):
+    """Adding the canonical collision pool must not strand its legacy display-name key."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "custom:private-relay": [{
+                "id": "legacy", "label": "legacy", "auth_type": "api_key",
+                "priority": 0, "source": "manual", "access_token": "legacy-key",
+            }],
+        },
+    })
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        "providers": {
+            "openrouter": {
+                "name": "Private Relay",
+                "base_url": "https://relay.example.test/v1",
+            },
+        },
+    }), encoding="utf-8")
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "custom:private-relay"
+        auth_type = "api-key"
+        api_key = "new-key"
+        label = "new"
+
+    auth_add_command(_Args())
+
+    pools = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]
+    assert "custom:private-relay" not in pools
+    assert {entry["access_token"] for entry in pools["custom:openrouter"]} == {
+        "legacy-key", "new-key",
+    }
+
+
+def test_auth_add_bare_colliding_display_alias_uses_custom_pool(tmp_path, monkeypatch):
+    """Bare display alias must not write a private relay key into built-in OpenRouter."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        "providers": {
+            "openrouter": {
+                "name": "Private Relay",
+                "base_url": "https://relay.example.test/v1",
+            },
+        },
+    }), encoding="utf-8")
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "private-relay"
+        auth_type = "api-key"
+        api_key = "private-key"
+        label = "private"
+
+    auth_add_command(_Args())
+
+    pools = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]
+    assert pools["custom:openrouter"][0]["access_token"] == "private-key"
+    assert not pools.get("openrouter")
+
+
 def test_auth_add_configured_provider_uses_canonical_pool_key(tmp_path, monkeypatch):
     """A keyed providers row must keep its runtime slug in the auth pool."""
     hermes_home = tmp_path / "hermes"

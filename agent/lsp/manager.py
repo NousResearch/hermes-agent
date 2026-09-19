@@ -226,11 +226,13 @@ class LSPService:
         self._set_delta_baseline(os.path.abspath(file_path), diags or [])
 
     def _set_delta_baseline(self, abs_path: str, diags: _Diags) -> None:
-        """Store a baseline, refreshing recency (pop + reinsert) so eviction tracks write order."""
-        self._delta_baseline.pop(abs_path, None)
-        self._delta_baseline[abs_path] = diags
-        while len(self._delta_baseline) > _DELTA_BASELINE_CAP:
-            del self._delta_baseline[next(iter(self._delta_baseline))]
+        """Store a baseline, refreshing recency (pop + reinsert) so eviction tracks write order.
+        Callers run on arbitrary threads; the multi-step mutation needs the lock (callers don't hold it)."""
+        with self._state_lock:
+            self._delta_baseline.pop(abs_path, None)
+            self._delta_baseline[abs_path] = diags
+            while len(self._delta_baseline) > _DELTA_BASELINE_CAP:
+                del self._delta_baseline[next(iter(self._delta_baseline))]
 
     def get_diagnostics_sync(
         self, file_path: str, *, delta: bool = True, timeout: Optional[float] = None,

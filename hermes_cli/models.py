@@ -333,13 +333,16 @@ def _nous_recommended_disk_path() -> "Path":
 
 def _read_nous_recommended_disk(base: str) -> tuple[dict[str, Any], float] | None:
     """Return the last good payload and its age; invalid timestamps are stale."""
-    blob = _read_json_cache(_nous_recommended_disk_path(), errors=(OSError, json.JSONDecodeError))
+    blob = _read_json_cache(_nous_recommended_disk_path(), errors=(OSError, json.JSONDecodeError, UnicodeDecodeError))
     entry = (blob or {}).get(base)
     data = entry.get("data") if isinstance(entry, dict) else None
     if not isinstance(data, dict) or not data:
         return None
     timestamp = entry.get("ts")
-    age = time.time() - timestamp if type(timestamp) in (int, float) else float("inf")
+    try:
+        age = time.time() - timestamp if type(timestamp) in (int, float) else float("inf")
+    except OverflowError:
+        age = float("inf")
     # Clock rollback/future timestamps must not make a cache entry immortal.
     return data, age if age >= 0 else float("inf")
 
@@ -351,7 +354,7 @@ def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
         return
     path = _nous_recommended_disk_path()
     try:
-        blob = _read_json_cache(path, errors=(OSError, json.JSONDecodeError)) or {}
+        blob = _read_json_cache(path, errors=(OSError, json.JSONDecodeError, UnicodeDecodeError)) or {}
         blob[base] = {"data": data, "ts": time.time()}
         _write_json_cache(path, blob, indent=2)
     except OSError as exc:

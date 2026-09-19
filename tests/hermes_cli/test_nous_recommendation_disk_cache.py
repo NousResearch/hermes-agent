@@ -79,6 +79,17 @@ def test_process_restarts_reuse_fresh_disk_but_force_and_expiry_fetch(tmp_path, 
     assert fetch_in_new_process(home, base) == disk[base]["data"]
     assert json.loads(path.read_text(encoding="utf-8"))[base]["ts"] == disk[base]["ts"]
 
+    # Bad local cache bytes/metadata must never stop a healthy API refresh.
+    state["status"] = 200
+    path.write_bytes(b"\xff")
+    assert fetch_in_new_process(home, base) == disk[base]["data"]
+    for timestamp in [None, True, "invalid", float("nan"), time.time() + 3600, 10 ** 400]:
+        disk[base]["ts"] = timestamp
+        path.write_text(json.dumps(disk), encoding="utf-8")
+        before = len(requests)
+        assert fetch_in_new_process(home, base) == disk[base]["data"]
+        assert len(requests) == before + 1
+
 
 def test_disk_cache_is_scoped_to_home_and_portal(tmp_path, portal):
     base, requests, state = portal

@@ -72,7 +72,27 @@ class FactRetriever:
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
+        self._mark_retrieved(results)
         return results
+
+    def _mark_retrieved(self, facts: list[dict]) -> None:
+        """Sensing telemetry: bump retrieval_count and refresh updated_at on returned facts.
+
+        retrieval_count exists in the schema solely to record how often a fact was served,
+        but no code path ever incremented it — the column was dead weight since the schema
+        landed. updated_at refresh doubles as reinforcement: temporal decay (when enabled)
+        keys on updated_at, so a fact that keeps being found keeps its score."""
+        ids = [f["fact_id"] for f in facts if f.get("fact_id") is not None]
+        if not ids:
+            return
+        try:
+            placeholders = ",".join("?" * len(ids))
+            self.store._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1, updated_at = CURRENT_TIMESTAMP "
+                f"WHERE fact_id IN ({placeholders})", ids)
+            self.store._conn.commit()
+        except Exception:
+            pass  # telemetry must never fail a retrieval
 
     def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
         """Rank every fact vector (optionally per category) by sim_fn; FTS5 fallback when no vectors exist."""
@@ -164,7 +184,9 @@ class FactRetriever:
         scored = [dict(row) for row in rows]
         for fact in scored:
             fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
-        return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        results = sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        self._mark_retrieved(results)
+        return results
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:
         """Raw FTS5 MATCH candidates with rank normalized to [0, 1] as 'fts_rank'."""

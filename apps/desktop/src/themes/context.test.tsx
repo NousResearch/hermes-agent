@@ -1,9 +1,22 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { getDashboardThemes, setDashboardTheme } from '@/api/dashboard-themes'
+
+import { $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { getBaseColors, skinPref, ThemeProvider, useTheme } from './context'
 import { BUILTIN_THEME_LIST, everforestTheme } from './presets'
+
+// Mock the transport, not the policy: the provider wiring is then exercised
+// against the REAL dashboard-sync module (baseline/echo rules included), and
+// the assertions land on the network boundary the feature actually owns.
+vi.mock('@/api/dashboard-themes', () => ({
+  getDashboardThemes: vi.fn(),
+  setDashboardTheme: vi.fn()
+}))
+
+const getThemes = vi.mocked(getDashboardThemes)
+const putTheme = vi.mocked(setDashboardTheme)
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -159,6 +172,98 @@ describe('ThemeProvider highlight preview', () => {
 
     act(() => ctx.previewTheme('does-not-exist', 'dark'))
     expect(cssVar('--theme-foreground')).toBe(painted)
+  })
+})
+
+// The wiring between the ThemeProvider and the dashboard-sync policy: a
+// desktop pick is mirrored to the Dashboard, an inbound value is never echoed
+// back, and a pick made on the Dashboard lands when this window regains focus.
+// The transport is mocked; the policy module runs for real.
+describe('ThemeProvider ← dashboard theme sync', () => {
+  let ctx: ReturnType<typeof useTheme>
+
+  function Probe() {
+    ctx = useTheme()
+
+    return null
+  }
+
+  const renderProbe = () =>
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.clearAllMocks()
+    $pendingSkinApply.set(null)
+    putTheme.mockResolvedValue({ ok: true, theme: 'midnight' })
+  })
+
+  afterEach(cleanup)
+
+  it('publishes a shared skin pick to the Dashboard', async () => {
+    renderProbe()
+
+    act(() => ctx.setTheme('midnight'))
+    // The publish is fire-and-forget; flush the PUT promise chain.
+    await act(async () => {})
+
+    expect(putTheme).toHaveBeenCalledWith('midnight')
+    // The local pick committed regardless — publish rides alongside it.
+    expect(skinPref.resolve('default')).toBe('midnight')
+  })
+
+  it('does not publish a skin applied from another surface', async () => {
+    renderProbe()
+
+    act(() => $pendingSkinApply.set('ember'))
+    await act(async () => {})
+
+    expect(skinPref.resolve('default')).toBe('ember')
+    expect(putTheme).not.toHaveBeenCalled()
+  })
+
+  it('adopts a changed Dashboard theme when the window regains focus', async () => {
+    // Baseline ≠ fetched active: ingest sees a genuine change and paints.
+    // (A first observation only records the baseline — see dashboard-sync.)
+    window.localStorage.setItem('hermes-desktop-dashboard-theme-v1', 'ember')
+    getThemes.mockResolvedValue({ themes: [], active: 'midnight' })
+
+    renderProbe()
+
+    const paintedSkin = () => window.document.documentElement.dataset.hermesTheme
+
+    expect(paintedSkin()).not.toBe('midnight')
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(getThemes).toHaveBeenCalled()
+    expect(paintedSkin()).toBe('midnight')
+    expect(ctx.themeName).toBe('midnight')
+
+    // A dashboard-only name moves the baseline but paints nothing.
+    getThemes.mockResolvedValue({ themes: [], active: 'rose' })
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(paintedSkin()).toBe('midnight')
+
+    // A second shared change repaints — the listener stays registered.
+    getThemes.mockResolvedValue({ themes: [], active: 'cyberpunk' })
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(paintedSkin()).toBe('cyberpunk')
+    expect(ctx.themeName).toBe('cyberpunk')
   })
 })
 

@@ -1186,7 +1186,7 @@ When you run `hermes update`, the web frontend is automatically rebuilt if `npm`
 
 The dashboard ships with eight built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
 
-**Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
+**Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load. The four theme names shared with the desktop app — `midnight`, `ember`, `mono`, `cyberpunk` — also follow Desktop's **Sync appearance with Hermes Dashboard** setting (**Settings → Appearance**); names unique to one surface stay independent.
 
 **Change the font independently** from the same picker — the **Font** section below the theme list overrides the UI font of whatever theme is active. The choice persists across theme switches (`config.yaml` → `dashboard.font`); pick **Theme default** to clear it and return to the active theme's own font.
 

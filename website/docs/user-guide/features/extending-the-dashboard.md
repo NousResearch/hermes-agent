@@ -355,7 +355,7 @@ customCSS: |
   /* Any additional selector-level tweaks */
 ```
 
-Refresh the dashboard after creating the file. Switch themes live from the header bar — click the palette icon. Selection persists to `config.yaml` under `dashboard.theme` and is restored on reload.
+Refresh the dashboard after creating the file. Switch themes live from the header bar — click the palette icon. Selection persists to `config.yaml` under `dashboard.theme` and is restored on reload. The four theme names shared with the native desktop app — `midnight`, `ember`, `mono`, `cyberpunk` — also follow its **Sync appearance with Hermes Dashboard** setting (**Settings → Appearance**); names unique to one surface stay independent, and your own YAML themes are never touched by the sync.
 
 ---
 

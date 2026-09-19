@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -470,9 +471,42 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(resolveTheme(themeName));
   }, [themeName, resolveTheme, fontId]);
 
+  // Mirror the live theme name into a ref so async fetch callbacks can
+  // compare against the current value without re-registering their effects
+  // on every theme switch.
+  const themeNameRef = useRef(themeName);
+  useEffect(() => {
+    themeNameRef.current = themeName;
+  }, [themeName]);
+
+  // Bumped whenever the user picks a theme, so an in-flight getThemes()
+  // (mount fetch or focus refetch) can tell it was superseded: its
+  // `active` predates the pick, and adopting it would flip the tab back
+  // to the old palette while the server already holds the new one. Only
+  // user picks bump this — an adopted server value must never invalidate
+  // a concurrent read.
+  const themeGeneration = useRef(0);
+
+  /** Adopt the server's active theme name: run it through the same legacy
+   *  alias migration the initial read uses, move state, and mirror into
+   *  localStorage so a reload doesn't flash the pre-switch palette. Shared
+   *  by the mount fetch and the focus refetch so the two paths cannot
+   *  drift. Deliberately does NOT write back to the server — callers that
+   *  need a migration write decide that themselves; the migrated name is
+   *  returned so they can make that call. */
+  const adoptServerThemeName = useCallback((active: string): string => {
+    const migrated = migrateThemeName(active);
+    if (migrated !== themeNameRef.current) {
+      setThemeName(migrated);
+      window.localStorage.setItem(STORAGE_KEY, migrated);
+    }
+    return migrated;
+  }, []);
+
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
     let cancelled = false;
+    const generation = themeGeneration.current;
     api
       .getThemes()
       .then((resp) => {
@@ -495,15 +529,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           }
           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
-        if (resp.active) {
-          const migratedActive = migrateThemeName(resp.active);
-          if (migratedActive !== themeName) {
-            setThemeName(migratedActive);
-            window.localStorage.setItem(STORAGE_KEY, migratedActive);
-          }
+        if (
+          resp.active &&
+          // A user pick during the fetch outranks this response — its
+          // PUT already told the server the new name, so adopting the
+          // older `active` here would flip the tab back. Drop silently.
+          themeGeneration.current === generation
+        ) {
+          const migratedActive = adoptServerThemeName(resp.active);
           // If the server is still persisting the stale key, push the
           // migrated value back so it converges too — otherwise every
-          // future page load would re-trigger this branch.
+          // future page load would re-trigger this branch. Migration-only:
+          // the focus refetch below must never write back.
           if (migratedActive !== resp.active) {
             api.setTheme(migratedActive).catch(() => {});
           }
@@ -540,6 +577,48 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Re-fetch the server's active theme when the tab regains focus /
+  // becomes visible again: Desktop (or another tab) may have written
+  // dashboard.theme while this tab sat in the background, and nothing else
+  // refreshes it. Read/apply only — never api.setTheme() here, or a tab
+  // adopting a migrated name would PUT it back and loop with the writer.
+  const refetchInFlight = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    const refetch = () => {
+      if (document.visibilityState !== "visible") return;
+      // Rapid focus/visibility flapping can overlap in-flight requests;
+      // let the in-flight one finish instead of firing a second one.
+      if (refetchInFlight.current) return;
+      refetchInFlight.current = true;
+      const generation = themeGeneration.current;
+      api
+        .getThemes()
+        .then((resp) => {
+          if (cancelled) return;
+          // Same rule as the mount fetch: a pick made while this request
+          // was in flight outranks the response — adopt nothing instead
+          // of overwriting the fresh pick with the server's older value.
+          if (resp.active && themeGeneration.current === generation) {
+            adoptServerThemeName(resp.active);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          refetchInFlight.current = false;
+        });
+    };
+    // Both events fire when alt-tabbing back; the in-flight guard keeps the
+    // duplicate from doubling the request.
+    window.addEventListener("focus", refetch);
+    document.addEventListener("visibilitychange", refetch);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refetch);
+      document.removeEventListener("visibilitychange", refetch);
+    };
+  }, [adoptServerThemeName]);
+
   const setTheme = useCallback(
     (name: string) => {
       // Accept any name the server told us exists OR any built-in.
@@ -549,6 +628,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         ...Object.keys(userThemeDefs),
       ]);
       const next = knownNames.has(name) ? name : "default";
+      // Invalidate any getThemes() still in flight before the pick lands,
+      // so a response carrying the pre-pick `active` can't overwrite it.
+      themeGeneration.current += 1;
       setThemeName(next);
       if (typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, next);

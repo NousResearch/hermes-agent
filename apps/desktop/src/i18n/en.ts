@@ -820,6 +820,9 @@ export const en: Translations = {
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      dashboardSyncTitle: 'Sync appearance with Hermes Dashboard',
+      dashboardSyncDesc:
+        'Shared theme names (midnight, ember, mono, cyberpunk) follow the web Dashboard from either side; names unique to one surface are left alone.',
       installTitle: 'Install from VS Code',
       installDesc:
         'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',

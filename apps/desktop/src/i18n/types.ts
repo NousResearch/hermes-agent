@@ -699,6 +699,8 @@ export interface Translations {
       themeDesc: string
       themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
+      dashboardSyncTitle: string
+      dashboardSyncDesc: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

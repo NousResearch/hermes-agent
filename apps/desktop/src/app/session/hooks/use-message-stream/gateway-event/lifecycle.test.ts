@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useStatusSnapshot } from '@/app/shell/hooks/use-status-snapshot'
 import { getStatus } from '@/hermes'
 import { $setupReadyTick } from '@/store/live-sync'
+import { $activeGatewayProfile } from '@/store/profile'
+import { refreshDashboardTheme } from '@/themes/dashboard-sync'
 
 import { handleLifecycleEvent } from './lifecycle'
 import type { GatewayEventContext } from './types'
@@ -11,6 +13,10 @@ import type { GatewayEventContext } from './types'
 vi.mock(import('@/hermes'), async importOriginal => ({
   ...(await importOriginal()),
   getStatus: vi.fn()
+}))
+
+vi.mock('@/themes/dashboard-sync', () => ({
+  refreshDashboardTheme: vi.fn(async () => undefined)
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -63,6 +69,42 @@ async function mountedStatusSnapshot() {
 function callsTo(requestGateway: ReturnType<typeof vi.fn>, method: string) {
   return requestGateway.mock.calls.filter(([called]) => called === method)
 }
+
+function gatewayReadyContext(fromActiveSource: boolean): GatewayEventContext {
+  const payload = { change_events: false, skin: undefined }
+
+  return {
+    deps: {} as GatewayEventContext['deps'],
+    event: { payload, type: 'gateway.ready' },
+    explicitSid: '',
+    fromActiveSource: () => fromActiveSource,
+    isActiveEvent: false,
+    occurredAt: 1_700_000_100,
+    payload: payload as GatewayEventContext['payload'],
+    scheduleConfigRefresh: vi.fn(),
+    sessionId: null
+  }
+}
+
+describe('handleLifecycleEvent gateway.ready', () => {
+  beforeEach(() => {
+    vi.mocked(refreshDashboardTheme).mockClear()
+    $activeGatewayProfile.set('work')
+  })
+
+  it('pulls the dashboard theme for the active profile from the active source', () => {
+    expect(handleLifecycleEvent(gatewayReadyContext(true))).toBe(true)
+
+    expect(refreshDashboardTheme).toHaveBeenCalledTimes(1)
+    expect(refreshDashboardTheme).toHaveBeenCalledWith('work')
+  })
+
+  it('claims gateway.ready from a non-active source without pulling the dashboard theme', () => {
+    expect(handleLifecycleEvent(gatewayReadyContext(false))).toBe(true)
+
+    expect(refreshDashboardTheme).not.toHaveBeenCalled()
+  })
+})
 
 describe('handleLifecycleEvent setup.ready', () => {
   beforeEach(() => {

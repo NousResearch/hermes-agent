@@ -1199,6 +1199,22 @@ export interface TerminalBackendsResponse {
   backends: TerminalBackendInfo[]
 }
 
+/** One row from `GET /api/dashboard/themes`. Built-ins ship name/label/
+ *  description only; user-authored themes additionally carry their
+ *  normalised `definition` from `~/.hermes/dashboard-themes/*.yaml`. */
+export interface DashboardThemeSummary {
+  name: string
+  label: string
+  description: string
+  definition?: unknown
+}
+
+/** Shape of `GET /api/dashboard/themes` (`active` = `dashboard.theme`). */
+export interface DashboardThemesResponse {
+  themes: DashboardThemeSummary[]
+  active: string
+}
+
 /** One model row from a toolset backend's catalog (image/video gen). */
 export interface ToolsetModel {
   id: string

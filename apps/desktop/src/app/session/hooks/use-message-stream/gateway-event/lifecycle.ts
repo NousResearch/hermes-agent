@@ -11,11 +11,14 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
 import { ingestBackendSkin } from '@/themes/backend-sync'
+// Leaf import for the same reason as `backend-sync` above.
+import { refreshDashboardTheme } from '@/themes/dashboard-sync'
 
 import type { GatewayEventContext } from './types'
 
@@ -28,6 +31,15 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // Seed the active skin into the desktop theme registry without applying,
     // so a fresh connect never overrides the user's persisted desktop theme.
     ingestBackendSkin(ready?.skin, { apply: false })
+
+    // The backend only answers `dashboard.theme` once it is up, and this
+    // window may have started with an absent or stale baseline. The Dashboard
+    // is a separate browser tab with no event channel into the desktop, so a
+    // connect-time pull is the earliest point we can learn its pick.
+    if (fromActiveSource()) {
+      void refreshDashboardTheme(normalizeProfileKey($activeGatewayProfile.get()))
+    }
+
     // Backends with the change watcher broadcast pet/cron/sessions change
     // events; consumers demote their legacy polls to slow backstops.
     setChangeEventsAvailable(Boolean(ready?.change_events))

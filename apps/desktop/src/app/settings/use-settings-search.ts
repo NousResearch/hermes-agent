@@ -141,6 +141,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.dashboardSyncDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.dashboardSync}`,
+      keywords: ['dashboard', 'theme sync', 'web'],
+      label: appearance.dashboardSyncTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.dashboardSync, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.uiScale}`,
       keywords: ['zoom', 'size'],

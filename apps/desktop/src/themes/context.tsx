@@ -23,6 +23,7 @@ import { $accentOverride } from './accent-override'
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
+import { publishDashboardTheme, refreshDashboardTheme } from './dashboard-sync'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
@@ -348,7 +349,12 @@ interface ThemeContextValue {
    */
   renderedMode: 'light' | 'dark'
   availableThemes: Array<{ name: string; label: string; description: string }>
-  setTheme: (name: string) => void
+  /**
+   * Commit a skin. `publish` (default true) mirrors a shared name to the
+   * Dashboard; internal re-applies of a value that came FROM another surface
+   * pass `publish: false` so the sync never echoes back.
+   */
+  setTheme: (name: string, opts?: { publish?: boolean }) => void
   setMode: (mode: ThemeMode) => void
   /**
    * Paint a theme with an explicit light/dark, without persistence. This is
@@ -492,11 +498,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // stay stable across profile switches).
   const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
 
-  const setTheme = useCallback((name: string) => {
+  const setTheme = useCallback((name: string, { publish = true }: { publish?: boolean } = {}) => {
     const next = normalizeSkin(name)
     setPreview(null)
     setThemeNameState(next)
     skinPref.assign(liveProfile(), next)
+
+    // Fire-and-forget on purpose: the pick is local and must never block on the
+    // network. A failed PUT simply leaves the Dashboard on its own theme.
+    if (publish) {
+      void publishDashboardTheme(next, { profile: liveProfile() })
+    }
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
@@ -518,10 +530,37 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (pendingSkin) {
-      setTheme(pendingSkin)
+      // publish: false — this value came FROM another surface (a backend skin,
+      // or the Dashboard itself via ingestDashboardTheme). Publishing it back
+      // would echo the change to the very surface that sent it.
+      setTheme(pendingSkin, { publish: false })
       $pendingSkinApply.set(null)
     }
   }, [pendingSkin, setTheme])
+
+  // The Dashboard is a browser tab: a theme picked there while this window sat
+  // in the background must land when the user comes back, so refresh on focus
+  // and on tab-visibility returns. Reading the profile through the atom (not a
+  // reactive dep) keeps the listeners registered exactly once.
+  useEffect(() => {
+    const onWindowFocus = () => {
+      void refreshDashboardTheme(liveProfile())
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshDashboardTheme(liveProfile())
+      }
+    }
+
+    window.addEventListener('focus', onWindowFocus)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      window.removeEventListener('focus', onWindowFocus)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.

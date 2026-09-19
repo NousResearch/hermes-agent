@@ -57,6 +57,7 @@ import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
+import { isDashboardSyncEnabled, setDashboardSyncEnabled } from '@/themes/dashboard-sync'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
@@ -112,6 +113,35 @@ function ResumeLastSessionSetting() {
       label={a.resumeLastSessionTitle}
       onChange={update}
     />
+  )
+}
+
+// dashboard-sync.ts stores the per-profile opt-out. The switch renders from
+// the stored value (default on) and re-reads when the active profile changes,
+// so switching profiles can never show a stale state.
+function DashboardSyncSetting({ profile }: { profile: string }) {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const [enabled, setEnabled] = useState(() => isDashboardSyncEnabled(profile))
+
+  useEffect(() => {
+    setEnabled(isDashboardSyncEnabled(profile))
+  }, [profile])
+
+  const update = (on: boolean) => {
+    setDashboardSyncEnabled(profile, on)
+    setEnabled(on)
+  }
+
+  return (
+    <div id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.dashboardSync)}>
+      <ToggleRow
+        checked={enabled}
+        description={a.dashboardSyncDesc}
+        label={a.dashboardSyncTitle}
+        onChange={update}
+      />
+    </div>
   )
 }
 
@@ -625,6 +655,8 @@ export function AppearanceSettings() {
             }
             wide
           />
+
+          <DashboardSyncSetting profile={activeProfileKey} />
 
           <ListRow
             action={

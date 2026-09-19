@@ -780,7 +780,8 @@ class _Runtime:
             # One in-flight pass per process; the next hook fire picks up what is pending.
             if self._send_thread is None or not self._send_thread.is_alive():
                 self._send_thread = threading.Thread(
-                    target=self._run_send_pass, args=(resolved.endpoint,),
+                    target=contextvars.copy_context().run,
+                    args=(self._run_send_pass, resolved.endpoint),
                     name="hermes-shared-metrics-send", daemon=True,
                 )
                 self._send_thread.start()

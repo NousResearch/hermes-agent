@@ -7,6 +7,8 @@ and the PINNED_THRESHOLDS escape-hatch for read_file.
 
 import dataclasses
 import math
+from decimal import Decimal
+from fractions import Fraction
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +21,8 @@ from tools.budget_config import (
     PINNED_THRESHOLDS,
     BudgetConfig,
     budget_for_context_window,
+    budget_with_persist_threshold,
+    normalize_persist_threshold,
 )
 
 
@@ -238,3 +242,138 @@ class TestMcpPrefixThreshold:
         cfg = budget_for_context_window(16_384)  # scaled default < 50K
         assert cfg.default_result_size < 50_000
         assert cfg.resolve_threshold("mcp_tool") == cfg.default_result_size
+
+
+# ---------------------------------------------------------------------------
+# budget_with_persist_threshold() — explicit user-configured cap
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetWithPersistThreshold:
+    """Explicit tools.tool_result_persist_threshold_chars path.
+
+    Overrides ONLY the per-result cap; turn budget and preview size keep the
+    context-scaled values (small-model turn-budget protection must survive),
+    and the pinned/registry guards stay active.
+    """
+
+    def test_small_model_turn_budget_protection_survives(self):
+        # 65K-token model: scaled turn budget is ~78,643 chars. An explicit
+        # per-result cap must NOT reset it back to the 200K default.
+        cfg = budget_with_persist_threshold(20_000, context_length=65_536)
+        assert cfg.default_result_size == 20_000
+        assert cfg.turn_budget == int(65_536 * 4 * 0.30)  # 78,643
+        assert cfg.turn_budget < DEFAULT_TURN_BUDGET_CHARS
+        assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
+
+    def test_large_context_turn_budget_caps_at_default(self):
+        cfg = budget_with_persist_threshold(20_000, context_length=1_000_000)
+        assert cfg.default_result_size == 20_000
+        assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
+        assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
+
+    def test_unknown_context_keeps_historical_defaults(self):
+        cfg = budget_with_persist_threshold(20_000)
+        assert cfg.default_result_size == 20_000
+        assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
+        assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
+
+    def test_explicit_threshold_wins_over_default(self):
+        cfg = budget_with_persist_threshold(20_000)
+        assert cfg.default_result_size == 20_000
+        with patch("tools.registry.registry") as mock_registry:
+            mock_registry.get_max_result_size.return_value = 100_000
+            assert cfg.resolve_threshold("terminal") == 20_000
+
+    def test_smaller_than_registry_cap_wins(self):
+        cfg = budget_with_persist_threshold(30_000)
+        with patch("tools.registry.registry") as mock_registry:
+            # web/terminal/x_search register 100K; explicit 30K must win.
+            mock_registry.get_max_result_size.return_value = 100_000
+            assert cfg.resolve_threshold("web_search") == 30_000
+
+    def test_larger_than_registry_cap_is_bounded(self):
+        cfg = budget_with_persist_threshold(200_000)
+        with patch("tools.registry.registry") as mock_registry:
+            mock_registry.get_max_result_size.return_value = 100_000
+            assert cfg.resolve_threshold("terminal") == 100_000
+
+    def test_pinned_read_file_stays_exempt(self):
+        cfg = budget_with_persist_threshold(1)
+        assert cfg.resolve_threshold("read_file") == float("inf")
+
+    def test_nonpositive_input_is_treated_as_unset(self):
+        # A 0/negative value must NOT clamp to 1 (which would persist almost
+        # every tool result); it is treated as "not configured" and returns the
+        # context-scaled budget unchanged.
+        assert budget_with_persist_threshold(0) is DEFAULT_BUDGET
+        assert budget_with_persist_threshold(-10) is DEFAULT_BUDGET
+        assert budget_with_persist_threshold(None) is DEFAULT_BUDGET
+        scaled = budget_with_persist_threshold(0, context_length=65_536)
+        assert scaled.turn_budget == int(65_536 * 4 * 0.30)
+
+    def test_normalize_rejects_bool(self):
+        # bool is an int subclass: int(True) == 1 would persist almost every
+        # tool result. Rejected even when set programmatically (the executor
+        # path), not just via YAML parsing.
+        assert normalize_persist_threshold(True) is None
+        assert normalize_persist_threshold(False) is None
+
+    def test_normalize_rejects_float(self):
+        # int(1.5) == 1 silently truncates into a near-universal persist
+        # threshold; only ints and whole-number strings are accepted.
+        assert normalize_persist_threshold(1.5) is None
+        assert normalize_persist_threshold(20_000.0) is None
+
+    def test_normalize_accepts_positive_int_and_whole_str(self):
+        assert normalize_persist_threshold(20_000) == 20_000
+        assert normalize_persist_threshold("20000") == 20_000
+
+    def test_normalize_rejects_nonpositive_and_garbage(self):
+        assert normalize_persist_threshold(0) is None
+        assert normalize_persist_threshold(-1) is None
+        assert normalize_persist_threshold("abc") is None
+        assert normalize_persist_threshold([]) is None
+        assert normalize_persist_threshold("20.5") is None  # int() raises
+
+    def test_normalize_rejects_decimal_fraction_bytes(self):
+        # Regression: int(Decimal("1.5")) == 1, int(Fraction(3, 2)) == 1 and
+        # int(b"20000") all silently coerce -- the same truncation trap as
+        # float/bool. Only non-bool int and whole-number str are accepted.
+        assert normalize_persist_threshold(Decimal("1.5")) is None
+        assert normalize_persist_threshold(Decimal("20000.0")) is None
+        assert normalize_persist_threshold(Fraction(3, 2)) is None
+        assert normalize_persist_threshold(Fraction(20000, 1)) is None
+        assert normalize_persist_threshold(b"20000") is None
+
+    def test_normalize_rejects_non_whole_strings(self):
+        # "20.5" already covered above; exponent/scientific notation and
+        # empty/whitespace-only strings must not reach int() either.
+        assert normalize_persist_threshold("1e4") is None
+        assert normalize_persist_threshold("") is None
+        assert normalize_persist_threshold("   ") is None
+        assert normalize_persist_threshold("+20000") == 20_000  # whole, signed
+        assert normalize_persist_threshold(" 20000 ") == 20_000  # stripped
+
+    def test_factory_rejects_decimal_fraction_set_programmatically(self):
+        scaled = budget_with_persist_threshold(Decimal("1.5"), context_length=65_536)
+        assert scaled.turn_budget == int(65_536 * 4 * 0.30)
+        assert scaled.default_result_size == int(65_536 * 4 * 0.15)
+        scaled = budget_with_persist_threshold(Fraction(3, 2), context_length=65_536)
+        assert scaled.default_result_size == int(65_536 * 4 * 0.15)
+
+    def test_factory_rejects_bool_set_programmatically(self):
+        # Regression: budget_with_persist_threshold(True) used to yield
+        # default_result_size == 1 via int(True). Must return the
+        # context-scaled budget unchanged instead.
+        assert budget_with_persist_threshold(True) is DEFAULT_BUDGET
+        assert budget_with_persist_threshold(False) is DEFAULT_BUDGET
+        scaled = budget_with_persist_threshold(True, context_length=65_536)
+        assert scaled.turn_budget == int(65_536 * 4 * 0.30)
+        assert scaled.default_result_size == int(65_536 * 4 * 0.15)
+        assert scaled.default_result_size != 1
+
+    def test_factory_rejects_float_set_programmatically(self):
+        scaled = budget_with_persist_threshold(20_000.0, context_length=65_536)
+        assert scaled.turn_budget == int(65_536 * 4 * 0.30)
+        assert scaled.default_result_size == int(65_536 * 4 * 0.15)

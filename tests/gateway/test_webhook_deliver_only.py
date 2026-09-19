@@ -215,13 +215,13 @@ class TestDeliverOnlySecurityInvariants:
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            # No signature header → reject
+            # No signature header → reject (404, same as an unknown route)
             resp = await cli.post(
                 "/webhooks/r",
                 json={},
                 headers={"X-GitHub-Delivery": "d-noauth-1"},
             )
-            assert resp.status == 401
+            assert resp.status == 404
 
         # Target never called
         mock_target.send.assert_not_awaited()

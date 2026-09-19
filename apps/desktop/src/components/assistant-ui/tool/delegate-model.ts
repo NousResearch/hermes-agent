@@ -19,6 +19,8 @@ export interface DelegateRow {
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
   status: DelegateRowStatus
+  /** Millisecond epoch supplied by the backend for focus/remount-safe timing. */
+  startedAt?: number
 }
 
 /**
@@ -108,7 +110,8 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
     id: live.id || fallbackId,
     model: live.model,
     sessionId: live.sessionId,
-    status: live.status
+    status: live.status,
+    startedAt: live.startedAt
   }
 }
 

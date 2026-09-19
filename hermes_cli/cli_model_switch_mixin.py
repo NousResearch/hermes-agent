@@ -152,6 +152,16 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         _cprint("    Prompt caching: enabled")
     if result.warning_message:
         _cprint(f"    ⚠ {result.warning_message}")
+    # Remaining quota / balance for the NEW route. Bounded + fail-open, mirroring the gateway
+    # confirmation: a provider with no limits API (or a slow one) contributes nothing.
+    from agent.account_usage import account_usage_lines
+    quota_lines = account_usage_lines(
+        result.target_provider, base_url=result.base_url or cli.base_url or "",
+        api_key=result.api_key or cli.api_key or "")
+    if quota_lines:
+        _cprint("")
+        for line in quota_lines:
+            _cprint(f"    {line}")
 
 
 def _switch_model_from(

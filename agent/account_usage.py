@@ -601,9 +601,88 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_DEEPSEEK_BALANCE_PATH = "/user/balance"
+
+
+def _deepseek_balance_url(base_url: Optional[str]) -> str:
+    """DeepSeek's balance API hangs off the API ROOT (``/user/balance``) while the configured
+    base_url carries a route suffix — ``https://api.deepseek.com/v1`` by default, ``/beta`` or
+    ``/anthropic`` on the other documented routes — so the endpoint is rebuilt from the URL origin.
+    """
+    raw = str(base_url or "").strip()
+    if not raw:
+        return f"https://api.deepseek.com{_DEEPSEEK_BALANCE_PATH}"
+    if "://" not in raw:
+        raw = "https://" + raw
+    scheme, _, rest = raw.partition("://")
+    origin = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    return f"{scheme}://{origin}{_DEEPSEEK_BALANCE_PATH}"
+
+
+def _deepseek_amount(value: Any) -> Optional[str]:
+    """DeepSeek quotes balance amounts as decimal STRINGS; an unparseable value is shown verbatim
+    rather than dropped (a missing balance is worse than an oddly formatted one)."""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            return text
+    return f"{value:,.2f}" if _is_finite_num(value) else None
+
+
+def _deepseek_is_zero(amount: str) -> bool:
+    try:
+        return float(amount) == 0.0
+    except ValueError:
+        return False
+
+
+def _deepseek_balance_line(info: dict) -> Optional[str]:
+    """One line per currency; the granted/topped-up split rides along when the API reports it (a
+    granted balance expires, a topped-up one does not) — a zero part is noise, not information."""
+    total = _deepseek_amount(info.get("total_balance"))
+    if total is None:
+        return None
+    parts = [
+        f"{label} {amount}" for label, amount in (
+            ("granted", _deepseek_amount(info.get("granted_balance"))),
+            ("topped up", _deepseek_amount(info.get("topped_up_balance"))),
+        ) if amount and not _deepseek_is_zero(amount)
+    ]
+    currency = str(info.get("currency") or "").strip()
+    breakdown = f" ({' • '.join(parts)})" if parts else ""
+    return f"Balance: {total}{f' {currency}' if currency else ''}{breakdown}"
+
+
+def _fetch_deepseek_account_usage(base_url: Optional[str] = None, api_key: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
+    """``GET /user/balance`` — prepaid credit, so it renders as balance details (no quota window)."""
+    runtime = resolve_runtime_provider(requested="deepseek", explicit_base_url=base_url, explicit_api_key=api_key)
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    payload = _get_json(
+        _deepseek_balance_url(runtime.get("base_url") or base_url),
+        {"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=10.0,
+    )
+    details: list[str] = []
+    for info in payload.get("balance_infos") or []:
+        line = _deepseek_balance_line(info) if isinstance(info, dict) else None
+        if line:
+            details.append(line)
+    if payload.get("is_available") is False:
+        # Balance too low for API calls; the chat request would fail with a billing error.
+        details.append(_DEPLETED_LINE)
+    if not details:
+        return None  # nothing to say — better than a header with no numbers under it
+    return _snapshot("deepseek", "balance_api", [], details, title="DeepSeek balance")
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "deepseek": _fetch_deepseek_account_usage,
 }
 
 
@@ -615,3 +694,37 @@ def fetch_account_usage(
         return fetcher(base_url, api_key) if fetcher else None
     except Exception:
         return None
+
+
+# Model-switch confirmations render this block inline, so a provider whose usage API is slow must
+# not stall the confirmation: the fetch is wall-clock bounded and the worker is abandonable.
+_INLINE_USAGE_TIMEOUT = 5.0
+
+
+def account_usage_lines(
+    provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+    markdown: bool = False, timeout: float = _INLINE_USAGE_TIMEOUT,
+) -> list[str]:
+    """Rendered remaining-quota / balance lines for the route in *provider*, or ``[]``.
+
+    Shared by the model-switch confirmations (gateway + CLI): a provider with no limits API, an
+    unauthenticated route, a slow API or any error contributes nothing — a switch confirmation must
+    never fail or hang on a usage fetch. The worker is a daemon (``tools.daemon_pool``) so a wedged
+    request cannot hold the process open after the timeout abandons it.
+    """
+    if not str(provider or "").strip():
+        return []
+    try:
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        pool = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="account-usage")
+        try:
+            snapshot = pool.submit(
+                fetch_account_usage, provider, base_url=base_url, api_key=api_key,
+            ).result(timeout=timeout)
+        finally:
+            # Never block the caller on a slow provider API: the timeout above is the deadline.
+            pool.shutdown(wait=False)
+    except Exception:
+        logger.debug("account usage unavailable for %s (fail-open)", provider, exc_info=True)
+        return []
+    return render_account_usage_lines(snapshot, markdown=markdown)

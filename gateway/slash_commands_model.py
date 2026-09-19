@@ -303,6 +303,18 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.prompt_caching_enabled"))
         if result.warning_message:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+        # Remaining quota / balance for the NEW route, so the user sees what the switch costs them
+        # before the next turn. Off-loop (network I/O) and fail-open: a provider with no limits API,
+        # an unauthenticated route or a slow API adds nothing to the confirmation.
+        from agent.account_usage import account_usage_lines
+        quota_lines = await asyncio.to_thread(
+            account_usage_lines, result.target_provider,
+            base_url=result.base_url or ctx.current_base_url or "",
+            api_key=result.api_key or ctx.current_api_key or "", markdown=True,
+        )
+        if quota_lines:
+            lines.append("")
+            lines.extend(quota_lines)
         if ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:

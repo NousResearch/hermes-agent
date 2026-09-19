@@ -730,21 +730,15 @@ class CLIInfoMixin:
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 
-        # Account limits — fetched off-thread with a hard timeout so slow provider APIs don't
+        # Account limits — the shared bounded fetch (10s, fail-open) so slow provider APIs don't
         # hang the prompt. Lazy import: pulls the OpenAI SDK chain.
         provider = self._agent_or_self("provider")
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
-                        api_key=self._agent_or_self("api_key"),
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+        from agent.account_usage import account_usage_lines
+        account_lines = [
+            f"  {line}" for line in account_usage_lines(
+                provider, base_url=self._agent_or_self("base_url"),
+                api_key=self._agent_or_self("api_key"), timeout=10.0)
+        ]
         if account_lines:
             print()
             for line in account_lines:

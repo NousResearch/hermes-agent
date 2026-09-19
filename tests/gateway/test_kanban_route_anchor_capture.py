@@ -42,5 +42,6 @@ def test_slash_subscription_keeps_the_routed_source_owner(tmp_path, monkeypatch)
     with kbc.connect() as conn:
         sub = kbn.list_notify_subs(conn, task)[0]
     assert sub["notifier_profile"] == source.profile
+    assert sub["delivery_mode"] == "notify"
     assert all(sub["delivery_metadata"][key] == getattr(source, key)
                for key in ("scope_id", "parent_chat_id"))

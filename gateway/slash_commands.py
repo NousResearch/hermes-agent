@@ -376,7 +376,7 @@ class GatewaySlashCommandsMixin(
         return output or t("gateway.kanban.no_output")
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
-        """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
+        """Subscribe the event's chat to *task_id* notifications. False when the
         source has no platform/chat to route back to."""
         source = event.source
 
@@ -405,8 +405,9 @@ class GatewaySlashCommandsMixin(
                     # the same session key only when the alt id survives the round-trip.
                     user_id_alt=_field("user_id_alt"),
                     notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                    # Subscribing from chat: deliver the passive message and wake the destination agent.
-                    delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
+                    # Leave delivery_mode unset so normal chat subscriptions are passive notify,
+                    # while stateless api_server keeps its add_notify_sub() wake default.
+                    delivery_metadata=delivery_metadata)
             finally:
                 conn.close()
         await asyncio.to_thread(_sub)

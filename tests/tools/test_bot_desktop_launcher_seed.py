@@ -22,8 +22,10 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "", profile_
         exe.write_text("#!/bin/sh\n", encoding="utf-8")
         exe.chmod(0o755)
     # The script's own tooling (mkdir, sed, cat, awk...) symlinked in, so PATH need not contain the
-    # host's /usr/bin where a real chrome/thunar would leak into the dock under test.
-    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "xauth", "od", "tr", "awk"):
+    # host's /usr/bin where a real chrome/thunar would leak into the dock under test. Deliberately
+    # NOT xauth/od: seeding the config tree must not need X11 tooling (the cookie is generated only
+    # once Xvnc actually starts).
+    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "tr", "awk"):
         real = shutil.which(tool)
         if real and not (bindir / tool).exists():
             (bindir / tool).symlink_to(real)

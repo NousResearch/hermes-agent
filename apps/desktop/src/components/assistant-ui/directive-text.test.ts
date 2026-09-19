@@ -60,6 +60,11 @@ describe('inline skill references', () => {
     expect(skills('please run /clean on this')).toEqual(['/clean'])
   })
 
+  it('keeps a digit-prefixed skill a chip in the sent message', () => {
+    expect(skills('/03-gh-go')).toEqual(['/03-gh-go'])
+    expect(skills('use /03-gh-go for this')).toEqual(['/03-gh-go'])
+  })
+
   it('keeps the surrounding prose as text around the chip', () => {
     const segments = hermesDirectiveFormatter.parse('tidy this with /clean thanks')
 

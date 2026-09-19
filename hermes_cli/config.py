@@ -319,7 +319,7 @@ def get_managed_update_command() -> Optional[str]:
 # "apt" is the Termux APT distribution identifier, not a generic Debian/Ubuntu signal; another
 # APT distribution needs its own method. "home-manager" is listed because the managed marker can
 # return it and a stamp must name every method this function returns.
-_SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-manager", "git", "unknown"})
+_SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-manager", "homebrew", "git", "unknown"})
 
 
 def _install_method_stamp(path: Path) -> Optional[str]:
@@ -331,9 +331,10 @@ def _install_method_stamp(path: Path) -> Optional[str]:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: apt/docker/nix/nixos/home-manager/git/unknown.
+    """Detect how Hermes was installed: apt/docker/nix/nixos/home-manager/homebrew/git/unknown.
     Order: code-scoped ``<install tree>/.install_method`` stamp (authoritative) -> legacy
-    ``$HERMES_HOME/.install_method`` -> managed marker -> /nix/store path -> .git dir -> unknown.
+    ``$HERMES_HOME/.install_method`` -> managed marker -> /nix/store path -> Homebrew Cellar
+    layout -> .git dir -> unknown.
     The stamp lives next to the code because HERMES_HOME is shared data: a container and a host
     install can bind-mount the same home, so a home-scoped ``docker`` stamp would make the host
     ``hermes update`` refuse to run. A legacy ``docker`` value is therefore ignored unless we are
@@ -344,6 +345,10 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     the code; - the published ``nousresearch/hermes-agent`` image bakes a ``docker`` stamp into
     ``/opt/hermes`` at build time. An unsupported manual install dropped into a container (no stamp) falls
     through to the ``.git`` checks and behaves like any off-path install. See issue #34397.
+
+    The official homebrew/core formula has no stamp and no ``.git``: it unpacks into
+    ``<prefix>/Cellar/hermes-agent/<version>/libexec/...``, and the Cellar layout itself is the
+    ownership signal (#101676).
     """
     # The stamp is a property of the running code tree (parent of hermes_cli/), NOT of $HERMES_HOME,
     # so it survives two installs sharing a home.
@@ -368,6 +373,15 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     except OSError:
         pass
 
+    # Homebrew owns everything under its Cellar: an in-place update there would fight the
+    # package manager. Both Apple Silicon (/opt/homebrew/Cellar) and Intel (/usr/local/Cellar)
+    # prefixes carry the same layout.
+    try:
+        if _is_homebrew_install(root):
+            return "homebrew"
+    except OSError:
+        pass
+
     # A .git directory, or a ``gitdir:`` pointer file for worktrees.
     git_path = root / ".git"
     try:
@@ -376,6 +390,15 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     except OSError:
         pass
     return "unknown"
+
+
+def _is_homebrew_install(project_root: Path) -> bool:
+    """True when the install tree lives under ``Cellar/hermes-agent`` (official formula layout)."""
+    parts = project_root.resolve().parts
+    return any(
+        parts[index] == "Cellar" and parts[index + 1] == "hermes-agent"
+        for index in range(len(parts) - 1)
+    )
 
 
 def _running_in_container() -> bool:
@@ -396,6 +419,7 @@ def is_nix_install_method(method: str) -> bool:
 _UPDATE_COMMAND_BY_METHOD = {
     "docker": "docker pull nousresearch/hermes-agent:latest",
     "apt": "pkg upgrade hermes-agent",  # "apt" == Termux APT by contract; uses Termux's `pkg`.
+    "homebrew": "brew upgrade hermes-agent",
 }
 
 

@@ -67,6 +67,23 @@ _monitor_stop = threading.Event()
 
 _LIVE_STATES = {"running", "stalling", "finalizing"}
 _ACTIVE_STATES = ("running", "stalling")
+
+# Terminal durable state values (issue 115556). The state column is lifecycle,
+# not outcome: a finished row must land in one of these so liveness checks never
+# read a finalized row (completed_at set) as live. Outcome detail such as error,
+# unknown, stalled or interrupted stays in the event and result payload status.
+_TERMINAL_DELEGATION_STATES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _durable_terminal_state(status):
+    "Map a completion outcome to its terminal durable state."
+    if (status or "completed") == "completed":
+        return "completed"
+    if status in ("cancelled", "interrupted"):
+        return "cancelled"
+    return "failed"
+
+
 # Routing origin persisted at dispatch so a restart-recovered completion can
 # reconstruct a full SessionSource (scope_id drives relay tenant egress).
 _ROUTING_KEYS = ("scope_id", "user_id", "user_name")
@@ -187,7 +204,7 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
-            (event.get("status", "completed"), event.get("completed_at", now), now,
+            (_durable_terminal_state(event.get("status", "completed")), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]))
 
 
@@ -257,7 +274,7 @@ def recover_abandoned_delegations() -> int:
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
             result = {"status": "unknown", "summary": None, "error": event["error"],
                       **({"results": recovered_results} if recovered_results else {})}
-            conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
+            conn.execute("""UPDATE async_delegations SET state='failed', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
             recovered += 1

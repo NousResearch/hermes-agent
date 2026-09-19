@@ -15,6 +15,7 @@ export {
 export type { UnspokenTurnSpeech } from './parts'
 export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
 export {
+  restoredToolStartPayload,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,
@@ -26,4 +27,5 @@ export {
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'
 export type { PendingClarifyProjection, SettledClarifyProjection } from './tool-parts'
+export { isToolCompletePayload, isToolStartPayload } from './types'
 export type { ChatMessage, ChatMessagePart, TimelinePartMetadata, ToolRowPayload } from './types'

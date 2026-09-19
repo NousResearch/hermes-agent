@@ -555,7 +555,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   }
 }
 
-/** `pet.select`'s result on success; `ok: false` alone when there was nothing to adopt or the select failed. */
+/** `pet.select`'s result (its own `ok`), or `{ ok: false }` alone when there was nothing to adopt. */
 export type AdoptOutcome = { ok: false } | PetSelectResult
 
 /**

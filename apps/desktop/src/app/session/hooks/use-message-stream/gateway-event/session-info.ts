@@ -1,3 +1,5 @@
+import type { SessionInfoPayload } from '@hermes/shared'
+
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -96,9 +98,8 @@ function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined
  * keeping the durable selection untouched. A live turn on the old runtime
  * (overlap window during a manual switch) refuses the adoption.
  */
-function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
+function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext, payload: SessionInfoPayload | undefined): boolean {
   const { deps, explicitSid, isActiveEvent } = ctx
-  const payload = ctx.event.type === 'session.info' ? ctx.event.payload : undefined
 
   if (!explicitSid || isActiveEvent || typeof payload?.stored_session_id !== 'string') {
     return false
@@ -151,7 +152,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // whether this event is the rebuilt runtime announcing itself for the
     // conversation already on screen — if so, re-bind the pane so every
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
-    const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+    const rebound = maybeRebindPaneToRebuiltRuntime(ctx, payload)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.

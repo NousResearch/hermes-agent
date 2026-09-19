@@ -5,6 +5,7 @@ import { isTodoToolName, parseTodos } from '@/lib/todos'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
+import { isToolCompletePayload, isToolStartPayload } from './types'
 import type { ChatMessage, ChatMessagePart, ToolRowPayload } from './types'
 
 function toolId(payload: ToolRowPayload | undefined): string {
@@ -77,7 +78,7 @@ function toolPayloadMatchValues(payload: ToolRowPayload | undefined): string[] {
     firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
-  const start = payload && 'context' in payload ? payload : undefined
+  const start = payload && isToolStartPayload(payload) ? payload : undefined
 
   return collectToolMatchValues(query, start?.context?.trim() ?? '', start?.preview?.trim() ?? '')
 }
@@ -232,7 +233,7 @@ function findToolPartIndex(
 // Carry todo state across sparse progress payloads: if this todo event lacks
 // a `todos` field, fall back to whatever we previously stored on the part.
 function carryTodos(payload: ToolRowPayload | undefined, ...prev: unknown[]): { todos: unknown } | undefined {
-  if (payload && 'todos' in payload && payload.todos !== null) {
+  if (payload && isToolCompletePayload(payload) && payload.todos !== null) {
     const next = parseTodos(payload.todos)
 
     return next === null ? undefined : { todos: next }
@@ -256,7 +257,7 @@ function carryTodos(payload: ToolRowPayload | undefined, ...prev: unknown[]): { 
 function toolArgs(payload: ToolRowPayload | undefined, prevArgs?: unknown): Record<string, unknown> {
   const prev = parseMaybeJsonObject(prevArgs)
   const eventArgs = liveToolArgs(payload)
-  const start = payload && 'context' in payload ? payload : undefined
+  const start = payload && isToolStartPayload(payload) ? payload : undefined
 
   return {
     ...prev,
@@ -270,7 +271,7 @@ function toolArgs(payload: ToolRowPayload | undefined, prevArgs?: unknown): Reco
 /** The wire has no failure flag on `tool.complete`: a failed tool call answers with a result
  *  object whose `error` is a non-empty string (the field the gateway's own previews read). */
 export function toolResultErrorText(result: unknown): string {
-  const error = recordFromUnknown(result)?.error
+  const error = parseMaybeJsonObject(result).error
 
   return typeof error === 'string' ? error.trim() : ''
 }
@@ -279,10 +280,9 @@ function toolResultMetadata(
   payload: ToolCompletePayload | undefined,
   previous: ToolResultMetadata | undefined,
   prevResult?: unknown,
-  prevArgs?: unknown
+  prevArgs?: unknown,
+  error = ''
 ): ToolResultMetadata {
-  const error = toolResultErrorText(payload?.result)
-
   return {
     ...previous,
     ...(payload?.inline_diff != null ? { inline_diff: payload.inline_diff } : {}),
@@ -325,7 +325,8 @@ export function upsertToolPart(
   const prevArgs = prev && 'args' in prev ? prev.args : undefined
   const prevResult = prev && 'result' in prev ? prev.result : undefined
   const args = toolArgs(payload, prevArgs)
-  const complete = payload && 'result' in payload ? payload : undefined
+  const complete = payload && isToolCompletePayload(payload) ? payload : undefined
+  const error = toolResultErrorText(complete?.result)
 
   const id =
     stableId ||
@@ -342,11 +343,8 @@ export function upsertToolPart(
     ...(phase === 'complete' && {
       completedAt: occurredAt,
       result: complete?.result != null ? complete.result : prevResult,
-      toolResultMetadata: toolResultMetadata(complete, prev?.toolResultMetadata, prevResult, prevArgs),
-      isError:
-        complete?.result != null
-          ? toolResultErrorText(complete.result) !== ''
-          : Boolean(prev && 'isError' in prev && prev.isError)
+      toolResultMetadata: toolResultMetadata(complete, prev?.toolResultMetadata, prevResult, prevArgs, error),
+      isError: complete?.result != null ? error !== '' : Boolean(prev && 'isError' in prev && prev.isError)
     })
   } satisfies ChatMessagePart
 
@@ -577,6 +575,12 @@ export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], r
  * tool call, attach it to trailing assistant commentary or seed one tail row as
  * a last resort.
  */
+/** A `tool.start`-shaped row for a blocking request whose real start event was missed;
+ *  `context: null` is what marks it as a start payload for the row builders. */
+export function restoredToolStartPayload(name: string, toolId: string, args: ToolStartPayload['args']): ToolStartPayload {
+  return { args, args_text: null, context: null, name, preview: null, tool_id: toolId }
+}
+
 export function restorePendingClarifyToolCall(
   messages: ChatMessage[],
   payload: ToolStartPayload,

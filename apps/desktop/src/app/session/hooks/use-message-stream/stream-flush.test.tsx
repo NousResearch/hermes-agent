@@ -1,9 +1,10 @@
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { messageDeltaPayload } from '@/test/contract'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
-import { messageDeltaPayload } from '@/test/contract'
 
 const SID = 'stream-session'
 

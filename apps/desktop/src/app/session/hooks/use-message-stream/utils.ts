@@ -1,5 +1,6 @@
 import type { SessionInfoPayload, SubagentStatus } from '@hermes/shared'
 
+import { isToolCompletePayload, isToolStartPayload } from '@/lib/chat-messages'
 import type { ToolRowPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { isTodoToolName } from '@/lib/todos'
@@ -179,8 +180,8 @@ export function delegateTaskPayloads(
     return []
   }
 
-  const start = 'context' in payload ? payload : undefined
-  const complete = 'result' in payload ? payload : undefined
+  const start = isToolStartPayload(payload) ? payload : undefined
+  const complete = isToolCompletePayload(payload) ? payload : undefined
   const args = parseMaybeRecord(payload.args)
   const result = parseMaybeRecord(complete?.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []

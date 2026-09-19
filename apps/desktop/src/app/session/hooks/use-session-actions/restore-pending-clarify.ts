@@ -1,5 +1,6 @@
 import type { ToolStartPayload } from '@hermes/shared'
 
+import { restoredToolStartPayload } from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
@@ -54,8 +55,9 @@ export function restorePendingClarifyFromSnapshot(
 }
 
 export function pendingClarifyToolPayload(request: ClarifyRequest): ToolStartPayload {
-  return {
-    args:
+  return restoredToolStartPayload(
+    'clarify',
+    request.requestId,
       request.kind === 'batch'
         ? {
             questions: request.questions.map(question => ({
@@ -68,11 +70,6 @@ export function pendingClarifyToolPayload(request: ClarifyRequest): ToolStartPay
             choices: request.choices ?? [],
             ...(request.multi_select ? { multi_select: true } : {}),
             question: request.question
-          },
-    args_text: null,
-    context: null,
-    name: 'clarify',
-    preview: null,
-    tool_id: request.requestId
-  }
+          }
+  )
 }

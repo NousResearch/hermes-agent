@@ -56,3 +56,13 @@ export type ChatMessage = {
  * payloads, plus the desktop's own restored blocking rows (clarify and connection cards),
  * which it shapes as a `ToolStartPayload`. */
 export type ToolRowPayload = ToolCompletePayload | ToolStartPayload
+
+// `context` and `result` are required (nullable) on their generated shapes and absent on the
+// other, so key presence is the reliable discriminant; restored rows set `context: null` for this.
+export function isToolStartPayload(payload: ToolRowPayload): payload is ToolStartPayload {
+  return 'context' in payload
+}
+
+export function isToolCompletePayload(payload: ToolRowPayload): payload is ToolCompletePayload {
+  return 'result' in payload
+}

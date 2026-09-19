@@ -32,8 +32,6 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'setup.ready') {
-    const payload = event.payload
-
     // The boot bootstrap (hermes_cli/free_tier_bootstrap.py) resolved the
     // free-tier identity and the inference route, and broadcast once. The
     // payload is only a hint — the status snapshot re-reads `setup.status` /
@@ -48,8 +46,6 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'skin.changed') {
-    const payload = event.payload
-
     // A runtime skin switch (Hermes activating an authored skin, or `/skin`
     // on another surface). Only the active source+profile's change repaints.
     if (fromActiveSource()) {
@@ -73,9 +69,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // gateways) watch their own homes.
     if (fromActiveSource()) {
       if (event.type === 'pet.changed') {
-        const payload = event.payload
-
-        notifyPetChanged(payload)
+        notifyPetChanged(event.payload)
       } else if (event.type === 'cron.changed') {
         notifyCronChanged()
       } else if (event.type === 'platforms.changed') {

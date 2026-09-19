@@ -9,6 +9,11 @@ import {
   FirstRunSetupResetError,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
+import {
+  REMOTE_ONLY_LOCAL_BOOTSTRAP_MESSAGE,
+  RemoteOnlyLocalBootstrapError,
+  remoteOnlyLocalBootstrapReason
+} from './remote-only-local-bootstrap'
 
 const bootstrapBackend = {
   activeRoot: '/tmp/hermes-home/hermes-agent',
@@ -228,4 +233,60 @@ test('reset rejects with a typed error and never enters either backend', async (
   await assert.rejects(pending, error => error instanceof FirstRunSetupResetError && error.firstRunSetupReset)
   assert.equal(options.connectRemote.mock.calls.length, 0)
   assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('a remote-gateway Desktop never falls into a local install when its remote stops resolving', async () => {
+  // #112514: the user picked the remote gateway at setup, but this launch's
+  // remote no longer resolves. Installing the local runtime anyway is the exact
+  // "install I will never use" the report is about, so the boot must stop at the
+  // decision instead of walking into the local steps.
+  const options = startupOptions({
+    localBootstrapBlockReason: () => remoteOnlyLocalBootstrapReason(true),
+    resolveRemote: vi.fn(async () => null)
+  })
+
+  await assert.rejects(runPrimaryBackendStartup(options), error => {
+    return error instanceof RemoteOnlyLocalBootstrapError && error.localBootstrapSkipped === true
+  })
+  assert.equal(options.waitForLocalStart.mock.calls.length, 0)
+  assert.equal(options.prepareLocalBackend.mock.calls.length, 0)
+  assert.equal(options.waitForDecision.mock.calls.length, 0)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('a local Desktop keeps the full local path with the guard wired in', async () => {
+  // Protection for the default: the option present-but-null is inert, so the
+  // first-run choice, update wait, runtime resolve and install all still happen.
+  const runtimeBackend = { ...bootstrapBackend, command: 'hermes' }
+  const options = startupOptions({
+    ensureLocalRuntime: vi.fn(async () => runtimeBackend),
+    localBootstrapBlockReason: () => remoteOnlyLocalBootstrapReason(false)
+  })
+
+  assert.deepEqual(await runPrimaryBackendStartup(options), { kind: 'local', backend: runtimeBackend })
+  assert.deepEqual(options.waitForLocalStart.mock.calls, [[]])
+  assert.deepEqual(options.prepareLocalBackend.mock.calls, [[]])
+  assert.deepEqual(options.waitForDecision.mock.calls, [[bootstrapBackend]])
+  assert.deepEqual(options.ensureLocalRuntime.mock.calls, [[bootstrapBackend]])
+})
+
+test('the remote-only choice is re-read from persisted state on later launches', async () => {
+  // The choice is the Desktop's persisted primary connection, not process
+  // memory: one store, two cold launches. Launch 1 installs locally; after the
+  // user connects their gateway, launch 2 starts no local install at all.
+  const store = { primaryIsRemoteGateway: false }
+
+  const launch = () =>
+    runPrimaryBackendStartup(
+      startupOptions({
+        localBootstrapBlockReason: () => remoteOnlyLocalBootstrapReason(store.primaryIsRemoteGateway),
+        resolveRemote: vi.fn(async () => null)
+      })
+    )
+
+  assert.equal((await launch()).kind, 'local')
+
+  store.primaryIsRemoteGateway = true
+
+  await assert.rejects(launch(), RemoteOnlyLocalBootstrapError)
 })

@@ -1,11 +1,18 @@
 import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
+import { RemoteOnlyLocalBootstrapError } from './remote-only-local-bootstrap'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
   assertCurrentAttempt: () => void
   signal?: AbortSignal
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
+  /**
+   * Why a local install must not start on this boot (the Desktop's primary
+   * connection is a remote gateway), or null when it may. Re-read on every
+   * call so the persisted choice governs later launches too (#112514).
+   */
+  localBootstrapBlockReason?: () => null | string
   prepareLocalBackend: () => Backend | Promise<Backend>
   resolveRemote: () => Promise<Remote | null>
   waitForDecision: (backend: Backend) => Promise<FirstRunSetupDecision>
@@ -85,6 +92,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   assertCurrentAttempt,
   connectRemote,
   ensureLocalRuntime,
+  localBootstrapBlockReason,
   prepareLocalBackend,
   resolveRemote,
   waitForDecision,
@@ -104,6 +112,17 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 
   if (savedRemote) {
     return { kind: 'remote', connection: await step(() => connectRemote(savedRemote)) }
+  }
+
+  // The user already chose a remote gateway (first-run "Connect to existing
+  // Hermes", or Settings → Gateway). If this launch's remote no longer
+  // resolves, surface that instead of quietly installing the local runtime
+  // they opted out of — and do it before the update wait so the boot cannot
+  // park on a local start it will never take (#112514).
+  const blockReason = localBootstrapBlockReason?.() ?? null
+
+  if (blockReason) {
+    throw new RemoteOnlyLocalBootstrapError(blockReason)
   }
 
   await step(waitForLocalStart)

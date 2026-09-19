@@ -60,6 +60,20 @@ def test_astral_uv_installer_invoked_via_resolved_host_variable(source: str):
         )
 
 
+def test_managed_uv_child_powershell_invocations_ignore_user_profiles(source: str):
+    invocations = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip().startswith("& $psHostExe")
+        and "uv" in line
+        and "install.ps1 | iex" in line
+    ]
+    assert invocations, "managed uv child PowerShell invocations not found"
+    for invocation in invocations:
+        assert "-NoProfile" in invocation
+        assert invocation.index("-NoProfile") < invocation.index("-ExecutionPolicy")
+
+
 def test_powershell_host_resolver_is_defined_and_portable(source: str):
     """A host-resolver helper must exist and be PATH-independent + pwsh-aware."""
     assert "function Get-PowerShellHostExe" in source, (

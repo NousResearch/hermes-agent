@@ -929,7 +929,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
-    if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
+    if "uthorization" in text.lower():  # header names are case-insensitive (HTTP); gate must fold case
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:

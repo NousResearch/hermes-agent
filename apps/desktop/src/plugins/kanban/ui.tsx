@@ -54,6 +54,126 @@ export const isLockedTarget = (name: string): boolean => (LOCKED_COLUMNS as read
 
 export const shortId = (id?: null | string) => (id ?? '').replace(/^t_/, '').slice(0, 6)
 
+// ── card dependency rail (PR2) ───────────────────────────────────────────────
+/** Rail tones: a parent that finished, one whose worker is live right now, and
+ *  one that is neither (queued, blocked, or never started). */
+export const DEP_TONES = {
+  done: '#34d399',
+  running: '#60a5fa',
+  unfinished: 'var(--ui-text-quaternary)'
+} as const
+
+export type DepSegment = keyof typeof DEP_TONES
+
+/** Which rail segment a parent's status earns. `archived` rides with `done`:
+ *  an archived parent will never move again, so gating on it forever would be a
+ *  deadlock rather than a dependency. */
+export const depSegment = (status?: null | string): DepSegment =>
+  status === 'done' || status === 'archived' ? 'done' : status === 'running' ? 'running' : 'unfinished'
+
+export interface DependencyState {
+  /** One entry per parent, in board order (empty when the card has none). */
+  rail: { id: string; segment: DepSegment; title: string }[]
+  /** True while at least one parent is unfinished — the card is gated. */
+  waiting: boolean
+  /** The unfinished parents: the rail's "and why". */
+  blockedBy: { id: string; title: string }[]
+  /** Child count, for the right-edge indicator. */
+  children: number
+}
+
+/** Resolve a card's dependency state against the board's own task map. Parent
+ *  statuses live on other cards, so the board owns the lookup, not the card. */
+export function dependencyState(
+  task: KanbanTask,
+  lookup: (id: string) => undefined | { status?: null | string; title?: null | string }
+): DependencyState {
+  const rail = (task.links?.parents ?? []).map(id => {
+    const parent = lookup(id)
+
+    return { id, segment: depSegment(parent?.status), title: parent?.title?.trim() || shortId(id) }
+  })
+
+  const blockedBy = rail.filter(parent => parent.segment !== 'done').map(({ id, title }) => ({ id, title }))
+
+  return {
+    rail,
+    waiting: blockedBy.length > 0,
+    blockedBy,
+    children: task.links?.children?.length ?? task.link_counts?.children ?? 0
+  }
+}
+
+/** Right-edge indicator for a card that owns children: the children's aggregate
+ *  state (live beats finished beats pending), or null when it has none. */
+export function childrenIndicator(
+  task: KanbanTask,
+  lookup: (id: string) => undefined | { status?: null | string }
+): null | DepSegment {
+  const children = task.links?.children ?? []
+
+  if (children.length === 0) {return null}
+  const segments = children.map(id => depSegment(lookup(id)?.status))
+
+  if (segments.includes('running')) {return 'running'}
+
+  return segments.every(segment => segment === 'done') ? 'done' : 'unfinished'
+}
+
+// ── tenant (档案) colour coding (PR2) ────────────────────────────────────────
+/** Twelve hues, interleaved so two adjacent entries never share a hue family.
+ *  Every one clears 3:1 against both the light (#ffffff) and dark (#111113)
+ *  surface — WCAG 1.4.11 non-text contrast, because the tint only ever fills
+ *  the 3px bar, the tab dot and the rail segments; all text keeps its token. */
+export const TENANT_HUES = [
+  '#e11d48',
+  '#0284c7',
+  '#4d7c0f',
+  '#9333ea',
+  '#d97706',
+  '#0f766e',
+  '#1565c0',
+  '#c2185b',
+  '#0e7490',
+  '#7c3aed',
+  '#b45309',
+  '#00897b'
+] as const
+
+/** FNV-1a with a murmur3 finalizer. The avalanche is load-bearing: plain FNV
+ *  collides two of the five court profiles (gongbu/menxia) onto one hue. */
+export const tenantHash = (tenant: string): number => {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < tenant.length; i += 1) {
+    hash = (hash ^ tenant.charCodeAt(i)) >>> 0
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+
+  hash = (hash ^ (hash >>> 16)) >>> 0
+  hash = Math.imul(hash, 0x7feb352d) >>> 0
+  hash = (hash ^ (hash >>> 15)) >>> 0
+  hash = Math.imul(hash, 0x846ca68b) >>> 0
+
+  return (hash ^ (hash >>> 16)) >>> 0
+}
+
+/** The tenant's hue, or the neutral token for the un-tenanted lane ('' ⇒ '—'). */
+export const tenantColor = (tenant?: null | string): string =>
+  tenant ? TENANT_HUES[tenantHash(tenant) % TENANT_HUES.length] : 'var(--ui-text-quaternary)'
+
+/** Tab-bar copy for a tenant: the empty tenant reads as an em dash. */
+export const tenantLabel = (tenant: string): string => tenant || '—'
+
+/** The tab row: "all" plus each distinct tenant, in board order. The backend
+ *  already sends distinct tenants; the "1 + distinct" count is the invariant
+ *  worth holding here, so it lives somewhere a test can reach it. */
+export const tenantTabList = (tenants: readonly string[]): string[] => ['', ...new Set(tenants)]
+
+/** Tenant scope for the board filter — '' means every tenant. */
+export const matchesTenant = (task: Pick<KanbanTask, 'tenant'>, tenant: string): boolean =>
+  !tenant || task.tenant === tenant
+
 // The electron REST bridge throws `Error("409: {\"detail\":\"…\"}")`; pull out
 // the human-readable detail for a toast.
 export function errText(err: unknown): string {
@@ -85,6 +205,71 @@ export function duration(start?: null | number, end?: null | number): null | str
   const { unit, value } = coarseElapsed((end - start) * 1000)
 
   return `${value}${ELAPSED_SUFFIX[unit]}`
+}
+
+// ── card badges ──────────────────────────────────────────────────────────────
+
+/** Compact "34m" for badge labels, off the same bucketing as run durations. */
+export function fmtSecs(seconds: number): string {
+  const { unit, value } = coarseElapsed(Math.max(0, Math.floor(seconds)) * 1000)
+
+  return `${value}${ELAPSED_SUFFIX[unit]}`
+}
+
+/** A blocked card quiet for this long is stale — it needs a human. */
+export const STALE_BLOCKED_SECONDS = 86_400
+
+export interface RuntimeBadge {
+  cap: number
+  elapsed: number
+  kind: 'near' | 'over'
+}
+
+/**
+ * The card's runtime-cap badge state: `over` past the cap (the dispatcher will
+ * time the run out), `near` past half of it, null with no cap or no run clock
+ * (a queued card's cap is nobody's worry yet).
+ */
+export function runtimeCapBadge(task: KanbanTask, nowSecs: number): null | RuntimeBadge {
+  const cap = task.max_runtime_seconds
+
+  if (!cap || task.status !== 'running' || !task.started_at) {
+    return null
+  }
+
+  const elapsed = Math.max(0, nowSecs - task.started_at)
+
+  if (elapsed > cap) {
+    return { cap, elapsed, kind: 'over' }
+  }
+
+  return elapsed > cap / 2 ? { cap, elapsed, kind: 'near' } : null
+}
+
+/** Blocked card that has seen no event for 24h+ — render the grey triage dot. */
+export function staleBlocked(task: KanbanTask, nowSecs: number): boolean {
+  return (
+    task.status === 'blocked' &&
+    typeof task.last_event_at === 'number' &&
+    nowSecs - task.last_event_at > STALE_BLOCKED_SECONDS
+  )
+}
+
+/** Ticking epoch-seconds clock for badges whose numbers age by the minute. */
+export function useNowSecs(active: boolean): number {
+  const [, force] = useState(0)
+
+  useEffect(() => {
+    if (!active) {
+      return
+    }
+
+    const id = window.setInterval(() => force(n => n + 1), 5_000)
+
+    return () => window.clearInterval(id)
+  }, [active])
+
+  return Math.floor(Date.now() / 1000)
 }
 
 // ── liveness ─────────────────────────────────────────────────────────────────

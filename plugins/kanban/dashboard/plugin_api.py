@@ -264,6 +264,58 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 
 # --- GET /board -------------------------------------------------------------
 
+def _triage_signals(conn: sqlite3.Connection, task_ids: list[str]) -> set[str]:
+    """Task ids that should carry the board's ``needs triage`` marker.
+
+    Two independent conditions, OR'd:
+
+    * **re-block after unblock** — the event stream shows ``kind='blocked'``
+      after a ``kind='unblocked'``. One self-join over ``task_events`` (row ``id``
+      is monotonic per table, so it orders events sharing a second); no N+1 and no
+      window frames. ``dependency_wait`` never counts — it never enters the human
+      ``blocked`` bucket.
+    * **consecutive_failures ≥ 2** — the dispatcher's own rerun-loop counter, i.e.
+      the card already bounced off a worker twice. It is the clearest "a human
+      should look at this" signal and it does not need an event scan at all.
+
+    Cards already in ``triage`` / ``done`` / ``archived`` are excluded: a card the
+    loop already escalated is already being handled, and a finished card must not
+    keep the board's "needs triage" filter pinned to history. (The dispatcher's
+    loop breaker escalates *same-kind* re-blocks into ``triage`` at
+    ``BLOCK_RECURRENCE_LIMIT``, so the pair condition's real catch here is a
+    kind-changing re-block — one that stays ``blocked``.)
+
+    The marker is deliberately wider than the ``block_unblock_cycling`` diagnostic
+    (which needs ≥3 cycles): it flags the *first* re-block so a card is surfaced
+    before it becomes a loop.
+    """
+    if not task_ids:
+        return set()
+    marks = ",".join(["?"] * len(task_ids))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT t.id
+          FROM tasks t
+          JOIN task_events e1 ON e1.task_id = t.id
+          JOIN task_events e2 ON e2.task_id = t.id AND e2.id > e1.id
+         WHERE e1.kind = 'unblocked'
+           AND e2.kind = 'blocked'
+           AND t.status NOT IN ('triage', 'done', 'archived')
+           AND t.id IN ({marks})
+        """,
+        tuple(task_ids),
+    ).fetchall()
+    signals = {r["id"] for r in rows}
+    failed = {
+        r["id"]
+        for r in conn.execute(
+            f"SELECT id FROM tasks WHERE consecutive_failures >= 2 AND id IN ({marks})",
+            tuple(task_ids),
+        ).fetchall()
+    }
+    return signals | failed
+
+
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
@@ -278,11 +330,22 @@ def get_board(
             workflow_template_id=workflow_template_id, current_step_key=current_step_key)
         # Link / comment / progress rollups are each one aggregate query rather than N per-task lookups.
         link_counts: dict[str, dict[str, int]] = {}
+        # Same rows, ids as well as counts: a card's dependency rail has to name
+        # the parent that still holds it back, and that parent's status lives on
+        # another card — a count can't tell "all parents done" from "one
+        # pending". Folded into the existing pass, so still one query.
+        link_ids: dict[str, dict[str, list[str]]] = {}
         for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall():
             link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})["children"] += 1
             link_counts.setdefault(row["child_id"], {"parents": 0, "children": 0})["parents"] += 1
+            link_ids.setdefault(row["parent_id"], {"parents": [], "children": []})["children"].append(row["child_id"])
+            link_ids.setdefault(row["child_id"], {"parents": [], "children": []})["parents"].append(row["parent_id"])
         comment_counts: dict[str, int] = {
             r["task_id"]: r["n"] for r in conn.execute("SELECT task_id, COUNT(*) AS n FROM task_comments GROUP BY task_id")}
+        # Last event per card — the stale-blocked badge's "last touched" clock
+        # (the tasks table keeps no updated_at; events are the activity record).
+        last_event_at: dict[str, int] = {
+            r["task_id"]: r["m"] for r in conn.execute("SELECT task_id, MAX(created_at) AS m FROM task_events GROUP BY task_id")}
         progress: dict[str, dict[str, int]] = {}  # per parent: children done / total, rendered as "N/M"
         for row in conn.execute(
             "SELECT l.parent_id AS pid, t.status AS cstatus FROM task_links l JOIN tasks t ON t.id = l.child_id").fetchall():
@@ -297,12 +360,18 @@ def get_board(
         # One window-function query for latest summaries (avoids N+1); cards get a
         # truncated preview, the full text comes from /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        triage_task_ids = _triage_signals(conn, [t.id for t in tasks])
         for t in tasks:
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
+            # Sorted so the rail's segments and the child dots keep one stable
+            # order across refetches (the aggregate pass follows row order).
+            d["links"] = {k: sorted((link_ids.get(t.id) or {}).get(k, [])) for k in ("parents", "children")}
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            d["triage_signal"] = t.id in triage_task_ids
+            d["last_event_at"] = last_event_at.get(t.id)
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -284,11 +285,19 @@ test('POSIX managed launcher executes the updater command and atomically publish
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
   try {
+    // The launcher executes the updater as `env <hermesPath> update --yes`, so
+    // the fixture path must actually exist. `/usr/bin/true` is present on every
+    // POSIX family this suite may run on, including the macOS developer box
+    // where the historical `/bin/true` fixture is absent — and a missing path
+    // surfaces as exit 127 plus a cryptic "env: ...: No such file or directory"
+    // in the child log instead of a real assertion failure.
+    const hermesPath = existsSync('/usr/bin/true') ? '/usr/bin/true' : '/bin/true'
+
     const command = buildPosixManagedUpdateLaunch(
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        hermesPath,
         hermesHome: home
       },
       CORRELATION

@@ -17,6 +17,50 @@ from tools.registry import registry
 logger = logging.getLogger("model_tools")
 
 
+def project_tool_args(tool_name: str, args: Dict[str, Any], *, schema: dict | None = None) -> Dict[str, Any]:
+    """Strip arguments not declared in the tool's registered schema.
+
+    Prevents hidden control-plane parameters (e.g. ``force`` on the terminal
+    tool) from reaching handlers when the model includes them in the tool
+    call arguments.  Schemas that explicitly set ``additionalProperties: true``
+    on the top-level parameters object are respected — unknown arguments are
+    preserved for tools that intentionally accept them.
+
+    When *schema* is supplied (e.g. from a scope-resolved ``ToolEntry``) it is
+    used directly, avoiding a second bare-name registry lookup that could
+    resolve against a different profile/registration than the one that
+    selected the handler.
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    if schema is None:
+        schema = registry.get_schema(tool_name)
+    if not schema:
+        return args
+
+    params = schema.get("parameters") or {}
+    properties = params.get("properties")
+    if not properties:
+        return args
+
+    # JSON Schema: missing additionalProperties defaults to True (allow extra).
+    # Only strip when a schema explicitly forbids them.
+    if params.get("additionalProperties") is not False:
+        return args
+
+    declared = set(properties.keys())
+    unknown = set(args.keys()) - declared
+    if not unknown:
+        return args
+
+    logger.warning(
+        "project_tool_args: stripped unknown arguments for %s: %s",
+        tool_name, ", ".join(sorted(unknown)),
+    )
+    return {k: v for k, v in args.items() if k in declared}
+
+
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
     if not args or not isinstance(args, dict):

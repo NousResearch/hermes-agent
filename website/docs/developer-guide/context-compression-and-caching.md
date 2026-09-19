@@ -175,7 +175,14 @@ A failed or stalled summary attempt arms a per-session **failure cooldown**
 (escalating 60s → 300s → 900s, never shorter than
 `compression.context_timeout_seconds`, persisted in `state.db`). While it is
 armed, ordinary threshold-triggered compaction is deferred so a broken summary
-backend does not re-fire every turn. Three paths run a real attempt anyway:
+backend does not re-fire every turn. Timeouts and stalls escalate on one
+counter; a summary that ends in `finish_reason=length` (output cap hit, the
+transcript is preserved) escalates on its own counter along the same
+60s → 300s → 900s rungs, so a later turn — such as an async delegation
+completion arriving after the cooldown lapsed — cannot re-issue the same
+capped request every 30 seconds (#69637). JSON-decode, closed-stream and
+empty-content failures stay on a flat 30 s cooldown. Three paths run a real
+attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
 - The same-turn `fallback_chain` retry after a stalled primary route — the

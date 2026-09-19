@@ -644,14 +644,20 @@ _TERMINAL_SUMMARY_FAILURES = (
     ),
 )
 
-# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer.
+# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer. Truncated summaries
+# (finish_reason=length) walk the same rungs on their own counter: the output cap is deterministic for an
+# unchanged route and prompt, so a flat 30s cooldown let every async-completion turn re-issue the same
+# capped request after its per-turn attempt budget was refilled (#69637).
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 
 
-def _next_timeout_cooldown(compressor: Any) -> int:
-    """Bump ``compressor._consecutive_timeout_failures`` and return the ladder rung for it.
-    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder."""
-    n = compressor._consecutive_timeout_failures = getattr(compressor, "_consecutive_timeout_failures", 0) + 1
+def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout_failures") -> int:
+    """Bump ``compressor.<counter>`` and return the ladder rung for it.
+    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder.
+    ``counter`` stays separate per failure class: the timeout streak also arms the deterministic stall fallback
+    (``_prior_timeout_failures``), which a truncation must not trigger."""
+    n = getattr(compressor, counter, 0) + 1
+    setattr(compressor, counter, n)
     return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
 
 
@@ -1997,7 +2003,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
-        self._consecutive_timeout_failures = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = self._last_feasibility_skip = False
@@ -2032,7 +2038,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_summary_error = None
-        self._consecutive_timeout_failures = self._fallback_compression_streak = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._reset_proactive_prune_rearm()
@@ -2294,7 +2300,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.info("Skipping compression cooldown clear: host already cancelled this compression attempt")
             return
         self._summary_failure_cooldown_until, self._last_summary_error = 0.0, None
-        self._consecutive_timeout_failures, self._cooldown_persist_failed = 0, False
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
+        self._cooldown_persist_failed = False
         ContextCompressor._durable_write(self, "clear_compression_failure_cooldown", "compression failure cooldown clear")
 
     def _compression_cancelled(self) -> bool:
@@ -3675,12 +3682,15 @@ Write only the summary body. Do not include any preamble or prefix."""
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
-        # Transient errors: short cooldown for JSON-decode/streaming-closed. Timeouts escalate
-        # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung.
+        # Transient errors: short cooldown for JSON-decode/streaming-closed/empty-content. Timeouts escalate
+        # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung; truncation
+        # escalates on its own counter (see _TIMEOUT_COOLDOWN_LADDER).
         if kind.timeout:
             _transient_cooldown = _next_timeout_cooldown(self)
+        elif kind.truncated:
+            _transient_cooldown = _next_timeout_cooldown(self, "_consecutive_truncation_failures")
         else:
-            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content or kind.truncated) else 60
+            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content) else 60
         err_text = _short_error_text(e)
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text

@@ -32,6 +32,11 @@ import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
+// Mirrored ids whose PATCH went out without a resolved row (profile unknown,
+// handler fell back to the current gateway's DB). When the row later loads
+// with a concrete profile, re-PATCH so non-default-profile sessions land in
+// the right state.db (#103900: the reporter pins under Personal, not default).
+const blindFlushed = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
 // Writes we've issued, id -> the value we wrote and when. A list page already
@@ -263,12 +268,45 @@ function reconcileInner(): void {
     }
   }
 
-  // Flush whatever we can resolve now; unresolved ids (row not loaded yet)
-  // retry on the next loaded-session slice change.
+  // Flush whatever we can resolve now. Unresolved ids (row not loaded yet —
+  // e.g. a pin from another device whose session isn't on any loaded page)
+  // flush blind (profile falls back to the current gateway's DB) so the pin
+  // is not local-only forever (#103900); when the row later loads, re-PATCH
+  // with the owning profile. A failed PATCH re-queues in pending and retries
+  // on the next slice change, same as before.
+  // Rows that arrived after a blind flush: re-PATCH with the owning profile
+  // so the flag lands in the right state.db, not just the default one.
+  // (Blind-flushed ids leave `pending`, so this pass runs outside that loop.
+  // A profile-less row targets the same DB the blind flush hit: skip.)
+  for (const id of [...blindFlushed]) {
+    const row = loadedRowFor(id)
+
+    if (!row || row.profile == null) {
+      continue
+    }
+
+    blindFlushed.delete(id)
+    void writePin(id, true, row.profile).catch(() => {
+      mirrored.delete(id)
+      blindFlushed.add(id)
+      pending.add(id)
+    })
+  }
+
   for (const id of [...pending]) {
     const row = loadedRowFor(id)
 
     if (!row) {
+      // No row yet: flush blind so the pin is not local-only forever.
+      pending.delete(id)
+      mirrored.add(id)
+      blindFlushed.add(id)
+      void writePin(id, true, undefined).catch(() => {
+        mirrored.delete(id)
+        blindFlushed.delete(id)
+        pending.add(id)
+      })
+
       continue
     }
 
@@ -310,6 +348,7 @@ export function watchSessionPins(): void {
  */
 export function resetSessionPinMirror(): void {
   mirrored.clear()
+  blindFlushed.clear()
   pending.clear()
   unconfirmed.clear()
   publishUnconfirmed()

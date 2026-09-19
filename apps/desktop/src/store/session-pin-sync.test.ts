@@ -71,15 +71,16 @@ describe('watchSessionPins', () => {
     expect(patch).toHaveBeenCalledWith('b', false, undefined)
   })
 
-  it('defers a pin whose row is not loaded, then flushes once it appears', async () => {
+  it('flushes a pin whose row is not loaded, then re-PATCHes once it appears', async () => {
     $pinnedSessionIds.set(['c'])
     await flush()
-    // No row yet -> nothing sent.
-    expect(patch).not.toHaveBeenCalled()
+    // No row yet -> blind flush so the pin is not local-only forever.
+    expect(patch).toHaveBeenCalledWith('c', true, undefined)
 
     $sessions.set([row('c', { profile: 'p2' })])
     await flush()
 
+    // Row arrived with an owning profile -> re-PATCH into the right state.db.
     expect(patch).toHaveBeenCalledWith('c', true, 'p2')
   })
 
@@ -225,17 +226,17 @@ describe('watchSessionPins remote pull', () => {
     expect(patch).toHaveBeenCalledWith('sticky', false, undefined)
   })
 
-  it('keeps a deferred pin (row not yet loaded) when a stale page finally arrives', async () => {
+  it('keeps a blind-flushed pin when a stale page finally arrives', async () => {
     $pinnedSessionIds.set(['deferred'])
     await flush()
-    expect(patch).not.toHaveBeenCalled()
+    // Blind flush went out immediately; the guard fences the stale page below.
+    expect(patch).toHaveBeenCalledWith('deferred', true, undefined)
 
     // The page that loads the row still predates our intent.
     $sessions.set([row('deferred', { pinned: false })])
     await flush()
 
     expect($pinnedSessionIds.get()).toContain('deferred')
-    expect(patch).toHaveBeenCalledWith('deferred', true, undefined)
   })
 
   it('ignores a stale page that contradicts a write still in flight', async () => {

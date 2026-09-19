@@ -4,6 +4,8 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import shutil
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -112,6 +114,43 @@ class TestWrapCommand:
         wrapped = env._wrap_command("echo hello", "/tmp")
 
         assert "source" not in wrapped
+
+    def test_noninteractive_git_knobs_forced_after_snapshot_source(self):
+        """The editor/prompt knobs are forced (no ``${VAR:-}`` default) and sit between the
+        snapshot ``source`` and the user's command, so neither an inherited ``EDITOR=vim`` nor
+        a value persisted by an earlier ``export`` can re-arm the git-editor hang."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("git commit", "/tmp")
+
+        forced = wrapped.index("GIT_EDITOR=true")
+        assert wrapped.index("source ") < forced < wrapped.index("eval 'git commit'")
+        for knob in ("GIT_SEQUENCE_EDITOR=true", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never"):
+            assert knob in wrapped
+        assert "${GIT_EDITOR" not in wrapped and "${GIT_TERMINAL_PROMPT" not in wrapped
+
+    @pytest.mark.skipif(shutil.which("git") is None or shutil.which("bash") is None, reason="needs git+bash")
+    def test_bare_git_commit_aborts_instead_of_opening_inherited_editor(self, tmp_path, monkeypatch):
+        """Live: with ``GIT_EDITOR=vim`` inherited, a bare ``git commit`` in the agent shell must
+        fail fast on the empty message, while an inline ``GIT_EDITOR=...`` on the command still wins."""
+        from tools.environments.local import LocalEnvironment
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True, stdin=subprocess.DEVNULL)
+        (repo / "f").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True, stdin=subprocess.DEVNULL)
+        monkeypatch.setenv("GIT_EDITOR", "vim")
+        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "1")
+        env = LocalEnvironment(cwd=str(repo), timeout=20, env={"GIT_EDITOR": "vim"})
+        try:
+            git_id = "-c user.email=a@b -c user.name=a"
+            out = env.execute(f"git {git_id} commit 2>&1; echo EXIT=$? PROMPT=$GIT_TERMINAL_PROMPT", str(repo))["output"]
+            assert "Aborting commit due to empty commit message" in out and "EXIT=1 PROMPT=0" in out
+            out = env.execute(f"GIT_EDITOR='sed -i s/^/msg/' git {git_id} commit -q; git log --oneline", str(repo))["output"]
+            assert "msg" in out
+        finally:
+            env.cleanup()
 
     def test_single_quote_escaping(self):
         env = _TestableEnv()

@@ -6,6 +6,7 @@ import functools
 import importlib.util
 import inspect
 import logging
+import os
 import shutil
 import subprocess
 from typing import Any, Dict, Optional
@@ -209,8 +210,12 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
+        # A Kanban worker's identity reaches the runtime only through the dispatcher-exported
+        # HERMES_KANBAN_TASK env (task_id is a terminal cache key: "default"/"session:*"); a
+        # backend that gates on that identity can never derive it from task_id (issue #113304).
         env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
-                                              container_config=cc)
+                                              container_config=cc,
+                                              kanban_task_id=os.environ.get("HERMES_KANBAN_TASK"))
         # Stamp the backend name so path-resolution and progress surfaces can identify plugin
         # backends without class-name sniffing. Test doubles may reject attributes.
         try:

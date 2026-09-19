@@ -281,11 +281,17 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    """Return the status setter: always the legacy ``assistant.threads.setStatus``.
+
+    The Agent Sessions API's ``agents.sessions.setStatus`` takes a CLOSED enum
+    (``active|processing|suspended|closed``) with no free-text field, so it cannot carry
+    the live verb phrases Hermes sends (``is thinking...``, ``still working… (2m03s)``)
+    nor the empty string used to clear the status — every such call returns
+    ``invalid_arguments`` and the status line silently never appears. The legacy
+    ``assistant.threads.setStatus`` accepts free text and remains supported until the
+    Feb 2027 assistant-view deprecation, so the status line stays on it; only the title
+    routes through ``agents.sessions.rename`` (see ``_session_title_method``).
+    """
     return client.assistant_threads_setStatus
 
 

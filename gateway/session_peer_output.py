@@ -175,7 +175,13 @@ def admitted_peer_scope(adapter, authority, row, conn):
     dispatch = HostedMemberDispatch.from_mapping(data['settings']['room_dispatch'])
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     _, catalog = _local_room_catalog(adapter, dispatch.target_profile, dispatch.target_install_id, _connection=conn)
-    if not catalog['text'] or catalog['catalog_digest'] != dispatch.capability_digest:
+    # Accepted Output consent is independent of passive Files readiness. Only
+    # reconstruct that bit; all other catalog fields, consent and owner checks
+    # below remain exact. This imports no lower Files/selection implementation.
+    from gateway.hosted_room_peer import _catalog_digest
+    accepted_bit = not catalog['attachments']
+    if not catalog['text'] or dispatch.capability_digest not in (
+            catalog['catalog_digest'], _catalog_digest(dict(catalog, attachments=accepted_bit))):
         raise RuntimeStoreError('room_capability_catalog_changed')
     scope = RoomArtifactScope.from_mapping({k: getattr(dispatch, k) for k in _SCOPE_FIELDS})
     if (row['principal_id'] != 'api' or row['owner_epoch'] != authority.epoch

@@ -69,7 +69,7 @@ def inprocess_http(target, monkeypatch):
 
 
 @asynccontextmanager
-async def peer_case(target, monkeypatch, *, defer_publication=True):
+async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queued=False):
     from tests.gateway.test_peer_output_product import register_routes
     from tests.gateway.test_canonical_peer_target_setup import invite, invitation
     from gateway.session_peer_output import initialize_peer_output
@@ -96,6 +96,9 @@ async def peer_case(target, monkeypatch, *, defer_publication=True):
     target.runner._cached_agent_for = lambda _: None
     register_routes(target)
     initialize_peer_output(target.adapter)
+    # Context sizing normally fetches external model metadata. This fixture
+    # tests real Output/Files/ACK, not model-catalog HTTP; sockets stay forbidden.
+    monkeypatch.setattr('model_tools._resolve_active_context_length', lambda: 32768)
     wire = inprocess_http(target, monkeypatch)
     home = target.home.parent / 'source'
     home.mkdir()
@@ -142,6 +145,9 @@ async def peer_case(target, monkeypatch, *, defer_publication=True):
         task = tasks.list_tasks(db.db_path, room_id='room-one', status='queued')[0]
         assert task['payload']['recipient_member_ids'] == ['writer', 'reader']
         binding = service.bindings()[0]
+        if resolve_queued:
+            assert task['status'] == 'queued'
+            await asyncio.to_thread(service._resolve_member_transport, binding, task)
         lease = tasks.acquire_lease(db.db_path, room_id='room-one', gateway_id=binding.gateway_id,
             authority_epoch=binding.authority_epoch, process_generation='manual-fixture', ttl_seconds=600, clock=time.time)
         attempt = tasks.start_task(db.db_path, task['identity'], lease, expected_cancel_generation=0, clock=time.time)

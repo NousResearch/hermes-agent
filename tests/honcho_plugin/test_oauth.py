@@ -102,6 +102,26 @@ class TestEnsureFreshToken:
         assert saved["oauth"]["refreshToken"] == "hch-rt-new"
         assert saved["oauth"]["expiresAt"] == 1000 + 3600
 
+    def test_non_rotating_refresh_keeps_stored_refresh_token(self, tmp_path, monkeypatch):
+        # RFC 6749 §6: an AS that doesn't rotate refresh tokens may omit refresh_token from the
+        # refresh response. The prior one must survive in memory AND on disk, or the next refresh
+        # (with no refresh_token left to send) fails permanently and forces a full re-login (#62333
+        # fixed the identical bug in tools/mcp_oauth_provider.py).
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(refresh="hch-rt-old", expires_at=100)}})
+
+        def fake_post(url, data, timeout):
+            assert data["refresh_token"] == "hch-rt-old"
+            return 200, {"access_token": "hch-at-new", "expires_in": 3600}  # no refresh_token in body
+
+        monkeypatch.setattr(oauth, "_http_post_form_status", fake_post)
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=1000)
+        assert token == "hch-at-new" and refreshed is True
+
+        saved = json.loads(path.read_text())["hosts"]["hermes"]
+        assert saved["apiKey"] == "hch-at-new"
+        assert saved["oauth"]["refreshToken"] == "hch-rt-old"  # carried forward, not dropped
+
     def test_refresh_failure_fails_open(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})

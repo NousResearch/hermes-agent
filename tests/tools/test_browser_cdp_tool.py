@@ -653,3 +653,175 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
         bt_cdp, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_cdp_endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_cdp_endpoint_returns_stripped_url(monkeypatch):
+    """_resolve_cdp_endpoint strips whitespace from the override."""
+    import tools.browser_tool_cdp as bt_cdp
+
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "  ws://localhost:9222  ")
+    assert browser_cdp_tool._resolve_cdp_endpoint() == "ws://localhost:9222"
+
+
+def test_resolve_cdp_endpoint_returns_empty_when_none(monkeypatch):
+    """_resolve_cdp_endpoint returns '' when override is None."""
+    import tools.browser_tool_cdp as bt_cdp
+
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: None)
+    assert browser_cdp_tool._resolve_cdp_endpoint() == ""
+
+
+# ---------------------------------------------------------------------------
+# _run_async with running loop
+# ---------------------------------------------------------------------------
+
+
+def test_run_async_with_running_loop():
+    """_run_async uses a thread pool when called from inside a running loop."""
+    import asyncio
+
+    async def _outer():
+        # We're inside a running loop — _run_async should detect this
+        # and use a ThreadPoolExecutor.
+        async def _inner():
+            return 42
+
+        return browser_cdp_tool._run_async(_inner())
+
+    result = asyncio.run(_outer())
+    assert result == 42
+
+
+# ---------------------------------------------------------------------------
+# Exception handlers in browser_cdp
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_error_handler(cdp_server):
+    """TimeoutError from _cdp_call is caught and returned as tool_error."""
+    # Register a handler that sleeps longer than the timeout
+    def slow(params, sid):
+        time.sleep(10)
+        return {}
+
+    cdp_server.on("Page.slowMethod", slow)
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Page.slowMethod", timeout=0.5)
+    )
+    assert "error" in result
+    # Either "timed out" or "Timed out" — both are TimeoutError paths
+    assert "tim" in result["error"].lower()
+
+
+def test_websocket_error_handler(monkeypatch):
+    """WebSocketException is caught and returns the reconnect-specific error."""
+    monkeypatch.setattr(
+        browser_cdp_tool, "_resolve_cdp_endpoint",
+        lambda: "ws://localhost:9222/devtools/browser/fake",
+    )
+
+    async def _raise_websocket_error(*args, **kwargs):
+        raise browser_cdp_tool.WebSocketException("connection closed")
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", _raise_websocket_error)
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))
+    assert "error" in result
+    assert "WebSocket error talking to CDP" in result["error"]
+    assert "/browser connect" in result["error"]
+    assert result.get("method") == "Target.getTargets"
+
+
+# ---------------------------------------------------------------------------
+# frame_id routing — supervisor error paths
+# ---------------------------------------------------------------------------
+
+
+def test_frame_id_no_supervisor_attached(monkeypatch):
+    """browser_cdp with frame_id but no supervisor → helpful error."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: None)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="frame-1",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "No CDP supervisor" in result["error"]
+
+
+def test_frame_id_not_found_in_supervisor(monkeypatch):
+    """browser_cdp with frame_id not in supervisor state → error."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
+
+    supervisor = CDPSupervisor("default", "ws://localhost:9222")
+    monkeypatch.setattr(supervisor, "snapshot", lambda: SupervisorSnapshot(
+        pending_dialogs=(), recent_dialogs=(),
+        frame_tree={"top": {"frame_id": "other"}, "children": []},
+        active=True, cdp_url="ws://localhost:9222", task_id="default",
+    ))
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="nonexistent",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_frame_id_same_origin_no_session(monkeypatch):
+    """browser_cdp with frame_id that has no session_id → error about OOPIF."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
+
+    supervisor = CDPSupervisor("default", "ws://localhost:9222")
+    monkeypatch.setattr(supervisor, "snapshot", lambda: SupervisorSnapshot(
+        pending_dialogs=(), recent_dialogs=(),
+        frame_tree={"top": {"frame_id": "top-1"}, "children": [{"frame_id": "child-1"}]},
+        active=True, cdp_url="ws://localhost:9222", task_id="default",
+    ))
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="child-1",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "out-of-process" in result["error"]
+
+
+def test_frame_id_supervisor_loop_not_running(monkeypatch):
+    """browser_cdp with frame_id but supervisor loop is None → error."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
+
+    supervisor = CDPSupervisor("default", "ws://localhost:9222")
+    monkeypatch.setattr(supervisor, "snapshot", lambda: SupervisorSnapshot(
+        pending_dialogs=(), recent_dialogs=(),
+        frame_tree={"top": {}, "children": [{"frame_id": "f1", "session_id": "s1"}]},
+        active=True, cdp_url="ws://localhost:9222", task_id="default",
+    ))
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="f1",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "not running" in result["error"]

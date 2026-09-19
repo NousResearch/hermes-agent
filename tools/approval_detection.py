@@ -590,6 +590,9 @@ _INTERPRETER_WITH_ARG = {
     "php": {"-c", "-d", "-z"},
     "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat",
                    "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
+    # Deno deliberately maps to no value-taking globals: its inline-script entry is the
+    # bare `eval` subcommand (first-arg fast path below), and its dash flags that precede
+    # `eval` (--ext, --no-check, ...) never swallow the next token as a value.
     "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": set(),
 }
 _READ_TOOL_EXEC_FLAGS = {

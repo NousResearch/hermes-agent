@@ -609,7 +609,7 @@ After your command exits successfully:
 
 1. If `{output_path}` exists and is non-empty → Hermes reads it as UTF-8 text.
 2. Otherwise, if the command wrote to stdout → Hermes uses that.
-3. Otherwise → error: "Command STT provider wrote no output file and produced no stdout".
+3. Otherwise → error: "Command STT provider returned an empty transcript: no output file at {output_path} and no stdout".
 
 This lets you use the registry for both file-writing CLIs (`whisper-cli`, `parakeet-asr`) and curl-style one-liners that emit transcript to stdout (`curl … | jq -r .text`).
 

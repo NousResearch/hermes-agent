@@ -1,4 +1,4 @@
-"""Behavioral contract tests for the read-only Desktop Agent Inbox aggregation.
+"""Behavioral contract tests for the read-only Desktop Action Center aggregation.
 
 ``inbox.list`` is profile-scoped, read-only, and aggregates:
   - persisted automation (goal/loop/heartbeat) via the same snapshots ``session.control.read``

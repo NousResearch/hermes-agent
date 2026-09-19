@@ -123,7 +123,7 @@ async function forceSize(app: MockBackendFixture['app'], width: number, height: 
 }
 
 function inboxChip(page: Page) {
-  return page.getByRole('button', { name: /inbox/i }).first()
+  return page.getByRole('button', { name: /Action Center/ }).first()
 }
 
 async function waitForInboxConnected(page: Page, timeoutMs = 30_000): Promise<void> {
@@ -143,7 +143,7 @@ async function waitForInboxConnected(page: Page, timeoutMs = 30_000): Promise<vo
 }
 
 function isPanelVisible(page: Page): Promise<boolean> {
-  return page.locator('h2:has-text("Agent Inbox")').isVisible()
+  return page.locator('h2:has-text("Action Center")').isVisible()
 }
 
 async function closePanelWithEscape(page: Page): Promise<void> {

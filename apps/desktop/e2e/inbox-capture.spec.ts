@@ -1,5 +1,5 @@
 /**
- * E2E visual capture and interaction verification for the Agent Inbox panel.
+ * E2E visual capture and interaction verification for the Action Center panel.
  *
  * Uses the existing Electron Playwright fixtures (setupMockBackend) to
  * exercise the real built renderer with a disposable sandbox and mock
@@ -41,7 +41,7 @@ async function forceSize(app: MockBackendFixture['app'], width: number, height: 
 
 /** Return the inbox chip locator. */
 function inboxChip(page: Page) {
-  return page.getByRole('button', { name: /inbox/i }).first()
+  return page.getByRole('button', { name: /Action Center/ }).first()
 }
 
 /**
@@ -50,7 +50,7 @@ function inboxChip(page: Page) {
  * response by checking for a terminal connected state: "All clear",
  * "Inbox not supported", "Partial read", or actual session items.
  *
- * Previous `waitForPanelVisible` only checked for "Agent Inbox" heading text,
+ * Previous `waitForPanelVisible` only checked for "Action Center" heading text,
  * which appears regardless of connection state — screenshots were mislabeled.
  */
 async function waitForInboxConnected(page: Page, timeoutMs = 30_000): Promise<void> {
@@ -77,7 +77,7 @@ async function waitForInboxConnected(page: Page, timeoutMs = 30_000): Promise<vo
 
 /** Wait for the inbox panel heading to appear (used for panel-open checks). */
 function isPanelVisible(page: Page): Promise<boolean> {
-  return page.locator('h2:has-text("Agent Inbox")').isVisible()
+  return page.locator('h2:has-text("Action Center")').isVisible()
 }
 
 /** Close the panel by pressing Escape. */

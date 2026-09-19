@@ -5,7 +5,7 @@ import { getApiRequestConnection } from '@/hermes'
 import { $gateway } from './gateway'
 
 /**
- * Agent Inbox — a read-only aggregation + navigation surface over the ACTIVE
+ * Action Center (formerly Agent Inbox) — aggregation + navigation over the ACTIVE
  * connection + profile's persisted automation and live pending requests.
  *
  * The backend (`tui_gateway/methods_inbox.py`) is the single authoritative

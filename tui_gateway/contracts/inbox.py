@@ -1,4 +1,4 @@
-"""Agent Inbox contracts (``tui_gateway/methods_inbox.py``): read-only cross-session aggregation
+"""Action Center contracts (``tui_gateway/methods_inbox.py``): read-only cross-session aggregation
 of persisted automation state and live pending server→client requests."""
 
 from __future__ import annotations

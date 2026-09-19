@@ -575,7 +575,7 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        // Agent Inbox attention surface: a self-contained floating-panel chip.
+        // Action Center attention surface: a self-contained floating-panel chip.
         // Always visible — the badge signals pending attention, so hiding it
         // would strand the very requests it warns about.
         id: 'inbox',

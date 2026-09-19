@@ -1,9 +1,9 @@
 /**
- * Live approval loop — real gateway, real terminal tool, real Agent Inbox.
+ * Live approval loop — real gateway, real terminal tool, real Action Center.
  *
  * Mock inference (scripted tool call) + `approvals: mode: "manual"`: the mock asks for
  * `rm -rf` through the REAL terminal tool, the real backend parks the turn on an approval,
- * and this spec drives the REAL Agent Inbox panel: the request must surface under Needs
+ * and this spec drives the REAL Action Center panel: the request must surface under Needs
  * attention and be answerable in place. The expiry case additionally proves that a request
  * that dies unanswered is still visible afterwards, with a Redo that re-raises it.
  *
@@ -101,8 +101,8 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
 async function openInbox(page: Page): Promise<void> {
   await page.keyboard.press('Escape')
   await page.waitForTimeout(200)
-  await page.getByRole('button', { name: /inbox/i }).first().click()
-  await expect(page.getByRole('heading', { name: 'Agent Inbox' })).toBeVisible()
+  await page.getByRole('button', { name: /Action Center/ }).first().click()
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible()
 }
 
 test('a pending approval surfaces in the inbox and can be approved there', async () => {

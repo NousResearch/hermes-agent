@@ -43,7 +43,7 @@ export function InboxStatusbarChip() {
     ? 'connecting'
     : coverage?.partial && !errors ? 'incomplete coverage' : chipStateText(badge, count, errors)
 
-  const label = count > 0 ? `Inbox — ${count} need attention` : 'Agent Inbox'
+  const label = count > 0 ? `Action Center — ${count} need attention` : 'Action Center'
 
   return (
     <>
@@ -58,7 +58,7 @@ export function InboxStatusbarChip() {
         )}
         disabled={switching}
         onClick={() => setOpen(!open)}
-        title={`Agent Inbox — ${stateText}. ${scope}. Open the panel to act on requests.`}
+        title={`Action Center — ${stateText}. ${scope}. Open the panel to act on requests.`}
         type="button"
       >
         <Codicon name="inbox" size="0.75rem" />

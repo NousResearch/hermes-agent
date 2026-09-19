@@ -62,7 +62,7 @@ async function forceSize(app: MockBackendFixture['app'], width: number, height: 
 }
 
 function inboxChip(page: Page) {
-  return page.getByRole('button', { name: /inbox/i }).first()
+  return page.getByRole('button', { name: /Action Center/ }).first()
 }
 
 async function waitForInboxReady(page: Page, timeoutMs = 30_000): Promise<void> {
@@ -199,7 +199,7 @@ test.describe('real backend-seeded automation', () => {
     // Wait for inbox content to load
     await waitForInboxReady(page, 15_000)
 
-    expect(await page.locator('h2:has-text("Agent Inbox")').isVisible()).toBe(true)
+    expect(await page.locator('h2:has-text("Action Center")').isVisible()).toBe(true)
 
     // Switch to Automation tab
     const autoTab = page.getByRole('button', { name: 'Automation' })
@@ -285,7 +285,7 @@ test.describe('real backend-seeded automation', () => {
     expect(urlAfter).toContain(encodeURIComponent(SESSION_KEY))
 
     // The inbox panel should no longer be visible (navigated away)
-    const panelHeading = page.locator('h2:has-text("Agent Inbox")')
+    const panelHeading = page.locator('h2:has-text("Action Center")')
     await expect(panelHeading).not.toBeVisible()
     expect(countSessions()).toBe(sessionsBefore)
 
@@ -301,7 +301,7 @@ test.describe('real backend-seeded automation', () => {
     await page.waitForTimeout(500)
 
     // Verify inbox is open
-    const heading = page.locator('h2:has-text("Agent Inbox")')
+    const heading = page.locator('h2:has-text("Action Center")')
     await expect(heading).toBeVisible({ timeout: 5_000 })
 
     // Press Escape to close
@@ -430,7 +430,7 @@ test.describe('partial fixture inbox', () => {
 
     await waitForInboxReady(page, 15_000)
 
-    expect(await page.locator('h2:has-text("Agent Inbox")').isVisible()).toBe(true)
+    expect(await page.locator('h2:has-text("Action Center")').isVisible()).toBe(true)
 
     // Switch to Automation tab to see our partial rows
     const autoTab = page.getByRole('button', { name: 'Automation' })

@@ -45,6 +45,10 @@ vi.mock('@/store/profile', () => ({
 
 vi.mock('@/store/session', () => ({
   setSelectedStoredSessionId: vi.fn(),
+  $activeSessionId: {
+    get: vi.fn(() => null),
+    listen: vi.fn(() => () => {})
+  },
   $connection: {
     get: vi.fn(() => null),
     listen: vi.fn(() => () => {})
@@ -143,7 +147,7 @@ function clickRow(title: string) {
 describe('InboxPanel', () => {
   it('renders the panel header with title and coverage', () => {
     renderPanel(makeEntry())
-    expect(screen.getByText('Agent Inbox')).toBeTruthy()
+    expect(screen.getByText('Action Center')).toBeTruthy()
   })
 
   it('renders left navigation with category items', () => {
@@ -375,7 +379,7 @@ describe('InboxPanel', () => {
   it('shows loading state while fetching', () => {
     const entry = makeEntry({ snapshot: null })
     renderPanel(entry)
-    expect(screen.getByText('Loading inbox…')).toBeTruthy()
+    expect(screen.getByText('Loading Action Center…')).toBeTruthy()
   })
 
   it('closing the panel calls onClose', () => {

@@ -1,4 +1,4 @@
-"""Scoped request-detail read layer for the Desktop Agent Inbox.
+"""Scoped request-detail read layer for the Desktop Action Center.
 
 ``inbox.requests`` returns, for a specific session identified by its durable ``session_key``,
 the live request details: redacted approval payloads with actual allowed choices, and
@@ -311,7 +311,7 @@ def _(rid, params: dict) -> dict:
 
 # ── expired requests: redo / dismiss ──────────────────────────────────────────
 _REDO_PROMPT = (
-    "[Agent Inbox] An approval request expired before it was answered. "
+    "[Action Center] An approval request expired before it was answered. "
     "The user asked to redo it — attempt this action again now so they can approve or deny it.\n\n"
     "Command: {command}"
 )

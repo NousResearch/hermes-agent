@@ -51,8 +51,8 @@ test.afterAll(async () => {
 
 test('capture category views from the real renderer', async () => {
   const page = fixture.page
-  await page.getByRole('button', { name: /inbox/i }).first().click()
-  await expect(page.getByRole('heading', { name: 'Agent Inbox' })).toBeVisible()
+  await page.getByRole('button', { name: /Action Center/ }).first().click()
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible()
   for (const label of ['All sessions', 'Needs attention', 'Goals', 'Loops', 'Heartbeats', 'Background tasks', 'Subagents', 'Other']) {
     await page.getByRole('button', { name: new RegExp(label, 'i') }).first().click()
     await expect(page.locator('[data-panel-row]').first()).toBeVisible()

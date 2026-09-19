@@ -143,8 +143,8 @@ async function closePanel(page: Page): Promise<void> {
 
 async function openInbox(page: Page): Promise<void> {
   await closePanel(page)
-  await page.getByRole('button', { name: /inbox/i }).first().click()
-  await expect(page.getByRole('heading', { name: 'Agent Inbox' })).toBeVisible()
+  await page.getByRole('button', { name: /Action Center/ }).first().click()
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible()
 }
 
 async function waitForRows(page: Page, timeoutMs = 15_000): Promise<void> {
@@ -402,7 +402,7 @@ test.describe('inbox view-only gallery', () => {
     await shot(p, 'context-fallback.png', 'context', 'Open full chat stays the escalation beside the inline context')
     await btn.click()
     await p.waitForTimeout(1000)
-    await expect(p.getByRole('heading', { name: 'Agent Inbox' })).not.toBeVisible()
+    await expect(p.getByRole('heading', { name: 'Action Center' })).not.toBeVisible()
     await shot(p, 'context-navigated.png', 'context', 'Panel closed after context click')
   })
 })

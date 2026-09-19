@@ -570,7 +570,7 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
     <Panel contentClassName={cn('flex h-full min-h-0 flex-col')} onClose={onClose}>
       <PanelHeader
         subtitle={coverageLine}
-        title="Agent Inbox"
+        title="Action Center"
       />
 
       <PanelBody>
@@ -648,12 +648,12 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
             {isUnsupported ? (
               <PanelEmpty
-                description="This connection or profile does not expose the inbox aggregation."
+                description="This connection or profile does not expose the Action Center aggregation."
                 icon="warning"
                 title="Inbox not supported"
               />
             ) : isLoading ? (
-              <PanelEmpty description="Reading the active profile…" icon="loading~spin" title="Loading inbox…" />
+              <PanelEmpty description="Reading the active profile…" icon="loading~spin" title="Loading Action Center…" />
             ) : isDisconnected ? (
               <PanelEmpty
                 action={

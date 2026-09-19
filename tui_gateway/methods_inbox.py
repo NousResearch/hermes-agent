@@ -1,4 +1,4 @@
-"""Desktop "Agent Inbox" aggregation.
+"""Desktop "Action Center" aggregation.
 
 ``inbox.list`` returns, for the ACTIVE connection + profile only, a bounded, deny-listed
 list of sessions that currently need the operator or carry persisted automation state.

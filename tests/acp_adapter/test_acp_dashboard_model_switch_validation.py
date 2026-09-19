@@ -34,8 +34,10 @@ def _acp_agent():
 
 
 def _state(**agent_attrs):
+    import threading
     return types.SimpleNamespace(
         session_id="s1", cwd=".", model="claude-sonnet-5",
+        is_running=False, command_op=False, queued_prompts=[], runtime_lock=threading.Lock(),
         agent=types.SimpleNamespace(
             provider="anthropic", base_url="https://api.anthropic.com", api_key="k", **agent_attrs))
 
@@ -97,6 +99,29 @@ def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch)
     resp, loop_thread = asyncio.run(_run())
     assert resp is not None and state.model == "claude-sonnet-5"
     assert seen["thread"] is not loop_thread
+
+
+def test_acp_set_session_model_rejected_while_turn_running(monkeypatch):
+    """The picker swaps state.agent wholesale; mid-turn that strands the running agent and
+    makes _finish_turn emit a spurious compression-rotation update."""
+    import acp
+    import asyncio
+
+    called = {}
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: called.setdefault("hit", kw))
+    agent, made = _acp_agent()
+    state = _state()
+    state.is_running = True
+    agent.session_manager.get_session = lambda sid: state
+
+    with pytest.raises(acp.RequestError):
+        asyncio.run(agent.set_session_model("anthropic:claude-sonnet-5", "s1"))
+
+    assert called == {} and made == {}  # no resolution, no rebuild
+    assert state.model == "claude-sonnet-5"
+    assert state.command_op is False
 
 
 def test_acp_switch_model_carries_the_live_agent_toolsets_into_the_rebuild(monkeypatch):

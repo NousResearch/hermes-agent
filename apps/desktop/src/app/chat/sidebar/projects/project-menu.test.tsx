@@ -1,10 +1,23 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 
-afterEach(cleanup)
+// Radix's focus scope defers its unmount handler by one macrotask
+// (setTimeout(..., 0) in react-focus-scope) and that handler dispatches a
+// CustomEvent at the container. `cleanup` only unmounts, so under full-suite
+// load the file could finish and the jsdom environment be torn down before the
+// timer fired — the event then belonged to a dead realm and vitest reported an
+// unhandled "parameter 1 is not of type 'Event'", failing a run whose tests all
+// passed. Flush the queue after unmounting so that handler runs while the
+// window still exists.
+afterEach(async () => {
+  cleanup()
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+})
 
 // jsdom doesn't implement ResizeObserver; Radix's PopoverContent/Arrow use it
 // (via @radix-ui/react-use-size) to measure the arrow once the popover is

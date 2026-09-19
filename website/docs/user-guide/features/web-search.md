@@ -28,8 +28,9 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **Ollama** | `OLLAMA_API_KEY` | ✔ | ✔ (page fetch) | ✔ Free (free Ollama account) |
 
-Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel/Ollama when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -330,6 +331,28 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ---
 
+### Ollama
+
+[Ollama's web search API](https://docs.ollama.com/capabilities/web-search) provides index-backed results (`POST /api/web_search`, up to 10 results per query). For `web_extract` it fetches each page via Ollama's `web_fetch` API (`POST /api/web_fetch`), returning the page's main content plus links. Free with an Ollama account.
+
+```bash
+# ~/.hermes/.env
+OLLAMA_API_KEY=your-ollama-key-here
+```
+
+Get a key at [ollama.com/settings/keys](https://ollama.com/settings/keys) (free Ollama account required).
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "ollama"
+  extract_backend: "ollama"   # or a whole-page vendor if you need verbatim dumps
+```
+
+`OLLAMA_API_KEY` is shared with Ollama Cloud inference, so like xAI this backend is **not** in the auto-detection chain — having the key set does not reroute web traffic. Opt in explicitly with `web.search_backend` / `web.extract_backend` / `web.backend: "ollama"`.
+
+---
+
 ### xAI (Grok) {#xai-grok}
 
 Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.ai/developers/tools/web-search) on the Responses API. Grok runs the actual searching and returns the top results as structured JSON.
@@ -386,7 +409,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | perplexity | keenable | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | perplexity | keenable | exa | parallel | ollama | xai
 ```
 
 ### Per-capability configuration
@@ -422,6 +445,8 @@ If no shared backend has **ever** been selected (no `web.backend` written by you
 | `BRAVE_SEARCH_API_KEY` | brave-free |
 | `ddgs` package importable | ddgs |
 | *(nothing set at all)* | keyless ring: exa / parallel / firecrawl / keenable (round-robin) |
+
+`OLLAMA_API_KEY` and `XAI_API_KEY` are shared inference credentials and are deliberately absent from this table — they never auto-select; opt in explicitly.
 
 **Keyless free-tier ring:** when *no* credential above is present, requests rotate across the ring vendors' public free tiers (Exa, Parallel, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 

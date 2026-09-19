@@ -559,6 +559,29 @@ describe('mergeSessionPage', () => {
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
   })
 
+  it('never carries hidden canonical Bot Chats through live, settled, or open-tab refresh races', () => {
+    // Bot Mode identifies its one forever-chat by this exact title and the
+    // backend deliberately omits it from normal sidebar pages. Every source
+    // of the refresh keep-list can name that id, but none may re-add it as a
+    // visible sidebar survivor.
+    const previous = [
+      session({ id: 'live-bot', last_active: 500, title: 'Bot Chat' }),
+      session({ id: 'settled-bot', last_active: 400, title: 'Bot Chat' }),
+      session({ id: 'bot-tip', _lineage_root_id: 'bot-root', last_active: 300, title: 'Bot Chat' }),
+      session({ id: 'ordinary-tab', last_active: 200, title: 'Working notes' })
+    ]
+
+    const merged = mergeSessionPage(previous, [session({ id: 'recent', last_active: 600 })], [
+      'live-bot',
+      'settled-bot',
+      // Open Bot tiles can retain either side of a compression lineage.
+      'bot-root',
+      'ordinary-tab'
+    ])
+
+    expect(merged.map(s => s.id)).toEqual(['recent', 'ordinary-tab'])
+  })
+
   it('evicts an old compression tip when the incoming page has the new tip from the same lineage', () => {
     // Repro of #43483: after auto-compression rotates the tip (#4 → #5),
     // the sidebar showed both the old tip and the new tip as separate rows.

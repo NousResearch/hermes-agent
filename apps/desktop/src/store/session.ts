@@ -570,6 +570,12 @@ export function resolveComposerSessionKey(
  *  resurrected here. */
 const profileKeyOf = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
+// Bot Mode's one forever-chat is identified by this exact title and is hidden
+// by the backend from every normal session-list response. Refresh keep-sets
+// protect transiently omitted visible rows; they must not turn a live/settled
+// Bot Chat or an open Bot tile back into a sidebar row.
+const isHiddenCanonicalBotChat = (session: SessionInfo): boolean => session.title === 'Bot Chat'
+
 function carriedConnectionId(prev: SessionInfo | undefined, incoming: SessionInfo): string | undefined {
   if (incoming.connection_id?.trim()) {
     return incoming.connection_id
@@ -658,6 +664,7 @@ export function mergeSessionPage(
     session =>
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
+      !isHiddenCanonicalBotChat(session) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 

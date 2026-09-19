@@ -286,6 +286,76 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
+
+def test_first_install_configures_shared_tools_once_per_invocation(tmp_path, monkeypatch):
+    from hermes_cli import tools_config
+    from hermes_cli.config import load_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "test-slack-token")
+    monkeypatch.setenv("FAL_KEY", "test-existing-image-key")
+    selections = {
+        "cli": {"browser", "image_gen", "tts"},
+        "slack": {"browser", "tts", "web"},
+    }
+    config = {
+        "model": {"provider": "custom"},
+        "browser": {"cloud_provider": "local"},
+        "tts": {"provider": "edge"},
+        "platform_toolsets": {platform: [] for platform in selections},
+    }
+    prompted_platforms = []
+    configured = []
+
+    def choose_tools(_label, _enabled, platform="cli", **_kwargs):
+        prompted_platforms.append(platform)
+        return selections[platform]
+
+    monkeypatch.setattr(tools_config, "_prompt_toolset_checklist", choose_tools)
+    monkeypatch.setattr(tools_config, "_configure_toolset", lambda key, _config: configured.append(key))
+
+    for _ in range(2):
+        prompted_platforms.clear()
+        configured.clear()
+        tools_command(first_install=True, config=config)
+
+        assert prompted_platforms == list(selections)
+        # Existing keys and free defaults must still offer a provider choice on the first pass.
+        assert sorted(configured) == sorted(set().union(*selections.values()))
+        saved = load_config()["platform_toolsets"]
+        assert {platform: set(saved[platform]) for platform in selections} == selections
+
+
+def test_first_install_keeps_shared_nous_defaults_without_reopening_provider_setup(tmp_path, monkeypatch):
+    from hermes_cli import tools_config
+    from hermes_cli.config import load_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "test-slack-token")
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda *args, **kwargs: NousPortalAccountInfo(
+            logged_in=True, source="jwt", fresh=False, paid_service_access=True,
+        ),
+    )
+    selections = {"cli": {"browser"}, "slack": {"browser", "video_gen"}}
+    config = {"model": {"provider": "nous"}, "platform_toolsets": {key: [] for key in selections}}
+    configured = []
+    monkeypatch.setattr(
+        tools_config, "_prompt_toolset_checklist",
+        lambda _label, _enabled, platform="cli", **_kwargs: selections[platform],
+    )
+    monkeypatch.setattr(tools_config, "_configure_toolset", lambda key, _config: configured.append(key))
+
+    tools_command(first_install=True, config=config)
+
+    assert configured == []
+    saved = load_config()
+    assert saved["browser"]["cloud_provider"] == "nous"
+    assert saved["video_gen"]["provider"] == "nous"
+    assert {platform: set(saved["platform_toolsets"][platform]) for platform in selections} == selections
+
+
 # ── Platform / toolset consistency ────────────────────────────────────────────
 
 

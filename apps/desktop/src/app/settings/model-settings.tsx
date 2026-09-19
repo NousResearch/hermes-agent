@@ -36,6 +36,7 @@ import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAu
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
@@ -851,6 +852,26 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
   if (loading && !mainModel) {
     return <ModelSettingsSkeleton />
+  }
+
+  // A failed initial fetch (e.g. the /api/model/options code-skew guard
+  // 503ing until the remote dashboard restarts) must surface a retry, not a
+  // '—' provider row with inline error text — the panel stays mounted while
+  // the user sits on it, so without an explicit recovery path the stale
+  // error view survives even after the backend is healthy again (#99843).
+  if (!loading && !mainModel && error) {
+    return (
+      <PanelEmpty
+        action={
+          <Button onClick={() => void refresh({ replaceSelection: true })} size="sm">
+            {t.common.retry}
+          </Button>
+        }
+        description={error}
+        icon="error"
+        title={t.settings.config.failedLoad}
+      />
+    )
   }
 
   return (

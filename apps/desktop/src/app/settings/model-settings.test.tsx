@@ -726,3 +726,24 @@ describe('ModelSettings code-skew 503', () => {
     await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))
   })
 })
+
+describe('ModelSettings failed initial load', () => {
+  // #99843: a failed initial catalog fetch (e.g. the /api/model/options
+  // code-skew guard 503ing until the remote dashboard restarts) parked the
+  // panel on a '—' provider row with inline error text and no recovery path —
+  // the panel stays mounted, so the stale error view survived even after the
+  // backend was healthy again.
+  it('surfaces a retry that refetches after the initial fetch fails', async () => {
+    getGlobalModelOptions.mockRejectedValueOnce(new Error('503: Restart required: stale-module revision'))
+    await renderModelSettings()
+
+    expect(await screen.findByText('Settings failed to load')).toBeTruthy()
+    expect(screen.getByText(/Restart required/)).toBeTruthy()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.queryByText('Settings failed to load')).toBeNull()
+  })
+})

@@ -1277,8 +1277,8 @@ DEFAULT_CONFIG = {
         "request_overrides": {},
         # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER
         # (not the request payload), applied as the lower of this and the child's ratio threshold.
-        # 0 (default) = no subagent-specific cap; children compact at the same 0.50 x window as the
-        # parent (500K on a 1M model). A replay of a 1,393-agent run showed 200K-400K caps within
+        # 0 (default) = no subagent-specific cap; children compact where the parent does — the lower
+        # of 0.50 x window and compression.threshold_tokens (256K on a 1M model). A replay of a 1,393-agent run showed 200K-400K caps within
         # 5% of each other in cost once cache prefixes are intact, and every compaction is a
         # chance to lose detail, so the default stays off. A token count >= 16000 enables it;
         # other values (true, "200k") are config errors: warned and ignored.

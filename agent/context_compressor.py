@@ -2314,7 +2314,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
         """The trigger ``update_model`` would install for ``model``/``context_length``, without mutating
-        state — the model-switch guard quotes it in its preflight-compression warning."""
+        state — the model-switch guard quotes it in its preflight-compression warning. Ignores any
+        auxiliary-summariser ceiling: the post-switch feasibility probe re-derives that."""
         config_percent = getattr(self, "_config_threshold_percent", self.threshold_percent)
         base_percent = resolve_model_threshold(model, self.model_thresholds, config_percent, provider)
         threshold_percent = self._effective_threshold_percent(context_length, base_percent)

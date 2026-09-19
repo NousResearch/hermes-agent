@@ -4,11 +4,26 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  startTransition,
+  Suspense,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
-import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
+import {
+  adoptLatestDuplicatePersistedRows,
+  preserveLoadedHistoryThroughCompaction,
+  sessionShouldHaveTranscript
+} from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -19,7 +34,7 @@ import { PromptOverlays } from '@/components/prompt-overlays'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -193,12 +208,18 @@ interface ChatRuntimeBoundaryProps {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  /** Stable lineage identity; runtime and stored tip ids can rotate during compaction. */
+  sessionKey?: string | null
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
 }
 
 const NO_MESSAGES: ChatMessage[] = []
+
+function transcriptLogicalIdentity(message: ChatMessage): string {
+  return JSON.stringify([message.role, message.timestamp, chatMessageText(message), message.attachmentRefs ?? []])
+}
 
 /**
  * The view's $messages, live only while this surface is the VISIBLE tab.
@@ -207,19 +228,39 @@ const NO_MESSAGES: ChatMessage[] = []
  * this gate a hidden tab re-renders its entire thread on every streaming
  * delta flush (~30×/s) — five busy tabs quintuple the per-token render cost
  * and the app crawls. Hidden tabs freeze their transcript instead (status
- * dots stay live through the separate status atoms) and catch up in one
- * commit on reveal — the subscribe fires immediately with the current value.
+ * dots stay live through the separate status atoms) and catch up on reveal —
+ * the subscribe fires immediately with the current value.
+ *
+ * That catch-up is the whole transcript a hidden tab missed, so applying it
+ * eagerly can block the tab-click frame. A transition lets the pane swap
+ * paint first while updates that arrive after reveal remain synchronous.
  */
 function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>, enabled = true): ChatMessage[] {
   const visible = usePaneVisible()
   const [messages, setMessages] = useState(() => $messages.get())
 
-  // nanostores types the listener value ReadonlyIfObject; the store publishes
-  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
-  useEffect(
-    () => (visible && enabled ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
-    [$messages, visible, enabled]
-  )
+  useEffect(() => {
+    if (!visible || !enabled) {
+      return undefined
+    }
+
+    let caughtUp = false
+
+    // nanostores types the listener value ReadonlyIfObject; the store publishes
+    // a fresh array per flush, so the cast is safe and avoids a per-token clone.
+    return $messages.subscribe(value => {
+      const next = value as ChatMessage[]
+
+      if (caughtUp) {
+        setMessages(next)
+
+        return
+      }
+
+      caughtUp = true
+      startTransition(() => setMessages(next))
+    })
+  }, [$messages, visible, enabled])
 
   return messages
 }
@@ -241,6 +282,7 @@ export function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
+  sessionKey,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
   const view = useSessionView()
@@ -271,44 +313,110 @@ export function ChatRuntimeBoundary({
   // History is a static display page. The live store continues streaming but
   // no delta subscribes/reconverts this historical runtime until return.
   const storeMessages = useMessagesWhileVisible(view.$messages, !history.page)
-  const messages = suppressMessages ? NO_MESSAGES : storeMessages
+  const transcriptIdentityKey = sessionKey ?? runtimeId
+  const transcriptWindowKey = transcriptIdentityKey ?? ''
+  const incomingMessages = suppressMessages ? NO_MESSAGES : storeMessages
+  const deduplicatedIncomingMessages = adoptLatestDuplicatePersistedRows(incomingMessages)
+  // Per-session sticky-cut continuity. The map preserves each lineage's cut
+  // across warm switches while the reconciler below preserves rows that an
+  // in-flight compaction has temporarily removed from the persisted snapshot.
+  const windowStateRef = useRef(new Map<string, SessionWindowMemo>())
+  const compactionWindowFloorRef = useRef<string | null>(null)
+
+  const transcriptMessagesRef = useRef({
+    key: transcriptIdentityKey,
+    messages: deduplicatedIncomingMessages,
+    source: incomingMessages
+  })
+
+  if (transcriptMessagesRef.current.key !== transcriptIdentityKey || suppressMessages) {
+    transcriptMessagesRef.current = {
+      key: transcriptIdentityKey,
+      messages: deduplicatedIncomingMessages,
+      source: incomingMessages
+    }
+  } else if (transcriptMessagesRef.current.source !== incomingMessages) {
+    const previousWindowFirst = windowStateRef.current.get(transcriptWindowKey)?.state.window.messages[0]
+    const previousMessages = transcriptMessagesRef.current.messages
+    const stableIncomingMessages = adoptLatestDuplicatePersistedRows(deduplicatedIncomingMessages, previousMessages)
+    const reconciled = preserveLoadedHistoryThroughCompaction(stableIncomingMessages, previousMessages)
+
+    if (reconciled !== stableIncomingMessages && previousWindowFirst) {
+      // The copied active rows can push a previously uncut window over its
+      // hysteresis threshold. Remember the first row the user had materialized
+      // and grow by bounded pages until that same logical row is present again.
+      compactionWindowFloorRef.current = transcriptLogicalIdentity(previousWindowFirst)
+    }
+
+    transcriptMessagesRef.current = {
+      key: transcriptIdentityKey,
+      messages: reconciled,
+      source: incomingMessages
+    }
+  }
+
+  const messages = transcriptMessagesRef.current.messages
+
+  const repairCompactedStore =
+    !suppressMessages && transcriptMessagesRef.current.source === storeMessages && messages !== storeMessages
+
+  useEffect(() => {
+    if (!repairCompactedStore || !runtimeId) {
+      return
+    }
+
+    const delegate = sessionTileDelegate()
+
+    if (!delegate || view.$runtimeId.get() !== runtimeId || view.$messages.get() !== storeMessages) {
+      return
+    }
+
+    delegate.updateSession(runtimeId, state => (state.messages === storeMessages ? { ...state, messages } : state))
+  }, [messages, repairCompactedStore, runtimeId, storeMessages, view])
 
   const [windowPages, setWindowPages] = useState(1)
-  const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
-  // Per-session sticky-cut continuity (advanceSessionTranscriptWindow). A ref,
-  // not state: it is derived from `messages` and must never trigger a render.
-  // Keyed by runtime id so a warm switch back to a session whose transcript
-  // is unchanged reuses the previous windowed slice BY REFERENCE — no window
-  // re-index, no runtime-repository rebuild, no per-row re-parse/re-highlight
-  // (#95595). Bounded internally (oldest session evicted).
-  const windowStateRef = useRef(new Map<string, SessionWindowMemo>())
-  // The memo below intentionally skips `runtimeId` in its deps (a switch
-  // always changes the messages array too, which re-runs it), so the current
-  // value must come from a ref rather than the stale render closure.
-  const runtimeIdRef = useRef(runtimeId)
-  runtimeIdRef.current = runtimeId
+  const [windowSessionKey, setWindowSessionKey] = useState(transcriptIdentityKey)
+  const transcriptWindowKeyRef = useRef(transcriptWindowKey)
+  transcriptWindowKeyRef.current = transcriptWindowKey
 
   // Reset the window on session swap during RENDER, so a large expand from the
   // previous chat can't leak into the next one's first paint (#55191). The
-  // per-session map above keeps each session's own cut; only the page count
-  // resets on a switch.
-  if (windowSessionKey !== runtimeId) {
-    setWindowSessionKey(runtimeId)
+  // per-session map retains the outgoing lineage's own sticky cut.
+  if (windowSessionKey !== transcriptIdentityKey) {
+    setWindowSessionKey(transcriptIdentityKey)
     setWindowPages(1)
   }
 
   const { messages: windowedMessages, windowed } = useMemo(() => {
     const next = advanceSessionTranscriptWindow(
       windowStateRef.current,
-      // Draft state has no runtime id yet; a single shared slot is fine there
-      // (mirrors the old single-slot behaviour for the no-runtime case).
-      runtimeIdRef.current ?? '',
+      transcriptWindowKey,
       messages,
       windowPages
     )
 
     return next.window
-  }, [messages, windowPages])
+  }, [messages, transcriptWindowKey, windowPages])
+
+  const compactionWindowFloor = compactionWindowFloorRef.current
+
+  const compactionWindowFloorPresent =
+    compactionWindowFloor === null ||
+    windowedMessages.some(message => transcriptLogicalIdentity(message) === compactionWindowFloor)
+
+  useLayoutEffect(() => {
+    if (compactionWindowFloor === null) {
+      return
+    }
+
+    if (!compactionWindowFloorPresent && windowed) {
+      setWindowPages(pages => pages + 1)
+
+      return
+    }
+
+    compactionWindowFloorRef.current = null
+  }, [compactionWindowFloor, compactionWindowFloorPresent, windowed])
 
   const currentMessages = history.page?.messages ?? windowedMessages
   const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
@@ -327,7 +435,7 @@ export function ChatRuntimeBoundary({
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
       if (
-        !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
+        !windowStateRef.current.get(transcriptWindowKeyRef.current)?.state.window.windowed &&
         runtimeId &&
         storedId &&
         transcriptBackfillAvailable(storedId, tailProfile)
@@ -617,7 +725,9 @@ const ChatViewContent = memo(function ChatViewContent({
   // to send to until a retry rebinds one. Watch windows are pure spectators of a
   // subagent run driven elsewhere — no composer, transcript is read-only.
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
-  const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
+
+  const threadKey =
+    queueSessionKey || selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResult>({
     queryKey: modelOptionsQueryKey(
@@ -752,6 +862,7 @@ const ChatViewContent = memo(function ChatViewContent({
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
+        sessionKey={threadKey}
         suppressMessages={routeSessionMismatch}
       >
         <div

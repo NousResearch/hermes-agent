@@ -177,6 +177,19 @@ describe('composerFocusKeysAllowed', () => {
     expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: button }), 'type')).toBe(true)
   })
 
+  it('yields Space paging to the focused transcript viewport without blocking type-to-focus letters', () => {
+    const viewport = document.createElement('div')
+    viewport.setAttribute('data-slot', 'aui_thread-viewport')
+    document.body.append(viewport)
+
+    expect(composerFocusKeysAllowed(keydown({ key: ' ', code: 'Space', target: viewport }), 'type')).toBe(false)
+    expect(
+      composerFocusKeysAllowed(keydown({ key: ' ', code: 'Space', shiftKey: true, target: viewport }), 'type')
+    ).toBe(false)
+    expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: viewport }), 'type')).toBe(true)
+    expect(composerFocusKeysAllowed(keydown({ key: ' ', code: 'Space', target: document.body }), 'type')).toBe(true)
+  })
+
   it('refuses when a dialog is open', () => {
     const dialog = document.createElement('div')
     dialog.setAttribute('role', 'dialog')

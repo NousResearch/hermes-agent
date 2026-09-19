@@ -534,6 +534,198 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+function persistedCompactionIdentity(message: ChatMessage): string | null {
+  if (
+    message.rowId === undefined ||
+    message.timestamp === undefined ||
+    message.pending === true ||
+    isLiveTailRow(message)
+  ) {
+    return null
+  }
+
+  return JSON.stringify([message.role, message.timestamp, chatMessageText(message), message.attachmentRefs ?? []])
+}
+
+/**
+ * Adopt a newer durable payload without changing the renderer identity of the
+ * row already mounted at this logical position. `rowId` remains the backend
+ * authority; `id` is the React/assistant-ui key that keeps local DOM state.
+ */
+function withStableRendererIdentity(authoritative: ChatMessage, mounted: ChatMessage): ChatMessage {
+  return authoritative.id === mounted.id ? authoritative : { ...authoritative, id: mounted.id }
+}
+
+/**
+ * A refreshed include-compacted tail can contain authoritative copies whose
+ * durable row ids already occur in its grafted prefix. Keep the first logical
+ * position, but adopt the later refreshed payload for that row.
+ */
+export function adoptLatestDuplicatePersistedRows(
+  messages: ChatMessage[],
+  mountedMessages: readonly ChatMessage[] = []
+): ChatMessage[] {
+  const mountedByRowId = new Map(
+    mountedMessages.flatMap(message => (message.rowId === undefined ? [] : [[message.rowId, message] as const]))
+  )
+
+  const indexByRowId = new Map<number, number>()
+  const reconciled: ChatMessage[] = []
+  let changed = false
+
+  for (const message of messages) {
+    if (message.rowId === undefined) {
+      reconciled.push(message)
+
+      continue
+    }
+
+    const mounted = mountedByRowId.get(message.rowId)
+    const stableMessage = mounted ? withStableRendererIdentity(message, mounted) : message
+
+    if (stableMessage !== message) {
+      changed = true
+    }
+
+    const existingIndex = indexByRowId.get(message.rowId)
+
+    if (existingIndex === undefined) {
+      indexByRowId.set(message.rowId, reconciled.length)
+      reconciled.push(stableMessage)
+
+      continue
+    }
+
+    reconciled[existingIndex] = withStableRendererIdentity(message, reconciled[existingIndex])
+    changed = true
+  }
+
+  return changed ? reconciled : messages
+}
+
+/**
+ * Keep durable display rows that were already loaded when `session.compress`
+ * replaces the runtime transcript with copied active rows. Compression assigns
+ * new backend row ids to its protected survivors, so ordinary row-id anchoring
+ * cannot recognize the rewrite. Match the copied survivors by the same
+ * role/timestamp/content identity the producer preserves, adopt those new rows,
+ * and retain the compacted rows between them.
+ *
+ * This intentionally refuses ordinary rewinds and live/optimistic projections:
+ * a compaction rewrite is a shorter, fully persisted projection with at least
+ * two in-order logical matches whose authoritative row ids all changed.
+ */
+export function preserveLoadedHistoryThroughCompaction(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[]
+): ChatMessage[] {
+  const splitPersistedPrefix = (messages: ChatMessage[]) => {
+    let persistedEnd = messages.length
+
+    while (persistedEnd > 0 && persistedCompactionIdentity(messages[persistedEnd - 1]) === null) {
+      const message = messages[persistedEnd - 1]
+
+      if (message.role !== 'system' || message.pending === true || isLiveTailRow(message)) {
+        return null
+      }
+
+      persistedEnd--
+    }
+
+    return {
+      persisted: persistedEnd === messages.length ? messages : messages.slice(0, persistedEnd),
+      trailingSystem: messages.slice(persistedEnd)
+    }
+  }
+
+  const next = splitPersistedPrefix(nextMessages)
+  const previous = splitPersistedPrefix(previousMessages)
+
+  if (!next || !previous) {
+    return nextMessages
+  }
+
+  const persistedNextMessages = next.persisted
+  const persistedPreviousMessages = previous.persisted
+
+  if (
+    persistedNextMessages.length === 0 ||
+    persistedPreviousMessages.length === 0 ||
+    persistedNextMessages.length >= persistedPreviousMessages.length ||
+    persistedNextMessages.some(message => persistedCompactionIdentity(message) === null) ||
+    persistedPreviousMessages.some(message => persistedCompactionIdentity(message) === null)
+  ) {
+    return nextMessages
+  }
+
+  const previousIndicesByIdentity = new Map<string, number[]>()
+
+  for (const [index, message] of persistedPreviousMessages.entries()) {
+    const identity = persistedCompactionIdentity(message)!
+    const indices = previousIndicesByIdentity.get(identity) ?? []
+
+    indices.push(index)
+    previousIndicesByIdentity.set(identity, indices)
+  }
+
+  const previousIndexByNextIndex = new Map<number, number>()
+  let lastPreviousIndex = -1
+
+  for (const [nextIndex, message] of persistedNextMessages.entries()) {
+    const identity = persistedCompactionIdentity(message)!
+    const previousIndex = (previousIndicesByIdentity.get(identity) ?? []).find(index => index > lastPreviousIndex)
+
+    if (previousIndex === undefined) {
+      continue
+    }
+
+    const previousMessage = persistedPreviousMessages[previousIndex]
+
+    if (previousMessage.rowId === message.rowId) {
+      return nextMessages
+    }
+
+    previousIndexByNextIndex.set(nextIndex, previousIndex)
+    lastPreviousIndex = previousIndex
+  }
+
+  if (previousIndexByNextIndex.size < 2) {
+    return nextMessages
+  }
+
+  const merged: ChatMessage[] = []
+  let previousCursor = 0
+
+  for (const [nextIndex, message] of persistedNextMessages.entries()) {
+    const previousIndex = previousIndexByNextIndex.get(nextIndex)
+
+    if (previousIndex === undefined) {
+      merged.push(message)
+
+      continue
+    }
+
+    merged.push(
+      ...persistedPreviousMessages.slice(previousCursor, previousIndex),
+      withStableRendererIdentity(message, persistedPreviousMessages[previousIndex])
+    )
+    previousCursor = previousIndex + 1
+  }
+
+  const previousSystemIds = new Set(previous.trailingSystem.map(message => message.id))
+
+  const trailingSystemMessages = [
+    ...previous.trailingSystem,
+    ...next.trailingSystem.filter(message => !previousSystemIds.has(message.id))
+  ]
+
+  merged.push(...persistedPreviousMessages.slice(previousCursor), ...trailingSystemMessages)
+
+  const rowIds = merged.flatMap(message => (message.rowId === undefined ? [] : [message.rowId]))
+
+  return new Set(rowIds).size === rowIds.length ? merged : nextMessages
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -593,6 +785,7 @@ export function preserveLocalPendingTurnMessages(
   }
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+  const authoritativeUsers = nextMessages.filter(message => message.role === 'user')
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -633,13 +826,29 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (
-      isOptimisticUser &&
-      latestAuthoritativeUser &&
-      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
-        textWithoutReferenceLines(chatMessageText(message))
-    ) {
-      continue
+    if (isOptimisticUser) {
+      const optimisticText = textWithoutReferenceLines(chatMessageText(message))
+
+      const matchingAuthoritativeUser = authoritativeUsers.find(candidate => {
+        if (textWithoutReferenceLines(chatMessageText(candidate)) !== optimisticText) {
+          return false
+        }
+
+        const authoritativeTimestamp = candidate.timestamp
+        const optimisticTimestamp = message.timestamp
+
+        if (authoritativeTimestamp !== undefined && optimisticTimestamp !== undefined) {
+          return authoritativeTimestamp === optimisticTimestamp
+        }
+
+        // Preserve the legacy last-user dedupe for transcripts without stable
+        // timestamps. An older same-text row is too ambiguous to identify.
+        return candidate === latestAuthoritativeUser
+      })
+
+      if (matchingAuthoritativeUser) {
+        continue
+      }
     }
 
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
@@ -995,6 +1204,33 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   }
 
   return projected.length ? [...messages, ...projected] : messages
+}
+
+/**
+ * A running resume projection owns a stable assistant tail id. Adopt that id
+ * before later gateway deltas arrive; otherwise mutateStream invents a second
+ * assistant row and leaves this empty boundary mounted in the transcript.
+ * The gateway can append its one accepted queued user after the live assistant;
+ * only that exact matching synthetic pair may displace the stream from the tail.
+ */
+export function runningProjectionStreamId(messages: ChatMessage[], running: boolean): string | null {
+  if (!running) {
+    return null
+  }
+
+  const visible = messages.filter(message => !message.hidden)
+  const tail = visible.at(-1)
+
+  const candidate =
+    tail?.role === 'user' && tail.id.startsWith('user-queued-')
+      ? visible.at(-2)?.id === `assistant-stream-${tail.id.slice('user-queued-'.length)}`
+        ? visible.at(-2)
+        : undefined
+      : tail
+
+  return candidate?.role === 'assistant' && candidate.pending === true && candidate.id.startsWith('assistant-stream-')
+    ? candidate.id
+    : null
 }
 
 function normalizedMessageText(message: ChatMessage): string {

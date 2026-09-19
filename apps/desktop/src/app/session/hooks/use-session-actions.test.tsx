@@ -1472,6 +1472,56 @@ describe('resumeSession failure recovery', () => {
     expect(resumedState?.turnStartedAt).toBe(1_700_000_000_000)
   })
 
+  it('keeps the running projection stream target when an accepted queued user follows it', async () => {
+    const storedMessages = [
+      { content: 'earlier question', role: 'user', timestamp: 1 },
+      { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-queued',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          running: true,
+          inflight: {
+            user: 'running prompt',
+            assistant: 'partial answer',
+            streaming: true
+          },
+          queued: { user: 'accepted queued prompt' },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    expect(resumedState?.messages.slice(-2).map(message => message.id)).toEqual([
+      'assistant-stream-runtime-queued',
+      'user-queued-runtime-queued'
+    ])
+    expect(resumedState?.streamId).toBe('assistant-stream-runtime-queued')
+  })
+
   it('preserves a runtime-cache delta that arrives while cold resume waits for REST', async () => {
     const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
 

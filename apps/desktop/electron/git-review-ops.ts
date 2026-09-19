@@ -15,6 +15,7 @@ import { resolveRequestedPathForIpc } from './hardening'
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const REVIEW_FILE_CAP = 2_000
+const COMMIT_STACK_CAP = 200
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
@@ -458,6 +459,101 @@ async function reviewRevParse(repoPath, ref, gitBin) {
   }
 }
 
+// The branch's commit stack: every commit between the merge base with trunk and
+// HEAD, oldest first, with per-commit churn + touched paths. This is what a
+// "restack" rewrites, and what the review pane's commit picker walks. Reads
+// only; empty (base null) off-repo, on trunk itself, or with no trunk to
+// compare against. Capped so a long-lived branch can't flood the IPC channel.
+async function reviewCommitStack(repoPath, gitBin) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit stack' })
+  } catch {
+    return { base: null, commits: [] }
+  }
+
+  const git = gitFor(cwd, gitBin)
+
+  try {
+    const base = await branchBase(git)
+
+    if (!base) {
+      return { base: null, commits: [] }
+    }
+
+    // \x1e separates commits, \x1f separates header fields; numstat rows
+    // follow each header as `added\tremoved\tpath` lines.
+    const raw = await git.raw([
+      'log',
+      '--reverse',
+      '--numstat',
+      `--max-count=${COMMIT_STACK_CAP}`,
+      '--format=%x1e%H%x1f%h%x1f%s',
+      `${base}..HEAD`
+    ])
+
+    const commits = String(raw || '')
+      .split('\x1e')
+      .filter(chunk => chunk.trim())
+      .map(chunk => {
+        const [header, ...rows] = chunk.split('\n')
+        const [sha, short, subject] = header.split('\x1f')
+        let added = 0
+        let removed = 0
+        const files = []
+
+        for (const row of rows) {
+          const [a, r, file] = row.split('\t')
+
+          if (file === undefined) {
+            continue
+          }
+
+          // Binary files report "-"; count them as zero-churn touches.
+          const fa = Number.parseInt(a, 10) || 0
+          const fr = Number.parseInt(r, 10) || 0
+
+          added += fa
+          removed += fr
+          files.push({ path: resolveRenamePath(file), added: fa, removed: fr })
+        }
+
+        return { sha, short, subject: subject || '', added, removed, files }
+      })
+
+    return { base, commits }
+  } catch {
+    return { base: null, commits: [] }
+  }
+}
+
+// One commit's patch — the whole commit, or a single path within it. `git show`
+// handles the root commit (no parent) where `sha^!` would not.
+async function reviewCommitDiff(repoPath, sha, filePath, gitBin) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit diff' })
+  } catch {
+    return ''
+  }
+
+  if (!/^[0-9a-f]{7,64}$/i.test(String(sha || ''))) {
+    return ''
+  }
+
+  const args = ['show', '--format=', '--patch', sha]
+
+  if (filePath) {
+    args.push('--', filePath)
+  }
+
+  return gitFor(cwd, gitBin)
+    .raw(args)
+    .catch(() => '')
+}
+
 // Commit the working tree. Mirrors VS Code: if nothing is staged, stage
 // everything first ("commit all"), then commit. Optionally push afterward,
 // setting upstream on the first push.
@@ -818,6 +914,8 @@ export {
   REVIEW_FILE_CAP,
   reviewCommit,
   reviewCommitContext,
+  reviewCommitDiff,
+  reviewCommitStack,
   reviewCreatePr,
   reviewDiff,
   reviewList,

@@ -152,6 +152,16 @@ async def git_ship_info_route(path: str):
     return await _git_op(_web_git.review_ship_info, _git_path(path))
 
 
+@router.get("/api/git/review/commit-stack")
+async def git_commit_stack_route(path: str):
+    return await _git_op(_web_git.review_commit_stack, _git_path(path))
+
+
+@router.get("/api/git/review/commit-diff")
+async def git_commit_diff_route(path: str, sha: str, file: Optional[str] = None):
+    return {"diff": await _git_op(_web_git.review_commit_diff, _git_path(path), sha, file)}
+
+
 @router.post("/api/git/review/pr-list")
 async def git_pr_list_route(body: GitPrListBody):
     return await _git_op(_web_git.review_pr_list, _git_path(body.path), body.branches, body.numbers)

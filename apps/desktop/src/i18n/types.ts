@@ -2801,6 +2801,16 @@ export interface Translations {
       switchTo: (branch: string) => string
       switchFailed: (branch: string) => string
       worktrees: string
+      restack: string
+      restackTip: string
+      restackPending: string
+      restackNothing: string
+      restackPromptIntro: string
+      restackPromptDirty: string
+      restackPromptRules: string
+      commitPicker: string
+      commitPickerWorkingTree: string
+      commitFiles: (count: number) => string
     }
   }
 

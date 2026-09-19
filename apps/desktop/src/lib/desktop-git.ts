@@ -4,6 +4,7 @@ import type {
   HermesGitWorktree,
   HermesRepoPullRequests,
   HermesRepoStatus,
+  HermesReviewCommitStack,
   HermesReviewList,
   HermesReviewShipInfo
 } from '@/global'
@@ -93,6 +94,11 @@ const remoteGit: GitBridge = {
     push: repoPath => gitPost('review/push', { path: repoPath }),
 
     shipInfo: repoPath => gitGet<HermesReviewShipInfo>('review/ship-info', { path: repoPath }),
+
+    commitStack: repoPath => gitGet<HermesReviewCommitStack>('review/commit-stack', { path: repoPath }),
+
+    commitDiff: async (repoPath, sha, filePath) =>
+      (await gitGet<{ diff: string }>('review/commit-diff', { file: filePath, path: repoPath, sha })).diff,
 
     prList: (repoPath, branches, numbers) =>
       gitPost<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),

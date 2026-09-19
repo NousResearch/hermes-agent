@@ -426,6 +426,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       commit: (repoPath, message, push) => ipcRenderer.invoke('hermes:git:review:commit', repoPath, message, push),
       commitContext: repoPath => ipcRenderer.invoke('hermes:git:review:commitContext', repoPath),
       push: repoPath => ipcRenderer.invoke('hermes:git:review:push', repoPath),
+      commitStack: repoPath => ipcRenderer.invoke('hermes:git:review:commitStack', repoPath),
+      commitDiff: (repoPath, sha, filePath) =>
+        ipcRenderer.invoke('hermes:git:review:commitDiff', repoPath, sha, filePath),
       shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
       prList: (repoPath, branches, numbers) =>
         ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),

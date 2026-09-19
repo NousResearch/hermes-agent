@@ -3238,7 +3238,19 @@ export const en: Translations = {
       branchOffFrom: base => `New branch from ${base}`,
       switchTo: branch => `Switch to ${branch}`,
       switchFailed: branch => `Could not switch to ${branch}`,
-      worktrees: 'Worktrees'
+      worktrees: 'Worktrees',
+      restack: 'Restack',
+      restackTip: 'Ask Hermes to reorganize this branch into a cleaner set of commits (same files, clearer history)',
+      restackPending: 'Hermes is restacking…',
+      restackNothing: 'Nothing to restack: this branch has no commits of its own and a clean tree.',
+      restackPromptIntro:
+        'Restack this branch: rewrite the commits since merge base {base} into a clean, logically ordered set for review. The current stack is:',
+      restackPromptDirty: 'There are also uncommitted changes in the working tree; fold them into the appropriate commits.',
+      restackPromptRules:
+        'Rules: the final tree must be byte-identical to the current working tree (create a snapshot ref first, verify with `git diff` against it at the end, and report the result). Split unrelated changes into separate commits, squash fixups and intermediate WIP into the commit they belong to, and give every commit a clear conventional-commit message with a body that explains why. Do not push, do not touch other branches, and stop and ask before resolving any conflict that would change file contents.',
+      commitPicker: 'Commit to review',
+      commitPickerWorkingTree: 'Working tree',
+      commitFiles: count => (count === 1 ? '1 file' : `${count} files`)
     }
   },
 

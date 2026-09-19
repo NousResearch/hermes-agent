@@ -2683,7 +2683,19 @@ export const ja = defineLocale({
       branchOffFrom: base => `${base} から新しいブランチ`,
       switchTo: branch => `${branch} に切り替え`,
       switchFailed: branch => `${branch} に切り替えできませんでした`,
-      worktrees: 'ワークツリー'
+      worktrees: 'ワークツリー',
+      restack: 'リスタック',
+      restackTip: 'このブランチをレビューしやすいコミット群に整理するよう Hermes に依頼します（ファイル内容は変わりません）',
+      restackPending: 'Hermes がリスタック中…',
+      restackNothing: 'リスタックするものがありません: このブランチ固有のコミットがなく、作業ツリーもクリーンです。',
+      restackPromptIntro:
+        'このブランチをリスタックしてください: マージベース {base} 以降のコミットを、レビュー向けに論理的な順序で整理された一連のコミットに書き換えます。現在のスタック:',
+      restackPromptDirty: '作業ツリーにも未コミットの変更があります。適切なコミットに含めてください。',
+      restackPromptRules:
+        'ルール: 最終的なツリーは現在の作業ツリーとバイト単位で同一でなければなりません（先にスナップショット用の ref を作成し、最後に `git diff` で検証して結果を報告してください）。無関係な変更は別コミットに分割し、fixup や途中の WIP は本来のコミットにまとめ、すべてのコミットに理由を説明する本文付きの明確な Conventional Commits メッセージを付けてください。プッシュせず、他のブランチに触れず、ファイル内容を変えるコンフリクトを解決する前には必ず停止して確認してください。',
+      commitPicker: 'レビューするコミット',
+      commitPickerWorkingTree: '作業ツリー',
+      commitFiles: count => `${count} ファイル`
     }
   },
 

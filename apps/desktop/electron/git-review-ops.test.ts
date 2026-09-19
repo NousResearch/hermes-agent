@@ -6,7 +6,15 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import {
+  gitFor,
+  repoStatus,
+  resolveRenamePath,
+  REVIEW_FILE_CAP,
+  reviewCommitDiff,
+  reviewCommitStack,
+  reviewList
+} from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -116,4 +124,36 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
+})
+
+test('reviewCommitStack lists the branch commits oldest first with churn; commitDiff shows one', async () => {
+  const dir = makeRepo()
+
+  execFileSync('git', ['branch', '-M', 'main'], { cwd: dir })
+  execFileSync('git', ['checkout', '-q', '-b', 'topic'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'tracked\nmore\n')
+  execFileSync('git', ['commit', '-qam', 'first: extend tracked'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'x\n')
+  execFileSync('git', ['add', 'b.txt'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'second: add b'], { cwd: dir })
+
+  const stack = await reviewCommitStack(dir, 'git')
+
+  assert.ok(stack.base)
+  assert.deepEqual(
+    stack.commits.map(c => c.subject),
+    ['first: extend tracked', 'second: add b']
+  )
+  assert.deepEqual(
+    stack.commits[1].files.map(f => f.path),
+    ['b.txt']
+  )
+  assert.equal(stack.commits[1].added, 1)
+
+  const diff = await reviewCommitDiff(dir, stack.commits[1].sha, null, 'git')
+
+  assert.match(diff, /\+x/)
+  assert.doesNotMatch(diff, /tracked\.txt/)
+  // A ref expression is not a sha — never forwarded to git.
+  assert.equal(await reviewCommitDiff(dir, 'HEAD~1', null, 'git'), '')
 })

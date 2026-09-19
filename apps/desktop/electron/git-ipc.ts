@@ -11,6 +11,8 @@ import {
   repoStatus,
   reviewCommit,
   reviewCommitContext,
+  reviewCommitDiff,
+  reviewCommitStack,
   reviewCreatePr,
   reviewDiff,
   reviewList,
@@ -96,6 +98,14 @@ export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps
     reviewCommitContext(repoPath, resolveGitBinary())
   )
   ipcMain.handle('hermes:git:review:push', async (_event, repoPath) => reviewPush(repoPath, resolveGitBinary()))
+  // The branch's commit stack (merge base → HEAD) and one commit's patch — the
+  // per-commit review that follows a restack. Reads only; empty off-repo.
+  ipcMain.handle('hermes:git:review:commitStack', async (_event, repoPath) =>
+    reviewCommitStack(repoPath, resolveGitBinary())
+  )
+  ipcMain.handle('hermes:git:review:commitDiff', async (_event, repoPath, sha, filePath) =>
+    reviewCommitDiff(repoPath, sha, filePath ?? null, resolveGitBinary())
+  )
   ipcMain.handle('hermes:git:review:shipInfo', async (_event, repoPath) => reviewShipInfo(repoPath, resolveGhBinary()))
   ipcMain.handle('hermes:git:review:prList', async (_event, repoPath, branches, numbers) =>
     reviewPrList(repoPath, resolveGhBinary(), branches, numbers)

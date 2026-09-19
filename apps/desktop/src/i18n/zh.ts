@@ -3371,7 +3371,18 @@ export const zh = defineLocale({
       branchOffFrom: base => `从 ${base} 新建分支`,
       switchTo: branch => `切换到 ${branch}`,
       switchFailed: branch => `无法切换到 ${branch}`,
-      worktrees: '工作树'
+      worktrees: '工作树',
+      restack: '重排提交',
+      restackTip: '让 Hermes 将此分支整理为更清晰的一组提交（文件相同，历史更清楚）',
+      restackPending: 'Hermes 正在重排提交…',
+      restackNothing: '没有可重排的内容：此分支没有自己的提交，且工作树是干净的。',
+      restackPromptIntro: '重排此分支：把合并基点 {base} 之后的提交改写为一组干净、按逻辑排序、便于评审的提交。当前提交栈：',
+      restackPromptDirty: '工作树中还有未提交的更改；请把它们并入合适的提交。',
+      restackPromptRules:
+        '规则：最终的文件树必须与当前工作树逐字节一致（先创建一个快照 ref，最后用 `git diff` 与其比对并报告结果）。把不相关的更改拆成独立提交，把 fixup 和中间 WIP 压入所属提交，并为每个提交写清晰的约定式提交信息，正文说明原因。不要推送，不要触碰其他分支，在解决任何会改变文件内容的冲突前先停下来询问。',
+      commitPicker: '要评审的提交',
+      commitPickerWorkingTree: '工作树',
+      commitFiles: count => `${count} 个文件`
     }
   },
 

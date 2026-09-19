@@ -486,6 +486,11 @@ declare global {
           // commit message. Reads only; empty strings off-repo.
           commitContext: (repoPath: string) => Promise<{ diff: string; recent: string }>
           push: (repoPath: string) => Promise<{ ok: boolean }>
+          // The branch's commits since its merge base with trunk (oldest first)
+          // and one commit's patch (whole commit, or one path in it). Reads
+          // only; empty off-repo / on trunk.
+          commitStack: (repoPath: string) => Promise<HermesReviewCommitStack>
+          commitDiff: (repoPath: string, sha: string, filePath?: null | string) => Promise<string>
           shipInfo: (repoPath: string) => Promise<HermesReviewShipInfo>
           // The PR on each of the given branches — plus any known only by
           // number — for badging a list of sessions in one request instead of
@@ -1477,6 +1482,25 @@ export interface HermesRepoPullRequests {
 export interface HermesReviewShipInfo {
   ghReady: boolean
   pr: HermesReviewPr | null
+}
+
+// One commit on the current branch, as the review pane's commit picker lists
+// it after a restack: subject, churn, and the paths it touched.
+export interface HermesReviewCommit {
+  sha: string
+  short: string
+  subject: string
+  added: number
+  removed: number
+  files: Array<{ path: string; added: number; removed: number }>
+}
+
+export interface HermesReviewCommitStack {
+  // Merge base with trunk the stack is measured from; null when there is no
+  // trunk to compare against (fresh repo, detached, not a repo).
+  base: null | string
+  // Oldest first — the order a rebase replays them.
+  commits: HermesReviewCommit[]
 }
 
 export interface HermesReadDirEntry {

@@ -15,6 +15,45 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_main():
+    """Give every test in this file a clean runtime-main baseline (#105888).
+
+    ``resolve_vision_provider_client`` (and the ``auto`` routers) read the live
+    main runtime from a process-global context var plus the legacy compat
+    mirrors.  Earlier auxiliary-client tests that call ``set_runtime_main`` (or
+    patch the mirrors) can leave that state populated; when they run first, the
+    custom-provider tests below inherit it, the context override shadows their
+    monkeypatched mirrors, and endpoint resolution collapses to the wrong
+    provider — so the tests pass or fail depending on collection order.
+
+    Snapshot the context var + every mirror global, reset to an empty baseline
+    before the test, and restore the originals afterwards so results are
+    order-independent regardless of what ran earlier in the process.
+    """
+    import agent.auxiliary_client as aux
+
+    mirror_names = (
+        "_RUNTIME_MAIN_PROVIDER",
+        "_RUNTIME_MAIN_MODEL",
+        "_RUNTIME_MAIN_BASE_URL",
+        "_RUNTIME_MAIN_API_KEY",
+        "_RUNTIME_MAIN_API_MODE",
+        "_RUNTIME_MAIN_AUTH_MODE",
+        "_RUNTIME_MAIN_COMPAT_SNAPSHOT",
+    )
+    saved = {name: getattr(aux, name) for name in mirror_names}
+    token = aux._RUNTIME_MAIN_CONTEXT.set(None)
+    aux._publish_runtime_main_mirrors(("", "", "", "", "", ""))
+    try:
+        yield
+    finally:
+        aux._RUNTIME_MAIN_CONTEXT.reset(token)
+        for name, value in saved.items():
+            setattr(aux, name, value)
 
 
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────

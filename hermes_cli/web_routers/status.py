@@ -18,9 +18,13 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
-from gateway.status import derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents, resolve_gateway_liveness
+from gateway.status import (
+    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
+from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import scoped_to_thread
 from pathlib import Path
@@ -112,6 +116,34 @@ async def get_health():
     """Lightweight process liveness for desktop/backend readiness probes."""
     return {"ok": True, "version": __version__,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
+
+
+@router.get("/api/health/idle")
+async def get_health_idle(request: Request):
+    """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
+    from hermes_cli.web_server_idle_proof import idle_proof
+    _require_token(request)
+    return {"ok": True, **idle_proof()}
+
+
+@router.post("/api/health/retirement")
+async def post_health_retirement(request: Request):
+    from hermes_cli.backend_retirement import retirement
+
+    _require_token(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    if not isinstance(body, dict) or body.get("action") not in ("prepare", "commit", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be prepare, commit, or cancel")
+    action = body["action"]
+    if action == "prepare":
+        return await run_in_threadpool(retirement.prepare)
+    token = body.get("token")
+    if not isinstance(token, str) or not token:
+        raise HTTPException(status_code=400, detail="token required")
+    return getattr(retirement, action)(token)
 
 
 # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
@@ -250,22 +282,38 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+    if liveness.runtime is not None:
+        # Served by the multiplexer: its record is this profile's runtime, with the profile's own
+        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
+        # profile is the process's own home (a pooled ``hermes --profile X serve``).
+        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        runtime = {**liveness.runtime,
+                   "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
 
     gateway_state = None
     gateway_platforms: dict = {}
     gateway_exit_reason = None
     gateway_updated_at = None
+    gateway_heartbeat_stale_s = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
+            # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
+            # ``startup_failed`` / watchdog ``degraded`` (kept on disk for diagnostics), so the
+            # overview does not alarm on it.
+            gateway_state = retained_gateway_state(runtime)
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.
             gateway_state = "running"
+        elif gateway_state in {"running", "degraded", "starting"} and runtime_status_is_stale(runtime):
+            # Alive PID, but housekeeping stopped re-stamping the heartbeat: the loop or the
+            # housekeeping thread wedged while the file still says 'running' (#113372). Same arm
+            # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
+            gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
-        gateway_exit_reason = runtime.get("exit_reason")
+        gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand
         # edits can inject anything) or a remote /health/detailed body — normalize both.
@@ -275,10 +323,15 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
+    # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
+    # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
+    served = (liveness.runtime or {}).get("served_profiles")
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
-        "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at}
+        "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
+        "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
 def _auth_gate_status() -> Dict[str, Any]:
@@ -336,11 +389,14 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         components["storage"] = {"status": storage_check.get("status", "degraded")}
     except Exception:
         components["storage"] = {"status": "degraded"}
+    # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile
+    # (shared ingress owned by the default) — informational, never a degraded verdict.
     platform_states = [str(value.get("state") or value.get("status") or "").lower()
                        for value in gateway_platforms.values() if isinstance(value, dict)]
+    platform_states = [state for state in platform_states if state != "disabled"]
     connected = sum(1 for state in platform_states if state in _HEALTHY_PLATFORM_STATES)
     components["platforms"] = {"status": "ok" if connected == len(platform_states) else "degraded",
-                               "configured": len(gateway_platforms), "connected": connected}
+                               "configured": len(platform_states), "connected": connected}
     return components
 
 
@@ -409,7 +465,7 @@ async def get_status(profile: Optional[str] = None):
 
         # Busy/drainable (NAS lifecycle-safety gate) derive from the persisted in-flight turn
         # count + liveness via gateway.status. Liveness keys off gateway_running, NEVER
-        # gateway_updated_at — a healthy idle gateway never advances that.
+        # gateway_updated_at — a stale heartbeat is reported separately, not treated as death.
         active_agents = parse_active_agents((gateway["runtime"] or {}).get("active_agents", 0))
         # Off-loop: on a cold Windows install the first import of hermes_cli.gateway blocks
         # 15-30s (.pyc compilation + Defender), exceeding the desktop handshake's 15s timeout.
@@ -424,6 +480,11 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            # Seconds since housekeeping last stamped the heartbeat, only when the PID is alive but the
+            # stamp is past the freshness TTL (loop/housekeeping wedged, #113372); else null.
+            "gateway_heartbeat_stale_s": gateway["gateway_heartbeat_stale_s"],
+            # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
+            "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=gateway_running, gateway_state=gateway_state,
@@ -655,6 +716,9 @@ def _get_portal_status_sync():
         "logged_in": bool(auth.get("logged_in")), "portal_url": auth.get("portal_base_url"),
         "inference_url": auth.get("inference_base_url"),
         "provider": str((model_cfg or {}).get("provider") or ""),
+        # Free tier: a token exists, so logged_in stays true for callers that only ask "is there a
+        # credential"; surfaces that render an account must branch on free_tier first.
+        "free_tier": bool(auth.get("free_tier")), "account_tier": auth.get("account_tier"),
         "subscription_url": "https://portal.nousresearch.com/manage-subscription",
         "features": features}
 

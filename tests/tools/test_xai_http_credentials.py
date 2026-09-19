@@ -95,7 +95,7 @@ def test_prefer_api_key_wins_over_available_oauth(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "tools.xai_http.get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: {"XAI_API_KEY": "paid-key-x1"}.get(name, default),
     )
     _install_fake_oauth_pool(monkeypatch, "oauth-token-x1")
@@ -118,7 +118,7 @@ def test_prefer_api_key_falls_back_to_oauth_without_explicit_key(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "tools.xai_http.get_env_value", lambda name, default=None: default
+        "hermes_cli.config.get_env_value", lambda name, default=None: default
     )
     _install_fake_oauth_pool(monkeypatch, "oauth-token-x1")
 
@@ -136,7 +136,7 @@ def test_prefer_api_key_honors_hermes_xai_base_url_with_validation(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "tools.xai_http.get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": "paid-key-x1",
             "HERMES_XAI_BASE_URL": "https://staging.x.ai/v1",
@@ -149,7 +149,7 @@ def test_prefer_api_key_honors_hermes_xai_base_url_with_validation(monkeypatch):
     assert creds["base_url"] == "https://staging.x.ai/v1"
 
     monkeypatch.setattr(
-        "tools.xai_http.get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": "paid-key-x1",
             "XAI_BASE_URL": "https://attacker.example/v1",

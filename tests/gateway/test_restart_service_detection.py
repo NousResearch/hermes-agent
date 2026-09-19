@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
@@ -76,3 +76,18 @@ async def test_false_external_supervisor_marker_keeps_detached_path(
     await runner._handle_restart_command(_make_restart_event())
 
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+def test_supervised_child_marker_is_a_launch_not_a_restart_route():
+    """The Windows Scheduled-Task launcher exports only ``HERMES_SUPERVISED_CHILD``: that must make
+    the gateway a supervised LAUNCH (self-kill guards active, #113667) without selecting the exit-75
+    restart route, which the task cannot honour (#113670)."""
+    from gateway.restart import is_gateway_supervisor_process, is_supervised_gateway_launch
+    from hermes_cli.gateway_windows import _GATEWAY_ENV
+
+    task_env = dict(_GATEWAY_ENV)
+    assert task_env["HERMES_SUPERVISED_CHILD"] == "1"
+    assert is_supervised_gateway_launch(task_env) is True
+    assert is_gateway_supervisor_process(task_env) is False
+    assert is_supervised_gateway_launch({}) is False
+    assert is_supervised_gateway_launch({"INVOCATION_ID": "abc"}) is True

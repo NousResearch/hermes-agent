@@ -110,6 +110,8 @@ def handle_api_error(
         api_error, provider=getattr(agent, "provider", "") or "",
         model=getattr(agent, "model", "") or "", approx_tokens=approx_tokens,
         context_length=_ctx_len, num_messages=len(api_messages) if api_messages else 0,
+        base_url=str(getattr(agent, "base_url", "") or ""),
+        api_key=getattr(agent, "api_key", None),
     )
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
@@ -272,8 +274,26 @@ def settle_unrecovered_error(
     # ``FailoverReason.billing`` (402) is deliberately NOT excluded: pool rotation and
     # eager fallback already gave up, so retrying only burns paid requests on a depleted
     # balance. Mirrors 401/403.
+    is_local_validation_error = _is_local_validation_error(api_error)
+    # ``recover_after_classification`` sets ``image_shrink_retry_attempted`` BEFORE it runs the shrink,
+    # so an image-size rejection reaching this point with the flag set had nothing left to shrink (the
+    # excess is text on a host whose cap is payload-scoped, or an unshrinkable image). Re-sending the
+    # byte-identical body ``max_retries`` times changes nothing: treat it as a client error and try
+    # the fallback chain now, as the format_error verdict these 400s carried before did (#112473).
+    shrink_spent = classified.reason == FailoverReason.image_too_large and bool(
+        getattr(_retry, "image_shrink_retry_attempted", False)
+    )
+    # Same shape for the reasoning-disable rung: the retry already went out without the disable,
+    # so a second reasoning-field rejection means the route refuses the configured reasoning
+    # controls themselves — nothing left to drop, so take the fallback chain now instead of
+    # replaying the identical request ``max_retries`` times (#114460).
+    reasoning_spent = classified.reason == FailoverReason.reasoning_mandatory and bool(
+        getattr(_retry, "reasoning_mandatory_retry_attempted", False)
+    )
     is_client_error = (
-        _is_local_validation_error(api_error)
+        is_local_validation_error
+        or shrink_spent
+        or reasoning_spent
         or (
             not classified.retryable
             and not classified.should_compress
@@ -282,6 +302,10 @@ def settle_unrecovered_error(
     ) and not is_context_length_error
 
     if is_client_error:
+        # A Codex ChatGPT-account entitlement 400 names the model: with nothing to rotate the
+        # slug is dead for this account, so record it before the fallback walk runs (#106475).
+        from agent.fallback_cooldown import _mark_entitlement_rejected_model
+        _mark_entitlement_rejected_model(agent, api_error)
         # Copilot self-heal BEFORE fallback: a stale credential yields a 400
         # ``model_not_available_for_integrator`` / ``model_not_supported``, not a 401.
         # Fresh token + client rebuild, one retry, SAME provider.
@@ -300,17 +324,23 @@ def settle_unrecovered_error(
                 )
                 retry_count = 0
                 return _verdict("continue")
-        # Announce the fallback only when a chain exists, else "trying fallback..." lies
-        # before a silent abort.
-        if agent._has_pending_fallback():
-            _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-            agent._buffer_status(f"⚠️ {_label} — trying fallback...")
-        if agent._try_activate_fallback():
-            # Direct ``return _verdict("break")`` is load-bearing: the restart handler
-            # re-runs the pre-API preflight against the fallback's context window.
-            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-            retry_count = compression_attempts = 0
-            return _verdict("break")
+        # ``should_fallback=False`` marks a deterministic failure no other provider can fix (the
+        # model's own malformed tool-call JSON, #12770; MoA preset/adapter faults, #55933): skip
+        # the cascade. An UNCLASSIFIED local ValueError/TypeError keeps its historical fallback;
+        # a recognised verdict that opts out wins even when the exception is a ValueError subclass.
+        _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
+        if classified.should_fallback or _unclassified_local or shrink_spent or reasoning_spent:
+            # Announce the fallback only when a chain exists, else "trying fallback..." lies
+            # before a silent abort.
+            if agent._has_pending_fallback():
+                _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
+                agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
+            if agent._try_activate_fallback():
+                # Direct ``return _verdict("break")`` is load-bearing: the restart handler
+                # re-runs the pre-API preflight against the fallback's context window.
+                active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+                retry_count = compression_attempts = 0
+                return _verdict("break")
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,
@@ -333,7 +363,7 @@ def settle_unrecovered_error(
             agent._fallback_activated = False
             return _verdict("continue")
         if agent._has_pending_fallback():
-            agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
         if agent._try_activate_fallback():
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.

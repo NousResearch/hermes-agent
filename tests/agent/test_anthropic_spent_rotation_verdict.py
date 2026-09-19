@@ -226,7 +226,7 @@ def test_auxiliary_refresh_reports_failure_for_a_lost_commit(
     monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
 
-    assert _refresh_provider_credentials("anthropic") is False
+    assert _refresh_provider_credentials("anthropic", failed_api_key=_STALE_ACCESS) is False
 
 
 def test_independent_pool_credential_stays_eligible(

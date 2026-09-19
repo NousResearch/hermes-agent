@@ -347,3 +347,74 @@ class TestAuxiliaryResolverHonoursKeyCmd:
         assert self._resolve(
             monkeypatch, {**self.BASE, "key_cmd": "   "}
         ) == "no-key-required"
+
+
+class TestExplicitCallableSurvivesCustomResolution:
+    """Callers hand ``resolve_provider_client`` a callable (key_cmd token, or the
+    main runtime's callable credential via ``_try_main_provider_route``) and every
+    resolution branch must pass it through *uncalled*: ``.strip()`` on it raised
+    AttributeError (#88667); ``str()`` sent the object repr as the bearer.
+    Adapted from SiaoZeng's #107344.
+    """
+
+    TOK = CommandTokenSource("printf minted-token", "dbx")
+    BASE = "https://example.invalid/v1"
+
+    @staticmethod
+    def _spy_client(monkeypatch):
+        import agent.auxiliary_client as ac
+
+        seen = {}
+
+        def _spy(*, api_key, base_url, **kw):
+            seen["api_key"] = api_key
+            return SimpleNamespace(api_key=api_key, base_url=base_url)
+
+        monkeypatch.setattr(ac, "_create_openai_client", _spy)
+        return seen
+
+    def _resolve(self, monkeypatch, shape, key):
+        import agent.auxiliary_client as ac
+        from hermes_cli import auth as hauth
+        from hermes_cli import runtime_provider as rp
+
+        seen = self._spy_client(monkeypatch)
+        if shape == "bare_custom":
+            ac.resolve_provider_client("custom", explicit_base_url=self.BASE, explicit_api_key=key)
+        elif shape == "local_server_alias":
+            ac.resolve_provider_client("ollama", explicit_base_url=self.BASE, explicit_api_key=key)
+        elif shape == "main_runtime_reuse":
+            ac.resolve_provider_client(
+                "custom", main_runtime={"base_url": self.BASE, "api_key": key, "model": "m1"},
+            )
+        elif shape == "named_custom":
+            monkeypatch.setattr(
+                rp, "_get_named_custom_provider",
+                lambda name: {"base_url": self.BASE, "model": "m1", "name": "dbx"} if name == "dbx" else None,
+            )
+            ac.resolve_provider_client("dbx", explicit_api_key=key)
+        elif shape == "api_key_branch":
+            monkeypatch.setattr(hauth, "resolve_api_key_provider_credentials", lambda provider: {})
+            ac.resolve_provider_client("deepseek", explicit_base_url=self.BASE, explicit_api_key=key)
+        else:  # pragma: no cover
+            raise AssertionError(shape)
+        return seen
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["bare_custom", "local_server_alias", "main_runtime_reuse", "named_custom", "api_key_branch"],
+    )
+    def test_callable_key_reaches_the_client_uncalled(self, monkeypatch, shape):
+        seen = self._resolve(monkeypatch, shape, self.TOK)
+        assert seen.get("api_key") is self.TOK, (
+            f"{shape}: an explicit callable must reach the client unchanged, not be "
+            "stripped (AttributeError) or stringified (repr-as-bearer)"
+        )
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["bare_custom", "local_server_alias", "main_runtime_reuse", "named_custom", "api_key_branch"],
+    )
+    def test_string_key_is_still_stripped(self, monkeypatch, shape):
+        seen = self._resolve(monkeypatch, shape, " sk-x ")
+        assert seen.get("api_key") == "sk-x"

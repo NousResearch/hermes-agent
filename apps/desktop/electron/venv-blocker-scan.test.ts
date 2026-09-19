@@ -18,6 +18,7 @@ import {
   formatBlockerMessage,
   formatProbeFailedMessage,
   parseVenvBlockerScanOutput,
+  resolveVenvDir,
   resolveVenvPython,
   scanVenvBlockers,
   stopSafeVenvBlockers
@@ -39,6 +40,34 @@ describe('resolveVenvPython', () => {
       const pyPath = path.join(dir, pythonName)
       fs.writeFileSync(pyPath, '', { mode: 0o755 })
       assert.equal(resolveVenvPython(sandbox), pyPath)
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves a uv-default .venv python when legacy venv is absent', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-'))
+
+    try {
+      const scriptsDir = process.platform === 'win32' ? 'Scripts' : 'bin'
+      const pythonName = process.platform === 'win32' ? 'python.exe' : 'python3'
+      const dir = path.join(sandbox, '.venv', scriptsDir)
+      fs.mkdirSync(dir, { recursive: true })
+      const pyPath = path.join(dir, pythonName)
+      fs.writeFileSync(pyPath, '', { mode: 0o755 })
+      assert.equal(resolveVenvPython(sandbox), pyPath)
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps legacy venv precedence when both supported layouts exist', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-'))
+
+    try {
+      fs.mkdirSync(path.join(sandbox, 'venv'), { recursive: true })
+      fs.mkdirSync(path.join(sandbox, '.venv'), { recursive: true })
+      assert.equal(resolveVenvDir(sandbox), path.join(sandbox, 'venv'))
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true })
     }

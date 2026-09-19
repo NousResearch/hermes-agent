@@ -100,7 +100,8 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         return _direct(wire, provider, base_url, api_key, model, language=language)
 
     def env_base_url(env_var: str, default: str) -> str:
-        return str(section.get("base_url") or tt.get_env_value(env_var) or default).strip().rstrip("/")
+        from hermes_cli.config import get_env_value
+        return str(section.get("base_url") or get_env_value(env_var) or default).strip().rstrip("/")
 
     if provider in _STT_KEYED:
         env_var, default_model, base = _STT_KEYED[provider]
@@ -120,7 +121,8 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     if provider == "xai":
         # API key only: an xAI OAuth bearer refreshes server-side mid-session and
         # would strand the client on the first 401.
-        api_key = str(tt.get_env_value("XAI_API_KEY") or "").strip()
+        from hermes_cli.config import get_env_value
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
         if not api_key:
             return _relay("xai oauth (server-managed) or no credentials")
         return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key, None)

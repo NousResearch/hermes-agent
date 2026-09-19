@@ -201,7 +201,7 @@ def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypa
     )
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "tools.xai_http.get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": "paid-api-key",
             "XAI_BASE_URL": "https://staging.x.ai/v1/",

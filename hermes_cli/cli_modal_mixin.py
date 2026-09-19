@@ -547,22 +547,32 @@ class CLIModalMixin:
         or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the
         OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body."""
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
-        if not getattr(self, flag, False):
+        if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
             return
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+        from hermes_cli.terminal_notify import notification_sequence, write_tty
+        body = context or ("input needed" if prompt else "turn complete")
         try:
-            sys.stdout.write("\a")
-            sys.stdout.flush()
+            seq = "\a" + notification_sequence(
+                body, prompt=prompt, session_id=getattr(self, "session_id", "") or "", detail=detail)
         except Exception:
-            pass
-        try:
-            from hermes_cli.terminal_notify import notify as _terminal_notify
-            _terminal_notify(
-                context or ("input needed" if prompt else "turn complete"),
-                prompt=prompt,
-                session_id=getattr(self, "session_id", "") or "",
-                detail=detail)
-        except Exception:
-            pass
+            return
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+
+        # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
+        # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
+        # in, the foreign ESC aborts the APC, and the terminal paints the rest of the payload as
+        # base64 at the input cursor. Serialize behind the renderer instead.
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass  # dead tty: same fail-quiet as _pet_flush_kitty_frame
+
+        _run_on_app_loop(app, _emit)
 
     def _clarify_teardown(self) -> None:
         self._clarify_state = None
@@ -815,20 +825,6 @@ class CLIModalMixin:
             choices.append("view")
         return choices
 
-    def _computer_use_approval_callback(self, action: str, args: dict, summary: str) -> str:
-        """Adapt the generic approval UI (once/session/always/deny) to the computer_use verdicts
-        (approve_once/approve_session/always_approve/deny)."""
-        verdict = self._approval_callback(
-            command=f"computer_use: {summary}",
-            description=f"Allow computer_use to perform `{action}`?")
-        return {
-            "once": "approve_once",
-            "session": "approve_session",
-            "always": "always_approve",
-            "deny": "deny",
-            "timeout": "timeout",
-        }.get(verdict, "deny")
-
     def _handle_approval_selection(self) -> None:
         """Process the currently selected dangerous-command approval choice."""
         state = self._approval_state
@@ -852,12 +848,89 @@ class CLIModalMixin:
         self._approval_state = None
         self._invalidate()
 
+    def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
+        """Masked master-password prompt for an external password manager (agent thread).
+        Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
+        self._sudo_deadline = _time.monotonic() + 120
+        self._ring_bell(prompt=True, context=f"unlock {display_name}")
+        self._paint_now()
+
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ {display_name} stays locked{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Unlocking {display_name} for this session{_RST}")
+        return result
+
+    def _vault_save_login_callback(self, origin: str, site: str):
+        """Two-step "save this login" prompt (identifier shown, password masked) on the sudo panel; the
+        answer goes to the vault store, never to the model. None = declined."""
+        from cli import _DIM, _RST, _cprint
+
+        answer: dict = {}
+        for step in ("identifier", "password"):
+            response_queue = queue.Queue()
+            self._capture_modal_input_snapshot()
+            self._sudo_state = {"response_queue": response_queue, "vault_save": {"site": site, "origin": origin,
+                                                                                  "step": step}}
+            self._sudo_deadline = _time.monotonic() + 180
+            if step == "identifier":
+                self._ring_bell(prompt=True, context=f"save login for {site}")
+            self._paint_now()
+            result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._paint_now()
+            if result is _TIMED_OUT or not result:
+                _cprint(f"\n{_DIM}  ⏭ Not saving a login for {site}{_RST}")
+                return None
+            answer[step] = result
+        _cprint(f"\n{_DIM}  ✓ Login for {site} saved to your vault{_RST}")
+        return answer
+
+    def _vault_code_callback(self, site: str, hint: str) -> str:
+        """One-time-code prompt (shown as typed; a 6-digit code is not a secret worth masking and users
+        need to see typos) on the sudo panel. "" = declined/timed out."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_code": {"site": site, "hint": hint}}
+        self._sudo_deadline = _time.monotonic() + 180
+        self._ring_bell(prompt=True, context=f"verification code for {site}")
+        self._paint_now()
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ No code entered for {site}{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Code entered into {site}{_RST}")
+        return result
+
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
-        return prompt_for_secret(self, var_name, prompt, metadata)
+        self._capture_modal_input_snapshot()
+        try:
+            return prompt_for_secret(self, var_name, prompt, metadata)
+        finally:
+            self._restore_modal_input_snapshot()
+            self._paint_now()
 
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""
-        if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
+        if getattr(self, "_modal_input_snapshot", None) is not None or not getattr(self, "_app", None):
             return
         try:
             buf = self._app.current_buffer
@@ -868,7 +941,7 @@ class CLIModalMixin:
 
     def _restore_modal_input_snapshot(self) -> None:
         """Restore any draft text that was present before a modal prompt opened."""
-        snapshot = self._modal_input_snapshot
+        snapshot = getattr(self, "_modal_input_snapshot", None)
         self._modal_input_snapshot = None
         if not snapshot or not getattr(self, "_app", None):
             return

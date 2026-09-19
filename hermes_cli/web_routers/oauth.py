@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
@@ -17,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_oauth import (
-    _external_process_cli_command, _minimax_poller, _nous_poller, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token, _xai_device_poller,
+    _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
 )
 from hermes_cli.web_models import OAuthSubmitBody
 from hermes_cli.web_routers._common import scoped_to_thread
@@ -30,6 +31,14 @@ _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _require_token = late("_require_token")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _OAUTH_PROVIDER_CATALOG = LateState("_OAUTH_PROVIDER_CATALOG", "hermes_cli.web_server_oauth")
+# Pollers are late-bound: they run on a background thread AFTER the route returns, so a
+# test's monkeypatch on web_server_oauth must win at spawn time, not router-import time.
+# A direct import here made those mocks no-ops — the real poller then hit the network
+# from the leaked thread and segfaulted a later test's collection (CI flake, 2026-09-09).
+_nous_plain_poller = late("_nous_plain_poller", "hermes_cli.web_server_oauth")
+_nous_promotion_poller = late("_nous_promotion_poller", "hermes_cli.web_server_oauth")
+_minimax_poller = late("_minimax_poller", "hermes_cli.web_server_oauth")
+_xai_device_poller = late("_xai_device_poller", "hermes_cli.web_server_oauth")
 
 _CODEX_ISSUER = "https://auth.openai.com"
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -90,6 +99,12 @@ def _new_oauth_session(provider_id: str, flow: str, profile: Optional[str] = Non
     return sid, sess
 
 
+def _drop_oauth_session(sid: str) -> None:
+    """Forget a session that never got started, so the dashboard does not poll a corpse forever."""
+    with _oauth_sessions_lock:
+        _oauth_sessions.pop(sid, None)
+
+
 def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
     threading.Thread(target=target, args=(sid,), daemon=True, name=f"{prefix}-{sid[:6]}").start()
 
@@ -135,15 +150,35 @@ def _codex_cancelled(sess: Dict[str, Any], session_id: str, stage: str = "") -> 
     return True
 
 
+def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
+    """One 15s POST for the device-login flow, mirroring ``auth_codex._codex_login_post``.
+
+    A transient transport blip (a dropped connection mid-flow) is retried twice with a small
+    linear backoff before propagating: losing the token exchange to a single SSL EOF wastes a
+    device-code approval the user already completed in the browser (#114610).
+    """
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
+    attempt, attempts = 1, 3
+    while True:
+        try:
+            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+                return client.post(url, **kwargs)
+        except Exception as exc:
+            if attempt == attempts or not _is_transient_transport_error(exc):
+                raise
+            time.sleep(attempt)
+            attempt += 1
+
+
 def _codex_request_user_code(httpx) -> Dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
     from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
 
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-        resp = client.post(
-            f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
-            headers=_JSON_HEADERS,
-        )
+    resp = _codex_post(
+        httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
+        headers=_JSON_HEADERS,
+    )
     if resp.status_code != 200:
         raise RuntimeError(_codex_device_code_start_error(resp))
     device_data = resp.json()
@@ -155,8 +190,12 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
 
 def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> Any:
     """Step 2: poll until authorized. ``None`` = expired; ``_CANCELLED`` = user cancelled."""
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
     deadline = time.monotonic() + sess["expires_in"]
     payload = {"device_auth_id": sess["device_auth_id"], "user_code": sess["user_code"]}
+    max_consecutive_blips = 6  # same cap as the CLI poll loop: survives drops, fails fast on a dead network
+    consecutive_blips = 0
     with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
         while time.monotonic() < deadline:
             if _codex_cancelled(sess, session_id):
@@ -164,7 +203,20 @@ def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> A
             time.sleep(sess["interval"])
             if _codex_cancelled(sess, session_id):
                 return _CANCELLED
-            poll = client.post(f"{_CODEX_ISSUER}/api/accounts/deviceauth/token", json=payload, headers=_JSON_HEADERS)
+            try:
+                poll = client.post(
+                    f"{_CODEX_ISSUER}/api/accounts/deviceauth/token", json=payload, headers=_JSON_HEADERS)
+            except Exception as exc:
+                if not _is_transient_transport_error(exc):
+                    raise
+                consecutive_blips += 1
+                if consecutive_blips >= max_consecutive_blips:
+                    raise RuntimeError(
+                        f"deviceauth/token poll failed after {consecutive_blips} consecutive"
+                        f" transport errors: {exc}") from exc
+                _log.info("oauth/device: openai-codex poll transport blip, retrying (session=%s)", session_id)
+                continue
+            consecutive_blips = 0
             if poll.status_code == 200:
                 return poll.json()
             if poll.status_code in {403, 404}:
@@ -181,16 +233,15 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
     code_verifier = code_resp.get("code_verifier", "")
     if not authorization_code or not code_verifier:
         raise RuntimeError("device-auth response missing authorization_code/code_verifier")
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-        token_resp = client.post(
-            CODEX_OAUTH_TOKEN_URL,
-            data={
-                "grant_type": "authorization_code", "code": authorization_code,
-                "redirect_uri": f"{_CODEX_ISSUER}/deviceauth/callback",
-                "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+    token_resp = _codex_post(
+        httpx, CODEX_OAUTH_TOKEN_URL,
+        data={
+            "grant_type": "authorization_code", "code": authorization_code,
+            "redirect_uri": f"{_CODEX_ISSUER}/deviceauth/callback",
+            "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
     if token_resp.status_code != 200:
         raise RuntimeError(f"token exchange returned {token_resp.status_code}")
     tokens = token_resp.json()
@@ -272,10 +323,10 @@ def _status_card(
 # refresh. xai: source_label is a human-readable origin (auth-store path /
 # credential source), not the internal auth_mode string ("oauth_pkce").
 _PROVIDER_STATUS: Dict[str, tuple[str, Callable[[dict], dict]]] = {
-    "nous": ("get_nous_auth_status_local", lambda r: _status_card(
+    "nous": ("get_nous_auth_status_local", lambda r: {**_status_card(
         r, "nous_portal", r.get("portal_base_url") or "Nous Portal",
         _truncate_token(r.get("access_token")), r.get("access_expires_at"), bool(r.get("has_refresh_token")),
-    )),
+    ), "free_tier": bool(r.get("free_tier")), "account_tier": r.get("account_tier")}),
     "openai-codex": ("get_codex_auth_status", lambda r: _status_card(
         r, r.get("source") or "openai_codex", r.get("auth_mode") or "OpenAI Codex",
         _truncate_token(r.get("api_key")), None, False, r.get("last_refresh"),
@@ -324,24 +375,86 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
 
 
 async def _start_nous_device_code(profile: Optional[str]) -> Dict[str, Any]:
+    """Start a Nous sign-in. Over a free-tier identity (``nous.guest`` on) the whole sign-in is the
+    shared ``anon_auth.run_sign_in`` flow: this route creates the generator, pulls its first state
+    (the transfer's consent link and code) and hands that to the UI, then the poller drains the rest.
+    Without a free-tier identity it is the plain device-code flow."""
+    from hermes_cli import anon_auth
     from hermes_cli.auth import PROVIDER_REGISTRY, _request_device_code
+    from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
     ).rstrip("/")
-    device_data = await _httpx_call(lambda client: _request_device_code(
-        client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id, scope=pconfig.scope,
-    ))
-    return _device_session_started(
-        "nous", profile, _nous_poller,
-        dict(
-            device_code=str(device_data["device_code"]), interval=int(device_data["interval"]),
-            expires_at=time.time() + int(device_data["expires_in"]), portal_base_url=portal_base_url,
+    with _profile_scope(_oauth_profile_name(profile)):
+        guest = anon_auth.current_nous_state() if anon_auth.guest_enabled() else None
+
+    if not anon_auth.is_guest_state(guest):
+        device_data = await _httpx_call(lambda client: _request_device_code(
+            client=client, portal_base_url=portal_base_url, client_id=pconfig.client_id,
+            scope=pconfig.scope))
+        expires_in, interval = int(device_data["expires_in"]), int(device_data["interval"])
+        fields = dict(
+            device_code=str(device_data["device_code"]), portal_base_url=portal_base_url,
             client_id=pconfig.client_id, scope=pconfig.scope,
-        ),
-        str(device_data["user_code"]), str(device_data["verification_uri_complete"]),
-        int(device_data["expires_in"]), int(device_data["interval"]),
+            interval=interval, expires_at=time.time() + expires_in)
+        return _device_session_started(
+            "nous", profile, _nous_plain_poller, fields, str(device_data["user_code"]),
+            str(device_data["verification_uri_complete"]), expires_in, interval)
+
+    # The session is registered BEFORE the generator exists, so a cancel landing in the start
+    # window is already visible to the flow's own cancel check and persist guard.
+    sid, sess = _new_oauth_session("nous", "device_code", profile=profile)
+
+    def _cancelled() -> bool:
+        with _oauth_sessions_lock:
+            return bool(sess.get("cancelled"))
+
+    @contextlib.contextmanager
+    def _persist_guard():
+        # The desktop's guarantee: the final cancellation check and the save share one lock.
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                yield False
+            else:
+                yield True
+
+    gen = anon_auth.run_sign_in(
+        timeout_seconds=15.0,
+        cancelled=_cancelled,
+        # A DELETE from this machine means "not here": nothing is persisted and the install
+        # re-mints a free tier on next use.
+        cancel_wins_after_promotion=True,
+        persist_guard=_persist_guard,
+        # Config + auth store only, so the light contextvar scope -- never the skills-module one,
+        # whose process-global lock would be held across the whole wait.
+        scope=lambda: _config_profile_scope(_oauth_profile_name(profile)),
     )
+    try:
+        first = await _httpx_call(lambda _client: next(gen))
+    except Exception:
+        with contextlib.suppress(Exception):
+            gen.close()
+        _drop_oauth_session(sid)
+        raise
+    if getattr(first, "kind", "") != "code":     # already signed in, or the free tier is unavailable
+        with contextlib.suppress(Exception):
+            gen.close()
+        _drop_oauth_session(sid)
+        raise HTTPException(400, detail=first.copy_terminal)
+    with _oauth_sessions_lock:
+        # ``device_code`` stays present because other routes read it; the generator owns the real one.
+        sess.update(dict(
+            portal_base_url=portal_base_url, client_id=pconfig.client_id, scope=pconfig.scope,
+            device_code="", claim_code=first.code, interval=first.interval,
+            expires_at=time.time() + first.expires_in, _sign_in=gen))
+    _start_poller(_nous_promotion_poller, sid)   # last: nothing observes `sess` before it is complete
+    return {
+        "session_id": sid, "flow": "device_code", "user_code": first.code,
+        "verification_url": first.link, "expires_in": first.expires_in,
+        "poll_interval": first.interval,
+    }
 
 
 async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:
@@ -640,6 +753,11 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
     return {
         "session_id": session_id, "status": sess["status"],
         "error_message": sess.get("error_message"), "expires_at": sess.get("expires_at"),
+        # Nous over a free-tier identity: why a transfer ended, who signed in, and the default model
+        # the completion settled on (None when the config was on the user's own model).
+        "reason": sess.get("reason"), "account_email": sess.get("account_email"), "model": sess.get("model"),
+        # Failed sign-ins over a free-tier identity: can a later attempt succeed, and after how long.
+        "retryable": sess.get("retryable"), "retry_after": sess.get("retry_after"),
     }
 
 

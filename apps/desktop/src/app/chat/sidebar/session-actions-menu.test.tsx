@@ -55,6 +55,7 @@ vi.mock('@/i18n', () => ({
           export: 'Export',
           hideTabBar: 'Hide tab bar',
           markRead: 'Mark as read',
+          openInSplit: 'Open in split',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -286,5 +287,53 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens a stored session in a split from the dropdown', async () => {
+    const { openSessionTile } = await import('@/store/session-states')
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    // The trigger row itself is the default (right) split — one hop.
+    fireEvent.click(await screen.findByRole('menuitem', { name: /open in split/i }))
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'right')
+  })
+
+  it('offers the split from the context menu too', async () => {
+    const { openSessionTile } = await import('@/store/session-states')
+    render(
+      <SessionContextMenu sessionId="s1" title="My session">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Session row' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /open in split/i }))
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'right')
+  })
+
+  it('hides the split item for the session loaded in main', async () => {
+    const { $selectedStoredSessionId } = await import('@/store/session')
+    $selectedStoredSessionId.set('s1')
+
+    try {
+      renderMenu()
+
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+
+      expect(await screen.findByRole('menu')).toBeTruthy()
+      expect(screen.queryByRole('menuitem', { name: /open in split/i })).toBeNull()
+    } finally {
+      $selectedStoredSessionId.set(null)
+    }
   })
 })

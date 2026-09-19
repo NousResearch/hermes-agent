@@ -2628,7 +2628,10 @@ def _compose_run_delivery(
         from cron.scheduler_failure_copy import blocked_config_notice
         deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
     elif success:
-        deliver_content = final_response
+        # Project only for delivery: the raw response has already been saved for audit/context.
+        from cron.scheduler_delivery import _extract_cron_deliverable_response
+
+        deliver_content = _extract_cron_deliverable_response(final_response)
         _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; withhold the per-run ping while the operator

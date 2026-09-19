@@ -195,6 +195,9 @@ _CRON_HINT = (
     "to the user — do NOT use send_message or try to deliver "
     "the output yourself. Just produce your report/output as your "
     "final response and the system handles the rest. "
+    "Before report content, include a line that says exactly "
+    "{deliverable_marker}. Only content after that marker "
+    "will be delivered; do not put working notes after the marker. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
     "[SILENT] is a literal ASCII control token — never translate or "
@@ -264,7 +267,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _CRON_HINT.format(deliverable_marker=_delivery.CRON_DELIVERABLE_MARKER) + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

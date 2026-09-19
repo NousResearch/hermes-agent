@@ -287,7 +287,16 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
   }
 
   // Across the axis a flex child just stretches; the fixed ones set the size.
-  return cssMax(sizes) ?? null
+  // MAIN IS THE FLOOR, like the group branch: a main-bearing split stays flex
+  // when not every visible child is fixed — otherwise one minimized rail's
+  // 28px strip makes the whole run "fixed", the chat collapses to the rail,
+  // and the run's uncapped absorber (a ticker track docked below main) grows
+  // to fill the window. The legitimate all-fixed rail (review | files above
+  // the terminal) has no main pane and keeps sizing from its content.
+  const hasFlexChild = sizes.some(size => size === null)
+  const mainFloor = allPaneIds(node).some(id => paneChrome(ctx.paneFor(id)).placement === 'main')
+
+  return hasFlexChild && mainFloor ? null : cssMax(sizes) ?? null
 }
 
 /**

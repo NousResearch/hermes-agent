@@ -3,7 +3,7 @@
 Every writer that wants a "before" copy of the user's config (setup wizard, corrupt-file
 snapshot, model migrations) goes through :func:`backup_config`. Copies live in
 ``<HERMES_HOME>/backups/config/`` — ``backups/`` is already excluded from full backups, so they
-never nest — as ``config.yaml.<reason>.<YYYYMMDD-HHMMSS>``. A copy identical to the newest one
+never nest — as ``config.yaml.<reason>.<YYYYMMDD-HHMMSS>.<sequence>``. A copy identical to the newest one
 for the same reason is skipped, and only the newest ``keep`` per reason survive, so repeated
 ``hermes setup`` runs or a gateway restarting against broken YAML cannot litter the home dir.
 """
@@ -57,11 +57,27 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         existing = list_config_backups(config_path, reason)
         if existing and filecmp.cmp(config_path, existing[0], shallow=False):
             return None
-        dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
-        if dest.is_symlink() or dest.exists():  # never write through a planted link
-            return None
-        shutil.copy2(config_path, dest)
-        for stale in [dest, *existing][keep:]:
+        prefix = f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}."
+        # Rotation frees earlier names. Continue above the newest sequence so a later
+        # copy in the same second still sorts first, including beside legacy unsuffixed copies.
+        sequences = (p.name[len(prefix):] for p in existing if p.name.startswith(prefix))
+        sequence = max((int(s) for s in sequences if s.isdecimal()), default=0) + 1
+        while True:
+            dest = root / f"{prefix}{sequence:012d}"
+            try:
+                target = dest.open("xb")  # never overwrite another writer or follow a planted link
+            except FileExistsError:
+                sequence += 1
+                continue
+            try:
+                with target, config_path.open("rb") as source:
+                    shutil.copyfileobj(source, target)
+                shutil.copystat(config_path, dest)
+            except OSError:
+                dest.unlink(missing_ok=True)
+                raise
+            break
+        for stale in list_config_backups(config_path, reason)[keep:]:
             stale.unlink(missing_ok=True)
         return dest
     except OSError as exc:

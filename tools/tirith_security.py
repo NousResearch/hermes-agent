@@ -555,6 +555,15 @@ def check_command_security(command: str) -> dict:
         logger.warning("tirith returned unexpected exit code %d", exit_code)
         return _crash(fail_open, f"tirith exit code {exit_code} (fail-open)",
                       f"tirith exit code {exit_code} (fail-closed)")
+    if action != "allow" and not result.stdout.strip():
+        # No verdict body. ``--json`` makes a completed scan write its verdict to stdout, so an empty
+        # stdout means the process never scanned: classically the dynamic loader refusing the binary
+        # ("version `GLIBC_2.34' not found" on stderr, ld.so exit status 1), a status that collides
+        # with Tirith's own 1 = block — which would otherwise report a finding for every command.
+        _warn_once(f"tirith_no_verdict:{exit_code}", "tirith produced no verdict (exit %d): %s",
+                   exit_code, (result.stderr or "").strip()[:200])
+        return _crash(fail_open, f"tirith produced no verdict (exit {exit_code}, fail-open)",
+                      f"tirith produced no verdict (exit {exit_code}, fail-closed)")
     # Any completed scan (allow/block/warn) proves the binary is healthy: clear the streak and close the
     # breaker. This is the half-open probe's recovery path, and it also fixes the streak never resetting on
     # block/warn verdicts.

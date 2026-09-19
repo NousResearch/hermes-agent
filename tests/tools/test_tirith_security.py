@@ -118,6 +118,38 @@ class TestJsonParseFailure:
 
 
 # ---------------------------------------------------------------------------
+# No verdict body: the process exited without scanning
+# ---------------------------------------------------------------------------
+
+class TestNoVerdictBody:
+    """An exit status alone is not evidence of a scan. A binary the dynamic loader refuses exits 1
+    with its error on stderr, and that status collides with Tirith's own 1 = block; only a verdict
+    body proves a scan happened, so its absence is an operational failure, not a finding."""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_exit_1_without_a_verdict_body_fails_open(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        mock_run.return_value = _mock_run(
+            1, "", "tirith: /lib64/libc.so.6: version `GLIBC_2.33' not found")
+        result = check_command_security("date")
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+        assert "no verdict" in result["summary"]
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_exit_1_without_a_verdict_body_fails_closed_when_configured(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": False}
+        mock_run.return_value = _mock_run(1, "", "error while loading shared libraries: libc.so.6")
+        result = check_command_security("date")
+        assert result["action"] == "block"
+        assert "no verdict" in result["summary"]
+
+
+# ---------------------------------------------------------------------------
 # Operational failures + fail_open
 # ---------------------------------------------------------------------------
 

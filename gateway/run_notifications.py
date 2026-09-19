@@ -961,22 +961,36 @@ class GatewayNotificationsMixin:
 
         Prefer the persisted session-store origin; the active foreground event causes cross-topic bleed.
         """
+        from dataclasses import replace
+
         from gateway.run import _parse_session_key
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
+        # A route captured at dispatch (platform/chat_type/chat_id) is fresher than the session's
+        # persisted origin: a completion must return to the thread that delegated it, not to
+        # wherever the session was last anchored. The origin still supplies namespacing fields
+        # (scope_id, chat_name, parent_chat_id, profile) that the event does not carry.
+        has_explicit_route = all(str(evt.get(k) or "").strip() for k in ("platform", "chat_type", "chat_id"))
+        persisted_origin = None
         if session_key:
             try:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    persisted_origin = entry.origin
+                    if not has_explicit_route:
+                        return persisted_origin
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
-            cached_source = self._get_cached_session_source(session_key)
-            if cached_source is not None:
-                return cached_source
-            derived = _parse_session_key(session_key) or {}
-        profile = derived.get("profile")
+            if persisted_origin is None:
+                cached_source = self._get_cached_session_source(session_key)
+                if cached_source is not None:
+                    if not has_explicit_route:
+                        return cached_source
+                    persisted_origin = cached_source
+            if persisted_origin is None:
+                derived = _parse_session_key(session_key) or {}
+        profile = str(evt.get("profile") or "").strip() or derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived.get("chat_type") or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived.get("chat_id") or "").strip()
@@ -1017,9 +1031,22 @@ class GatewayNotificationsMixin:
                 "without scope_id; scoped relay egress may be declined by "
                 "the connector's tenant guard (user_id fallback only).", platform_name, chat_id, chat_type,
             )
+        if persisted_origin is not None:
+            # Nullable dispatch fields intentionally overwrite stale origin values: a top-level
+            # completion has no thread_id and must not inherit the session's previous thread.
+            explicit = {
+                "platform": platform, "chat_id": chat_id, "chat_type": chat_type, "thread_id": _opt("thread_id"),
+                "user_id": _opt("user_id"), "user_name": _opt("user_name"), "message_id": _opt("message_id"),
+            }
+            if scope_id is not None:
+                explicit["scope_id"] = scope_id
+            if profile:
+                explicit["profile"] = profile
+            return replace(persisted_origin, **explicit)
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
-            user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
+            user_id=_opt("user_id"), user_name=_opt("user_name"), message_id=_opt("message_id"),
+            scope_id=scope_id, profile=profile or None,
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:

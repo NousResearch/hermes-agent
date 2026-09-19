@@ -69,7 +69,10 @@ _LIVE_STATES = {"running", "stalling", "finalizing"}
 _ACTIVE_STATES = ("running", "stalling")
 # Routing origin persisted at dispatch so a restart-recovered completion can
 # reconstruct a full SessionSource (scope_id drives relay tenant egress).
-_ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+# Full inbound route, captured at dispatch: a completion must land in the exact thread that
+# delegated it, not in the session's (possibly older) persisted origin.
+_ROUTING_KEYS = ("scope_id", "user_id", "user_name", "platform", "chat_id", "chat_type", "thread_id",
+                 "message_id", "profile")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().

@@ -2162,6 +2162,25 @@ class TestMcpInvocationResolution:
         assert cmd == "/opt/cua-driver"
         assert args == ["mcp"]
 
+    def test_environment_wrapper_remains_spawn_command(self, monkeypatch):
+        """A remote wrapper must not be replaced by the remote manifest's
+        absolute executable path, which does not exist on the Hermes host.
+        """
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
+
+        wrapper = "/home/hermes/.local/bin/cua-mac.sh"
+        manifest = (
+            '{"schema_version":"1",'
+            '"mcp_invocation":{"command":"/Applications/CuaDriver.app/'
+            'Contents/MacOS/cua-driver","args":["mcp"]}}'
+        )
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", wrapper)
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation(wrapper)
+        assert cmd == wrapper
+        assert args == ["mcp"]
+
     def test_falls_back_when_manifest_missing_command(self):
         """If the manifest knows the args but not the command, keep our
         resolved driver path (so HERMES_CUA_DRIVER_CMD still wins)."""

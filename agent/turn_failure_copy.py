@@ -154,6 +154,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
+    FailoverReason.role_alternation.value: (
+        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "conversation's shape. Start a clean session with /new or switch models with /model."
+    ),
     FailoverReason.ssl_cert_verification.value: (
         "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
         "This is usually a corporate proxy or an outdated certificate store on this computer — "

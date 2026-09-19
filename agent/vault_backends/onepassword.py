@@ -79,7 +79,9 @@ class OnePasswordLoginBackend(LoginBackend):
         proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
         token = (proc.stdout or "").strip()
         if proc.returncode != 0 or not token:
-            raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
+            err = _scrub(proc.stderr or "")
+            raise RuntimeError(_account_selection_hint(err) or
+                               f"1Password unlock failed: {err[:200] or 'no session token'}")
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
@@ -155,3 +157,20 @@ def _all_origins(urls: List[str]) -> List[str]:
         if origin not in out:
             out.append(origin)
     return out
+
+
+def _account_selection_hint(stderr: str) -> str:
+    """Map ``op``'s account-selection complaints to the Hermes setting that fixes them.
+
+    ``op signin`` needs an explicit account once the desktop app holds more than one; its raw
+    message names ``--account``/``OP_ACCOUNT``, which a Hermes user cannot act on directly.
+    """
+    low = stderr.lower()
+    if "multiple accounts found" in low:
+        return ("1Password CLI found multiple accounts and none is selected — set "
+                "vault.onepassword.account to the account shorthand (e.g. \"my\"; "
+                "`op account list` shows them) and try again.")
+    if "found no accounts for filter" in low:
+        return ("vault.onepassword.account is set to a value the 1Password CLI doesn't recognize — "
+                "use the account shorthand shown by `op account list` (e.g. \"my\", not the email).")
+    return ""

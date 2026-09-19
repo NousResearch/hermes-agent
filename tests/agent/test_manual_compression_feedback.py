@@ -64,5 +64,46 @@ def test_fallback_compression_reports_dropped_message_count():
     assert "invalid response" in feedback["note"]
 
 
+def test_manual_receipt_reports_the_effective_aux_route_and_elapsed_time():
+    messages = _messages(12)
+    state = SimpleNamespace(
+        _last_compress_aborted=False,
+        _last_compress_refused_would_grow=False,
+        _last_summary_fallback_used=False,
+        _last_summary_error=None,
+        _last_compression_telemetry={
+            "aux_provider": "custom",
+            "aux_model": "gpt-5.6-luna",
+            "aux_call_duration_ms": 1_234,
+        },
+    )
+
+    feedback = summarize_manual_compression(
+        messages,
+        messages[:2] + messages[-2:],
+        120_000,
+        40_000,
+        compression_state=state,
+    )
+
+    assert feedback["receipt_line"] == "Summary route: custom / gpt-5.6-luna · 1.2s"
+
+
+def test_manual_receipt_is_omitted_without_complete_telemetry():
+    messages = _messages(12)
+    state = SimpleNamespace(
+        _last_compress_aborted=False,
+        _last_compress_refused_would_grow=False,
+        _last_summary_fallback_used=False,
+        _last_summary_error=None,
+        _last_compression_telemetry={"aux_provider": "custom", "aux_model": "gpt-5.6-luna"},
+    )
+
+    feedback = summarize_manual_compression(messages, messages[:2] + messages[-2:], 120_000, 40_000,
+                                             compression_state=state)
+
+    assert feedback["receipt_line"] is None
+
+
 
 

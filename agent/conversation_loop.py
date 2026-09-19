@@ -590,6 +590,7 @@ def _billing_failure_result(
         "final_response": final, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": summary,
         "failure_reason": classified.reason.value,
+        "failure_status_code": classified.status_code,
         # Classifier's own retry verdict so the UI shows Retry only when a re-run can differ.
         "failure_retryable": bool(classified.retryable),
         "billing_unverified": unverified,

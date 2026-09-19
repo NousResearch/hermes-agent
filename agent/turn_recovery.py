@@ -907,6 +907,7 @@ def nonretryable_client_error_result(
     # "Provider error" and offers Retry instead of a re-login.
     result.update({
         "failure_reason": classified.reason.value,
+        "failure_status_code": classified.status_code,
         "failure_retryable": bool(classified.retryable),
     })
     if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
@@ -1035,6 +1036,7 @@ def max_retries_exhausted_result(
         # Classified reason so callers (kanban worker in cli.py) can tell a quota wall
         # (``rate_limit`` / ``billing``) from a task failure.
         "failure_reason": classified.reason.value,
+        "failure_status_code": classified.status_code,
         # The classifier's own retry verdict — UI surfaces use this, not the reason string.
         "failure_retryable": bool(classified.retryable),
         # True when the billing verdict rests on an ambiguous body.

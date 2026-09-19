@@ -103,6 +103,16 @@ def refresh_agent_mcp_tools(
     dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
     from model_tools import get_tool_definitions
     from tools.registry import registry
+    from tools import mcp_tool_discovery as _discovery
+    # SEP-2549 TTL re-list: a CONNECTED server whose ``tools/list`` cache hint (``ttl_ms``) has
+    # elapsed is re-probed BEFORE the snapshot rebuild, so server-side additions/removals reach the
+    # registry first and the rebuilt snapshot (and tool_search's catalog) reflects them. No-op for
+    # servers without a hint or whose TTL still holds; the helper logs per-server failures and never
+    # breaks the refresh.
+    try:
+        _discovery._refresh_ttl_expired_server_tool_lists()
+    except Exception:  # noqa: BLE001 - the pre-rebuild re-list is best-effort
+        logger.debug("TTL tool-list refresh skipped", exc_info=True)
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.

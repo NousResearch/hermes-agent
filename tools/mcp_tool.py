@@ -395,7 +395,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession`` method attribute
         # corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
-        # SEP-2549 cache hints from the last tools/list (ttl_ms, cache_scope).
+        # SEP-2549 cache hints from the last tools/list (ttl_ms, cache_scope) plus the wall-clock
+        # ``listed_at`` anchor TTL expiry is measured against.
         self._list_cache_meta: dict = {}
         # Latched when ``ping`` returns -32601; keepalives then use list_tools. Reset per connect.
         self._ping_unsupported: bool = False

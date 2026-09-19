@@ -130,8 +130,11 @@ class MCPServerHealthMixin:
                 _registration._deregister_mcp_tool_all_scopes(self, tool_name)
 
     async def _refresh_tools(self):
-        """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire
-        notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
+        """Re-fetch tools on ``tools/list_changed`` and update the registry. Also the body of the
+        SEP-2549 TTL trigger (``tools.mcp_tool_discovery._refresh_ttl_expired_server_tool_lists``):
+        a connected server whose ``ttl_ms`` cache hint elapsed re-lists through this same path, so
+        both triggers reconcile identically. The lock serializes rapid-fire notifications; after
+        the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:
@@ -146,7 +149,14 @@ class MCPServerHealthMixin:
                 if session is None:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
-                new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
+                # Cache hints describe THIS list: clear them first so a server that stopped sending
+                # ``ttlMs`` isn't left on the previous hint (and its old ``listed_at`` anchor).
+                self._list_cache_meta = {}
+                new_mcp_tools = await _core._paginate_full_list(
+                    session.list_tools, "tools", self.name, cache_meta_out=self._list_cache_meta)
+                # Anchor TTL expiry on the list that just happened — the re-list that follows a
+                # ``list_changed`` refresh must not fire again over an already-fresh manifest.
+                self._list_cache_meta["listed_at"] = time.time()
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})

@@ -137,10 +137,13 @@ def _egress_enforce_on_docker(default: bool = True) -> bool:
 
 
 def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
-    """Env names that would weaken or bypass enforced egress if overridden."""
-    critical = set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"}
-    critical.update(k for k in env_overrides if k.endswith("_API_KEY") or k.endswith("_TOKEN"))
-    return critical
+    """Env names that would weaken or bypass enforced egress if overridden.
+
+    Every name the egress layer writes is critical: mapped tokens land under arbitrary
+    ``real_env_name``/``alias_env_names`` entries from mappings.json, so a suffix
+    heuristic would silently unprotect any mapped credential not ending in
+    ``_API_KEY``/``_TOKEN`` (e.g. ``AWS_SECRET_ACCESS_KEY``)."""
+    return set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"} | set(env_overrides)
 
 
 def _extra_args_egress_collisions(extra_args: list[str], critical_names: set[str]) -> list[str]:

@@ -1000,6 +1000,38 @@ def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
         _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
 
 
+def test_extra_args_non_suffixed_egress_name_refuses_under_egress(monkeypatch):
+    """The collision guard must cover every name the egress layer writes, not
+    only *_API_KEY/*_TOKEN: mappings can carry arbitrary real_env_name and
+    alias_env_names entries, and check_docker_env_collisions already guards the
+    full mapped set via load_mappings()."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: ([], {"AWS_SECRET_ACCESS_KEY": "proxy-token"}, []),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*AWS_SECRET_ACCESS_KEY"):
+        _make_dummy_env(extra_args=["-e", "AWS_SECRET_ACCESS_KEY=real"])
+
+
+def test_forward_env_non_suffixed_egress_name_refuses_under_egress(monkeypatch):
+    """docker_forward_env injects the real host value over the swapped token on
+    every docker exec; non-suffixed egress names must refuse too."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: ([], {"AWS_SECRET_ACCESS_KEY": "proxy-token"}, []),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_forward_env.*AWS_SECRET_ACCESS_KEY"):
+        _make_dummy_env(forward_env=["AWS_SECRET_ACCESS_KEY"])
+
+
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     """A labeled container in ``exited`` state must be restarted via
     ``docker start`` before the new Hermes process uses it. Without this

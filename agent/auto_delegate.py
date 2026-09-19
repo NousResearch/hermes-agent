@@ -94,10 +94,14 @@ def auto_delegate_enabled() -> bool:
 def _extract_first_summary(payload: Any) -> Optional[str]:
     """Pull the first child summary out of a ``delegate_task`` JSON payload.
 
-    ``delegate_task`` returns ``{"results": [{"status": "ok", "summary": ...,
-    "task_index": ...}], "total_duration_seconds": ...}`` (unchanged in
-    v0.21.3). Returns ``None`` when there is no usable summary (error/empty
-    results).
+    ``delegate_task`` returns ``{"results": [{"status": ..., "summary": ...,
+    "task_index": ...}], "total_duration_seconds": ...}``. The result-entry
+    status contract is defined by
+    ``tools.delegate_tool_child_run._build_result_entry``: ``"completed"`` for
+    a normal finish, ``"interrupted"`` or ``"failed"`` otherwise. Only a
+    completed child with a non-empty summary is a usable dispatch result;
+    anything else (failed, interrupted, blank summary) falls back to the
+    normal loop. Returns ``None`` when there is no usable summary.
     """
     if not isinstance(payload, dict):
         return None
@@ -109,7 +113,7 @@ def _extract_first_summary(payload: Any) -> Optional[str]:
         return None
     status = str(first.get("status") or "").lower()
     summary = first.get("summary")
-    if status != "ok" or not isinstance(summary, str) or not summary.strip():
+    if status != "completed" or not isinstance(summary, str) or not summary.strip():
         return None
     return summary.strip()
 

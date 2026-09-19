@@ -16,8 +16,8 @@ Behavior contracts under test:
 Run with: python -m pytest tests/agent/test_auto_delegate.py -v
 """
 
-import inspect
 import json
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -113,13 +113,13 @@ class TestAutoDelegateConfig(unittest.TestCase):
 class TestExtractFirstSummary(unittest.TestCase):
     def test_ok_summary_extracted(self):
         payload = {
-            "results": [{"status": "ok", "summary": "  done.  ", "task_index": 0}],
+            "results": [{"status": "completed", "summary": "  done.  ", "task_index": 0}],
             "total_duration_seconds": 1.2,
         }
         self.assertEqual(_extract_first_summary(payload), "done.")
 
     def test_error_status_returns_none(self):
-        payload = {"results": [{"status": "error", "summary": None}], "total_duration_seconds": 0.1}
+        payload = {"results": [{"status": "failed", "summary": None}], "total_duration_seconds": 0.1}
         self.assertIsNone(_extract_first_summary(payload))
 
     def test_empty_results_returns_none(self):
@@ -129,7 +129,7 @@ class TestExtractFirstSummary(unittest.TestCase):
         self.assertIsNone(_extract_first_summary("not a dict"))
 
     def test_blank_summary_returns_none(self):
-        payload = {"results": [{"status": "ok", "summary": "   "}]}
+        payload = {"results": [{"status": "completed", "summary": "   "}]}
         self.assertIsNone(_extract_first_summary(payload))
 
 
@@ -164,7 +164,7 @@ class TestTryAutoDelegate(unittest.TestCase):
         agent = _make_agent()
         summary = "Child finished: wrote /tmp/out.txt."
         ok_payload = json.dumps(
-            {"results": [{"status": "ok", "summary": summary, "task_index": 0}]}
+            {"results": [{"status": "completed", "summary": summary, "task_index": 0}]}
         )
         user_msg = {"role": "user", "content": "write a report"}
         with patch("agent.auto_delegate.auto_delegate_enabled", return_value=True), patch(
@@ -204,7 +204,7 @@ class TestTryAutoDelegate(unittest.TestCase):
         # keyword; that shape must work and must not mutate s.messages.
         agent = _make_agent()
         summary = "summary text"
-        ok_payload = json.dumps({"results": [{"status": "ok", "summary": summary}]})
+        ok_payload = json.dumps({"results": [{"status": "completed", "summary": summary}]})
         user_msg = {"role": "user", "content": "task"}
         messages = [user_msg]
         with patch("agent.auto_delegate.auto_delegate_enabled", return_value=True), patch(
@@ -223,7 +223,7 @@ class TestTryAutoDelegate(unittest.TestCase):
 
     def test_does_not_mutate_input_messages(self):
         agent = _make_agent()
-        ok_payload = json.dumps({"results": [{"status": "ok", "summary": "s"}]})
+        ok_payload = json.dumps({"results": [{"status": "completed", "summary": "s"}]})
         user_msg = {"role": "user", "content": "task"}
         messages = [user_msg]
         with patch("agent.auto_delegate.auto_delegate_enabled", return_value=True), patch(
@@ -242,7 +242,7 @@ class TestTryAutoDelegate(unittest.TestCase):
 
     def test_falls_back_on_error_status(self):
         agent = _make_agent()
-        err_payload = json.dumps({"results": [{"status": "error", "summary": None}]})
+        err_payload = json.dumps({"results": [{"status": "failed", "summary": None}]})
         with patch("agent.auto_delegate.auto_delegate_enabled", return_value=True), patch(
             "tools.delegate_tool.delegate_task", return_value=err_payload
         ):
@@ -266,22 +266,84 @@ class TestTryAutoDelegate(unittest.TestCase):
         self.assertIsNone(result)
 
 
-class TestLoopCallSite(unittest.TestCase):
-    """The handoff is wired into the turn loop after the codex branch."""
+class TestAutoDelegateE2E(unittest.TestCase):
+    """Real ``delegate_task`` chain, not a mock at the tool boundary.
 
-    def test_call_site_is_after_codex_handoff_and_before_loop(self):
-        # v0.21.3: the loop body lives in ``_run_conversation_turn`` (called by
-        # ``run_conversation``), after the ``_LoopState`` construction.
-        from agent import conversation_loop as cl
+    The child agent is stubbed at the ``run_agent.AIAgent`` boundary (no real
+    LLM call), but ``_normalize_task_list`` → ``_build_children`` →
+    ``_run_batch`` → ``_finalize_child_results`` → ``_build_result_entry`` →
+    ``_extract_first_summary`` all run for real against a temp ``HERMES_HOME``
+    with ``delegation.auto_delegate: true`` written to ``config.yaml``. This
+    exercises the actual result-entry status contract (``"completed"``) — a
+    mock at the ``delegate_task`` boundary previously hid the ``"ok"`` vs
+    ``"completed"`` mismatch that made dispatcher mode silently no-op.
+    """
 
-        src = inspect.getsource(cl._run_conversation_turn)
-        codex_idx = src.index('agent.api_mode == "codex_app_server"')
-        handoff_idx = src.index("try_auto_delegate(")
-        loop_idx = src.index("while (s.api_call_count < agent.max_iterations")
-        self.assertLess(codex_idx, handoff_idx)
-        self.assertLess(handoff_idx, loop_idx)
-        # Wrapped so a dispatcher failure can never hard-fail the turn.
-        self.assertIn("except Exception:", src[handoff_idx:loop_idx])
+    def _make_real_parent(self):
+        parent = MagicMock()
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_key = "***"
+        parent.provider = "openrouter"
+        parent.api_mode = "chat_completions"
+        parent.model = "anthropic/claude-sonnet-4"
+        parent.platform = "cli"
+        parent.providers_allowed = None
+        parent.providers_ignored = None
+        parent.providers_order = None
+        parent.provider_sort = None
+        parent._session_db = None
+        parent._delegate_depth = 0
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        parent._print_fn = None
+        parent.tool_progress_callback = None
+        parent.thinking_callback = None
+        return parent
+
+    def test_real_delegate_chain_dispatches_and_returns_summary(self):
+        import os
+
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        config_path = os.path.join(hermes_home, "config.yaml")
+        os.makedirs(hermes_home, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write("delegation:\n  auto_delegate: true\n")
+        _LOAD_CONFIG_CACHE.clear()
+        try:
+            parent = self._make_real_parent()
+            summary = "Child finished: wrote /tmp/out.txt."
+            user_msg = {"role": "user", "content": "write a report"}
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.run_conversation.return_value = {
+                    "final_response": summary,
+                    "completed": True,
+                    "api_calls": 1,
+                }
+                MockAgent.return_value = mock_child
+                result = try_auto_delegate(
+                    parent,
+                    user_message="write a report",
+                    messages=[user_msg],
+                    effective_task_id="task-e2e",
+                )
+        finally:
+            _LOAD_CONFIG_CACHE.clear()
+            if os.path.exists(config_path):
+                os.remove(config_path)
+
+        self.assertIsNotNone(
+            result, "auto_delegate must dispatch, not silently fall back to the normal loop"
+        )
+        if result is None:  # pragma: no cover - unreachable on success
+            return
+        self.assertEqual(result["final_response"], summary)
+        self.assertTrue(result["auto_delegated"])
+        self.assertEqual(result["turn_exit_reason"], "auto_delegated")
+        self.assertEqual(result["task_id"], "task-e2e")
 
 
 if __name__ == "__main__":

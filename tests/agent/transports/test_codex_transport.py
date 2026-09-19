@@ -1249,13 +1249,23 @@ class TestXaiReservedToolSearchAlias:
         assert "tool_describe" in names
         assert "read_file" in names
 
-    def test_non_xai_backend_keeps_tool_search_name(self, transport):
+    def test_openai_responses_aliases_reserved_tool_search(self, transport):
+        """OpenAI Responses reserves the ``tool_search`` namespace for its native Tool Search (#83122):
+        both the ChatGPT Codex backend and api.openai.com get the bridge under ``hermes_tool_search``."""
+        for extra in ({"is_codex_backend": True}, {"base_url": "https://api.openai.com/v1"}):
+            kw = transport.build_kwargs(
+                model="gpt-5.4", messages=[{"role": "user", "content": "hi"}], tools=list(self._TOOLS), **extra,
+            )
+            names = self._names(kw)
+            assert "hermes_tool_search" in names and "tool_search" not in names, extra
+            assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
+
+    def test_other_responses_backend_keeps_tool_search_name(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "hi"}],
             tools=list(self._TOOLS),
-            is_codex_backend=True,
-            base_url="https://api.openai.com/v1",
+            base_url="https://responses-proxy.example.invalid/v1",
         )
         names = self._names(kw)
         assert "tool_search" in names

@@ -80,7 +80,11 @@ _PERPLEXITY_RESERVED_TOOL_NAMES = (
     "people_search",
     "finance_search",
 )
+# xAI and OpenAI Responses (api.openai.com and the ChatGPT Codex backend) reserve ``tool_search``
+# for their native Tool Search ("Function 'tool_search.tool_search' not allowed in reserved
+# namespace 'tool_search'", #83122 / #95003).
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
+_OPENAI_RESPONSES_HOSTS = frozenset({"api.openai.com", "chatgpt.com"})
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
 # Reverse map used ONLY when normalize_response runs on a transport that never
@@ -171,6 +175,18 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
+def _reserves_tool_search(params: dict[str, Any], is_xai_responses: bool) -> bool:
+    """True when the Responses endpoint owns the ``tool_search`` namespace (xAI, OpenAI, ChatGPT Codex)."""
+    if is_xai_responses or params.get("is_codex_backend") is True:
+        return True
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() in _OPENAI_RESPONSES_HOSTS
+    except Exception:
+        return False
+
+
 def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
@@ -214,7 +230,7 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     # request emits is recorded here and stashed on the transport, so the reverse rewrite in
     # ``normalize_response`` applies only to aliases that were actually sent (never to a real tool that
     # merely shares an alias-shaped name).
-    if is_xai_responses and response_tools:
+    if response_tools and _reserves_tool_search(params, is_xai_responses):
         response_tools, _xai_aliases = _alias_reserved_tools(response_tools, _XAI_RESERVED_TOOL_NAMES)
         wire_aliases.update(_xai_aliases)
     return response_tools, wire_aliases

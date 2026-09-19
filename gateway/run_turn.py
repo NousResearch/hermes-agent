@@ -2094,12 +2094,16 @@ class GatewayTurnMixin:
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        # Redact before truncating/folding: the YAML/ENV passes are line-anchored, so folding
+        # newlines first would move "Password: …" mid-line and leak the value into the log.
+        from agent.redact import redact_sensitive_text
+        _msg_preview = redact_sensitive_text(event.text or "", force=True)[:80].replace("\n", " ")
+        _reply_txt = redact_sensitive_text(getattr(event, "reply_to_text", None) or "", force=True)[:80].replace("\n", " ")
+        _reply_id = getattr(event, "reply_to_message_id", None)
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
             _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", (event.text or "")[:80].replace("\n", " "),
-            getattr(event, "reply_to_message_id", None),
-            (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
+            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
         resolved = await self._hmwa_resolve_session(event, source)

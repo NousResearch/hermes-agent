@@ -1711,6 +1711,12 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return _delivery_manager().invoke_hook(hook_name, **kwargs)
 
 
+async def ainvoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+    """:func:`invoke_hook` for callers on an event loop: ``async def`` callbacks are awaited
+    there instead of bridged through a helper thread (see ``PluginManager.ainvoke_hook``)."""
+    return await _delivery_manager().ainvoke_hook(hook_name, **kwargs)
+
+
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> List[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)

@@ -6,6 +6,7 @@ the origin (tests patch it there) and is looked up lazily.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import copy
 import inspect
@@ -165,7 +166,23 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 class PluginDispatchMixin:
     @staticmethod
-    def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
+    def _hook_callback_kwargs(callback: Callable, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """The slice of *payload* a callback accepts: everything for ``**kwargs`` (or
+        un-introspectable) callbacks, only declared names for narrow legacy signatures."""
+        try:
+            parameters = inspect.signature(callback).parameters
+        except (TypeError, ValueError):
+            return dict(payload)  # no introspectable signature
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+            return dict(payload)
+        keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+        return {
+            name: value for name, value in payload.items()
+            if name in parameters and parameters[name].kind in keyword_kinds
+        }
+
+    @classmethod
+    def _invoke_hook_callback(cls, callback: Callable, payload: Dict[str, Any]) -> Any:
         """Invoke a hook while withholding additive fields from narrow legacy callbacks.
 
         An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
@@ -173,17 +190,7 @@ class PluginDispatchMixin:
         plugin's body never runs (#12449).
         """
         from hermes_cli.plugins import resolve_plugin_command_result
-        try:
-            parameters = inspect.signature(callback).parameters
-        except (TypeError, ValueError):
-            return resolve_plugin_command_result(callback(**payload))  # no introspectable signature
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-            return resolve_plugin_command_result(callback(**payload))
-        keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        return resolve_plugin_command_result(callback(**{
-            name: value for name, value in payload.items()
-            if name in parameters and parameters[name].kind in keyword_kinds
-        }))
+        return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
@@ -444,6 +451,40 @@ class PluginDispatchMixin:
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
+
+    async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """:meth:`invoke_hook` for callers that are already on an event loop.
+
+        Same payload narrowing, per-callback isolation and result contract. The difference is
+        where an ``async def`` callback runs: here it is awaited on the caller's own loop, so a
+        callback that awaits anything scheduled on that loop can make progress. Through the
+        sync path it runs on a helper thread while the caller blocks in ``done.wait()`` — on the
+        gateway that stalls the whole event loop for the callback's duration. Sync callbacks
+        run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
+        (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
+        """
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        results: List[Any] = []
+        timeout = _resolve_hook_callback_timeout()
+        use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
+        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        for cb in self._hooks.get(hook_name, []):
+            callback_name = getattr(cb, "__name__", repr(cb))
+            try:
+                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                if inspect.isawaitable(ret):
+                    ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                if ret is not None:
+                    results.append(ret)
+            except asyncio.TimeoutError:
+                logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
+                if fail_closed:  # policy hook: fail closed with a block directive
+                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+            except Exception as exc:
+                logger.warning("Hook '%s' callback %s raised: %s", hook_name, callback_name, exc)
+        return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""

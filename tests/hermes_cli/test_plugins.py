@@ -2587,3 +2587,54 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestAsyncHookOnCallerLoop:
+    """``ainvoke_hook`` awaits ``async def`` callbacks on the caller's own event loop.
+
+    #109196 made async callbacks run under ``invoke_hook`` by bridging them through a helper
+    thread; the caller blocks in ``done.wait()`` until the callback finishes. For a hook fired
+    from a coroutine (``pre_gateway_dispatch`` on the gateway loop) that stalls the loop, and a
+    callback that awaits anything scheduled on that loop can never complete. The async twin keeps
+    the callback on the caller's loop.
+    """
+
+    def test_callback_that_needs_the_caller_loop_completes(self):
+        import asyncio
+
+        mgr = PluginManager()
+
+        async def driver():
+            gate = asyncio.Event()
+
+            async def async_hook(**kwargs):
+                await gate.wait()  # only a sibling task on THIS loop can release it
+                return {"action": "allow"}
+
+            async def release():
+                await asyncio.sleep(0)
+                gate.set()
+
+            mgr._hooks.setdefault("pre_gateway_dispatch", []).append(async_hook)
+            asyncio.create_task(release())
+            return await asyncio.wait_for(
+                mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"), timeout=5)
+
+        assert asyncio.run(driver()) == [{"action": "allow"}]
+
+    def test_narrow_legacy_signature_still_gets_only_its_fields(self):
+        """Payload narrowing is shared with ``invoke_hook``: a callback declaring only ``event``
+        must not receive the additive ``gateway`` / ``telemetry_schema_version`` fields."""
+        import asyncio
+
+        mgr = PluginManager()
+
+        def narrow(event):
+            return {"seen": event}
+
+        async def narrow_async(event):
+            return {"seen_async": event}
+
+        mgr._hooks.setdefault("pre_gateway_dispatch", []).extend([narrow, narrow_async])
+        results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
+        assert results == [{"seen": "e"}, {"seen_async": "e"}]

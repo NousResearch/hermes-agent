@@ -339,18 +339,32 @@ export function usePromptActions({
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
-      options: { updateComposerAttachments?: boolean } = {}
+      options: { storedSessionId?: null | string; updateComposerAttachments?: boolean } = {}
     ): Promise<{ attachments: ComposerAttachment[]; sessionId: string }> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
-      const storedSessionId = selectedStoredSessionIdRef.current
+      // The submit's own target, never the chat on screen: a queued send drains
+      // after the user has moved on, so a stale runtime here must recover the
+      // session the text belongs to — not stage the files on, and then submit
+      // into, whichever chat is selected now (#46194, the attachments edition).
+      const storedSessionId = options.storedSessionId ?? selectedStoredSessionIdRef.current
+      const targetIsForeground = storedSessionId === selectedStoredSessionIdRef.current
       const remote = isSessionRemote(storedSessionId ?? sessionId)
       let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
 
       const onSessionRecovered = (recoveredId: string) => {
         liveSessionId = recoveredId
-        activeSessionIdRef.current = recoveredId
-        setActiveSessionId(recoveredId)
+
+        if (storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, recoveredId)
+        }
+
+        // Only a foreground send may retarget the foreground: a background
+        // drain that recovers its own session must not steal the view.
+        if (targetIsForeground) {
+          activeSessionIdRef.current = recoveredId
+          setActiveSessionId(recoveredId)
+        }
       }
 
       for (const original of attachments) {
@@ -417,7 +431,7 @@ export function usePromptActions({
 
       return { attachments: synced, sessionId: liveSessionId }
     },
-    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
+    [activeSessionIdRef, requestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef]
   )
 
   // Stage a freshly dropped file as soon as it lands (when a session already

@@ -4617,10 +4617,15 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
-            full_chunk = prefix + chunk_body
-            # Walk only chunk_body (not the prepended prefix) for the fence state.
+            rest = remaining[split_at:]
+            # Walk only chunk_body (not the prepended prefix) for the fence state BEFORE trimming:
+            # inside a code fence the leading whitespace of ``rest`` is literal code content
+            # (blank lines, indentation), so only strip it for prose splits.
             in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
+            if not in_code:
+                rest = rest.lstrip()
+            remaining = rest
+            full_chunk = prefix + chunk_body
             carry_lang = lang if in_code else None
             # Close the orphaned fence so the chunk stands alone.
             chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)

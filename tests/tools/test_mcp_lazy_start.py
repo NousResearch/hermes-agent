@@ -379,3 +379,89 @@ class TestLazyMcpStatus:
                 status["playwright"]["connected"]) == ("lazy", len(cached), False)
         assert status["eager"]["status"] == "configured" and status["eager"]["tools"] == 0
         assert status["live"]["status"] == "connected" and status["live"]["tools"] == 2
+
+
+class TestStaleCacheEntryIsNotServed:
+    """A manifest an OLDER build wrote must not be trusted by the lazy path.
+
+    Measured 2026-09-17 (mcp 2.0.0): the pre-fix hint reader persisted
+    ``annotations.readOnlyHint: false`` for EVERY read-only tool — the operator's live ``gmail`` row
+    read ``{"name": "list_labels", "annotations": {"readOnlyHint": false}}`` while the server
+    declared it read-only. A ``lazy: true`` server serves its manifest without ever connecting, and
+    its first call is gated by the very annotation the stale row gets wrong, so the wrong value would
+    outlive the fix. The entry_version stamp makes such an entry a MISS — which falls back to the
+    eager connect whose write-through rewrites the row (``_register_lazy_from_cache``).
+    """
+
+    # The exact pre-fix row shape: every hint false, and no entry_version stamp.
+    _STALE_ROWS = [
+        {"name": "list_labels", "description": "", "inputSchema": {"type": "object", "properties": {}},
+         "annotations": {"readOnlyHint": False}},
+        {"name": "create_draft", "description": "", "inputSchema": {"type": "object", "properties": {}},
+         "annotations": {"readOnlyHint": False}},
+    ]
+
+    def _cache_with(self, monkeypatch, tmp_path, **entry_extra):
+        """Write a real cache file for the lazy fixture server; returns (path, fingerprint)."""
+        import tools.mcp_schema_cache as msc
+        from tools.mcp_schema_cache import config_fingerprint
+
+        fingerprint = config_fingerprint(_lazy_config()["playwright"])
+        entry = {"fingerprint": fingerprint, "tools": list(self._STALE_ROWS),
+                 "utility_tools": [], **entry_extra}
+        path = tmp_path / "mcp_schema_cache.json"
+        path.write_text(json.dumps({"playwright": entry}), encoding="utf-8")
+        monkeypatch.setattr(msc, "_cache_path", lambda: path)
+        return path, fingerprint
+
+    def test_unversioned_entry_is_a_miss_and_falls_back_to_eager(self, monkeypatch, tmp_path):
+        self._cache_with(monkeypatch, tmp_path)  # no entry_version: written by a pre-fix build
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool_registration._register_from_cache_sync") as lazy_register, \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as run_on_loop:
+
+            _mcp_discovery.register_mcp_servers(_lazy_config())
+
+        lazy_register.assert_not_called()  # a pre-fix manifest must not be trusted by the lazy path
+        run_on_loop.assert_called_once()  # eager connect -> write-through refreshes the row
+
+    def test_current_version_entry_is_still_served_lazily(self, monkeypatch, tmp_path):
+        import tools.mcp_schema_cache as msc
+
+        self._cache_with(monkeypatch, tmp_path, entry_version=msc._ENTRY_VERSION)
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool_registration._register_from_cache_sync",
+                   return_value=["mcp_playwright_list_labels"]) as lazy_register, \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as run_on_loop:
+
+            _mcp_discovery.register_mcp_servers(_lazy_config())
+
+        lazy_register.assert_called_once()
+        run_on_loop.assert_not_called()
+        # the current-version entry itself was handed to the lazy registration
+        assert lazy_register.call_args[0][2]["entry_version"] == msc._ENTRY_VERSION
+
+    def test_write_through_heals_the_row_and_it_is_trusted_again(self, monkeypatch, tmp_path):
+        """The self-heal, without a hand-edit: miss -> eager connect -> rewritten row is served."""
+        import tools.mcp_schema_cache as msc
+
+        self._cache_with(monkeypatch, tmp_path)
+        from tools.mcp_schema_cache import config_fingerprint
+
+        fingerprint = config_fingerprint(_lazy_config()["playwright"])
+        assert msc.get_cached_entry("playwright", fingerprint) is None, "stale row was served"
+
+        # what the eager connect's write-through does once the hint reader sees the 2.x spelling (#88858)
+        msc.write_cache_entry("playwright", fingerprint, tools=[
+            {"name": "list_labels", "description": "", "inputSchema": {"type": "object", "properties": {}},
+             "annotations": {"readOnlyHint": True}},
+            {"name": "create_draft", "description": "", "inputSchema": {"type": "object", "properties": {}},
+             "annotations": {"readOnlyHint": False}},
+        ], utility_tools=[])
+
+        entry = msc.get_cached_entry("playwright", fingerprint)
+        assert entry is not None and entry["entry_version"] == msc._ENTRY_VERSION
+        rows = {r["name"]: r["annotations"]["readOnlyHint"] for r in msc.tools_from_cache_entry(entry)}
+        assert rows == {"list_labels": True, "create_draft": False}

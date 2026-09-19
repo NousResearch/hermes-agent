@@ -2,6 +2,7 @@ import { ConfirmDialog, host } from '@hermes/plugin-sdk'
 import type { useI18n } from '@hermes/plugin-sdk'
 
 import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
+import { PairBotsDialog } from './pair-bots-dialog'
 import type { useRoster } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
 import { disbandGroupChat, openGroupChat } from './group-chat-view'
@@ -18,6 +19,8 @@ interface renderRosterDialogsProps {
   setCreateOpen: (value: boolean) => void
   groupCreateOpen: boolean
   setGroupCreateOpen: (value: boolean) => void
+  pairOpen: boolean
+  setPairOpen: (value: boolean) => void
   editing: RosterRow | null
   setEditing: (value: RosterRow | null) => void
   deleting: (RosterRow & { path?: string }) | null
@@ -40,6 +43,8 @@ export function renderRosterDialogs({
   setCreateOpen,
   groupCreateOpen,
   setGroupCreateOpen,
+  pairOpen,
+  setPairOpen,
   editing,
   setEditing,
   deleting,
@@ -71,6 +76,7 @@ export function renderRosterDialogs({
         // registered connections — their turns route to their own machines.
         roster={roster}
       />
+      <PairBotsDialog onClose={() => setPairOpen(false)} open={pairOpen} roster={roster} />
       <SectionNameDialog
         initialName={sectionDialog?.mode === 'rename' ? sectionDialog.name : ''}
         mode={sectionDialog?.mode === 'rename' ? 'rename' : 'create'}

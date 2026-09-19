@@ -97,9 +97,9 @@ def _native_binary_candidates(base: Path, *, is_windows: Optional[bool] = None) 
     return list(cands.values())
 
 
-def _first_existing(*bases: Path) -> Optional[Path]:
+def _first_existing(*bases: Path, is_windows: Optional[bool] = None) -> Optional[Path]:
     """First platform-native candidate of any ``base`` that exists on disk."""
-    return next((c for base in bases for c in _native_binary_candidates(base) if c.exists()), None)
+    return next((c for base in bases for c in _native_binary_candidates(base, is_windows=is_windows) if c.exists()), None)
 
 
 def _npm_bin_dir() -> Path:
@@ -107,13 +107,17 @@ def _npm_bin_dir() -> Path:
     return hermes_lsp_bin_dir().parent / "node_modules" / ".bin"
 
 
-def _existing_binary(name: str) -> Optional[str]:
-    """Probe the staging dir (+ npm's bin dir on Windows) then PATH for a binary named ``name``."""
-    bases = [hermes_lsp_bin_dir() / name] + ([_npm_bin_dir() / name] if _is_windows() else [])
-    for staged in (c for base in bases for c in _native_binary_candidates(base)):
+def _existing_binary(name: str, *, is_windows: Optional[bool] = None) -> Optional[str]:
+    """Probe the staging dir (+ npm's bin dir on Windows) then PATH for a binary named ``name``.
+
+    ``is_windows`` overrides the host check so the Windows resolution is testable as data on every lane.
+    """
+    win = _is_windows() if is_windows is None else is_windows
+    bases = [hermes_lsp_bin_dir() / name] + ([_npm_bin_dir() / name] if win else [])
+    for staged in (c for base in bases for c in _native_binary_candidates(base, is_windows=win)):
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
-    suffixes = (*_WINDOWS_WRAPPER_SUFFIXES, "") if _is_windows() else ("",)
+    suffixes = (*_WINDOWS_WRAPPER_SUFFIXES, "") if win else ("",)
     return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
 
 

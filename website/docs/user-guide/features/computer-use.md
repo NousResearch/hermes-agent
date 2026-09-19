@@ -96,6 +96,24 @@ hermes -t computer_use chat
 
 or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
+## Autostart (Windows) — on-demand by default
+
+Hermes does **not** start cua-driver at Windows login. The
+`cua-driver-serve` Scheduled Task is never created by Hermes installs or
+updates — the driver is spawned per session over stdio when you actually
+use Computer Use, so a per-boot daemon (and the brief login console
+flash it caused, trycua/cua#1645) is unnecessary.
+
+- `hermes computer-use status` shows the autostart state on Windows.
+- `hermes computer-use autostart status|enable|disable` manages the task:
+  `enable` is the explicit opt-in (UAC prompt); `disable` stops the
+  per-login launch without deleting anything (reversible).
+- Upgraded from an older Hermes that created the task? One command
+  cleans it up: `hermes computer-use autostart disable`.
+
+(Driving over SSH is the exception — that setup needs the autostart
+pattern; see the Windows row in the prereqs table above.)
+
 ## Permission modes and logged-in browser profiles
 
 Hermes maps its existing approval UX onto cua-driver's immutable runtime

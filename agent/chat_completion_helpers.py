@@ -1791,6 +1791,74 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
+_LOOPBACK_FALLBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+_NON_API_KEY_AUTH_TYPES = frozenset({
+    "aws_sdk", "external_process", "oauth_device_code", "oauth_external", "vertex", "virtual",
+})
+_UNUSABLE_FALLBACK_KEYS = frozenset({"no-key-required"})
+
+
+def _fallback_auth_value_is_usable(value: Any) -> bool:
+    """Return whether a resolved key or auth callable can authenticate a request."""
+    if callable(value):
+        return True
+    value = str(value or "").strip()
+    return bool(value) and value not in _UNUSABLE_FALLBACK_KEYS
+
+
+def _fallback_client_has_auth(client: Any) -> bool:
+    """Check client auth without treating Hermes' local/keyless placeholders as keys."""
+    if _fallback_auth_value_is_usable(getattr(client, "api_key", None)):
+        return True
+    headers = getattr(client, "default_headers", None)
+    try:
+        for name, value in headers.items():
+            if str(name).lower() == "authorization" and _fallback_auth_value_is_usable(value):
+                return True
+    except (AttributeError, TypeError):
+        pass
+    return False
+
+
+def _fallback_destination_auth_failure(
+    provider: str, base_url: str, client: Any, api_key_hint: Any = None,
+) -> Optional[str]:
+    """Return why a fallback cannot authenticate, or None when it has an auth path.
+
+    The fallback client has already been resolved, so non-api-key providers and local endpoints
+    are usable even when ``client.api_key`` is empty. For ordinary remote providers, require a
+    credential that is available now. This avoids swapping into a pool whose entries are all
+    exhausted, which would keep the same retry loop alive under a different provider name.
+    """
+    if _fallback_auth_value_is_usable(api_key_hint) or _fallback_client_has_auth(client):
+        return None
+
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+        overlay = HERMES_OVERLAYS.get(provider)
+    except Exception:
+        overlay = None
+    if overlay is not None and (
+        getattr(overlay, "keyless", False) or overlay.auth_type in _NON_API_KEY_AUTH_TYPES
+    ):
+        return None
+
+    if base_url_hostname(base_url) in _LOOPBACK_FALLBACK_HOSTS:
+        return None
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider)
+        if pool is not None and pool.has_available():
+            return None
+    except Exception as exc:
+        logger.warning(
+            "Fallback skip: could not verify credentials for %s (%s)", provider, type(exc).__name__
+        )
+        return "credential availability could not be verified"
+    return "no usable credentials are available"
+
+
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -1972,6 +2040,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_api_mode = "chat_completions"
                 elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                     fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+
+            # do not commit a remote fallback that has no usable key or available pool entry.
+            # A resolved client is not proof that the next request can authenticate: keyless
+            # placeholders can build a paid client that then loops on 401 forever.
+            auth_failure = _fallback_destination_auth_failure(
+                fb_provider, fb_base_url, fb_client, fb_api_key_hint,
+            )
+            if auth_failure:
+                unavailable.add(fb_key)
+                message = f"Fallback skip: {fb_provider}/{fb_model} {auth_failure}"
+                logger.warning(message)
+                agent._buffer_status(f"⚠️ {message}.")
+                continue
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 

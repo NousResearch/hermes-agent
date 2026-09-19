@@ -279,6 +279,13 @@
         }
       ]
     },
+    "mac": {
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Hermes needs access to devices on your local network to connect to your configured gateway."
+      },
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.inherit.plist"
+    },
     "win": {
       "legalTrademarks": "Hermes",
       "target": [

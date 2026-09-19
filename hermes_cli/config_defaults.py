@@ -1913,7 +1913,8 @@ DEFAULT_CONFIG = {
     },
     # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
     # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
-    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
+    # (terminal, file tools, todo, memory, browser_*, ...) are not deferred unless ``defer`` names
+    # them: the curated set below plus any name the user adds.
     "tools": {
         "tool_search": {
             # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
@@ -1939,6 +1940,35 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
+            # Names to defer ON TOP of the MCP/plugin catalog. This list IS the curated default
+            # (`tools/tool_search.py` reads it, so the value the user sees is the value the agent
+            # obeys); an explicit user list REPLACES it wholesale, and ``[]`` defers no core tool
+            # at all. Adding cold/bulky names here is the supported way to shrink the always-sent
+            # tools array (measured on a 26-def CLI array: deferring 11 cold defs moved
+            # 35,824 B -> 25,747 B per call). A deferred tool costs one round trip on first use
+            # (tool_search -> tool_describe -> tool_call) and keeps its name visible in the
+            # embedded manifest; it is never unreachable.
+            # Event-triggered shims whose schemas are dead weight most turns:
+            "defer": [
+                "computer_use",
+                "session_search",
+                "image_generate",
+                "todo_list",
+                "process_manage",
+                "cronjob_manage",
+                # Desktop GUI surface (desktop_ui + project toolsets)
+                "drive_preview",
+                "gui_tour",
+                "desktop_preview",
+                "annotate_preview",
+                "show_tip",
+                "desktop_project",
+                "close_terminal",
+                "apply_layout",
+                "read_terminal",
+                "read_window_below",
+                "focus_pane",
+            ],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

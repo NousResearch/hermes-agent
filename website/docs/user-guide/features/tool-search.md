@@ -5,23 +5,30 @@ sidebar_position: 95
 
 # Tool Search
 
-When you have many MCP servers or non-core plugin tools attached to a
-session, their JSON schemas can consume a substantial fraction of the
-context window on every turn — even when only a few of them are relevant
-to what the user actually asked for.
+When a session carries many tools — MCP servers, plugin tools, or a large
+built-in surface — their JSON schemas can consume a substantial fraction of
+the context window on every turn, even when only a few are relevant to what
+the user actually asked for.
 
-**Tool Search** is Hermes' opt-in progressive-disclosure layer for that
-problem. When activated, MCP and plugin tools are replaced in the
-model-visible tools array by three bridge tools, and the model loads each
-specific tool's schema on demand.
+**Tool Search** is Hermes' progressive-disclosure layer for that problem.
+Deferred tools are replaced in the model-visible tools array by three bridge
+tools, and the model loads each specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
-The tools that make up Hermes' core capability set (`terminal`,
-`read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
-`browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+:::info What defers, and when
+Every **MCP tool** and **non-core plugin tool** is automatically eligible.
+**Core Hermes tools** (`terminal`, `read_file`, `write_file`, `patch`,
+`search_files`, memory, the `browser_*` family, `execute_code`,
+`delegate_task`, `session_search`, …) stay eager *by default* — but they are
+**not** exempt: naming one in `tools.tool_search.defer` defers it like any
+other tool. The curated set in that key already names cold, event-triggered
+core tools (`todo_list`, `cronjob_manage`, `session_search`,
+`process_manage`, `image_generate`, `computer_use`, the desktop-GUI shims),
+and adding to it is the supported way to shrink the always-sent array
+further — measured on a 26-definition CLI array, deferring 11 cold
+definitions moved it from 35,824 B to 25,747 B (~2.8k tokens) per call. A
+deferred tool keeps its name in the manifest and costs one extra round trip
+on first use (`tool_search` → `tool_describe` → `tool_call`); it is never
+unreachable.
 :::
 
 ## How it works
@@ -78,12 +85,12 @@ see the underlying tool, not the bridge.
 ## When does it activate?
 
 Tool Search uses **tiered disclosure**: the presence of *any* deferrable
-(MCP/plugin) tool activates the bridge; what scales with catalog size is
-how much of the catalog stays visible, not whether schemas defer.
+tool activates the bridge; what scales with catalog size is how much of the
+catalog stays visible, not whether schemas defer.
 
 | Tier | Condition | What the model sees |
 | --- | --- | --- |
-| **0** | No MCP/plugin tools | Every tool eager, no bridge. Pass-through. |
+| **0** | No deferrable tools (no MCP/plugin tools, and no core tool named in `defer`) | Every tool eager, no bridge. Pass-through. |
 | **1** | Deferred catalog's listing fits the budget | Bridge + a skills-style manifest of every deferred tool (name + short description, degrading to names-only when over budget). Degradation is **per server**: when one oversized server (Cloudflare) is attached alongside small ones (Linear), the small servers keep their per-tool listings and only the oversized server collapses to a summary line. |
 | **2** | Per-tool listing exceeds the budget even names-only for every server (e.g. Cloudflare's flat API surface alone: ~3,300 tools whose names are ~32K tokens) | Bare bridge + a one-line-per-server summary (server name + tool count), so the model knows which domains are reachable; individual tools are discoverable only through `tool_search`. |
 
@@ -103,6 +110,10 @@ tools:
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
+    defer:              # names to defer on top of the MCP/plugin catalog
+      - todo_list
+      - cronjob_manage
+      - browser_vision
 ```
 
 | Key | Default | Meaning |
@@ -113,6 +124,18 @@ tools:
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+| `defer` | the curated set (`todo_list`, `cronjob_manage`, `session_search`, `process_manage`, `image_generate`, `computer_use`, the desktop-GUI shims) | Tool names to defer on top of the MCP/plugin catalog. An explicit list **replaces** the curated set wholesale — `defer: []` keeps every core tool eager, and `defer: [todo_list, skill_manage, browser_snapshot]` is how you shrink a built-in-heavy array. Set it with `hermes config set tools.tool_search.defer '["todo_list","skill_manage"]'` (a JSON/YAML list literal). Deferred tools stay in the manifest, so nothing becomes undiscoverable — the cost is one round trip the first time the model uses one. |
+
+:::warning Never rewrite the `tool_search` description
+The `tool_search` bridge description **is** the manifest: one line per
+deferred tool, which is what keeps every deferred capability discoverable. Any
+transform that shortens or truncates tool descriptions (a compression
+middleware, a provider-side schema trim) must skip `tool_search` — truncating
+it deletes capabilities rather than padding. Measured: a description
+compressor cut it 2,501 → 1,648 chars and dropped whole groups (`cronjob
+tools`, `delegation tools`, `image_gen tools`) from the sent request, leaving
+those tools unreachable even though they were still registered.
+:::
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.

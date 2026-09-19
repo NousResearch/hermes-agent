@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tools.registry import tool_error
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
@@ -131,13 +132,11 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 # config replaces this wholesale ([] = everything eager). POST-rename names. ``clarify``
 # is deliberately absent: A/B showed deferring it collapsed structured-clarify usage
 # (18/18 -> 7/18) — the ask-the-user affordance must be ambient, a stub is not enough.
-_DEFAULT_DEFERRED_TOOLS = frozenset({
-    "computer_use", "session_search", "image_generate",
-    "todo_list", "process_manage", "cronjob_manage",
-    # Desktop GUI surface (desktop_ui + project toolsets)
-    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
-    "show_tip", "desktop_project", "close_terminal",
-    "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
+_DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+"""The curated defer set, owned by ``hermes_cli/config_defaults.py`` so the key a user reads in
+``hermes config`` is the value the agent obeys (an unregistered reader hid this key from
+``hermes config``, which then answered "not a recognized config key" for it). Read once at import:
+``config_defaults`` is pure data, so the import is a 2.6 ms no-op with no cycle risk."""
 
 
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:

@@ -260,6 +260,10 @@ class TestConfigGetPhantomKeyNotice:
             ("terminal.timeout", "terminal:\n  timeout: 120\n"),
             ("my_custom_setting", "my_custom_setting: hello\n"),
             ("mcp_servers.local.url", "mcp_servers:\n  local:\n    url: http://127.0.0.1:1\n"),
+            # tools.tool_search.defer IS read (tools/tool_search.py::ToolSearchConfig.from_raw) but
+            # was not in DEFAULT_CONFIG, so `hermes config set` answered "not a recognized config
+            # key — it was saved anyway, but Hermes may not read it" for a key the agent obeys.
+            ("tools.tool_search.defer", "tools:\n  tool_search:\n    defer:\n      - terminal\n"),
         ],
     )
     def test_recognized_and_custom_keys_are_not_flagged(

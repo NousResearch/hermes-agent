@@ -1,6 +1,6 @@
 ---
 name: har-derived-api-client
-description: Record a site's XHR into a HAR, derive an HTTP client.
+description: Use when a site has no public API but fetches JSON.
 version: 0.1.0
 author: Hermes Agent
 license: MIT
@@ -37,6 +37,26 @@ HAR recording works differently in each case (see How to Run).
 - You're about to loop `browser_navigate` for the same query repeatedly — stop and derive the endpoint once.
 - Reverse-engineering an autocomplete, search, feed, or checkout XHR.
 - You captured a session on a cloud backend (Browserbase / Browser-Use / Firecrawl) or via `/browser connect` and want the API without re-renting the browser.
+
+## When NOT to Use
+
+Reach for this only when the payoff is a *repeated, browserless* call to a JSON
+endpoint you cannot otherwise reach. Do not use it when:
+
+- **The page is server-rendered.** No XHR means nothing to derive (`har_to_client.py` prints "No API-looking entries"). Scrape the HTML instead.
+  - *Observed 2026-09-10 (Goodreads):* the CAPTURE succeeded — 730 KB HAR, headed browser cleared the WAF — and the derive step still found nothing, because Goodreads delivers its data in HTML. The skill was no help for that job; HTML parsing was. **Cheap pre-flight: confirm a JSON XHR actually fires before paying for a capture.**
+- **A public/official API exists** (docs, OpenAPI, a documented REST endpoint). Use it.
+- **You need one or two page reads.** `browser_navigate` or a plain HTTP GET is cheaper than installing Playwright and standing up a real browser for a one-off.
+- **You were handed a `.har` file to read or analyze.** That is ordinary JSON analysis — load it and answer; you do not need the capture half (you may still reuse `har_to_client.py` for the parsing).
+- **The data is already fetchable** with a single unauthenticated GET (RSS, sitemap, public JSON). Capture is overhead.
+- **You need to get past login, CAPTCHA, or bot detection.** This skill carries the session you already have; it does not forge or bypass one.
+- **The interaction is a write, checkout, or anything irreversible.** Replaying a captured mutating endpoint is riskier than doing it once by hand; derive read paths only.
+- **You cannot launch a browser locally and have no reachable CDP endpoint.** Capture is impossible in that configuration.
+
+Cost reality check: the capture step needs Playwright plus a browser binary
+(heavy install) and a real page load. If the goal is a single answer, the
+browser tool is the cheaper path; if the goal is a *client* that runs many
+times a day, this skill pays for itself immediately.
 
 ## Prerequisites
 

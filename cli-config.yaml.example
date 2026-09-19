@@ -767,6 +767,12 @@ compression:
   # prune. Default 4096.
   proactive_prune_min_reclaim_tokens: 4096
 
+  # Historical tool-call arguments above this JSON blob size retain bounded
+  # windows from each long string leaf. Set the threshold to 0 to disable.
+  tool_arg_head_chars: 1000
+  tool_arg_tail_chars: 1000
+  tool_arg_truncate_threshold: 4000
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

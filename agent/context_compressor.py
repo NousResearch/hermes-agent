@@ -1347,8 +1347,13 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+_TOOL_ARG_TRUNCATION_MARKER = "...[truncated]..."
+
+
+def _truncate_tool_call_args_json(
+    args: str, head_chars: int = 1000, tail_chars: int = 1000,
+) -> str:
+    """Window long string leaves in tool-call arguments while keeping valid JSON."""
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
@@ -1356,7 +1361,9 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            if len(obj) <= head_chars + tail_chars + len(_TOOL_ARG_TRUNCATION_MARKER):
+                return obj
+            return obj[:head_chars] + _TOOL_ARG_TRUNCATION_MARKER + (obj[-tail_chars:] if tail_chars else "")
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1365,7 +1372,8 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     shrunken = _shrink(parsed)
     # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+    candidate = json.dumps(shrunken, ensure_ascii=False)
+    return candidate if len(candidate) < len(args) else args
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
@@ -2461,6 +2469,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        tool_arg_head_chars: int = 1000, tool_arg_tail_chars: int = 1000,
+        tool_arg_truncate_threshold: int = 4000,
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
@@ -2487,6 +2497,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
+        # Pass 3 keeps both ends of historical tool arguments. A zero threshold disables it.
+        self.tool_arg_head_chars = max(0, int(tool_arg_head_chars))
+        self.tool_arg_tail_chars = max(0, int(tool_arg_tail_chars))
+        self.tool_arg_truncate_threshold = max(0, int(tool_arg_truncate_threshold))
         # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
         self._proactive_prune_rearm_tokens: int = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
@@ -2817,8 +2831,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             content_hashes.add(h)
         return pruned
 
-    @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
+    def _truncate_tool_call_args_at(self, result: List[Dict[str, Any]], idx: int) -> bool:
         """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -2826,7 +2839,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         new_tcs = []
         for tc in msg["tool_calls"]:
             args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            new_args = (
+                _truncate_tool_call_args_json(
+                    args,
+                    head_chars=self.tool_arg_head_chars,
+                    tail_chars=self.tool_arg_tail_chars,
+                )
+                if self.tool_arg_truncate_threshold > 0
+                and len(args) > self.tool_arg_truncate_threshold
+                else args
+            )
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:

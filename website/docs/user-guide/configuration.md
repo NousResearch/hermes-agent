@@ -986,6 +986,9 @@ compression:
   proactive_prune_tokens: 0                         # Opt-in tokens trigger for the no-LLM tool-result prune (0 = off; see below)
   proactive_prune_min_result_chars: 8000            # Prune's summarize pass only touches tool results larger than this (clamped >= 200)
   proactive_prune_min_reclaim_tokens: 4096          # Prune only commits when it reclaims at least this many tokens (0 = commit any)
+  tool_arg_head_chars: 1000                          # Characters kept from each long string argument's beginning
+  tool_arg_tail_chars: 1000                          # Characters kept from each long string argument's end
+  tool_arg_truncate_threshold: 4000                  # Argument blob size that enables windowing (0 = disabled)
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:

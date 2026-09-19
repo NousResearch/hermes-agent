@@ -571,6 +571,11 @@ DEFAULT_CONFIG = {
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
         "proactive_prune_min_reclaim_tokens": 4096,
+        # Historical tool-call arguments are windowed only above this blob size. The head and tail
+        # of each long string leaf are retained; set the threshold to 0 to disable this pass.
+        "tool_arg_head_chars": 1000,
+        "tool_arg_tail_chars": 1000,
+        "tool_arg_truncate_threshold": 4000,
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized

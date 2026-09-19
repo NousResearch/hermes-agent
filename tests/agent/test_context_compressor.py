@@ -2362,15 +2362,18 @@ class TestTruncateToolCallArgsJson:
     def test_shrunken_args_remain_valid_json(self):
         import json as _json
         shrink = self._helper()
+        content = "# Shopping Browser Setup Notes\n\n" + "abc " * 1200
         original = _json.dumps({
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+            "content": content,
         })
         assert len(original) > 500
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert parsed["content"].startswith(content[:1000])
+        assert parsed["content"].endswith(content[-1000:])
+        assert "...[truncated]..." in parsed["content"]
         assert len(shrunk) < len(original)
 
 
@@ -2391,9 +2394,19 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        assert parsed["note"] == "z" * 500
 
 
+
+    def test_windowing_never_expands_argument_json(self):
+        import json as _json
+        shrink = self._helper()
+        data = {f"key_{i}": "x" for i in range(1100)}
+        data["barely_long"] = "y" * 2018
+        payload = _json.dumps(data, separators=(",", ":"))
+        assert len(payload) > 4000
+        assert len(shrink(payload)) <= len(payload)
+        assert shrink(payload) == payload
 
     def test_pass3_emits_valid_json_for_downstream_provider(self):
         """End-to-end: Pass 3 must never produce the exact failure payload
@@ -2412,7 +2425,7 @@ class TestTruncateToolCallArgsJson:
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
             "content": huge_content,
         })
-        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+        assert len(args_payload) < 4000  # raised default preserves modest calls verbatim
         messages = [
             {"role": "user", "content": "please write two files"},
             {"role": "assistant", "content": None, "tool_calls": [
@@ -2426,10 +2439,34 @@ class TestTruncateToolCallArgsJson:
         ]
         result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
         shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
-        # Must parse — otherwise downstream provider returns 400
+        # The raised default no longer destroys ordinary file payloads.
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert parsed["content"] == huge_content
+
+    def test_pass3_honors_configured_head_tail_and_threshold(self):
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model", protect_first_n=1, protect_last_n=1, quiet_mode=True,
+                tool_arg_head_chars=8, tool_arg_tail_chars=7,
+                tool_arg_truncate_threshold=20,
+            )
+        content = "BEGIN---" + "x" * 100 + "---TAIL"
+        args_payload = _json.dumps({"content": content})
+        messages = [
+            {"role": "user", "content": "write it"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "write_file", "arguments": args_payload},
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ]
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        windowed = _json.loads(result[1]["tool_calls"][0]["function"]["arguments"])["content"]
+        assert windowed == "BEGIN---...[truncated]...---TAIL"
 
 
 class TestLazyContextResolution:

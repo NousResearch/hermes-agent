@@ -145,6 +145,7 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+    assert "**Work continuing (this chat):** Yes" in result
 
 
 @pytest.mark.asyncio

@@ -162,6 +162,9 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
                 resolved_platform = get_session_env("HERMES_SESSION_PLATFORM") or ""
         platform_disabled = None
         if resolved_platform:
+            from agent.skill_utils import platform_allowlist_disabled
+            if name in platform_allowlist_disabled(skills_cfg, resolved_platform):
+                return True
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
         in_platform = platform_disabled is not None and name in platform_disabled
         return in_platform or name in skills_cfg.get("disabled", [])

@@ -1407,6 +1407,19 @@ DEFAULT_CONFIG = {
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
         # See #79686.
         "ledger": True,
+        # Rendering density of the skills index in the system prompt.
+        #   "full"        (default) — each visible category header plus a
+        #                  description line per skill (current behavior).
+        #   "names_only"  — every category collapses to a single names-only
+        #                  line (same compact rendering already used for
+        #                  categories demoted by the coding-context focus
+        #                  posture — see agent/coding_context.py). No skill
+        #                  is ever hidden; only descriptions are dropped, to
+        #                  shrink the per-turn prompt cost for large skill
+        #                  collections. Independent of coding_context focus:
+        #                  setting this to "full" does not turn off focus's
+        #                  own per-category demotion.
+        "index_style": "full",
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

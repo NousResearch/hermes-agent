@@ -387,9 +387,13 @@ class MemoryStore:
         """System prompt block: header + usage indicator + entries ("" when empty)."""
         if not entries:
             return ""
-        content, sep = ENTRY_DELIMITER.join(entries), "═" * 46
+        content = ENTRY_DELIMITER.join(entries)
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
-        return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]\n{sep}\n{content}"
+        # Plain markdown heading instead of a box-drawing border: box-drawing characters
+        # tokenize inefficiently and add no information the model needs. The heading text
+        # (MEMORY_BLOCK_HEADERS values) is preserved verbatim — conversation_compression.py's
+        # stale-block detection matches on that exact substring.
+        return f"## {title} [{self._usage_pct(target, len(content))}]\n{content}"
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:

@@ -149,6 +149,29 @@ class TestMemoryFileLockPermissions:
         assert outside.read_text(encoding="utf-8") == "do not touch"
 
 
+class TestRenderBlockPlainHeadings:
+    """_render_block must use plain markdown headings, not box-drawing borders —
+    they tokenize inefficiently. The exact heading text (MEMORY / USER PROFILE)
+    must survive since MEMORY_BLOCK_HEADERS values are matched verbatim elsewhere
+    (agent/conversation_compression.py's stale-block detection)."""
+
+    def test_memory_block_uses_markdown_heading_no_box_drawing(self, store):
+        store.add("memory", "Some fact")
+        block = store._render_block("memory", store.memory_entries)
+        assert "MEMORY" in block
+        assert block.startswith("## MEMORY")
+        for ch in "━═│┌┐└┘─├┤┬┴┼║╔╗╚╝╭╮╯╰":
+            assert ch not in block, f"box-drawing char {ch!r} found in rendered block"
+
+    def test_user_block_uses_markdown_heading_no_box_drawing(self, store):
+        store.add("user", "Name: Alice")
+        block = store._render_block("user", store.user_entries)
+        assert "USER PROFILE" in block
+        assert block.startswith("## USER PROFILE")
+        for ch in "━═│┌┐└┘─├┤┬┴┼║╔╗╚╝╭╮╯╰":
+            assert ch not in block, f"box-drawing char {ch!r} found in rendered block"
+
+
 class TestMemoryStoreAdd:
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")

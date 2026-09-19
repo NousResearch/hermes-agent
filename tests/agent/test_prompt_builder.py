@@ -419,6 +419,97 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_flat_external_skills_share_one_category_header(self, monkeypatch, tmp_path):
+        """Flat external_dirs skills (no category subdir) must collapse under
+        a single 'general' header, not one header per skill."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(parents=True)
+
+        ext_dir = tmp_path / "external"
+        ext_dir.mkdir()
+        for i in range(6):
+            d = ext_dir / f"flat-skill-{i}"
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: flat-skill-{i}\ndescription: Flat skill {i}\n---\n"
+            )
+
+        from unittest.mock import patch
+
+        with patch(
+            "agent.prompt_builder.get_all_skills_dirs",
+            return_value=[tmp_path / "skills", ext_dir],
+        ):
+            result = build_skills_system_prompt()
+
+        for i in range(6):
+            assert f"flat-skill-{i}" in result
+        # Exactly one category header line ("  general:" or "  general [names only]:")
+        # rather than 6 one-skill headers.
+        header_lines = [
+            line for line in result.splitlines()
+            if line.startswith("  ") and not line.startswith("    ")
+        ]
+        assert len(header_lines) == 1, header_lines
+        assert header_lines[0].strip().startswith("general")
+
+    def test_index_style_names_only_smaller_and_no_descriptions(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat_dir = tmp_path / "skills" / "tools"
+        for i in range(8):
+            d = cat_dir / f"skill-{i}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: skill-{i}\ndescription: Long description text for skill {i} explaining what it does\n---\n"
+            )
+
+        from unittest.mock import patch
+
+        with patch(
+            "agent.prompt_builder.get_skills_index_style",
+            return_value="full",
+        ):
+            full = build_skills_system_prompt()
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+        with patch(
+            "agent.prompt_builder.get_skills_index_style",
+            return_value="names_only",
+        ):
+            names_only = build_skills_system_prompt()
+
+        for i in range(8):
+            assert f"skill-{i}" in full
+            assert f"skill-{i}" in names_only
+            assert f"Long description text for skill {i}" in full
+            assert f"Long description text for skill {i}" not in names_only
+
+        assert len(names_only.encode("utf-8")) < len(full.encode("utf-8"))
+
+    def test_index_style_does_not_affect_focus_mode(self, monkeypatch, tmp_path):
+        """Focus mode (compact_categories) must keep working unchanged
+        regardless of the new index_style config key."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "writing" / "essay-helper"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: essay-helper\ndescription: Help write essays\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        with patch(
+            "agent.prompt_builder.get_skills_index_style",
+            return_value="full",
+        ):
+            focus_result = build_skills_system_prompt(
+                compact_categories=frozenset({"writing"})
+            )
+
+        assert "essay-helper" in focus_result
+        assert "Help write essays" not in focus_result
 
 # =========================================================================
 # Context files prompt builder

@@ -24,7 +24,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
+    get_skills_index_style, iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
@@ -1168,15 +1168,31 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     return None
 
 
-def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
-    """Serialisable metadata dict for one skill."""
+def _build_snapshot_entry(
+    skill_file: Path, skills_dir: Path, frontmatter: dict, description: str, *, flat_root: bool = False
+) -> dict:
+    """Serialisable metadata dict for one skill.
+
+    ``flat_root``: the skill was discovered directly under a directory with no
+    category subdirectory structure (currently only ``skills.external_dirs``
+    entries). Without it, a skill at ``<ext_dir>/<skill-name>/SKILL.md`` gets its
+    own category named after the skill — one index header per skill. Flat-root
+    skills instead collapse under a single ``"general"`` category header.
+    """
     parts = skill_file.relative_to(skills_dir).parts
     # Org mirror: category/name derive from the path WITHIN `_org/<org_id>/`; org_id drives labeling + collisions.
     org_id: str | None = None
     if len(parts) >= 3 and parts[0] == ORG_MIRROR_DIR_NAME:
         org_id, parts = parts[1], parts[2:]
     skill_name = skill_file.parent.name  # == parts[-2] whenever a parent component exists
-    category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+    if len(parts) < 2:
+        category = "general"
+    elif len(parts) > 2:
+        category = "/".join(parts[:-2])
+    elif flat_root:
+        category = "general"
+    else:
+        category = parts[0]
     platforms = frontmatter.get("platforms") or []
     platforms = [platforms] if isinstance(platforms, str) else platforms
     entry = {
@@ -1291,13 +1307,13 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
 
 def _collect_extra_skills(
     root: Path, skill_files, hides, claimed: set[str], skills_by_category: dict[str, list[tuple[str, str]]],
-    *, desc_prefix: str, log_fmt: str,
+    *, desc_prefix: str, log_fmt: str, flat_root: bool = False,
 ) -> None:
     """Add visible skills from a project/external dir; names already in *claimed* are skipped."""
     for skill_file in skill_files:
         try:
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc) if is_compatible else None
+            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc, flat_root=flat_root) if is_compatible else None
             fm_name = entry["frontmatter_name"] if entry else ""
             if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
@@ -1327,18 +1343,32 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    names_only_all: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
-    hidden_note = (
-        "\n(Categories marked [names only] are outside the current coding "
-        "context, so their descriptions are omitted — the skills work "
-        "normally and load with skill_view(name) as usual.)"
-    ) if demoted else ""
+    # skills.index_style: names_only demotes every category; focus mode's own per-category demotion is the
+    # union of the two, so leaving index_style at the default "full" does not disturb existing behavior.
+    if names_only_all:
+        demoted = frozenset(skills_by_category.keys())
+    else:
+        demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    if demoted and not names_only_all:
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        )
+    elif demoted and names_only_all:
+        hidden_note = (
+            "\n(Skill descriptions are omitted (skills.index_style: names_only) "
+            "— the skills work normally and load with skill_view(name) as usual.)"
+        )
+    else:
+        hidden_note = ""
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
@@ -1386,11 +1416,15 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    # skills.index_style: "names_only" reuses the names-only rendering already used to demote
+    # categories under coding_context focus, but applies it to every category. Focus mode's own
+    # per-category demotion composes (union), so the default "full" leaves existing behavior intact.
+    names_only_all = get_skills_index_style() == "names_only"
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())), names_only_all,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1444,11 +1478,13 @@ def _build_skills_system_prompt_inner(
     seen_skill_names: set[str] = {name for cat in skills_by_category.values() for name, _ in cat}
     for ext_dir in (d for d in external_dirs if d.exists()):
         _collect_extra_skills(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), hides, seen_skill_names,
-                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
+                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s",
+                              flat_root=True)
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools,
+                                  names_only_all)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

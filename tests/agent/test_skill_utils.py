@@ -410,3 +410,57 @@ class TestBOMToleranceSiblingSites:
         assert fm is not None
         assert fm.get("name") == "bp"
 
+
+
+# ---------------------------------------------------------------------------
+# skills.platform_enabled — per-platform allowlist
+# ---------------------------------------------------------------------------
+
+def _write_skill(root, name):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name}\n---\nbody\n")
+
+
+def _allowlist_env(tmp_path, monkeypatch, config_text):
+    (tmp_path / "config.yaml").write_text(config_text)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    skills = tmp_path / "skills"
+    for name in ("keep-me", "hide-me", "new-arrival"):
+        _write_skill(skills, name)
+    from agent import skill_utils
+    skill_utils._raw_config_cache_clear()
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills])
+    return skill_utils
+
+
+def test_platform_enabled_disables_everything_not_listed(tmp_path, monkeypatch):
+    """An allowlist hides every skill it doesn't name — including skills that
+    appear after the list was written (the denylist's failure mode)."""
+    su = _allowlist_env(tmp_path, monkeypatch,
+        "skills:\n  platform_enabled:\n    telegram:\n      - keep-me\n")
+    disabled = su.get_disabled_skill_names(platform="telegram")
+    assert "keep-me" not in disabled
+    assert {"hide-me", "new-arrival"} <= disabled
+
+
+def test_platform_enabled_unions_with_disabled_lists(tmp_path, monkeypatch):
+    """Global and per-platform denylists still apply on top of the allowlist."""
+    su = _allowlist_env(tmp_path, monkeypatch,
+        "skills:\n"
+        "  disabled:\n    - keep-me\n"
+        "  platform_enabled:\n    telegram:\n      - keep-me\n      - hide-me\n")
+    disabled = su.get_disabled_skill_names(platform="telegram")
+    assert "keep-me" in disabled          # globally disabled wins
+    assert "hide-me" not in disabled      # allowlisted, not denied
+    assert "new-arrival" in disabled      # not allowlisted
+
+
+def test_platform_enabled_only_applies_to_its_platform(tmp_path, monkeypatch):
+    """No allowlist for a platform → behaviour unchanged (denylist only)."""
+    su = _allowlist_env(tmp_path, monkeypatch,
+        "skills:\n  platform_enabled:\n    telegram:\n      - keep-me\n")
+    assert su.get_disabled_skill_names(platform="discord") == set()
+    assert su.get_disabled_skill_names() == set()

@@ -963,7 +963,15 @@ def _cmd_stats(db, args):
 
 # -- dispatch -----------------------------------------------------------------
 
-_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+def _cmd_repair_profiles(args):
+    from hermes_cli.sessions_cmd_repair_profiles import cmd_repair_profiles
+    return cmd_repair_profiles(args)
+
+
+_PRE_DB_HANDLERS = {
+    "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
+    "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
+}
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,

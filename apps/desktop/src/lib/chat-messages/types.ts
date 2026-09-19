@@ -29,6 +29,7 @@ export interface TimelinePartMetadata {
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
 
 export type ChatMessage = {
+  inputIds?: string[]
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
@@ -81,6 +82,7 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  inputs?: { id?: string; ref?: string }[]
   /** Unix seconds supplied by tests/newer gateways; the desktop falls back to
    * its local receipt clock when older gateways omit it. */
   timestamp?: number

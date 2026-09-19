@@ -147,6 +147,8 @@ export interface PersistedDisplayTranscriptProvenance {
 }
 
 export interface ClientSessionState {
+  observedExecutionId?: string
+  observedInputIds?: string[]
   storedSessionId: string | null
   transcriptAuthorityEpoch?: number
   transcriptProvenance?: PersistedDisplayTranscriptProvenance

@@ -809,7 +809,9 @@ export function usePromptActions({
         try {
           const result = await target.requestGateway<SessionRedirectResponse>('session.redirect', {
             session_id: id,
-            text
+            submission_ref: messageId,
+            text,
+            input_visibility: 'visible'
           })
 
           if (result?.status === 'redirected') {

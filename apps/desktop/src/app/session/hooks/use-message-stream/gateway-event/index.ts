@@ -19,6 +19,7 @@ import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
+import { handleMessageInputEvent } from './message-input'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
@@ -83,6 +84,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
   handleSessionInfoEvent,
   handleControlEvent,
+  handleMessageInputEvent,
   handleMessageStreamEvent,
   handleToolEvent,
   handleInputRequestEvent,

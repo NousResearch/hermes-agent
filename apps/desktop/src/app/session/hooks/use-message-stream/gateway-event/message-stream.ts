@@ -137,6 +137,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return {
         ...state,
         busy: true,
+        observedExecutionId: event.turn?.id,
+        observedInputIds: [],
         awaitingResponse: true,
         sawAssistantPayload: false,
         interrupted: false,

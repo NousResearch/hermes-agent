@@ -454,7 +454,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>('session.redirect', {
+              session_id: liveId,
+              submission_ref: messageId,
+              text,
+              input_visibility: 'visible'
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime

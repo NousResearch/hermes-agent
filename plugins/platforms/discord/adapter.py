@@ -3797,6 +3797,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""
+        # Hearing the user is activity (see _reset_voice_timeout): re-arm BEFORE STT, so a
+        # failed/empty/hallucinated transcript — the user was talking either way — still
+        # counts, and every caller of this path is covered.
+        self._reset_voice_timeout(guild_id)
         from tools.voice_mode import is_whisper_hallucination
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name

@@ -1049,6 +1049,35 @@ class TestLeaveExceptionHandling:
         return _make_runner(tmp_path)
 
     @pytest.mark.asyncio
+    async def test_leave_clears_bound_text_channel_mode(self, runner):
+        """/voice leave typed in a different channel than /voice join must clear the BOUND
+        channel's voice_mode too. Join stamps mode=all on the join channel and binds it in
+        _voice_text_channels; clearing only the leave channel left the bound one on mode=all,
+        so later text replies there kept getting an auto-TTS voice bubble with the bot no
+        longer in a voice channel."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter._voice_input_callback = MagicMock()
+        mock_adapter._voice_text_channels = {111: 456}   # joined from #456
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        event = _make_event("/voice leave")
+        event.source.platform = Platform.DISCORD
+        event.source.chat_id = "123"                     # leaving from #123
+        event.raw_message = SimpleNamespace(guild_id=111, guild=None)
+        runner._voice_mode["discord:456"] = "all"        # set by join
+        runner._voice_mode["discord:123"] = "all"
+
+        result = await runner._handle_voice_channel_leave(event)
+
+        assert "left" in result.lower()
+        assert runner._voice_mode["discord:123"] == "off"
+        assert runner._voice_mode["discord:456"] == "off"
+
+    @pytest.mark.asyncio
     async def test_leave_exception_still_cleans_state(self, runner):
         """If leave_voice_channel raises, voice_mode is still cleaned up."""
         mock_adapter = AsyncMock()

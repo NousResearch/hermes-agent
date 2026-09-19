@@ -188,9 +188,22 @@ class GatewayVoiceMixin:
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
-        # Always clean up state even if leave raised an exception
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "off")
+        # Always clean up state even if leave raised an exception. Join stamps mode=all on the
+        # channel where /voice join was typed and binds it in _voice_text_channels; leaving from
+        # a DIFFERENT channel used to clear only the leave channel, so the bound one kept
+        # mode=all and every later text reply there got an auto-TTS voice bubble with the bot no
+        # longer in a VC. The timeout path (_handle_voice_timeout_cleanup) already clears the
+        # bound channel — this is its manual-leave sibling.
+        profile = self._adapter_profile_for_source(event.source)
+        chat_ids = {str(event.source.chat_id)}
+        bound = getattr(adapter, "_voice_text_channels", None)
+        if isinstance(bound, dict) and bound.get(guild_id) is not None:
+            chat_ids.add(str(bound[guild_id]))
+        for chat_id in chat_ids:
+            self._apply_voice_mode(
+                adapter,
+                self._voice_key(event.source.platform, chat_id, profile=profile),
+                chat_id, "off")
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."

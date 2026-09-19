@@ -237,7 +237,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
     wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
-    also fsyncs the parent so the rename itself is durable. The temp file is removed on any
+    also fsyncs the resolved target's own directory — for a symlinked target that is the directory
+    the rename landed in, not the link's — so the rename itself is durable. The temp file is removed on any
     failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
     # A profile delete leaves a tombstone beside its removed home.  Background
@@ -257,9 +258,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        resolved = Path(atomic_replace(tmp_path, path))  # symlink-preserving
+        _restore_file_metadata(resolved, original_owner, mode)
         if fsync_dir:
-            fsync_directory(path.parent)
+            fsync_directory(resolved.parent)  # the dir the rename landed in, not the link's
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)

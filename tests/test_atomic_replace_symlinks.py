@@ -32,6 +32,7 @@ from utils import (
     atomic_replace,
     atomic_roundtrip_yaml_save,
     atomic_roundtrip_yaml_update,
+    atomic_write_text,
     atomic_yaml_write,
 )
 
@@ -217,6 +218,41 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     assert link.is_symlink(), "symlink must be preserved"
     assert missing.exists(), "real target should now exist"
     assert missing.read_text(encoding="utf-8") == "created-through-link\n"
+
+
+# ─── fsync_dir must sync the resolved target's directory (GitHub #115030) ──
+
+
+@pytest.mark.require_symlinks
+def test_fsync_dir_syncs_the_resolved_target_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fsync_dir=True`` through a symlink must sync the directory the rename
+    actually landed in, not the link's own (pre-resolve) parent.
+
+    ``atomic_replace`` resolves a symlinked target so the real file is
+    overwritten in place, but ``_atomic_write`` kept handing the *unresolved*
+    ``path.parent`` to ``fsync_directory``.  Power-loss durability then covered
+    a directory the rename never touched, leaving the publish unsynced.
+    """
+    real_dir = tmp_path / "real"
+    link_dir = tmp_path / "links"
+    real_dir.mkdir()
+    link_dir.mkdir()
+    target = real_dir / "value"
+    target.write_text("old", encoding="utf-8")
+    link = link_dir / "value"
+    link.symlink_to(target)
+
+    synced: list[Path] = []
+    monkeypatch.setattr("utils.fsync_directory", lambda p: synced.append(Path(p)))
+
+    atomic_write_text(link, "new", mode=0o600, fsync_dir=True)
+
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == "new"
+    # resolve(): Windows reports the same directory as an 8.3 short name here.
+    assert [p.resolve() for p in synced] == [real_dir.resolve()]
 
 
 # ─── EXDEV / EBUSY copy fallback ───────────────────────────────────────────

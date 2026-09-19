@@ -113,10 +113,14 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def save_config(self, values, hermes_home):
         """Write config to config.yaml under plugins.hermes-memory-store."""
-        # The canonical writer: config lock, managed-mode refusal, default stripping, atomic replace.
-        # ``merge_existing`` keeps every other section; *hermes_home* is the active profile already.
         from hermes_cli.config import save_config
-        save_config({"plugins": {"hermes-memory-store": dict(values)}}, merge_existing=True)
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        token = set_hermes_home_override(hermes_home)
+        try:
+            save_config({"plugins": {"hermes-memory-store": dict(values)}}, merge_existing=True)
+        finally:
+            reset_hermes_home_override(token)
 
     def get_config_schema(self):
         from hermes_constants import display_hermes_home

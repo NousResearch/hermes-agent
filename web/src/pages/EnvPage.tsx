@@ -296,7 +296,9 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Input
             autoFocus
-            type="text"
+            type={info.is_password ? "password" : "text"}
+            autoComplete={info.is_password ? "new-password" : undefined}
+            spellCheck={false}
             value={edits[varKey]}
             onChange={(e) =>
               setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))

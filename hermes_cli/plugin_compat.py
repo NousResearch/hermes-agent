@@ -201,7 +201,9 @@ def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[st
 # ---------------------------------------------------------------------------------------------- report
 
 _report_lock = threading.Lock()
-_report_cache: Dict[Tuple[str, ...], Dict[str, List[Hit]]] = {}
+_SourceFingerprint = Tuple[Tuple[str, int, int], ...]
+_ReportCacheKey = Tuple[bool, Tuple[Tuple[str, str, str, str, str, _SourceFingerprint], ...]]
+_report_cache: Dict[_ReportCacheKey, Dict[str, List[Hit]]] = {}
 
 
 def _scan_root(manifest) -> Optional[Path]:
@@ -229,10 +231,38 @@ def _scan_root(manifest) -> Optional[Path]:
     return p if p.is_dir() else None
 
 
+def _report_cache_key(manifests) -> Optional[_ReportCacheKey]:
+    """Removal-date gate, manifest identities, and cheap Python source stats.
+
+    The persisted report embeds ``in_effect: removal_in_effect()``, so a pre-date
+    cache entry must not be reused after the gate flips. Returns None when
+    metadata races discovery.
+    """
+    entries = []
+    for m in manifests:
+        root = _scan_root(m)
+        sources = []
+        if root is not None:
+            try:
+                for path in _iter_py(root):
+                    stat = path.stat()
+                    sources.append((str(path.relative_to(root)), stat.st_mtime_ns, stat.st_size))
+            except (OSError, ValueError):
+                return None
+        entries.append((
+            str(getattr(m, "source", "")), str(getattr(m, "name", "")),
+            str(getattr(m, "key", "")), str(getattr(m, "version", "")),
+            str(getattr(m, "path", "")), tuple(sorted(sources)),
+        ))
+    return (removal_in_effect(), tuple(sorted(entries)))
+
+
 def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]]:
     """``{plugin_name: hits}`` for every ENABLED external (non-bundled) plugin with at least one hit.
 
-    ``manifests`` defaults to the current PluginManager's discovered manifests. Cached per manifest set.
+    ``manifests`` defaults to the current PluginManager's discovered manifests. Cached per removal-date
+    gate, manifest set, and Python source stat fingerprint. Cache hits still rewrite the Desktop report
+    file so ``in_effect`` / ``written_at`` stay current.
     """
     if manifests is None:
         try:
@@ -243,18 +273,23 @@ def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]
         except Exception:
             return {}
     external = [m for m in manifests if getattr(m, "source", "") != "bundled" and getattr(m, "path", None)]
-    key = tuple(sorted(f"{m.name}@{m.path}" for m in external))
+    key = _report_cache_key(external)
+    cached = None
     with _report_lock:
-        if not force and key in _report_cache:
-            return _report_cache[key]
+        if not force and key is not None and key in _report_cache:
+            cached = _report_cache[key]
+    if cached is not None:
+        _write_report_file(cached)
+        return cached
     manifest = load_manifest()
     out: Dict[str, List[Hit]] = {}
     for m in external:
         hits = scan_plugin(_scan_root(m), manifest)
         if hits:
             out[m.name] = hits
-    with _report_lock:
-        _report_cache[key] = out
+    if key is not None:
+        with _report_lock:
+            _report_cache[key] = out
     _write_report_file(out)
     return out
 

@@ -82,8 +82,12 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
-    """Remove aborted-fetch temp pack files under ``.git/objects/pack``; same contract as clear_stale_git_locks."""
-    pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
+    """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
+
+    Resolves ``.git/objects/pack`` for a checkout and ``objects/pack`` for a bare repo such as
+    the checkpoint store — a ``git gc`` killed by a timeout strands the same debris there."""
+    git_dir = Path(repo_root) / ".git"
+    pack_dir = (git_dir if git_dir.is_dir() else Path(repo_root)) / "objects" / "pack"
 
     def _candidates():
         try:

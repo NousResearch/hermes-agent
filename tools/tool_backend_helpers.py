@@ -148,7 +148,7 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
     return ""
 
 
-def resolve_openai_audio_api_key() -> str:
+def resolve_openai_audio_api_key(config_value: str = "", key_env: str = "") -> str:
     """Prefer VOICE_TOOLS_OPENAI_KEY, else OPENAI_API_KEY (scope-aware, pool fallback for the
     latter). Must go through the secret scope: a raw ``os.environ`` read could bill another
     profile's account under multiplex.
@@ -156,9 +156,28 @@ def resolve_openai_audio_api_key() -> str:
     Outside a multiplexed turn, ``OPENAI_API_KEY`` additionally falls back to the credential pool (``hermes
     auth add openai-api``) via ``resolve_provider_secret`` — same #68003 fix as the other voice providers.
     The dedicated voice-tools override remains env/scope-only.
+
+    ``config_value`` (typically ``tts.openai.api_key``) wins over env — same precedence as the
+    explicit-arg branch of the STT resolver and the documented #26175 contract. ``key_env`` is
+    the name of an env var the user named in config (e.g. ``tts.openai.key_env:
+    TTS_OPENAI_API_KEY``); when set, its value is treated as a config-supplied credential with
+    the same priority as ``api_key``. Both flags are honoured by ``resolve_provider_secret``,
+    which already accepts ``config_value`` as the highest-priority source.
     """
-    return (resolve_provider_secret("VOICE_TOOLS_OPENAI_KEY", "")
-            or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
+    # Precedence (highest first): explicit ``config_value`` (``tts.openai.api_key``) > the
+    # ``key_env`` indirection (``tts.openai.key_env: NAME`` looked up via the canonical env
+    # loader) > the built-in env names. config_value wins because it is the user's direct
+    # YAML setting; key_env is an instruction to read a named env var, so when both are set
+    # the explicit value still wins.
+    explicit = str(config_value or "").strip()
+    if not explicit and key_env:
+        try:
+            from hermes_cli.config import get_env_value
+            explicit = str(get_env_value(key_env) or "").strip()
+        except Exception:
+            explicit = ""
+    return (resolve_provider_secret("VOICE_TOOLS_OPENAI_KEY", "", config_value=explicit)
+            or resolve_provider_secret("OPENAI_API_KEY", "openai-api", config_value=explicit))
 
 
 def prefers_gateway(config_section: str) -> bool:

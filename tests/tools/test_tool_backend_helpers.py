@@ -304,3 +304,66 @@ class TestResolveOpenaiAudioApiKeyIsProfileScoped:
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-plain")
         assert resolve_openai_audio_api_key() == "sk-plain"
+
+
+# ---------------------------------------------------------------------------
+# resolve_openai_audio_api_key — config_value / key_env honours #26175 + key_env indirection
+# ---------------------------------------------------------------------------
+class TestResolveOpenaiAudioApiKeyConfigSources:
+    """``config_value`` (from ``tts.openai.api_key``) wins over env; ``key_env`` looks up the
+    user-named env var via ``hermes_cli.config.get_env_value`` and is treated as the highest
+    priority source. This is the symmetry needed for #26175's tts.openai.api_key contract to
+    survive across any caller, and the unblock for the ``tts.openai.key_env`` indirection that
+    was previously silently dropped (P1 + P1b cousin).
+    """
+
+    def test_config_value_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "env-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert resolve_openai_audio_api_key(config_value="cfg-key") == "cfg-key"
+
+    def test_config_value_strips_whitespace(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert resolve_openai_audio_api_key(config_value="  cfg-key  ") == "cfg-key"
+
+    def test_key_env_honoured_via_dotenv(self, monkeypatch, tmp_path):
+        """``tts.openai.key_env: NAME`` reads NAME through the canonical env loader, the same
+        loader the rest of Hermes uses for ``.env`` secrets."""
+        import hermes_cli.config as _cfg
+
+        # Provide a stub get_env_value so the test does not depend on the live .env file.
+        # Patch on the module so both this test's local re-import and the production code's
+        # inside-function import see the stub (late-bound function lookup).
+        monkeypatch.setattr(
+            _cfg, "get_env_value",
+            lambda name, default=None: "dotenv-key" if name == "TTS_OPENAI_API_KEY" else default,
+        )
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("TTS_OPENAI_API_KEY", raising=False)
+        assert resolve_openai_audio_api_key(key_env="TTS_OPENAI_API_KEY") == "dotenv-key"
+
+    def test_key_env_missing_value_falls_through(self, monkeypatch):
+        import hermes_cli.config as _cfg
+
+        monkeypatch.setattr(
+            _cfg, "get_env_value",
+            lambda name, default=None: default,
+        )
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "fallback-key")
+        assert resolve_openai_audio_api_key(key_env="NOT_SET_VAR") == "fallback-key"
+
+    def test_config_value_takes_precedence_over_key_env(self, monkeypatch):
+        import hermes_cli.config as _cfg
+
+        monkeypatch.setattr(
+            _cfg, "get_env_value",
+            lambda name, default=None: "dotenv-key" if name == "TTS_OPENAI_API_KEY" else default,
+        )
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("TTS_OPENAI_API_KEY", raising=False)
+        assert resolve_openai_audio_api_key(
+            config_value="cfg-key", key_env="TTS_OPENAI_API_KEY") == "cfg-key"

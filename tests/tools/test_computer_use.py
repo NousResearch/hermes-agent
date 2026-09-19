@@ -2464,6 +2464,73 @@ class TestSessionLifecycle:
         assert name == "start_session"
         assert args["session"] == backend._session_id
 
+    def _started_backend(self):
+        """A backend whose session handshake already flipped `_started`, ready
+        for post-handshake tuning assertions."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.start = MagicMock()
+        backend._session.call_tool = MagicMock(return_value={
+            "data": "", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        })
+        return backend
+
+    @staticmethod
+    def _cursor_call(backend):
+        """The set_agent_cursor_enabled call_tool a start() issued, if any."""
+        for call in backend._session.call_tool.call_args_list:
+            name, args = call.args
+            if name == "set_agent_cursor_enabled":
+                return args
+        return None
+
+    def test_start_enables_agent_cursor_when_policy_allows_it(self):
+        """#109690: the engine default-hides the per-session cursor, so a run
+        whose overlay policy allows it must explicitly enable the cursor —
+        the mirror of the disable branch. Without it the documented tinted
+        overlay cursor never appears for a Hermes run."""
+        from unittest.mock import patch
+
+        backend = self._started_backend()
+        with patch(
+            "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+            return_value={"ready": True},
+        ), patch("tools.lazy_deps.ensure"), patch(
+            "tools.computer_use.cua_backend._cua_no_overlay",
+            return_value=False,
+        ):
+            backend.start()
+
+        args = self._cursor_call(backend)
+        assert args is not None, "policy allows overlay: cursor must be enabled"
+        assert args["enabled"] is True
+        assert args["cursor_id"] == backend._session_id
+        assert args["session"] == backend._session_id
+
+    def test_start_disables_agent_cursor_when_policy_forbids_it(self):
+        """The pre-#109690 behavior stays: a policy that forbids the overlay
+        still disables the session cursor (belt-and-suspenders for a daemon
+        started without --no-overlay support)."""
+        from unittest.mock import patch
+
+        backend = self._started_backend()
+        with patch(
+            "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+            return_value={"ready": True},
+        ), patch("tools.lazy_deps.ensure"), patch(
+            "tools.computer_use.cua_backend._cua_no_overlay",
+            return_value=True,
+        ):
+            backend.start()
+
+        args = self._cursor_call(backend)
+        assert args is not None, "policy forbids overlay: cursor must be disabled"
+        assert args["enabled"] is False
+        assert args["cursor_id"] == backend._session_id
 
     def test_session_lifecycle_failures_are_non_fatal(self):
         """A lifecycle-label failure does not discard an otherwise valid runtime."""

@@ -859,6 +859,8 @@ display:
       # Or quiet them entirely
       interim_assistant_messages: false
       long_running_notifications: false
+      # Keep one editable streaming preview across tool calls (needs streaming enabled)
+      streaming_single_message: true
 ```
 
 ### Warning and error notifications (opt-in suppression)

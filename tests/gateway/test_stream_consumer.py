@@ -315,6 +315,62 @@ class TestSegmentBreakOnToolBoundary:
     """Verify that on_delta(None) finalizes the current message and starts a
     new one so the final response appears below tool-progress messages."""
 
+    def test_telegram_single_message_display_option_requires_progress_off(self, monkeypatch):
+        """The opt-in is Telegram-only and leaves progress chronology intact."""
+        from gateway.config import Platform
+        from gateway.run_turn import GatewayTurnMixin
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {
+                "streaming_single_message": True, "tool_progress": "off",
+            }}}},
+        )
+        source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat_123", chat_type="dm")
+        streaming = SimpleNamespace(
+            cursor=" ▉", edit_interval=0.5, buffer_threshold=20,
+            fresh_final_after_seconds=0, transport="edit",
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+
+        assert config.single_message_per_turn is True
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {
+                "streaming_single_message": True, "tool_progress": "new",
+            }}}},
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is False
+
+    @pytest.mark.asyncio
+    async def test_single_message_mode_keeps_editing_across_tool_boundary(self):
+        """An opted-in Telegram stream keeps one editable preview for the turn."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, single_message_per_turn=True,
+            ),
+        )
+        consumer.on_delta("Before tool. ")
+        consumer.on_delta(None)
+        consumer.on_delta("After tool.")
+        consumer.finish("Before tool. After tool.")
+
+        await consumer.run()
+
+        assert adapter.send.await_count == 1
+        assert adapter.edit_message.call_args_list[-1].kwargs["content"] == "Before tool. After tool."
+
 
     @pytest.mark.asyncio
     async def test_segment_break_removes_cursor(self):
@@ -1506,4 +1562,3 @@ class TestFlushPendingSync:
 
         consumer.finish()
         await task
-

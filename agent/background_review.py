@@ -316,13 +316,17 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 # per-agent overrides work; the text lives here.
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, preferences, or "
-    "personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work style, or ways "
-    "they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. If nothing is worth saving, just say "
-    "'Nothing to save.' and stop."
+    "Memory has TWO distinct stores — pick the right one for each fact:\n"
+    "  • USER.md (memory tool, target='user'): who the user is — persona, preferences, "
+    "communication and work style, personal details they revealed, and expectations about how you "
+    "should behave.\n"
+    "  • MEMORY.md (memory tool, target='memory'): facts about the ENVIRONMENT you operate in — "
+    "tool quirks, project conventions, config gotchas, paths and endpoints that matter.\n\n"
+    "One fact goes to ONE store; never write the same fact to both. Mixing user-profile data into "
+    "MEMORY.md (or vice versa) fills both files with duplicates until they hit their size limits "
+    "and crowd out the facts that matter.\n\n"
+    "If something stands out, save it once, in the right store, using the memory tool with the "
+    "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
 # Shared shape contract for anything written into a skill. The failure mode this prevents is the
@@ -471,9 +475,11 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory**: who the user is. Did the user reveal persona, desires, preferences, personal "
-    "details, or expectations about how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "**Memory**: two stores, one target each. USER.md (memory tool, target='user') holds who the "
+    "user is — persona, preferences, communication and work style, expectations about how you "
+    "should behave. MEMORY.md (memory tool, target='memory') holds facts about the environment — "
+    "tool quirks, project conventions, config gotchas, paths and endpoints. One fact goes to ONE "
+    "store; never write the same fact to both.\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"
@@ -513,7 +519,10 @@ _COMBINED_REVIEW_PROMPT = (
     "User-preference embedding: when the user complains about how you handled a task, update the "
     "skill that governs that task — memory alone isn't enough. Memory says 'who the user is and "
     "what the current situation and state of your operations are'; skills say 'how to do this "
-    "class of task for this user'. Both should carry user-preference lessons when relevant.\n\n"
+    "class of task for this user'. A user-preference lesson lives in exactly ONE place: the skill "
+    "that governs the task when one exists, USER.md only for cross-cutting preferences no skill "
+    "owns — never both. Duplicating it across stores is how MEMORY.md ends up restating SKILL.md "
+    "until both hit their size limits.\n\n"
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"

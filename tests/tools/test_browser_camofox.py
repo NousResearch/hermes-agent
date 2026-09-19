@@ -107,6 +107,25 @@ class TestCamofoxNavigate:
         assert result["url"] == "https://example.com"
 
 
+    @patch("tools.browser_camofox._fetch_snapshot", return_value=("", 0))
+    @patch("tools.browser_camofox.get_vnc_url", return_value=None)
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_reads_title_from_owned_tab_when_navigation_response_omits_it(
+            self, mock_post, mock_get, _mock_vnc, _mock_snapshot, monkeypatch):
+        """Camofox navigation replies omit title although the owned tab listing has it."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab-title", "url": "https://example.com"})
+        mock_get.return_value = _mock_response(json_data={"tabs": [{
+            "tabId": "tab-title", "title": "Example Domain", "url": "https://example.com",
+        }]})
+
+        result = json.loads(camofox_navigate("https://example.com", task_id="t_title"))
+
+        assert result["success"] is True
+        assert result["title"] == "Example Domain"
+        assert mock_get.call_args.kwargs["params"] == {"userId": mock_post.call_args.kwargs["json"]["userId"]}
+
     def test_connection_error_returns_helpful_message(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))

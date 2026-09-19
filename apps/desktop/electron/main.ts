@@ -97,6 +97,13 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import {
+  hasSoftwareRenderingFlag,
+  readChromiumFlags,
+  splitChromiumFlag,
+  withSoftwareRenderingFlags,
+  writeChromiumFlags
+} from './chromium-flags'
 import { discoverWithTeamFallback } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
@@ -379,7 +386,7 @@ import {
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
-import { loadRendererLoadErrorPage } from './renderer-load-error-page'
+import { describeRendererCrashCause, loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import {
@@ -584,6 +591,33 @@ if (DEV_CDP.port) {
 
   if (why) {
     console.warn(`[hermes] ${why}`)
+  }
+}
+
+// Persisted Chromium switches (`chromium-flags.json` under userData): the
+// only way a Finder / Start-menu / Store launch can carry `--disable-gpu` or
+// any other pre-launch switch, and where the crash page's "Restart with
+// software rendering" records its choice. Pattern from the Claude desktop
+// app's `chromiumFlags` setting (v2.110.0). Must run before app `ready`.
+const PERSISTED_CHROMIUM_FLAGS = readChromiumFlags(app.getPath('userData'))
+
+for (const flag of PERSISTED_CHROMIUM_FLAGS) {
+  const { name, value } = splitChromiumFlag(flag)
+
+  if (value === undefined) {
+    app.commandLine.appendSwitch(name)
+  } else {
+    app.commandLine.appendSwitch(name, value)
+  }
+}
+
+if (PERSISTED_CHROMIUM_FLAGS.length > 0) {
+  console.log(`[hermes] applied persisted Chromium flags from chromium-flags.json: ${PERSISTED_CHROMIUM_FLAGS.join(' ')}`)
+
+  if (hasSoftwareRenderingFlag(PERSISTED_CHROMIUM_FLAGS)) {
+    // appendSwitch('disable-gpu') alone leaves Electron's own GPU bookkeeping
+    // on; this is the documented way to turn hardware acceleration off.
+    app.disableHardwareAcceleration()
   }
 }
 
@@ -14627,6 +14661,66 @@ function closeQuickEntryWindow() {
   quickEntryWindow = null
 }
 
+/**
+ * Visible crash page for an exhausted renderer crash-loop budget (any exit
+ * signature the platform-specific relaunch paths above did not claim).
+ * Buttons: Reload (re-attempt the bundle), Restart Hermes (fresh GPU process
+ * and renderer), and — when GPU acceleration is still on — Restart with
+ * software rendering, which persists `--disable-gpu` to chromium-flags.json
+ * so the recovery survives every future launch (`hermes desktop` from a
+ * Finder/Start-menu icon has no other place to keep it).
+ */
+function loadRendererCrashLoopPage(details?: { reason?: string; exitCode?: number | string }) {
+  const userData = app.getPath('userData')
+
+  const gpuAlreadyOff =
+    Boolean(REMOTE_DISPLAY_REASON) ||
+    hasSoftwareRenderingFlag(PERSISTED_CHROMIUM_FLAGS) ||
+    process.argv.includes('--disable-gpu') ||
+    ['1', 'true', 'yes', 'on'].includes(String(process.env.HERMES_DESKTOP_DISABLE_GPU || '').toLowerCase())
+
+  const relaunch = (label: string) => {
+    rememberLog(`[renderer:main] crash page: ${label}; relaunching`)
+
+    try {
+      app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      void exitAfterBackendShutdown(0)
+    } catch (error) {
+      rememberLog(`[renderer:main] relaunch from crash page failed: ${error?.message || error}`)
+    }
+  }
+
+  rememberLog(
+    `[renderer:main] crash-loop budget exhausted (reason=${String(details?.reason ?? '?')} ` +
+      `exitCode=${String(details?.exitCode ?? '?')}); loading visible crash page` +
+      (gpuAlreadyOff ? ' (GPU already off; software-rendering option hidden)' : '')
+  )
+
+  void loadRendererLoadErrorPage(mainWindow, {
+    title: 'Hermes\u2019 desktop UI keeps crashing',
+    errorDescription: describeRendererCrashCause({ reason: details?.reason, exitCode: details?.exitCode }),
+    reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+    recovery: {
+      restart: () => relaunch('Restart Hermes'),
+      ...(gpuAlreadyOff
+        ? {}
+        : {
+            restartSoftwareRendering: () => {
+              try {
+                const flags = writeChromiumFlags(userData, withSoftwareRenderingFlags(PERSISTED_CHROMIUM_FLAGS))
+
+                rememberLog(`[renderer:main] persisted software-rendering flags: ${flags.join(' ')}`)
+              } catch (error) {
+                rememberLog(`[renderer:main] could not persist chromium-flags.json: ${error?.message || error}`)
+              }
+
+              relaunch('Restart with software rendering')
+            }
+          })
+    }
+  })
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -14783,6 +14877,12 @@ function createWindow() {
             relaunchAttempted: windowsNoSandboxRelaunchAttempted
           })
         ) {
+          // Every other exhausted crash loop used to end here with a dead
+          // window and a desktop.log line nobody sees. Show the cause and the
+          // two things worth trying: a full restart, and — unless the GPU is
+          // already off — a restart with software rendering persisted.
+          loadRendererCrashLoopPage(details)
+
           return
         }
 

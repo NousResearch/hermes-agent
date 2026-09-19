@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { buildRendererLoadErrorPage, loadRendererLoadErrorPage } from './renderer-load-error-page'
+import {
+  buildRendererLoadErrorPage,
+  describeRendererCrashCause,
+  loadRendererLoadErrorPage,
+  parseRecoveryAction
+} from './renderer-load-error-page'
 
 test('error page names the failure and carries a Reload button', () => {
   const html = buildRendererLoadErrorPage({
@@ -92,4 +97,75 @@ test('loadRendererLoadErrorPage loads a data: URL and swallows loadURL rejection
   }
 
   await assert.doesNotReject(() => loadRendererLoadErrorPage(rejectingWin))
+})
+
+test('crash page names the cause and offers restart buttons only for handlers that exist', () => {
+  const html = buildRendererLoadErrorPage({
+    title: 'Hermes\u2019 desktop UI keeps crashing',
+    errorDescription: describeRendererCrashCause({ reason: 'oom', exitCode: -9 }),
+    recovery: { restart: () => undefined }
+  })
+
+  assert.match(html, /keeps crashing/)
+  assert.match(html, /ran out of memory \(exit code -9\)/)
+  assert.match(html, /href="hermes-recovery:restart">Restart Hermes</)
+  assert.doesNotMatch(html, /software rendering/)
+
+  const both = buildRendererLoadErrorPage({
+    recovery: { restart: () => undefined, restartSoftwareRendering: () => undefined }
+  })
+
+  assert.match(both, /hermes-recovery:restart-software-rendering">Restart with software rendering</)
+  assert.match(describeRendererCrashCause({ reason: 'crashed', exitCode: 133 }), /crashed \(exit code 133\).*GPU driver/)
+  assert.equal(parseRecoveryAction('hermes-recovery:restart'), 'restart')
+  assert.equal(parseRecoveryAction('hermes-recovery://restart-software-rendering'), 'restartSoftwareRendering')
+  assert.equal(parseRecoveryAction('file:///dist/index.html'), null)
+})
+
+test('recovery buttons are intercepted on will-navigate; other navigations pass through', async () => {
+  const listeners: Array<(event: { preventDefault: () => void }, url: string) => void> = []
+  const fired: string[] = []
+  let prevented = 0
+
+  const win = {
+    loadURL: async () => undefined,
+    webContents: {
+      on: (_event: 'will-navigate', listener: (event: { preventDefault: () => void }, url: string) => void) => {
+        listeners.push(listener)
+      },
+      removeListener: (_event: 'will-navigate', listener: (...args: any[]) => void) => {
+        listeners.splice(listeners.indexOf(listener), 1)
+      }
+    }
+  }
+
+  await loadRendererLoadErrorPage(win, {
+    recovery: {
+      restart: () => {
+        fired.push('restart')
+      }
+    }
+  })
+
+  assert.equal(listeners.length, 1)
+
+  const preventDefault = () => {
+    prevented += 1
+  }
+
+  // The Reload button's real-renderer navigation is not ours to block.
+  listeners[0]({ preventDefault }, 'file:///dist/index.html')
+  assert.equal(prevented, 0)
+  assert.deepEqual(fired, [])
+
+  // A recovery URL for a handler that is NOT offered is swallowed, not executed.
+  listeners[0]({ preventDefault }, 'hermes-recovery:restart-software-rendering')
+  assert.equal(prevented, 1)
+  assert.deepEqual(fired, [])
+  assert.equal(listeners.length, 1)
+
+  listeners[0]({ preventDefault }, 'hermes-recovery:restart')
+  assert.equal(prevented, 2)
+  assert.deepEqual(fired, ['restart'])
+  assert.equal(listeners.length, 0, 'intercept removes itself once it fired')
 })

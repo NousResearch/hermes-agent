@@ -616,6 +616,24 @@ rm -f "$HOME/Library/Caches/electron"/electron-*.zip   # macOS
 rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 ```
 
+### The window keeps crashing (GPU driver faults, out of memory)
+
+When the desktop UI's renderer process dies, the app reloads it automatically — up to three times a minute, waiting progressively longer between attempts (immediately, then 2&nbsp;s, then 6&nbsp;s) so a GPU driver reset or a file lock has time to clear. If it is still crashing after that, the window no longer goes dead: it shows what happened (for example *ran out of memory* or *crashed (exit code 133)*) with three buttons:
+
+- **Reload** — re-attempt the UI bundle in place.
+- **Restart Hermes** — relaunch the whole app (a fresh GPU process and renderer).
+- **Restart with software rendering** — write `--disable-gpu --disable-gpu-compositing` to `chromium-flags.json` (see below) and relaunch. Offered only while GPU acceleration is still on. Repeated crashes on one machine are almost always the GPU driver; this is the fix to try first.
+
+#### Persistent Chromium flags (`chromium-flags.json`)
+
+Launching from a Finder/Start-menu icon or a Store package gives you no command line and no shell environment to put Chromium switches in. Put them in `chromium-flags.json` inside the app's user-data directory instead; it is read before the window opens and applied on every launch:
+
+```json
+{ "flags": ["--disable-gpu", "--disable-gpu-compositing"] }
+```
+
+The directory is `~/Library/Application Support/Hermes/` on macOS, `%APPDATA%\Hermes\` on Windows and `~/.config/Hermes/` on Linux (`HERMES_DESKTOP_USER_DATA_DIR` overrides it). Only entries shaped like `--name` or `--name=value` are honoured; anything else is dropped. Other flags people reach for: `--ozone-platform=wayland`, `--disable-features=…`. `--disable-gpu` here also turns hardware acceleration off in Electron proper, the same as `HERMES_DESKTOP_DISABLE_GPU=1` in the environment. Delete the file (or the flag) to go back to the defaults.
+
 ## Building from source
 
 If you want to hack on the app itself, install workspace deps from the repo root once, then run the dev server from `apps/desktop`:

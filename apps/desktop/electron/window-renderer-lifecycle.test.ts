@@ -7,6 +7,8 @@ import {
   installWindowRendererLifecycle,
   pruneReloadTimes,
   pushReloadTime,
+  reloadDelayMs,
+  RENDERER_RELOAD_BACKOFF_MS,
   shouldReloadAfterFailedLoad,
   shouldReloadAfterRendererGone
 } from './window-renderer-lifecycle'
@@ -77,6 +79,12 @@ function makeOptions(win: ReturnType<typeof makeFakeWindow>, kind = 'secondary',
 // tests flush the deferred queue before asserting.
 function flushDeferred(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve))
+}
+
+// Budget tests are about counting, not timing: collapse the progressive
+// back-off so every reload lands on the next setImmediate tick.
+const immediate = (fn: () => void) => {
+  setImmediate(fn)
 }
 
 test('pruneReloadTimes drops timestamps outside the rolling window', () => {
@@ -205,7 +213,8 @@ test('installWindowRendererLifecycle suppresses a peer crash loop after the budg
   const { logs, options } = makeOptions(win, 'instance', {
     reloadWindowMs: 60_000,
     reloadMax: 3,
-    now: () => 1000
+    now: () => 1000,
+    schedule: immediate
   })
 
   installWindowRendererLifecycle(win, options)
@@ -233,14 +242,16 @@ test('windows share one crash-loop budget via recentReloadTimesRef', async () =>
     reloadWindowMs: 60_000,
     reloadMax: 3,
     now: () => 1000,
-    recentReloadTimesRef: shared
+    recentReloadTimesRef: shared,
+    schedule: immediate
   })
 
   const { logs: secondaryLogs, options: secondaryOptions } = makeOptions(secondary, 'secondary', {
     reloadWindowMs: 60_000,
     reloadMax: 3,
     now: () => 1000,
-    recentReloadTimesRef: shared
+    recentReloadTimesRef: shared,
+    schedule: immediate
   })
 
   installWindowRendererLifecycle(main, mainOptions)
@@ -260,7 +271,9 @@ test('windows share one crash-loop budget via recentReloadTimesRef', async () =>
   await flushDeferred()
   assert.equal(main.reloadCalls.length, 2)
   assert.match(mainLogs[mainLogs.length - 1], /suppressing reload/)
-  assert.equal(secondaryLogs.length, 1)
+  // One event line (plus the back-off notice for spending the third slot).
+  assert.equal(secondaryLogs.filter(line => /render-process-gone/.test(line)).length, 1)
+  assert.ok(secondaryLogs.every(line => !/suppressing reload/.test(line)))
 })
 
 test('log-only mode never reloads', () => {
@@ -544,4 +557,41 @@ test('ERR_ABORTED does not consume the load-failure budget', async () => {
   win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
   await flushDeferred()
   assert.equal(win.reloadCalls.length, 1)
+})
+
+test('reloadDelayMs backs off progressively and repeats the last step', () => {
+  assert.deepEqual(RENDERER_RELOAD_BACKOFF_MS, [0, 2_000, 6_000])
+  assert.equal(reloadDelayMs(0), 0)
+  assert.equal(reloadDelayMs(1), 2_000)
+  assert.equal(reloadDelayMs(2), 6_000)
+  assert.equal(reloadDelayMs(7), 6_000)
+  assert.equal(reloadDelayMs(1, []), 0)
+})
+
+test('reloads inside one window wait progressively longer instead of retrying at once', async () => {
+  const win = makeFakeWindow()
+  const scheduled: number[] = []
+
+  const { logs, options } = makeOptions(win, 'main', {
+    reloadWindowMs: 60_000,
+    reloadMax: 3,
+    now: () => 1000,
+    schedule: (fn: () => void, delayMs: number) => {
+      scheduled.push(delayMs)
+      setImmediate(fn)
+    }
+  })
+
+  installWindowRendererLifecycle(win, options)
+
+  for (let index = 0; index < 3; index += 1) {
+    win.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 3 })
+  }
+
+  await flushDeferred()
+
+  // First reload immediate; the second and third wait 2 s and 6 s.
+  assert.deepEqual(scheduled, [0, 2_000, 6_000])
+  assert.equal(win.reloadCalls.length, 3)
+  assert.ok(logs.some(line => /reload 2\/3 in 2000ms \(progressive back-off\)/.test(line)))
 })

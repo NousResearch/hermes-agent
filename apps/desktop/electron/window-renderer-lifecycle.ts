@@ -98,6 +98,16 @@ export interface WindowRendererLifecycleOptions {
   reloadMax?: number
   /** Shared per-process reload budget. Omitted → per-window budget (tests). */
   recentReloadTimesRef?: { current: number[] }
+  /**
+   * Delay before the Nth reload inside the rolling window, ms (index = number
+   * of reloads already spent). Defaults to RENDERER_RELOAD_BACKOFF_MS: the
+   * first reload is immediate, later ones wait progressively longer so a
+   * GPU driver reset or a file lock has time to clear instead of the budget
+   * being burnt in a fraction of a second. The last entry repeats.
+   */
+  reloadBackoffMs?: readonly number[]
+  /** Timer injection for tests. Default: setImmediate for 0 ms, else setTimeout. */
+  schedule?: (fn: () => void, delayMs: number) => void
   /** Enable bounded auto-reload + visible-error surfacing for main-frame
    *  `did-fail-load` (primary content windows; off by default so OAuth/portal
    *  windows loading remote URLs never auto-reload into a loop). */
@@ -117,6 +127,35 @@ export interface LifecycleWindowLike {
 
 const DEFAULT_RELOAD_WINDOW_MS = 60_000
 const DEFAULT_RELOAD_MAX = 3
+
+/**
+ * Progressive back-off between bounded reloads (ms, indexed by reloads already
+ * spent in the window). Immediate first, then 2 s, then 6 s: three immediate
+ * reloads used to burn the whole budget in well under a second, which is no
+ * time at all for a GPU driver reset or an antivirus file lock to clear.
+ * Inspired by the Claude desktop app's crash recovery (v2.110.0), which moved
+ * from immediate retries to progressively longer waits.
+ */
+export const RENDERER_RELOAD_BACKOFF_MS: readonly number[] = [0, 2_000, 6_000]
+
+/** Delay for the reload after `spent` reloads in the current window. */
+export function reloadDelayMs(spent: number, backoff: readonly number[] = RENDERER_RELOAD_BACKOFF_MS): number {
+  if (backoff.length === 0) {
+    return 0
+  }
+
+  const index = Math.min(Math.max(0, Math.floor(spent)), backoff.length - 1)
+
+  return Math.max(0, Number(backoff[index]) || 0)
+}
+
+function defaultSchedule(fn: () => void, delayMs: number): void {
+  if (delayMs <= 0) {
+    setImmediate(fn)
+  } else {
+    setTimeout(fn, delayMs)
+  }
+}
 
 const RECOVERABLE_REASONS = new Set(['crashed', 'oom'])
 
@@ -268,9 +307,38 @@ export function installWindowRendererLifecycle(
   const { log, reload, onCrashLoopSuppressed } = options.callbacks
   const reloadWindowMs = options.reloadWindowMs ?? DEFAULT_RELOAD_WINDOW_MS
   const reloadMax = options.reloadMax ?? DEFAULT_RELOAD_MAX
+  const backoff = options.reloadBackoffMs ?? RENDERER_RELOAD_BACKOFF_MS
+  const schedule = options.schedule ?? defaultSchedule
   const now = options.now
   const budgetRef = options.recentReloadTimesRef ?? { current: [] }
   const contents = win.webContents
+
+  // Never reload from inside the event handler (Electron warns about
+  // re-entrant webContents calls); wait out the back-off for the reloads
+  // after the first so the fault has a chance to clear.
+  const scheduleReload = (spent: number, failureLabel: string) => {
+    if (typeof reload !== 'function') {
+      return
+    }
+
+    const delayMs = reloadDelayMs(spent, backoff)
+
+    if (delayMs > 0) {
+      log(`[renderer:${kind}] reload ${spent + 1}/${reloadMax} in ${delayMs}ms (progressive back-off)`)
+    }
+
+    schedule(() => {
+      if (win.isDestroyed()) {
+        return
+      }
+
+      try {
+        reload()
+      } catch (error) {
+        log(`[renderer:${kind}] reload after ${failureLabel}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }, delayMs)
+  }
 
   const onRendererGone = (_event: unknown, details?: RendererLifecycleDetails) => {
     const destroyed = win.isDestroyed()
@@ -307,20 +375,10 @@ export function installWindowRendererLifecycle(
       return
     }
 
+    const spent = budgetRef.current.length
+
     pushReloadTime(budgetRef.current, nowMs)
-
-    // Deferred: never reload from inside the event handler (see above).
-    setImmediate(() => {
-      if (win.isDestroyed()) {
-        return
-      }
-
-      try {
-        reload()
-      } catch (error) {
-        log(`[renderer:${kind}] reload after crash failed: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    })
+    scheduleReload(spent, 'crash failed')
   }
 
   const onUnresponsive = () => {
@@ -389,20 +447,10 @@ export function installWindowRendererLifecycle(
       return
     }
 
+    const spent = budgetRef.current.length
+
     pushReloadTime(budgetRef.current, nowMs)
-
-    // Deferred: never reload from inside the event handler (see above).
-    setImmediate(() => {
-      if (win.isDestroyed()) {
-        return
-      }
-
-      try {
-        reload()
-      } catch (error) {
-        log(`[renderer:${kind}] reload after failed load: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    })
+    scheduleReload(spent, 'failed load')
   }
 
   contents.on('render-process-gone', onRendererGone)

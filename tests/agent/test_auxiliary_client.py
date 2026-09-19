@@ -2500,6 +2500,76 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_task_reasoning_disable_uses_deepseek_thinking_wire(self, monkeypatch):
+        """Task-level ``none`` must reach an always-toggle profile as its native disable shape."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "none"})
+
+        kwargs = aux._build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("compression"),
+            task="compression",
+        )
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning" not in kwargs["extra_body"]
+
+    def test_task_reasoning_disable_uses_remembered_floor_without_stale_wire(self, monkeypatch):
+        """A remembered mandatory-reasoning floor must replace the task's stale disable shape."""
+        import agent.auxiliary_client as aux
+        import agent.auxiliary_reasoning_floor as floor
+
+        monkeypatch.setattr(floor, "_FLOORED_ROUTES", {("api.example.test", "test-model")})
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "none"})
+
+        kwargs = aux._build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("compression"),
+            base_url="https://api.example.test/v1",
+            task="compression",
+        )
+
+        assert kwargs["reasoning_effort"] == "low"
+        assert "extra_body" not in kwargs or "reasoning" not in kwargs["extra_body"]
+
+    def test_explicit_reasoning_config_replaces_task_reasoning_wire(self, monkeypatch):
+        """A per-call config must not coexist with the task's normalized reasoning shape."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "none"})
+
+        kwargs = aux._build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("compression"),
+            reasoning_config={"enabled": True, "effort": "low"},
+            task="compression",
+        )
+
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning" not in kwargs["extra_body"]
+
+    def test_explicit_deepseek_thinking_disable_beats_profile_default(self):
+        """An explicit vendor control is authoritative when no normalized config is present."""
+        import agent.auxiliary_client as aux
+
+        kwargs = aux._build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body={"thinking": {"type": "disabled"}},
+            task="compression",
+        )
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
     def test_disabled_caller_reasoning_suppresses_task_reasoning_for_profile_wire(self, monkeypatch):
         """A profile-owned ``reasoning_effort=none`` must not ship with task reasoning."""
         import agent.auxiliary_client as aux

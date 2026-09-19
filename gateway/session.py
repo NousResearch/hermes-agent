@@ -1690,7 +1690,7 @@ class SessionStore(
                     session_key, expected_session_id, old_entry.session_id,
                 )
                 return None
-            if old_entry.session_id == target_session_id:
+            if old_entry.session_id == target_session_id and persisted_cwd is None:
                 return old_entry
             candidate = SessionEntry(
                 session_key=session_key, session_id=target_session_id,

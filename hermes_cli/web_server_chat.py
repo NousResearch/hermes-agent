@@ -225,10 +225,12 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``credential`` names what was presented so the accept path can log *how*.
 
     Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
-    Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
+    Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL), ``?internal=``
     (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
-    child can reconnect; never injected into the SPA).  The legacy token is
-    rejected in gated mode: a leaked ``_SESSION_TOKEN`` must not grant access.
+    child can reconnect; never injected into the SPA), or ``?token=``
+    (user session access token verified against the dashboard auth session providers,
+    e.g. for Remote desktop connections). The legacy in-process ``_SESSION_TOKEN``
+    is rejected in gated mode: a leaked ``_SESSION_TOKEN`` must not grant access.
     """
     from hermes_cli.web_server import _SESSION_TOKEN, app
     auth_required = bool(getattr(app.state, "auth_required", False))
@@ -266,21 +268,46 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         if protocol_reason == "invalid":
             return "ticket_invalid", "ticket-subprotocol"
         ticket = protocol_ticket or ws.query_params.get("ticket", "")
-        if not ticket:
-            return "no_credential", "none"
+        if ticket:
+            try:
+                _stamp_identity(consume_ticket(ticket))
+                if protocol_ticket:
+                    # Select only the stable public protocol during accept. The
+                    # ticket-bearing protocol is a credential and must never be
+                    # reflected back to the browser or retained after admission.
+                    ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+                    return None, "ticket-subprotocol"
+                return None, "ticket"
+            except TicketInvalid as exc:
+                _reject(str(exc))
+                return "ticket_invalid", "ticket"
 
-        try:
-            _stamp_identity(consume_ticket(ticket))
-            if protocol_ticket:
-                # Select only the stable public protocol during accept. The
-                # ticket-bearing protocol is a credential and must never be
-                # reflected back to the browser or retained after admission.
-                ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
-                return None, "ticket-subprotocol"
-            return None, "ticket"
-        except TicketInvalid as exc:
-            _reject(str(exc))
-            return "ticket_invalid", "ticket"
+        token = ws.query_params.get("token", "")
+        if token:
+            from hermes_cli.dashboard_auth.middleware import _verify_access_token
+            session = _verify_access_token(ws, access_token=token, audit=False)
+            if session is not None:
+                _stamp_identity({
+                    "user_id": getattr(session, "user_id", None),
+                    "provider": getattr(session, "provider", None),
+                })
+                audit_log(
+                    AuditEvent.TOKEN_AUTH_SUCCESS,
+                    provider=getattr(session, "provider", None),
+                    user_id=getattr(session, "user_id", None),
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return None, "token"
+            audit_log(
+                AuditEvent.TOKEN_AUTH_FAILURE,
+                reason="session_token_invalid",
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return "token_invalid", "token"
+
+        return "no_credential", "none"
 
     token = ws.query_params.get("token", "")
     if not token:

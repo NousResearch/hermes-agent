@@ -93,6 +93,24 @@ async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
+    """An outer startup budget may cancel initialize before the manager registers the client."""
+    client = _client(tmp_path, "slow")
+    start = asyncio.create_task(client.start())
+    while client._proc is None:
+        await asyncio.sleep(0)
+    proc = client._proc
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(start, timeout=0.05)
+
+    assert proc is not None
+    await asyncio.wait_for(proc.wait(), timeout=3.0)
+    assert client.state == "error"
+    assert client._proc is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("script", ["clean_eof", "malformed_frame"])
 async def test_reader_failure_retires_client_and_rejects_later_work(
     tmp_path: Path, script: str

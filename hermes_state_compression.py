@@ -54,6 +54,69 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
 
 
+# A wait is only a claim on the NEXT handoff, so a waiter row must not outlive the wait that
+# created it. Bound it by the longest legitimate wait (acquire_session_turn_lease's 1800s
+# default) plus slack: past that the row is a leak that would fence the conversation off, not a
+# queue position (measured: t_ebfd74d3).
+# queue position (#84776).
+SESSION_TURN_WAITER_STALE_SECONDS = 1860.0
+
+
+def _session_turn_waiter_is_stale(holder: str, enqueued_at: float, now: float, stale_seconds: float) -> bool:
+    """A waiter's row is dead when its age exceeds the longest legitimate wait or its
+    ``pid=<n>`` process is provably gone."""
+    from hermes_state import _compression_lock_holder_process_is_dead
+
+    if now - float(enqueued_at) > stale_seconds:
+        return True
+    return bool(_compression_lock_holder_process_is_dead(holder))
+
+
+def _prune_session_turn_waiters(conn, conversation_id: str, now: float, *, stale_seconds: float) -> None:
+    """Drop dead waits inside the caller's transaction so they cannot fence the handoff."""
+    rows = conn.execute(
+        "SELECT holder, enqueued_at FROM session_turn_waiters WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchall()
+    doomed = [
+        row[0] for row in rows
+        if _session_turn_waiter_is_stale(row[0], row[1], now, stale_seconds)
+    ]
+    if doomed:
+        conn.executemany(
+            "DELETE FROM session_turn_waiters WHERE conversation_id = ? AND holder = ?",
+            [(conversation_id, holder) for holder in doomed],
+        )
+
+
+def _session_turn_waiter_count_on_conn(conn, conversation_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM session_turn_waiters WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _session_turn_waiter_ahead(conn, conversation_id: str, holder: str, enqueued_at) -> bool:
+    """True when this claim must lose the handoff to a wait queued ahead of it.
+
+    ``enqueued_at`` is the caller's own queue position, or None for an ordinary claim that has
+    not been waiting: an ordinary claim never jumps a live wait, while a waiting claim is
+    admitted as soon as its wait is the oldest (measured: t_ebfd74d3).
+    admitted as soon as its wait is the oldest (#84776).
+    """
+    row = conn.execute(
+        "SELECT holder, enqueued_at FROM session_turn_waiters "
+        "WHERE conversation_id = ? AND holder != ? ORDER BY enqueued_at ASC, holder ASC LIMIT 1",
+        (conversation_id, holder),
+    ).fetchone()
+    if not row:
+        return False
+    if enqueued_at is None:
+        return True
+    return (float(row[1]), str(row[0])) < (float(enqueued_at), str(holder))
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> Tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -522,10 +585,22 @@ class SessionCompressionMixin:
 
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+        waiter_enqueued_at: Optional[float] = None,
+        waiter_stale_seconds: float = SESSION_TURN_WAITER_STALE_SECONDS,
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
-        share one write transaction."""
+        share one write transaction.
+
+        Fairness is part of the same transaction: a claim that has published a wait
+        (``waiter_enqueued_at``) is admitted once its wait is the oldest, and an ordinary claim
+        is denied while a live wait is queued ahead of it, so the handoff at release goes to the
+        turn that waited instead of to whichever process polls first (measured: t_ebfd74d3).
+        Dead waits are pruned here, so a waiter that died mid-wait cannot fence the conversation
+        off.
+        turn that waited instead of to whichever process polls first (#84776). Dead waits are
+        pruned here, so a waiter that died mid-wait cannot fence the conversation off.
+        """
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
@@ -533,11 +608,98 @@ class SessionCompressionMixin:
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            _prune_session_turn_waiters(
+                conn, conversation_id, now, stale_seconds=waiter_stale_seconds)
+            if _session_turn_waiter_ahead(conn, conversation_id, holder, waiter_enqueued_at):
+                return False
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
             )[0]
         return bool(self._execute_write(_do, patience_s=patience_s))
+
+    def register_session_turn_waiter(
+        self, session_id: str, holder: str, *, enqueued_at: Optional[float] = None,
+    ) -> bool:
+        """Publish this holder's wait for the lease, so a fresh claim cannot jump the queue.
+
+        Called before the first acquisition attempt: a claim arriving inside the release window
+        must already see the wait. Cleared by ``clear_session_turn_waiter`` when the wait ends.
+        Never raises — a store without the queue table must not break admission.
+        """
+        if not session_id or not holder:
+            return False
+        stamp = time.time() if enqueued_at is None else float(enqueued_at)
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            _prune_session_turn_waiters(
+                conn, conversation_id, time.time(), stale_seconds=SESSION_TURN_WAITER_STALE_SECONDS)
+            conn.execute(
+                "INSERT OR REPLACE INTO session_turn_waiters (conversation_id, holder, enqueued_at) "
+                "VALUES (?, ?, ?)", (conversation_id, holder, stamp))
+            return True
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error:
+            logger.debug("Could not publish session turn lease wait", exc_info=True)
+            return False
+
+    def clear_session_turn_waiter(self, session_id: str, holder: str) -> None:
+        """Drop this holder's published wait; idempotent, and never raises."""
+        if not session_id or not holder:
+            return
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            conn.execute(
+                "DELETE FROM session_turn_waiters WHERE conversation_id = ? AND holder = ?",
+                (conversation_id, holder))
+            return True
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error:
+            logger.debug("Could not clear session turn lease wait", exc_info=True)
+
+    def session_turn_waiter_count(self, session_id: str) -> int:
+        """Live queued waits for this conversation (queue depth of an admission receipt)."""
+        if not session_id:
+            return 0
+        try:
+            with self._read_ctx() as conn:
+                conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+                return _session_turn_waiter_count_on_conn(conn, conversation_id)
+        except sqlite3.Error:
+            return 0
+
+    def oldest_session_turn_waiter_age(self, session_id: str, *, now: Optional[float] = None) -> Optional[float]:
+        """Age of the oldest live wait, or None when nothing is queued."""
+        if not session_id:
+            return None
+        reference = time.time() if now is None else float(now)
+        try:
+            with self._read_ctx() as conn:
+                conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+                row = conn.execute(
+                    "SELECT MIN(enqueued_at) FROM session_turn_waiters WHERE conversation_id = ?",
+                    (conversation_id,)).fetchone()
+        except sqlite3.Error:
+            return None
+        if not row or row[0] is None:
+            return None
+        return max(0.0, reference - float(row[0]))
+
+    def current_session_turn_lease_holder(self, session_id: str) -> Optional[str]:
+        """Holder string currently owning the conversation, or None when the row is free."""
+        if not session_id:
+            return None
+        try:
+            with self._read_ctx() as conn:
+                conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+                row = conn.execute(
+                    "SELECT holder FROM session_turn_leases WHERE conversation_id = ?",
+                    (conversation_id,)).fetchone()
+        except sqlite3.Error:
+            return None
+        return str(row[0]) if row and row[0] else None
 
     def acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
@@ -546,43 +708,58 @@ class SessionCompressionMixin:
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
         best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
-        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
+        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once.
+
+        The wait is published in ``session_turn_waiters`` before the first attempt and withdrawn
+        when it ends, which is what makes the handoff FIFO rather than first-poller-wins
+        (measured: t_ebfd74d3).
+        when it ends, which is what makes the handoff FIFO rather than first-poller-wins (#84776).
+        """
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         wait_started = None
         last_notice_at = None
         notice_every = max(0.0, float(wait_notice_interval_seconds))
-        while True:
-            if should_abort is not None:
+        waiter_enqueued_at = time.time() if float(wait_seconds) > 0 else None
+        if waiter_enqueued_at is not None:
+            self.register_session_turn_waiter(session_id, holder, enqueued_at=waiter_enqueued_at)
+        try:
+            while True:
+                if should_abort is not None:
+                    try:
+                        if should_abort():
+                            return False
+                    except Exception:
+                        logger.debug("session turn lease should_abort callback failed", exc_info=True)
                 try:
-                    if should_abort():
-                        return False
-                except Exception:
-                    logger.debug("session turn lease should_abort callback failed", exc_info=True)
-            try:
-                if self.try_acquire_session_turn_lease(
-                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s):
-                    return True
-            except sqlite3.Error as exc:
-                # Long holder transactions can exhaust one write-patience budget; keep
-                # polling until wait_seconds or should_abort.
-                if classify_persistence_error(exc) != "locked":
-                    raise
-            now = time.monotonic()
-            remaining = deadline - now
-            if remaining <= 0:
-                return False
-            if wait_started is None:
-                wait_started = now
-            if on_wait is not None and (
-                last_notice_at is None or notice_every == 0.0 or (now - last_notice_at) >= notice_every
-            ):
-                try:
-                    on_wait(max(0.0, now - wait_started))
-                except Exception:
-                    logger.debug("session turn lease on_wait callback failed", exc_info=True)
-                last_notice_at = now
-            time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
+                    if self.try_acquire_session_turn_lease(
+                        session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s,
+                        waiter_enqueued_at=waiter_enqueued_at,
+                    ):
+                        return True
+                except sqlite3.Error as exc:
+                    # Long holder transactions can exhaust one write-patience budget; keep
+                    # polling until wait_seconds or should_abort.
+                    if classify_persistence_error(exc) != "locked":
+                        raise
+                now = time.monotonic()
+                remaining = deadline - now
+                if remaining <= 0:
+                    return False
+                if wait_started is None:
+                    wait_started = now
+                if on_wait is not None and (
+                    last_notice_at is None or notice_every == 0.0 or (now - last_notice_at) >= notice_every
+                ):
+                    try:
+                        on_wait(max(0.0, now - wait_started))
+                    except Exception:
+                        logger.debug("session turn lease on_wait callback failed", exc_info=True)
+                    last_notice_at = now
+                time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
+        finally:
+            if waiter_enqueued_at is not None:
+                self.clear_session_turn_waiter(session_id, holder)
 
     def refresh_session_turn_lease(self, session_id: str, holder: str, *, ttl_seconds: float = 300.0) -> bool:
         """Extend a turn lease only while ``holder`` still owns it."""

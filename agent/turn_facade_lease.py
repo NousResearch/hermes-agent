@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -22,6 +22,13 @@ _REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
+
+# A drained spool becomes ONE turn message (the bodies are joined in order), so the drain is bounded
+# on both axes and whatever does not fit stays queued for the next turn instead of growing the
+# prompt without limit. The queue's head is always taken whatever its size, so an oversized body can
+# never wedge the queue behind a budget it will never fit.
+_LEASE_DRAIN_MAX_RECORDS = 8
+_LEASE_DRAIN_MAX_BYTES = 32 * 1024
 
 
 class DurableTurnLease:
@@ -211,11 +218,16 @@ class DurableTurnLease:
 
 @dataclass
 class TurnLeaseAdmission:
-    """Outcome of ``admit_durable_turn_lease``: exactly one of ``lease`` / ``early_result`` may be set."""
+    """Outcome of ``admit_durable_turn_lease``: exactly one of ``lease`` / ``early_result`` may be set.
+
+    ``drained_delivery_ids`` names the spooled inbound deliveries this turn took ownership of, in
+    drain order, so the caller can report what the turn absorbed.
+    """
 
     lease: Optional[DurableTurnLease] = None
     early_result: Optional[Dict[str, Any]] = None
     conversation_history: Optional[List[Dict[str, Any]]] = None
+    drained_delivery_ids: List[str] = field(default_factory=list)
 
 
 def _durable_session_exists(db, session_id: str) -> bool:
@@ -238,12 +250,17 @@ def _durable_session_exists(db, session_id: str) -> bool:
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
+    inbound_delivery: Optional[Dict[str, Any]] = None,
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease when the session is durable; build (not start) its threads.
 
     Mutates ``task_context["session_id"]`` and ``agent.session_id`` when the wait forced a resume-id
     reload. Returns an ``early_result`` (interrupted / timed out) instead of a lease when admission
-    fails; the caller returns it verbatim."""
+    fails; the caller returns it verbatim. ``inbound_delivery`` — a mapping with ``message`` and
+    optional ``author`` / ``delivery_id`` — marks a turn started for a message that arrived from
+    outside this process: losing the lease wait spools that message onto the CONVERSATION instead of
+    dropping it, and an admitted turn drains whatever is already spooled for the conversation as its
+    first user message (see ``agent/turn_facade_lease`` + ``tools/bot_live_delivery``)."""
     db = getattr(agent, "_session_db", None)
     admission = TurnLeaseAdmission(conversation_history=conversation_history)
     if db is None or not session_id:
@@ -278,7 +295,9 @@ def admit_durable_turn_lease(
         session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
         on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
-        admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
+        admission.early_result = _lease_admission_result(
+            agent, db, session_id, conversation_history, inbound_delivery,
+        )
         return admission
 
     # Assign only after admission so the finally cannot release a holder that never owned the
@@ -308,6 +327,11 @@ def admit_durable_turn_lease(
             )
             admission.conversation_history = reloaded
         lease.build_threads()
+        # Mail that lost an earlier wait is owned by this turn: drained AFTER admission/reload so it
+        # lands on the latest transcript, and never able to fail the turn (see _drain_lease_queue).
+        admission.conversation_history, admission.drained_delivery_ids = _drain_lease_queue(
+            session_id, admission.conversation_history,
+        )
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.
         lease.release()
@@ -348,6 +372,166 @@ def carry_unadmitted_user_message(
     if platform_id is not None:
         deferred_user["platform_message_id"] = platform_id
     append_message(early_result["messages"], deferred_user, timestamp=timestamp)
+def _lease_queue_home():
+    """Profile home whose delivery store holds this conversation's spooled inbound mail.
+
+    Resolved from ``get_hermes_home()`` - the context-local override first, then ``HERMES_HOME``, then
+    the process default - so a multiplexed gateway serving several profiles from one process drains
+    the profile its task is scoped to, which is also where that profile's ``deliver_to_live_owner``
+    put the record. The process home alone would leave another profile's mail unread.
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home()
+
+
+def _lease_queue_dir(home) -> str:
+    from tools.bot_live_delivery import DELIVERY_DIR_NAME
+
+    return os.path.join(str(home), "runtime", DELIVERY_DIR_NAME)
+
+
+def _lease_waiter_observation(db, session_id: str) -> Dict[str, Any]:
+    """Holder / queue depth for the admission receipt.
+
+    Each accessor is probed with its own default, so a store that predates the waiter queue reports
+    nothing rather than breaking an admission.
+    """
+    def _probe(name: str, default):
+        probe = getattr(db, name, None)
+        if not callable(probe):
+            return default
+        try:
+            return probe(session_id)
+        except Exception:
+            logger.debug("Turn lease observation failed: %s", name, exc_info=True)
+            return default
+
+    return {
+        "holder": _probe("current_session_turn_lease_holder", None),
+        "waiter_age_s": _probe("oldest_session_turn_waiter_age", None),
+        "queue_depth": _probe("session_turn_waiter_count", 0),
+    }
+
+
+def _lease_admission_result(
+    agent, db, session_id: str, conversation_history, inbound_delivery,
+) -> Dict[str, Any]:
+    """Early result for a turn that could not take the conversation's lease.
+
+    A human turn keeps the fail-closed timeout: nothing is spooled on its behalf, so the caller must
+    resend. An inbound delivery is spooled onto the CONVERSATION and the result reports the queue
+    admission instead, because that message has an owner waiting on it and no retry of its own.
+    """
+    message = ""
+    if inbound_delivery and not getattr(agent, "_interrupt_requested", False):
+        message = str(inbound_delivery.get("message") or "").strip()
+    if not message:
+        return _lease_not_acquired_result(agent, session_id, conversation_history)
+    observation = _lease_waiter_observation(db, session_id)
+    try:
+        from tools.bot_live_delivery import enqueue_lease_delivery
+
+        record = enqueue_lease_delivery(
+            _lease_queue_home(), conversation_id=session_id, message=message,
+            holder=str(observation.get("holder") or ""),
+            author=inbound_delivery.get("author"),
+            delivery_id=inbound_delivery.get("delivery_id"),
+        )
+    except Exception:
+        # Fail closed: without a durable spool the message would vanish, so report the timeout.
+        logger.warning(
+            "Could not queue the inbound delivery for %s; reporting the lease timeout instead",
+            session_id, exc_info=True,
+        )
+        return _lease_not_acquired_result(agent, session_id, conversation_history)
+    notice = (
+        "Another Hermes process is using this session. Your message was queued and will be the "
+        "first thing the next turn on this session reads."
+    )
+    try:
+        agent._emit_status("⏳ " + notice)
+    except Exception:
+        logger.debug("Failed to emit queued-delivery notice", exc_info=True)
+    return {
+        "final_response": notice,
+        "messages": list(conversation_history or []),
+        "api_calls": 0,
+        "completed": False,
+        "status": "queued",
+        "queued": True,
+        "delivery_id": record.get("delivery_id"),
+        **observation,
+    }
+
+
+def _drain_lease_queue(session_id: str, conversation_history):
+    """Move this conversation's spooled deliveries into the transcript of the turn that owns it.
+
+    Returns ``(history, delivery_ids)``. Records are claimed one at a time and settled as
+    ``drained_into_turn`` once the body is in the transcript, so each message is run at most once. A
+    delivery that arrives while a user message is already pending JOINS that message: strict role
+    alternation is never broken to inject mail. The batch is bounded - at most
+    ``_LEASE_DRAIN_MAX_RECORDS`` records and ``_LEASE_DRAIN_MAX_BYTES`` of bodies - and everything
+    that does not fit stays queued, in order, for the next turn. Any unexpected failure leaves the
+    transcript untouched — a turn admitted normally must not die because of what is in the spool.
+    """
+    history = list(conversation_history or [])
+    if not session_id:
+        return history, []
+    try:
+        home = _lease_queue_home()
+        if not os.path.isdir(_lease_queue_dir(home)):
+            return history, []
+        from tools.bot_live_delivery import claim_lease_delivery, complete_lease_delivery
+
+        bodies: List[str] = []
+        drained: List[str] = []
+        claims = 0
+        spent = 0
+        while claims < _LEASE_DRAIN_MAX_RECORDS:
+            # The head of the queue is always taken - deferring a body bigger than the whole budget
+            # would starve it forever - and every later record only while the batch it would join
+            # still fits. The rest stay queued, in order, for the next turn.
+            record = claim_lease_delivery(
+                home, conversation_id=session_id,
+                max_bytes=None if claims == 0 else _LEASE_DRAIN_MAX_BYTES - spent,
+            )
+            if record is None:
+                break
+            claims += 1
+            delivery_id = str(record.get("delivery_id") or "")
+            body = str(record.get("message") or "").strip()
+            if body:
+                bodies.append(body)
+                spent += len(body.encode("utf-8"))
+            if delivery_id:
+                drained.append(delivery_id)
+            try:
+                complete_lease_delivery(
+                    home, delivery_id, status="settled", reason="drained_into_turn",
+                )
+            except Exception:
+                # Stays claimed: inspectable, and never re-run by a later turn.
+                logger.warning(
+                    "Queued delivery %s drained but not settled", delivery_id, exc_info=True,
+                )
+        if not bodies:
+            return history, drained
+        text = "\n\n".join(bodies)
+        if history and history[-1].get("role") == "user":
+            merged = dict(history[-1])
+            existing = merged.get("content")
+            merged["content"] = (
+                f"{existing}\n\n{text}" if isinstance(existing, str) and existing else text
+            )
+            history[-1] = merged
+        else:
+            history.append({"role": "user", "content": text})
+        return history, drained
+    except Exception:
+        logger.warning("Could not drain queued deliveries for %s", session_id, exc_info=True)
+        return list(conversation_history or []), []
 
 
 def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:

@@ -962,3 +962,46 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+# =============================================================================
+# MiniMax M3 direct-provider pricing entries
+# =============================================================================
+
+def test_minimax_direct_provider_m3_entry_resolves():
+    """`provider: minimax` + `model: minimax-m3` returns the direct entry, not the
+    upstream Fireworks one and not the M2.7 entry (which has no cache fields)."""
+    entry = get_pricing_entry("minimax-m3", provider="minimax")
+    assert entry is not None, "minimax/minimax-m3 lookup returned None"
+    assert entry.input_cost_per_million == Decimal("0.30")
+    assert entry.output_cost_per_million == Decimal("1.20")
+    assert entry.cache_read_cost_per_million == Decimal("0.06")
+    # The point of this PR - the fireworks entry has no cache_write rate:
+    assert entry.cache_write_cost_per_million == Decimal("0.30")
+
+
+def test_minimax_cn_direct_provider_m3_entry_resolves():
+    """`provider: minimax-cn` + `model: minimax-m3` returns the cn entry."""
+    entry = get_pricing_entry("minimax-m3", provider="minimax-cn")
+    assert entry is not None, "minimax-cn/minimax-m3 lookup returned None"
+    assert entry.input_cost_per_million == Decimal("0.30")
+    assert entry.output_cost_per_million == Decimal("1.20")
+    assert entry.cache_read_cost_per_million == Decimal("0.06")
+    assert entry.cache_write_cost_per_million == Decimal("0.30")
+
+
+def test_minimax_m2_7_entry_unchanged():
+    """Adding the M3 entries must not perturb the existing M2.7 entry."""
+    entry = get_pricing_entry("minimax-m2.7", provider="minimax")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.30")
+    assert entry.output_cost_per_million == Decimal("1.20")
+    assert entry.cache_write_cost_per_million is None
+
+
+def test_fireworks_m3_entry_still_resolves_independently():
+    """Direct-provider entries must not shadow the existing fireworks row."""
+    entry = get_pricing_entry("minimax-m3", provider="fireworks")
+    assert entry is not None, "fireworks/minimax-m3 lookup returned None"
+    assert entry.input_cost_per_million == Decimal("0.30")
+    assert entry.output_cost_per_million == Decimal("1.20")
+    assert entry.cache_read_cost_per_million == Decimal("0.06")

@@ -185,6 +185,15 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if target_error is not None:
         return json.dumps(target_error)
     if operations:
+        # Some providers (esp. open-weight models via agent-loop path) emit the
+        # operations array as a JSON-encoded string. Normalize it here — the
+        # agent-loop path skips model_tools.coerce_tool_args, so this is the
+        # only guard. Mirrors todo_tool #14185 defensive coercion.
+        if isinstance(operations, str):
+            try:
+                operations = json.loads(operations)
+            except (json.JSONDecodeError, TypeError):
+                return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         denied = _background_delete_gate(action, operations, target)

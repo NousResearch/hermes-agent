@@ -410,7 +410,11 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
             and cached.get("head") == head_rev:
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
-        if now - cached.get("ts", 0) < ttl:
+        # A cached "up to date" is provably stale once a local fetch (manual, or `hermes update
+        # --check`) shows origin/main ahead of HEAD — re-check instead of serving it for a day.
+        stale_zero = cached.get("behind") == 0 and repo_dir is not None and \
+            (_git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir) or 0) > 0
+        if now - cached.get("ts", 0) < ttl and not stale_zero:
             return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)

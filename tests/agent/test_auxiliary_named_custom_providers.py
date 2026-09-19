@@ -394,7 +394,8 @@ class TestCustomProviderAliasCollision:
         # Built-in kimi-coding points at api.moonshot.ai
         assert "moonshot" in base_url or "kimi" in base_url, f"unexpected base_url {base_url!r}"
 
-    def test_named_llamacpp_wins_over_local_server_alias(self, tmp_path):
+    @pytest.mark.parametrize("provider", ["llamacpp", "custom:llamacpp"])
+    def test_named_llamacpp_wins_over_local_server_alias(self, tmp_path, provider):
         _write_config(tmp_path, {
             "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
             "providers": {
@@ -407,7 +408,7 @@ class TestCustomProviderAliasCollision:
         from agent.auxiliary_client import resolve_provider_client
         from openai import OpenAI
 
-        client, model = resolve_provider_client("llamacpp", model="local-model", raw_codex=True)
+        client, model = resolve_provider_client(provider, model="local-model", raw_codex=True)
 
         assert isinstance(client, OpenAI)
         assert str(client.base_url).rstrip("/") == "http://127.0.0.1:8081/v1"

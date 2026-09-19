@@ -5373,10 +5373,11 @@ def resolve_provider_client(
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
+    alias_identity = original_provider.removeprefix("custom:")
     # A configured provider whose name collides with a local-server alias is still a named
     # provider. Resolve it before the alias's generic ``custom`` branch, which otherwise loses
     # the configured base_url and can fall through to an unrelated credentialed provider.
-    if branch is None or original_provider in _LOCAL_SERVER_ALIASES:
+    if branch is None or alias_identity in _LOCAL_SERVER_ALIASES:
         try:
             result = _resolve_named_custom_branch(req)
         except ImportError:

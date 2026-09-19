@@ -597,6 +597,34 @@ gateway:
 
 A legitimate high-volume bot posting more than 20 messages into one chat in 5 minutes trips the guard too; raise `max_events` for that gateway.
 
+### Bot-to-bot messaging
+
+Messages authored by another bot — a peer Hermes profile, a relay or automation bot — are **ignored by default**, no matter what `require_mention` is set to. One setting, `telegram.allow_bots`, admits them:
+
+```yaml
+telegram:
+  allow_bots: off      # off (default) | mentions | all
+```
+
+Env equivalent `TELEGRAM_ALLOW_BOTS` (the env value wins when both are set). Hermes logs the refusal at debug level, so a peer bot's message that never triggers shows up as `Ignoring message from bot sender ... telegram.allow_bots=off` when the gateway runs at DEBUG.
+
+| Value | Behavior |
+| --- | --- |
+| `off` (default; also `none`, `false`, blank, any unknown value) | Another bot's messages never trigger a turn. |
+| `mentions` | Only a message that explicitly `@mentions` this bot triggers a turn. A quote-reply does not count. |
+| `all` | Every message from another bot in an allowed chat triggers a turn. |
+
+What still applies to admitted bot messages: the sender needs no `TELEGRAM_ALLOWED_USERS` entry (the gateway's bot admission bypass, #4466), but `allowed_chats`, `ignored_threads`, topic gates and `exclusive_bot_mentions` do; `guest_mode` never admits a bot outside `allowed_chats` — bots need `allow_bots`, not an `@mention`.
+
+**Loop guarding.** Telegram also does not deliver messages between bots unless *Bot-to-Bot Communication Mode* is enabled for the sending or receiving bot in [@BotFather](https://t.me/botfather), and a bot only receives another bot's messages without an explicit `@mention`/reply when it is a group admin or has Group Privacy Mode disabled. Telegram recommends deduplication, rate limits and interaction depth caps for exactly this feature; Hermes already has them:
+
+- `allow_bots: mentions` is the loop-safe mode — two profiles both set to `mentions` only answer when explicitly pinged.
+- With `allow_bots: all`, also set `telegram.bots_require_mention: true` (env `TELEGRAM_BOTS_REQUIRE_MENTION`), otherwise a peer bot's quote-reply re-triggers this bot forever.
+- The bot loop guard above meters everything `allow_bots` admits: 20 bot messages per chat per 5 minutes, then a 10-minute cooldown for that chat, one warning logged. Human messages are never counted.
+- `exclusive_bot_mentions` (on by default) keeps a message that names one bot from waking every Hermes profile in the group.
+
+**Not supported: `rich_message.blocks`.** Hermes reads the plaintext `text`/`caption` of an incoming update; Telegram's Bot API 10.1 rich-message blocks are only *sent* by Hermes (see [Rich Messages](#rendering-rich-messages-tables-and-link-previews)) and are not parsed on the way in. A peer that puts its content only in `rich_message.blocks` — OpenClaw's structured replies, for example — delivers no plaintext for the model to read, so stock Hermes has nothing to act on. Reading those blocks needs a custom extractor.
+
 Group conversation text and media captions keep every mention when the message names other participants too (`@research_bot , @ops_bot are you both listening?` reaches `research_bot` verbatim); when this bot is the only one addressed, its own handle is still stripped so short answers such as `@hermes_bot 2` keep working. Group turns also carry the bot's own Telegram username in the per-channel context so the model can tell which retained mentions are for it. Slash commands still use the normal command-trigger cleanup.
 
 Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.

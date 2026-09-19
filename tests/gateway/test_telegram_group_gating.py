@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -40,6 +41,7 @@ def _make_adapter(
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bots_require_mention=None,
+    allow_bots=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -85,6 +87,8 @@ def _make_adapter(
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
     if bots_require_mention is not None:
         extra["bots_require_mention"] = bots_require_mention
+    if allow_bots is not None:
+        extra["allow_bots"] = allow_bots
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -924,7 +928,7 @@ def test_bot_quote_reply_loop_is_broken_by_bots_require_mention():
     """With require_mention alone the quote-reply-to-bot branch returns True unconditionally, so
     two bots admitting each other's messages answer each other forever. The flag closes exactly
     that path; a bot message that does @mention this bot still goes through."""
-    loop_adapter = _make_adapter(require_mention=True)
+    loop_adapter = _make_adapter(require_mention=True, allow_bots="all")
     assert (
         loop_adapter._should_process_message(
             _bot_sender_message("auto-reply", reply_to_bot=True)
@@ -932,7 +936,9 @@ def test_bot_quote_reply_loop_is_broken_by_bots_require_mention():
         is True
     )
 
-    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    gated = _make_adapter(
+        require_mention=True, bots_require_mention=True, allow_bots="all"
+    )
     assert (
         gated._should_process_message(
             _bot_sender_message("auto-reply", reply_to_bot=True)
@@ -956,3 +962,113 @@ def test_human_reply_unaffected_by_bots_require_mention():
         gated._should_process_message(_group_message("replying", reply_to_bot=True))
         is True
     )
+
+
+def _no_allow_bots_env(monkeypatch):
+    """The scoped env rung beats ``config.extra``, so a leaked TELEGRAM_ALLOW_BOTS would mask the
+    YAML value under test."""
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+
+
+def test_bot_sender_is_ignored_by_default_and_the_drop_is_logged(monkeypatch, caplog):
+    """Default (``allow_bots`` unset → off): another bot's group message never triggers, and the
+    skip is explained in the log instead of vanishing silently (#111712)."""
+    _no_allow_bots_env(monkeypatch)
+    adapter = _make_adapter(require_mention=False)
+    with caplog.at_level(logging.DEBUG):
+        assert adapter._should_process_message(_bot_sender_message("hola")) is False
+    assert any("allow_bots" in record.getMessage() for record in caplog.records)
+
+    # An explicit off/none/false is the same policy, not a typo-shaped crash.
+    for value in ("off", "none", "false", ""):
+        _no_allow_bots_env(monkeypatch)
+        assert (
+            _make_adapter(require_mention=False, allow_bots=value)._should_process_message(
+                _bot_sender_message("hola")
+            )
+            is False
+        )
+
+
+def test_allow_bots_mentions_admits_only_an_explicit_mention(monkeypatch):
+    """``mentions``: a bot message that @mentions this bot goes through; plain chatter and a bare
+    quote-reply stay out (that reply is the loop path)."""
+    _no_allow_bots_env(monkeypatch)
+    adapter = _make_adapter(require_mention=True, allow_bots="mentions")
+
+    text = "@hermes_bot ping"
+    assert (
+        adapter._should_process_message(
+            _bot_sender_message(text, entities=[_mention_entity(text)])
+        )
+        is True
+    )
+    assert adapter._should_process_message(_bot_sender_message("chatter")) is False
+    assert (
+        adapter._should_process_message(_bot_sender_message("auto-reply", reply_to_bot=True))
+        is False
+    )
+
+    # Telegram's own allowed bot-to-bot forms: /cmd@thisbot counts as an address too.
+    command = "/status@hermes_bot"
+    assert (
+        adapter._should_process_message(
+            _bot_sender_message(command, entities=[_bot_command_entity(command, command)]),
+            is_command=True,
+        )
+        is True
+    )
+
+
+def test_allow_bots_all_admits_any_bot_message(monkeypatch):
+    _no_allow_bots_env(monkeypatch)
+    adapter = _make_adapter(require_mention=True, allow_bots="all")
+    assert adapter._should_process_message(_bot_sender_message("chatter")) is True
+    assert (
+        adapter._should_process_message(_bot_sender_message("auto-reply", reply_to_bot=True))
+        is True
+    )
+
+
+def test_allow_bots_env_beats_yaml_and_unknown_values_mean_off(monkeypatch):
+    """Env ``TELEGRAM_ALLOW_BOTS`` → ``telegram.allow_bots`` is the documented bridge; an unknown
+    value degrades to off rather than opening the gate."""
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "all")
+    assert (
+        _make_adapter(require_mention=True, allow_bots="off")._should_process_message(
+            _bot_sender_message("chatter")
+        )
+        is True
+    )
+
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "sometimes")
+    assert (
+        _make_adapter(require_mention=False)._should_process_message(
+            _bot_sender_message("chatter")
+        )
+        is False
+    )
+
+
+def test_human_group_path_is_unchanged_by_the_bot_policy(monkeypatch):
+    """The bot policy must not touch human senders: same verdicts with it off, mentions and all."""
+    for mode in (None, "off", "mentions", "all"):
+        monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", mode or "off")
+        adapter = _make_adapter(require_mention=True, allow_bots=mode)
+        text = "@hermes_bot ping"
+        assert (
+            adapter._should_process_message(
+                _group_message(text, entities=[_mention_entity(text)])
+            )
+            is True
+        )
+        assert adapter._should_process_message(_group_message("hello everyone")) is False
+        assert (
+            adapter._should_process_message(_group_message("replying", reply_to_bot=True))
+            is True
+        )
+
+    # require_mention off still means an open group for humans, whatever the bot policy is.
+    monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+    open_adapter = _make_adapter(require_mention=False, allow_bots="off")
+    assert open_adapter._should_process_message(_group_message("hello everyone")) is True

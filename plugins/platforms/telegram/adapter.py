@@ -5467,6 +5467,26 @@ class TelegramAdapter(BasePlatformAdapter):
             "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
         )
 
+    def _telegram_allow_bots(self) -> str:
+        """Bot-sender policy: ``off`` (default), ``mentions`` or ``all`` (#111712).
+
+        * ``off`` (also ``none``/``false``/blank/anything unrecognized) — another bot's message is
+          never processed. The safe default: two Hermes profiles that admit each other's messages
+          would answer each other forever.
+        * ``mentions`` — processed only when the bot's message explicitly ``@mentions`` this bot.
+          A quote-reply does not count, for the same loop reason as ``bots_require_mention``.
+        * ``all`` — every message from another bot in an allowed chat is processed. Pair it with
+          ``bots_require_mention: true`` when two Hermes profiles share a group.
+
+        Read through the shared per-profile reader (``TELEGRAM_ALLOW_BOTS`` env → ``config.yaml
+        telegram.allow_bots`` → off), the same rung the yaml bridge at ``_apply_yaml_config`` seeds.
+        The gateway's authz layer reads the identical setting for its bot allowlist bypass (#4466),
+        and the bot loop guard meters whatever this admits.
+        """
+        raw = _extra_or_secret(self.config.extra, "allow_bots", "TELEGRAM_ALLOW_BOTS", "off")
+        mode = str(raw or "").strip().lower()
+        return mode if mode in {"mentions", "all"} else "off"
+
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
 
@@ -6043,10 +6063,42 @@ class TelegramAdapter(BasePlatformAdapter):
         sender_id = getattr(sender, "id", None)
         return bot_id is None or sender_id is None or sender_id != bot_id
 
+    def _telegram_bot_sender_admitted(self, message: Message) -> bool:
+        """Whether another bot's message may trigger, per ``_telegram_allow_bots``.
+
+        The only admission path for bot senders (human senders never reach it); a refusal is logged
+        because "the other bot's message just vanished" was otherwise invisible in gateway.log
+        (#111712). ``bots_require_mention`` keeps its veto inside ``all``, where an admitted bot's
+        quote-reply would otherwise re-open the loop that flag exists to break.
+        """
+        mode = self._telegram_allow_bots()
+        mentioned = self._message_mentions_bot(message)
+        if mode == "all":
+            admitted = not (self._telegram_bots_require_mention() and not mentioned)
+        else:
+            admitted = mode == "mentions" and mentioned
+        if not admitted:
+            if mode == "mentions":
+                why = "this bot was not @mentioned"
+            elif self._telegram_bots_require_mention():
+                why = "another bot's quote-reply is not an explicit @mention"
+            else:
+                why = 'set "mentions" or "all" to admit messages from other bots'
+            logger.debug(
+                "[%s] Ignoring message from bot sender %s in chat %s: telegram.allow_bots=%s (%s)",
+                self.name,
+                getattr(getattr(message, "from_user", None), "id", None),
+                getattr(getattr(message, "chat", None), "id", None),
+                mode,
+                why,
+            )
+        return admitted
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
-        off, reply to the bot, @mention (incl. ``/cmd@botname``), or a wake-word match."""
+        off, reply to the bot, @mention (incl. ``/cmd@botname``), or a wake-word match. A bot sender is decided first
+        by ``telegram.allow_bots`` (default off) instead of these human trigger branches (#111712)."""
         # Learn the live handle BEFORE any mention gate routes on it, then drop our own echoed messages.
         # Filter out the bot's own messages (returned by getUpdates in some environments like
         # groups/supergroups where the bot can see its own messages). Without this, outbound messages are
@@ -6066,20 +6118,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         # Resolve once; _message_mentions_bot is not re-called below in guest mode.
         guest_mention = self._is_guest_mention(message)
-        # allowed_chats whitelist: outside chats pass only via the guest-mode explicit mention.
+        # Bot sender: one explicit, default-off decision (telegram.allow_bots, #111712) instead of the
+        # human trigger branches below. Decided before the chat allowlist so an @mention in a
+        # non-allowlisted chat cannot smuggle a bot past "off".
+        other_bot = self._sender_is_other_bot(message)
+        if other_bot and not self._telegram_bot_sender_admitted(message):
+            return False
+        # allowed_chats whitelist: outside chats pass only via the guest-mode explicit mention; bots get
+        # no such bypass — they need allow_bots, not an @mention.
         allowed = self._telegram_allowed_chats()
         if allowed and chat_id_str not in allowed:
-            return guest_mention
+            return guest_mention and not other_bot
+        if other_bot:
+            return True
         if guest_mention or chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return True
-        # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
-        # plain chatter does not count (two bots answering each other's replies never stop otherwise).
-        if (
-            self._telegram_bots_require_mention()
-            and self._sender_is_other_bot(message)
-            and not self._message_mentions_bot(message)
-        ):
-            return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):

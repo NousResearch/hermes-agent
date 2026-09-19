@@ -411,6 +411,11 @@ DEFAULT_CONFIG = {
         # Firefox etc. fails closed. Also gates the browser_exec `local` argument (real-profile
         # local session even under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
+        # Optional stable Chromium family to use as the real-profile source:
+        # chrome | edge | brave | chromium. Empty means detect the OS default.
+        # This only affects real-profile browsing; it does not change the OS
+        # default browser. Useful when an OS association API reports stale state.
+        "real_profile_browser": "",
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
         # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
         # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)

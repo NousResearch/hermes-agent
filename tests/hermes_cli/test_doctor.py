@@ -66,6 +66,52 @@ class TestDoctorPlatformHints:
         assert "hermes update" not in hint
 
 
+class TestDoctorPlaintextConfigSecrets:
+    def test_flags_nested_case_insensitive_secret_keys_without_echoing_values(self, monkeypatch, tmp_path, capsys):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        secret = "super-secret-value-that-must-not-be-printed"
+        (home / "config.yaml").write_text(
+            "providers:\n"
+            "  example:\n"
+            f"    API_KEY: {secret}\n"
+            "connections:\n"
+            "  - credentials:\n"
+            f"      ToKeN: {secret}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        finding = doctor_config._check_config_plaintext_secrets(False)
+
+        out = capsys.readouterr().out
+        assert "providers.example.API_KEY" in out
+        assert "connections[0].credentials.ToKeN" in out
+        assert secret not in out
+        assert len(finding.manual_issues) == 1
+
+    def test_ignores_safe_keys_and_empty_secret_values(self, monkeypatch, tmp_path, capsys):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "token_count: 4\nsecret_santa: alice\napi_key: ''\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+
+        finding = doctor_config._check_config_plaintext_secrets(False)
+
+        assert finding.manual_issues == []
+        assert "No plaintext credentials in config.yaml" in capsys.readouterr().out
+
+    def test_bounds_cyclic_config_values(self):
+        config = {}
+        config["nested"] = config
+
+        assert doctor_config._plaintext_secret_paths(config) == []
+
+
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"

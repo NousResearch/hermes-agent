@@ -43,4 +43,3 @@ def inert_agent(monkeypatch, db, sid):
     agent.client = MagicMock()
     agent.client.chat.completions.create.side_effect = provider
     return agent, sent, at_provider
-

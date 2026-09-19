@@ -249,9 +249,7 @@ console.error = (...args) => {
     .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
     .join(" ");
   classifyStreamLog(text);
-  // The SDK sometimes logs values read from PASSWORD_STORE. Keep the
-  // stream-health classifier, but never forward arbitrary SDK arguments to
-  // the sidecar log where credentials could be exposed in clear text.
+  // Keep health classification, never forward arbitrary SDK values.
   originalConsoleError("photon-sidecar: Spectrum SDK stream event");
 };
 

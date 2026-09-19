@@ -629,9 +629,12 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     against the process table, matching ``/api/status``."""
     from gateway.status import get_running_pid, resolve_gateway_liveness
     # cleanup_stale=False: a status probe for ANOTHER profile must never unlink its PID file.
-    return resolve_gateway_liveness(
-        profile_dir=profile_dir, use_cache=False,
-        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False)).running
+    try:
+        return resolve_gateway_liveness(
+            profile_dir=profile_dir, use_cache=False,
+            pid_probe=lambda path: get_running_pid(path, cleanup_stale=False)).running
+    except Exception:
+        return False
 
 
 def _served_by_running_multiplexer(profile_name: str) -> bool:
@@ -836,8 +839,17 @@ def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
         alias_map = build_alias_map()  # ONCE, not per profile (was the dominant cost)
         for entry in named:
             alias_name = alias_map.get(normalize_profile_name(entry.name))
-            profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name,
-                                          lazy_skill_count=lazy_skill_count))
+            try:
+                profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name,
+                                              lazy_skill_count=lazy_skill_count))
+            except Exception:
+                # One broken dir (SOUL.md leftover, unreadable pid, …) must not hide
+                # the rest of `hermes profile list` / `hermes doctor` (#115365).
+                logger.warning(
+                    "Skipping profile %s: listing failed; remaining profiles still shown",
+                    entry.name,
+                    exc_info=True,
+                )
     return profiles
 
 

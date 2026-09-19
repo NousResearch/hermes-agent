@@ -396,7 +396,7 @@ export const FREE_INPUT_KEYS = new Set([
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
-  modelContextLength: 'Context Window',
+  modelContextLength: 'Main model context window (override)',
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
@@ -556,6 +556,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     targetRatio: 'Compression Target',
     protectLastN: 'Protected Recent Messages'
   },
+  auxiliary: {
+    compression: {
+      timeout: 'Compression model timeout (s)'
+    }
+  },
   delegation: {
     model: 'Subagent Model',
     provider: 'Subagent Provider',
@@ -571,7 +576,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
-  modelContextLength: "Leave at 0 to use the selected model's detected context window.",
+  modelContextLength:
+    "Overrides the detected context window of the MAIN chat model only (tokens). Leave at 0 to use the selected model's detected value. Does not affect auxiliary/MoA models.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
@@ -624,6 +630,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   compression: {
     enabled: 'Summarize older context when conversations get large.',
     codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.'
+  },
+  auxiliary: {
+    compression: {
+      timeout:
+        'Seconds to wait for the auxiliary compression model per call (default 120). Raise for slow local models.'
+    }
   },
   voice: {
     autoTts: 'Automatically speak assistant responses.',
@@ -732,7 +744,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'compression.threshold',
       'compression.codex_gpt55_autoraise',
       'compression.target_ratio',
-      'compression.protect_last_n'
+      'compression.protect_last_n',
+      'auxiliary.compression.timeout'
     ]
   },
   {

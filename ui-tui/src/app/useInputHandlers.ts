@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
-import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import type { ConfigGetValueResponse, ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -178,6 +178,25 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
   return historyIdx !== null && value !== history[historyIdx]
+}
+
+// Reasoning-effort ladder (canonical order, mirrors the /reasoning levels).
+const EFFORT_LADDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
+
+/**
+ * Step one rung along the effort ladder, clamped at both ends. Unknown
+ * values ('none', provider default, typos) enter from the nearest end so the
+ * first press always lands somewhere predictable. Pure for unit tests.
+ */
+export function stepEffortLevel(current: string, dir: 1 | -1): string {
+  const cur = current.trim().toLowerCase()
+  let idx = (EFFORT_LADDER as readonly string[]).indexOf(cur)
+
+  if (idx < 0) {
+    idx = dir > 0 ? -1 : EFFORT_LADDER.length
+  }
+
+  return EFFORT_LADDER[clamp(idx + dir, 0, EFFORT_LADDER.length - 1)]!
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -495,6 +514,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
+      } else if (isCtrl(key, ch, 'x') && overlay.sessions && !promptOverlay) {
+        // Second Ctrl+X while the picker is open closes it (toggle). This
+        // lives here — not beside the open-path below — because an open
+        // picker sets $isBlocked, which returns early before that code runs.
+        patchOverlayState({ sessions: false })
       }
 
       // When a prompt overlay is up and the user pressed a scroll key, fall
@@ -634,7 +658,39 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isCtrl(key, ch, 'x')) {
+      // Open-path only: when the picker is open $isBlocked returns early
+      // above, so the matching close lives in the blocked region.
       return patchOverlayState({ sessions: true })
+    }
+
+    // Alt+, / Alt+. step reasoning effort down/up without spending a turn.
+    if (key.meta && !key.ctrl && (ch === ',' || ch === '.')) {
+      if (!live.sid) {
+        return void actions.sys('effort needs an active session')
+      }
+
+      const dir = ch === '.' ? 1 : -1
+      const sid = live.sid
+
+      // gateway.rpc swallows errors with its own sys() message and resolves
+      // to null, so we only speak when it came back with a real shape.
+      return void gateway
+        .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: sid })
+        .then(r => {
+          if (!r) {
+            return
+          }
+
+          const next = stepEffortLevel(r.value ?? '', dir)
+
+          return void gateway
+            .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: sid, value: next })
+            .then(sr => {
+              if (sr) {
+                actions.sys(`reasoning: ${sr.value || next}`)
+              }
+            })
+        })
     }
 
     // Ctrl+O opens the model picker without disturbing a typed draft — the

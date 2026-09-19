@@ -452,6 +452,8 @@ const shortModelLabel = (model: string) =>
     .pop()!
     .replace(/^claude[-_]/, '')
     .replace(/^anthropic[-_]/, '')
+    .replace(/^muse[-_]/, '')
+    .replace(/[-_]contributor$/, '')
     .replace(/[-_]/g, ' ')
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
@@ -519,20 +521,25 @@ export function StatusRule({
   // classic CLI bar). null = user hasn't customized → everything shows.
   const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
 
+  // The fill bar carries context on wide terminals (needs context_max); the
+  // numeric label stands in wherever the bar can't — narrow screens, missing
+  // max, or an explicit fields filter without context_pct. Never both.
+  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
   const ctxLabel =
-    ok('context_detail') || ok('context_pct')
-      ? usage.context_max
-        ? segs.compactCtx
-          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
-        : (usage.total ?? 0) > 0
-          ? `${compactNumber(usage.total)} tok`
-          : ''
-      : ''
-
-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+    bar
+      ? ''
+      : ok('context_detail') || ok('context_pct')
+        ? usage.context_max
+          ? segs.compactCtx
+            ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
+            : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+          : (usage.total ?? 0) > 0
+            ? `${compactNumber(usage.total)} tok`
+            : ''
+        : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.

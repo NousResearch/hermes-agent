@@ -128,8 +128,10 @@ Vue is pinned to `@vue/language-server@2`, started with
 line only works behind a client-hosted `tsserver` tunnel (the VS Code /
 Neovim setup) that Hermes's generic client does not run, so it never
 publishes diagnostics. If an earlier Hermes installed 3.x, the log shows a
-one-time `vue-language-server: ... 3.x` warning; reinstall with
-`npm install --prefix <HERMES_HOME>/lsp @vue/language-server@2 typescript@6`.
+one-time `vue-language-server: ... 3.x` warning; delete
+`<HERMES_HOME>/lsp/node_modules/@vue` and `<HERMES_HOME>/lsp/bin/vue-language-server*`,
+then run `hermes lsp install vue-language-server` (the recipe co-installs the
+TypeScript SDK).
 
 ## CLI
 

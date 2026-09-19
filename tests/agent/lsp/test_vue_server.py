@@ -12,7 +12,6 @@ import os
 
 import pytest
 
-from agent.lsp.install import INSTALL_RECIPES, TYPESCRIPT_SDK_PKG
 from agent.lsp.servers import ServerContext, find_server_for_file
 
 
@@ -56,9 +55,16 @@ def test_vue_spawns_only_a_self_hosting_server_with_a_js_typescript_sdk(tmp_path
 
 
 def test_js_toolchain_recipes_pin_a_javascript_typescript_sdk():
-    """Both TypeScript-hosting recipes co-install the same JS-based TypeScript line (7+ is the Go port with no
-    ``tsserver.js``), and the Vue recipe stays on the self-hosting 2.x major."""
+    """Both TypeScript-hosting recipes co-install a JS-based TypeScript line (7+ is the Go port with no
+    ``tsserver.js``), and the Vue recipe stays below the tunnel-only 3.x major."""
+    from agent.lsp.install import INSTALL_RECIPES
+
+    def major(spec: str, name: str) -> int:
+        assert spec.startswith(f"{name}@"), spec  # unpinned = floats onto the next major
+        return int(spec[len(name) + 1:].split(".")[0])
+
     vue, tsls = INSTALL_RECIPES["@vue/language-server"], INSTALL_RECIPES["typescript-language-server"]
-    assert vue["pkg"] == "@vue/language-server@2"
-    assert TYPESCRIPT_SDK_PKG in vue["extra_pkgs"] and TYPESCRIPT_SDK_PKG in tsls["extra_pkgs"]
-    assert TYPESCRIPT_SDK_PKG.startswith("typescript@") and int(TYPESCRIPT_SDK_PKG.split("@")[1].split(".")[0]) < 7
+    assert major(vue["pkg"], "@vue/language-server") < 3
+    for recipe in (vue, tsls):
+        sdk = [p for p in recipe.get("extra_pkgs") or [] if p.split("@")[0] == "typescript"]
+        assert sdk and major(sdk[0], "typescript") < 7

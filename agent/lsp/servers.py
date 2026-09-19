@@ -192,14 +192,17 @@ def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     return _make_spec(root, ctx, "bash-language-server", [bin_path, "start"])
 
 
+_VUE_REINSTALL = (
+    "delete <HERMES_HOME>/lsp/node_modules/@vue and <HERMES_HOME>/lsp/bin/vue-language-server*, "
+    "then run: hermes lsp install vue-language-server"
+)
 _VUE_TUNNEL_MSG = (
     "vue-language-server: the installed @vue/language-server is 3.x, which only works behind a client-hosted "
-    "tsserver tunnel Hermes does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: "
-    "npm install --prefix <HERMES_HOME>/lsp @vue/language-server@2 typescript@6"
+    f"tsserver tunnel Hermes does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: {_VUE_REINSTALL}"
 )
 _VUE_TSDK_MSG = (
     "vue-language-server: no JavaScript TypeScript SDK (typescript/lib/typescript.js) next to the server or under "
-    "the project's node_modules — diagnostics are skipped. Install one: npm install --prefix <HERMES_HOME>/lsp typescript@6"
+    f"the project's node_modules — diagnostics are skipped. Reinstall (the recipe co-installs one): {_VUE_REINSTALL}"
 )
 
 

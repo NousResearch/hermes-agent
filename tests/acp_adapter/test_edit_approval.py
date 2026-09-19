@@ -9,6 +9,7 @@ from pathlib import Path
 from acp_adapter.edit_approval import (
     EditProposal,
     build_acp_edit_tool_call,
+    build_edit_proposal,
     set_edit_approval_requester,
     should_auto_approve_edit,
 )
@@ -121,3 +122,82 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+
+
+def test_multifile_v4a_patch_does_not_bypass_sensitive_or_workspace_checks(tmp_path):
+    """Each V4A header path must pass the checks, not the comma-joined display string."""
+    patch = (
+        "*** Update File: .env\n@@\n+SECRET=x\n"
+        "*** Update File: src/ok.py\n@@\n+ok\n"
+    )
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": patch})
+    assert proposal is not None
+
+    # A sensitive file anywhere in the patch still prompts under both policies.
+    assert not should_auto_approve_edit(proposal, "session", str(tmp_path))
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
+def test_multifile_v4a_patch_outside_workspace_path_prompts(tmp_path):
+    # Escape target must be outside BOTH allowed roots (tempdir + session cwd).
+    escape = str(Path.home() / ".hermes-acp-escape-test.txt")
+    patch = (
+        f"*** Update File: {tmp_path}/src/ok.py\n@@\n+ok\n"
+        f"*** Update File: {escape}\n@@\n+evil\n"
+    )
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": patch})
+    assert proposal is not None
+
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+    # Session policy still approves non-sensitive absolute paths by design.
+    assert should_auto_approve_edit(proposal, "session", str(tmp_path))
+
+
+def test_multifile_v4a_patch_all_safe_paths_auto_approves(tmp_path):
+    patch = (
+        f"*** Update File: {tmp_path}/a.py\n@@\n+a\n"
+        f"*** Update File: {tmp_path}/b.py\n@@\n+b\n"
+    )
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": patch})
+    assert proposal is not None
+
+    assert should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+    assert should_auto_approve_edit(proposal, "session", str(tmp_path))
+
+
+def test_multifile_v4a_env_write_reaches_permission_prompt_e2e(tmp_path):
+    """Pre-fix, ``session`` policy auto-approved the ``.env`` hidden in the join."""
+    env_target = tmp_path / ".env"
+    ok_target = tmp_path / "ok.py"
+    patch = (
+        f"*** Update File: {env_target}\n@@\n+SECRET=x\n"
+        f"*** Update File: {ok_target}\n@@\n+ok\n"
+    )
+
+    prompted = []
+
+    def requester(proposal):
+        if should_auto_approve_edit(proposal, "session", str(tmp_path)):
+            return True
+        prompted.append(proposal.path)
+        return False
+
+    set_edit_approval_requester(requester)
+    result = json.loads(
+        handle_function_call("patch", {"mode": "patch", "patch": patch}, task_id="acp-v4a-e2e")
+    )
+
+    assert prompted, "multi-file .env patch must reach the prompt, not auto-approve"
+    assert "denied" in result["error"].lower()
+    assert not env_target.exists()
+    assert not ok_target.exists()
+
+
+def test_v4a_move_file_checks_both_endpoints(tmp_path):
+    patch = (
+        "*** Move File: src/a.py -> /tmp/../outside-dir/moved.py\n"
+        "@@\n@@\n"
+    )
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": patch})
+    if proposal is not None:
+        assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))

@@ -13,6 +13,7 @@ import stat
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -347,6 +348,35 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
 
+    def test_bank_missions_pushed_once_per_bank(self, provider_with_config):
+        p = provider_with_config(bank_mission="Reflect mission", bank_retain_mission="Extract key facts",
+                                 bank_observations_mission="Synthesise preferences")
+        p._client.aupdate_bank_config = AsyncMock(return_value={})
+        p.handle_tool_call("hindsight_retain", {"content": "a"})
+        p.handle_tool_call("hindsight_retain", {"content": "b"})
+        p._client.aupdate_bank_config.assert_awaited_once_with(
+            "test-bank", reflect_mission="Reflect mission", retain_mission="Extract key facts",
+            observations_mission="Synthesise preferences")
+
+    def test_bank_mission_only_sends_configured_fields(self, provider_with_config):
+        p = provider_with_config(bank_retain_mission="Extract key facts")
+        p._client.aupdate_bank_config = AsyncMock(return_value={})
+        p.handle_tool_call("hindsight_retain", {"content": "a"})
+        p._client.aupdate_bank_config.assert_awaited_once_with("test-bank", retain_mission="Extract key facts")
+
+    def test_no_bank_config_call_without_missions(self, provider):
+        provider._client.aupdate_bank_config = AsyncMock(return_value={})
+        provider.handle_tool_call("hindsight_retain", {"content": "a"})
+        provider._client.aupdate_bank_config.assert_not_awaited()
+
+    def test_bank_mission_failure_is_nonfatal(self, provider_with_config):
+        p = provider_with_config(bank_mission="Reflect mission")
+        p._client.aupdate_bank_config = AsyncMock(side_effect=RuntimeError("config api disabled"))
+        result = json.loads(p.handle_tool_call("hindsight_retain", {"content": "a"}))
+        assert result["result"] == "Memory stored successfully."
+        p.handle_tool_call("hindsight_retain", {"content": "b"})
+        assert p._client.aupdate_bank_config.await_count == 1  # no retry storm
+
     def test_retain_source_defaults_empty(self, provider):
         # Opt-in per AGENTS.md: no attribution tag ships by default.
         assert provider._retain_source == ""
@@ -516,6 +546,44 @@ class TestToolHandlers:
     def test_build_retain_kwargs_accepts_explicit_occurred_at(self, provider):
         item = provider._build_retain_kwargs("dinner with Sam", occurred_at="2026-08-20T19:00:00+02:00")
         assert item["timestamp"] == "2026-08-20T19:00:00+02:00"
+
+    def test_retain_tool_observation_scopes_overrides_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="combined")
+        p.handle_tool_call("hindsight_retain", {"content": "x", "observation_scopes": "per_tag"})
+        assert p._client.aretain_batch.call_args.kwargs["items"][0]["observation_scopes"] == "per_tag"
+
+    def test_retain_tool_observation_scopes_invalid_falls_back_to_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="per_tag")
+        p.handle_tool_call("hindsight_retain", {"content": "x", "observation_scopes": "bogus"})
+        assert p._client.aretain_batch.call_args.kwargs["items"][0]["observation_scopes"] == "per_tag"
+
+    def test_retain_tool_observation_scopes_tag_lists(self, provider):
+        provider.handle_tool_call("hindsight_retain",
+                                  {"content": "x", "observation_scopes": [["a"], ["a", "b"]]})
+        assert provider._client.aretain_batch.call_args.kwargs["items"][0]["observation_scopes"] == [["a"], ["a", "b"]]
+
+    def test_retain_tool_passes_entities_strategy_metadata(self, provider):
+        provider.handle_tool_call("hindsight_retain", {
+            "content": "x", "strategy": "facts", "metadata": {"topic": "db"},
+            "entities": [{"text": "Alice", "type": "person"}, {"type": "no-text"}, "junk"],
+        })
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["entities"] == [{"text": "Alice", "type": "person"}]
+        assert item["strategy"] == "facts"
+        assert item["metadata"]["topic"] == "db"
+
+    def test_retain_tool_document_id_and_update_mode(self, provider):
+        provider.handle_tool_call("hindsight_retain",
+                                  {"content": "x", "document_id": "doc-1", "update_mode": "append"})
+        kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert kwargs["document_id"] == "doc-1"
+        assert kwargs["items"][0]["update_mode"] == "append"
+
+    def test_retain_tool_update_mode_ignored_without_document_id(self, provider):
+        provider.handle_tool_call("hindsight_retain", {"content": "x", "update_mode": "append"})
+        kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert "document_id" not in kwargs
+        assert "update_mode" not in kwargs["items"][0]
 
     def test_retain_schema_exposes_occurred_at(self):
         from plugins.memory.hindsight import RETAIN_SCHEMA
@@ -701,6 +769,41 @@ class TestPrefetchServerRetainVisibility:
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
         assert "op-async-1" in provider._pending_retain_ops
+
+    def test_async_retain_sends_deterministic_operation_id(self, provider):
+        provider._client.aretain_batch = AsyncMock(return_value=SimpleNamespace(operation_id=None, operation_ids=None))
+        for _ in range(2):
+            provider._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode="append", label="t")()
+        first, second = (c.kwargs["operation_id"] for c in provider._client.aretain_batch.call_args_list)
+        assert first == second and str(uuid.UUID(first)) == first
+        provider._make_turn_retain_job(['{"t":2}'], document_id="d", update_mode="append", label="t")()
+        assert provider._client.aretain_batch.call_args.kwargs["operation_id"] != first
+
+    def test_sync_retain_sends_no_operation_id(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode="append", label="t")()
+        assert "operation_id" not in p._client.aretain_batch.call_args.kwargs
+
+    def test_failed_append_is_replayed_first_with_same_operation_id(self, provider):
+        provider._client.aretain_batch = AsyncMock(side_effect=RuntimeError("server down"))
+        job = provider._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode="append", label="t")
+        with pytest.raises(RuntimeError):
+            job()
+        failed_op = provider._client.aretain_batch.call_args.kwargs["operation_id"]
+        assert list(provider._failed_append_jobs) == [job]
+
+        provider._client.aretain_batch = AsyncMock(return_value=SimpleNamespace(operation_id=None, operation_ids=None))
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        calls = provider._client.aretain_batch.call_args_list
+        assert calls[0].kwargs["operation_id"] == failed_op  # replay first, same identity
+        assert len(calls) == 2 and not provider._failed_append_jobs
+
+    def test_failed_replace_is_not_buffered(self, provider):
+        provider._client.aretain_batch = AsyncMock(side_effect=RuntimeError("server down"))
+        with pytest.raises(RuntimeError):
+            provider._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode=None, label="t")()
+        assert not provider._failed_append_jobs
 
     def test_tracks_multiple_operation_ids(self, provider):
         provider._client.aretain_batch = AsyncMock(

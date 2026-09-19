@@ -334,7 +334,7 @@ echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 | **数据存储** | Hindsight Cloud 或本地嵌入式 PostgreSQL |
 | **费用** | Hindsight 定价（云端）或免费（本地） |
 
-**工具：** `hindsight_retain`（带实体提取的存储）、`hindsight_recall`（多策略搜索）、`hindsight_reflect`（跨记忆合成）
+**工具：** `hindsight_retain`（带实体提取的存储；可选的每次调用参数 `tags`、`observation_scopes`、`entities`、`metadata`、`strategy`、`occurred_at`、`document_id` + `update_mode`）、`hindsight_recall`（多策略搜索）、`hindsight_reflect`（跨记忆合成）
 
 **安装：**
 ```bash
@@ -344,7 +344,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-安装向导会自动安装依赖，并仅安装所选模式所需的内容（云端用 `hindsight-client`，本地用 `hindsight-all`）。需要 `hindsight-client >= 0.4.22`（会话启动时若版本过旧则自动升级）。
+安装向导会自动安装依赖，并仅安装所选模式所需的内容（云端用 `hindsight-client`，本地用 `hindsight-all`）。需要 `hindsight-client >= 0.10.0`（会话启动时若版本过旧则自动升级）。异步保留会携带确定性的 `operation_id`，因此重试或重放的保留不会被重复处理（需要 Hindsight 服务器 0.8.6+）。
 
 **本地模式 UI：** `hindsight-embed -p hermes ui start`
 
@@ -354,6 +354,9 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud` 或 `local` |
 | `bank_id` | `hermes` | 记忆库标识符 |
+| `bank_mission` | — | 记忆库的 reflect 使命；会话启动时应用到记忆库 |
+| `bank_retain_mission` | — | 保留使命（引导提取内容）；会话启动时应用到记忆库 |
+| `bank_observations_mission` | — | 观察使命（决定哪些内容被合成为观察；替换内置规则）；会话启动时应用到记忆库 |
 | `recall_budget` | `mid` | 召回彻底程度：`low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid`（上下文 + 工具）、`context`（仅自动注入）、`tools`（仅工具） |
 | `auto_retain` | `true` | 自动保留对话轮次 |
@@ -361,6 +364,7 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 | `retain_async` | `true` | 在服务器上异步处理保留操作 |
 | `retain_context` | `conversation between Hermes Agent and the User` | 保留记忆的上下文标签 |
 | `retain_tags` | — | 应用于保留记忆的默认标签；与每次工具调用的标签合并 |
+| `observation_scopes` | — | 整合时观察的作用域：`combined`（默认）、`per_tag`、`all_combinations`，或标签列表的 JSON 列表 |
 | `retain_source` | — | 附加到保留记忆的可选 `metadata.source` |
 | `retain_user_prefix` | `User` | 自动保留的对话记录中用户轮次前的标签 |
 | `retain_assistant_prefix` | `Assistant` | 自动保留的对话记录中助手轮次前的标签 |

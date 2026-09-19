@@ -15,6 +15,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# One shared decoder: ``raw_decode`` stops at the end of the first complete JSON value, which is
+# what bounds a candidate span (see ``extract_json_candidate``).
+_JSON_DECODER = json.JSONDecoder()
+# Cap on opener positions probed per answer, so a bracket-dense blob (diff, stack trace, base64
+# chunk) cannot turn candidate extraction into a quadratic scan.
+_MAX_JSON_SCAN_ATTEMPTS = 256
+
 
 def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """``(schema, None)`` when usable, ``(None, error)`` when not; ``None`` input
@@ -57,8 +64,37 @@ def append_output_contract(context: Optional[str], schema: Dict[str, Any]) -> st
     return f"{base}\n\n{block}" if base else block
 
 
+def _first_decodable_span(source: str) -> Optional[str]:
+    """Outermost JSON value starting at the earliest opener that decodes, or ``None``.
+
+    Every ``{``/``[`` is tried in document order with ``JSONDecoder.raw_decode``, which stops at
+    the END of the first complete value. Attempts are capped so a bracket-dense blob (a diff, a
+    stack trace) cannot turn validation into a quadratic scan.
+    """
+    attempts = 0
+    for index, char in enumerate(source):
+        if char not in "{[":
+            continue
+        attempts += 1
+        if attempts > _MAX_JSON_SCAN_ATTEMPTS:
+            return None
+        try:
+            _value, end = _JSON_DECODER.raw_decode(source, index)
+        except (ValueError, RecursionError):
+            continue
+        return source[index:end]
+    return None
+
+
 def extract_json_candidate(text: str) -> str:
-    """Strip markdown fences and prose around the outermost ``{...}``/``[...]``."""
+    """The first ``{...}``/``[...]`` span of ``text`` that decodes as one complete JSON value.
+
+    Fences are stripped first. The span ends where ``raw_decode`` ends the first complete value,
+    NOT at the last closer in the text: slicing to the last closer swallowed any prose after the
+    payload that itself contained a brace — the child loop's file-mutation-verifier footer is one
+    — so a correct answer came back as "Response is not valid JSON: Extra data: line 2 column 1"
+    and burned the one bounded retry.
+    """
     raw = (text or "").strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
@@ -67,21 +103,17 @@ def extract_json_candidate(text: str) -> str:
         raw = raw.strip()
         if raw.lower().startswith("json\n"):
             raw = raw.split("\n", 1)[1]
-    # Try each bracket kind's outermost span, earliest opener first, and keep the first that parses:
-    # checking "{" before "[" unconditionally sliced a fenced array down to its first..last object and
-    # rejected every valid array answer.
+    span = _first_decodable_span(raw)
+    if span is not None:
+        return span
+    # Nothing decodes whole: hand the retry prompt the earliest-opening bracket slice, so the
+    # parse error it reports points at the payload rather than at trailing prose.
     spans = []
     for opener, closer in (("{", "}"), ("[", "]")):
         start, end = raw.find(opener), raw.rfind(closer)
         if start >= 0 and end > start:
             spans.append((start, raw[start : end + 1]))
-    for _start, candidate in sorted(spans):
-        try:
-            json.loads(candidate)
-            return candidate
-        except ValueError:
-            continue
-    return spans[0][1] if spans else raw
+    return sorted(spans)[0][1] if spans else raw
 
 
 def validate_output(text: str, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:

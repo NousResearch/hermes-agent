@@ -853,7 +853,7 @@ class GatewayAdapterLifecycleMixin:
             from hermes_cli.profiles import get_active_profile_name
         except Exception:
             return 0
-        active = get_active_profile_name() or "default"
+        active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)

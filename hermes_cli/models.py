@@ -147,6 +147,7 @@ def _custom_provider_ssl_context(base_url: str):
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_OPENROUTER_PRESETS_CACHE_KEY = "openrouter_presets"
 
 # The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
 # picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
@@ -191,6 +192,87 @@ def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
             {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
     except Exception as exc:
         logger.debug("openrouter curated catalog disk write failed: %s", exc)
+
+
+def _openrouter_preset_connection() -> tuple[str, str]:
+    """Return the resolved OpenRouter API key and base URL, or empty strings when unavailable."""
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested="openrouter")
+        if runtime.get("provider") != "openrouter":
+            return "", ""
+        api_key = str(runtime.get("api_key") or "").strip()
+        base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+        return (api_key, base_url) if api_key and base_url else ("", "")
+    except Exception:
+        return "", ""
+
+
+def _fetch_openrouter_preset_ids(timeout: float = 8.0) -> Optional[list[str]]:
+    """Fetch every account-scoped OpenRouter preset, returning ``None`` on any failed page."""
+    api_key, base_url = _openrouter_preset_connection()
+    if not api_key:
+        return []
+
+    url: Optional[str] = f"{base_url}/presets"
+    preset_ids: list[str] = []
+    seen_urls: set[str] = set()
+    while url and url not in seen_urls:
+        seen_urls.add(url)
+        try:
+            payload = _get_json(url, timeout=timeout, headers={
+                "Accept": "application/json", "Authorization": f"Bearer {api_key}"})
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        entries = payload.get("data")
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            slug = str(entry.get("slug") or "").strip() if isinstance(entry, dict) else ""
+            if slug and re.fullmatch(r"[A-Za-z0-9._~-]+", slug):
+                preset_ids.append(f"@preset/{slug}")
+        pagination = payload.get("pagination")
+        next_page = (pagination.get("next") if isinstance(pagination, dict) else None) or payload.get("next")
+        url = urllib.parse.urljoin(url, next_page) if isinstance(next_page, str) and next_page else None
+    return list(dict.fromkeys(preset_ids))
+
+
+def _cached_openrouter_preset_ids(*, force_refresh: bool) -> list[str]:
+    """Credential-scoped cached preset IDs; stale rows keep the picker available during outages."""
+    fp = _credential_fingerprint("openrouter")
+    cache = _load_provider_models_cache()
+    entry = cache.get(_OPENROUTER_PRESETS_CACHE_KEY)
+    now = time.time()
+
+    def _refresh_entry() -> Optional[dict]:
+        fresh = _fetch_openrouter_preset_ids()
+        return _cache_entry(fp, fresh) if fresh is not None else None
+
+    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=True):
+        age = now - entry["at"]
+        if age < _PROVIDER_MODELS_CACHE_TTL:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            _spawn_swr_refresh(_OPENROUTER_PRESETS_CACHE_KEY, _refresh_entry)
+            return list(entry["models"])
+
+    fresh = _fetch_openrouter_preset_ids()
+    if fresh is not None:
+        _store_cache_entry(_OPENROUTER_PRESETS_CACHE_KEY, _cache_entry(fp, fresh, now), cache)
+        return fresh
+    if _cache_entry_valid(entry, fp, allow_empty=True):
+        return list(entry["models"])
+    return []
+
+
+def _merge_openrouter_presets(catalog: list[tuple[str, str]], *, force_refresh: bool) -> list[tuple[str, str]]:
+    """Append account presets without letting discovery failure change the public catalog."""
+    presets = _cached_openrouter_preset_ids(force_refresh=force_refresh)
+    known = {model_id.lower() for model_id, _ in catalog}
+    return catalog + [(preset, "OpenRouter preset") for preset in presets if preset.lower() not in known]
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -551,7 +633,7 @@ def fetch_openrouter_models(
     cached = profile_slot_get(_me, "_openrouter_catalog_cache")
 
     if cached is not None and not force_refresh:
-        return list(cached)
+        return _merge_openrouter_presets(list(cached), force_refresh=False)
 
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
@@ -559,7 +641,7 @@ def fetch_openrouter_models(
         disk = _read_openrouter_catalog_disk()
         if disk:
             profile_slot_set(_me, "_openrouter_catalog_cache", disk)
-            return list(disk)
+            return _merge_openrouter_presets(list(disk), force_refresh=False)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
@@ -572,7 +654,7 @@ def fetch_openrouter_models(
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
-        return list(cached or fallback)
+        return _merge_openrouter_presets(list(cached or fallback), force_refresh=force_refresh)
     live_items, live_by_id = live
 
     # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
@@ -598,12 +680,12 @@ def fetch_openrouter_models(
         curated.append((preferred_id, desc))
 
     if not curated:
-        return list(cached or fallback)
+        return _merge_openrouter_presets(list(cached or fallback), force_refresh=force_refresh)
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
     profile_slot_set(_me, "_openrouter_catalog_cache", curated)
     _write_openrouter_catalog_disk(curated)
-    return list(curated)
+    return _merge_openrouter_presets(list(curated), force_refresh=force_refresh)
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:
@@ -1604,6 +1686,20 @@ def _credential_fingerprint(provider: str) -> str:
                 parts.append(f"{bev}={os.environ.get(bev, '')}")
     except Exception:
         pass
+
+    if provider == "openrouter":
+        try:
+            from agent.secret_scope import get_secret_str
+
+            parts.extend(
+                f"{name}={get_secret_str(name, '').strip()}"
+                for name in ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL")
+            )
+            model_cfg = _get_model_config_dict()
+            if normalize_provider(str(model_cfg.get("provider", "") or "")) == "openrouter":
+                parts.append(f"model.base_url={model_cfg.get('base_url', '')}")
+        except Exception:
+            pass
 
     # config.yaml's model.base_url changes the endpoint discovery probes (data-residency hosts)
     # without touching any env var, so it must change the fingerprint too.

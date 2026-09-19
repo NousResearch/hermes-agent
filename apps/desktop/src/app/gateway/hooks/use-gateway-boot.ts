@@ -302,6 +302,33 @@ export function useGatewayBoot({
       }
     }
 
+    // Surfaces the actionable "sign in again" toast for a confirmed primary
+    // reauth failure, once per disconnect episode (reauthNotified), from
+    // whichever producer detected it. In the foreground the boot overlay
+    // (syncPrimaryReauthError, above) carries the sign-in flow, so the button
+    // hands off to it (desktop-14). A parked background primary no longer
+    // retries by itself, so it must still offer a way to Settings instead of
+    // failing silently.
+    const notifyPrimaryReauthRequired = () => {
+      if (reauthNotified || !primaryReauthError) {
+        return
+      }
+
+      reauthNotified = true
+      notify({
+        kind: 'error',
+        title: translateNow('boot.errors.gatewaySignInRequired'),
+        message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
+        detail: primaryReauthError,
+        action: isActivePrimary()
+          ? {
+              label: translateNow('boot.errors.signInAgain'),
+              onClick: () => failDesktopBoot(primaryReauthError ?? '')
+            }
+          : RECOVERY_ACTIONS.openGateways()
+      })
+    }
+
     // Raised once the reconnect loop has been failing for
     // RECONNECT_ESCALATE_AFTER_MS so we fire a single non-blocking toast.
     // Reset on a clean open or a manual/wake-driven reconnect.
@@ -468,24 +495,7 @@ export function useGatewayBoot({
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
           primaryReauthError = err instanceof Error ? err.message : String(err)
           syncPrimaryReauthError()
-          reauthNotified = true
-          // Plain "signed out" copy; the raw ticket/HTTP text stays under
-          // Details. In the foreground the boot overlay carries the sign-in
-          // flow, so the button hands off to it (desktop-14). A parked
-          // background primary no longer retries by itself, so it must still
-          // offer a way to Settings instead of failing silently.
-          notify({
-            kind: 'error',
-            title: translateNow('boot.errors.gatewaySignInRequired'),
-            message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
-            detail: primaryReauthError,
-            action: isActivePrimary()
-              ? {
-                  label: translateNow('boot.errors.signInAgain'),
-                  onClick: () => failDesktopBoot(primaryReauthError ?? '')
-                }
-              : RECOVERY_ACTIONS.openGateways()
-          })
+          notifyPrimaryReauthRequired()
         }
       } finally {
         reconnecting = false
@@ -833,7 +843,13 @@ export function useGatewayBoot({
           primaryReauthError = payload.error
 
           if (bootCompleted) {
+            // Main re-emits boot-progress independently of the renderer's own
+            // reconnect loop (a post-boot startHermes()/ticket mint failing on
+            // liveness reset/rebuild/wake recovery) — a backgrounded primary
+            // needs the same toast attemptReconnect's catch block gives it,
+            // not just the foreground-only overlay sync above.
             syncPrimaryReauthError()
+            notifyPrimaryReauthRequired()
           } else {
             applyDesktopBootProgress(payload)
           }

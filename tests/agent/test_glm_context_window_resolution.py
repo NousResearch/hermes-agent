@@ -27,7 +27,10 @@ def test_feasibility_check_inherits_main_window_when_aux_is_the_main_model(monke
     lowered = []
     monkeypatch.setattr(cc, "_lower_threshold_to_aux_context", lambda *a, **k: lowered.append(k))
     import agent.auxiliary_client as aux
-    monkeypatch.setattr(aux, "_resolve_task_provider_model", lambda task: ("auto", None, None, None, None))
+    monkeypatch.setattr(
+        aux, "_resolve_task_provider_model",
+        lambda task, **_kwargs: ("auto", None, None, None, None),
+    )
     client = SimpleNamespace(base_url="https://relay.example/v1/", api_key="k")
     monkeypatch.setattr(aux, "get_text_auxiliary_client", lambda task, main_runtime=None: (client, "uncatalogued-relay-model"))
     import agent.model_metadata as mm

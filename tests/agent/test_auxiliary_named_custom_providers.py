@@ -123,6 +123,7 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+
     def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
         """Titles/compression/vision must read credential_pool.<key>, not a placeholder."""
         _write_config(tmp_path, {
@@ -155,6 +156,74 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         assert "api.b.ai" in str(client.base_url)
         assert client.api_key == "sk-real-b-ai-pool-key-12345"
+
+
+class TestPerPrimaryModelAuxiliaryOverrides:
+    def test_canonical_provider_override_reaches_public_text_resolver(self, tmp_path):
+        _write_config(tmp_path, {
+            "auxiliary": {"title_generation": {
+                "provider": "openrouter", "model": "global-title", "api_mode": "chat_completions",
+            }},
+            "providers": {
+                "llama": {
+                    "api": "http://llama.local/v1",
+                    "models": {"slow": {"auxiliary": {"title_generation": {
+                        "provider": "title-helper", "model": "fast-title",
+                    }}}},
+                },
+                "title-helper": {"api": "http://title-helper.local/v1"},
+            },
+        })
+        marker = MagicMock()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(marker, "fast-title")) as resolve:
+            from agent.auxiliary_client import get_text_auxiliary_client
+
+            client, model = get_text_auxiliary_client(
+                "title_generation",
+                main_runtime={
+                    "provider": "custom", "model": "slow", "base_url": "http://llama.local/v1",
+                },
+            )
+
+        assert (client, model) == (marker, "fast-title")
+        assert resolve.call_args.args[0] == "title-helper"
+        assert resolve.call_args.kwargs["model"] == "fast-title"
+        assert resolve.call_args.kwargs["api_mode"] == "chat_completions"
+
+    def test_legacy_override_is_model_and_route_scoped_with_global_fallback(self, tmp_path):
+        _write_config(tmp_path, {
+            "auxiliary": {"title_generation": {
+                "provider": "openrouter", "model": "global-title", "api_mode": "chat_completions",
+            }},
+            "custom_providers": [
+                {
+                    "name": "llama-a", "base_url": "http://llama-a.local/v1",
+                    "models": {"shared": {"auxiliary": {"title_generation": {"model": "fast-title"}}}},
+                },
+                {
+                    "name": "llama-b", "base_url": "http://llama-b.local/v1",
+                    "models": {"shared": {}},
+                },
+            ],
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        overridden = _resolve_task_provider_model(
+            "title_generation",
+            main_runtime={
+                "provider": "custom", "model": "shared", "base_url": "http://llama-a.local/v1",
+            },
+        )
+        fallback = _resolve_task_provider_model(
+            "title_generation",
+            main_runtime={
+                "provider": "custom", "model": "shared", "base_url": "http://llama-b.local/v1",
+            },
+        )
+
+        assert overridden[:2] == ("openrouter", "fast-title")
+        assert overridden[4] == "chat_completions"
+        assert fallback[:2] == ("openrouter", "global-title")
 
 
 class TestResolveProviderClientModelNormalization:

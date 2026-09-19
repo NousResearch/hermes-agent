@@ -3618,7 +3618,7 @@ def _prepare_same_provider_retry(
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
-            api_key=resolved_api_key, async_mode=async_mode,
+            api_key=resolved_api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
     else:
         retry_client, retry_model = _get_cached_client(
@@ -5338,7 +5338,8 @@ def resolve_provider_client(
 
 def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, default_model_slug) for text-only aux tasks; ``task`` selects auxiliary.<task> overrides."""
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None, main_runtime=main_runtime)
     return resolve_provider_client(
         provider, model=model, explicit_base_url=base_url, explicit_api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime,
@@ -5522,7 +5523,7 @@ def resolve_vision_provider_client(
     """
     runtime = _normalize_main_runtime(main_runtime)
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        "vision", provider, model, base_url, api_key, main_runtime=runtime
     )
     requested = _normalize_vision_provider(requested)
     if resolved_base_url:
@@ -5946,7 +5947,7 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
 
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine (provider, model, base_url, api_key, api_mode) for a call.
 
@@ -5957,6 +5958,21 @@ def _resolve_task_provider_model(
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)
+        runtime = _normalize_main_runtime(main_runtime)
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.config_providers import get_custom_provider_model_auxiliary
+
+            model_override = get_custom_provider_model_auxiliary(
+                runtime.get("model", ""), task,
+                provider=runtime.get("provider", ""),
+                requested_provider=runtime.get("requested_provider", ""),
+                base_url=runtime.get("base_url", ""),
+                config=load_config_readonly(),
+            )
+        except (ImportError, TypeError, ValueError):
+            model_override = {}
+        task_config = {**task_config, **model_override}
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
@@ -7106,7 +7122,7 @@ def _prepare_aux_request(
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, main_runtime=main_runtime)
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -8019,7 +8035,8 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None, main_runtime=main_runtime)
     return resolve_provider_client(
         provider,
         model=model,

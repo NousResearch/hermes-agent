@@ -1338,6 +1338,31 @@ Hermes uses "auxiliary" models for side tasks like image analysis, browser scree
 Earlier builds split aggregator users (OpenRouter, Nous Portal) onto a cheap provider-side default. That was surprising — users who paid for an aggregator subscription would see a different model handling their auxiliary traffic. `auto` now uses the main model for everyone, and per-task overrides in `config.yaml` still win (see [Full auxiliary config reference](#full-auxiliary-config-reference) below).
 :::
 
+Named custom providers can override an auxiliary route for one selected primary model. Put the
+task under `providers.<name>.models.<primary-model>.auxiliary`; omitted route fields still inherit
+from the profile-wide `auxiliary.<task>` block, and other models keep the global route:
+
+```yaml
+auxiliary:
+  title_generation:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+
+providers:
+  local:
+    api: http://localhost:8000/v1
+    models:
+      large-local-model:
+        auxiliary:
+          title_generation:
+            provider: local
+            model: small-local-model
+```
+
+The override is matched to both the active primary model and its custom endpoint, so the same
+model id on another provider does not inherit it. The legacy `custom_providers:` list accepts the
+same nested `models.<model>.auxiliary.<task>` shape, but `providers:` is the canonical format.
+
 ### Configuring auxiliary models interactively
 
 Instead of hand-editing YAML, run `hermes model` and pick **"Configure auxiliary models"** from the menu. You'll get an interactive per-task picker:

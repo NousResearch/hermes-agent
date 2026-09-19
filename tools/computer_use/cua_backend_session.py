@@ -20,6 +20,21 @@ from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_fiel
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
+try:  # mcp ships as a dev/test dependency; the classifier must not require it at runtime
+    from mcp.shared.exceptions import MCPError as _McpError
+    from mcp_types.jsonrpc import CONNECTION_CLOSED as _MCP_CONNECTION_CLOSED
+except ImportError:  # pragma: no cover - exercised only where mcp is not installed
+    _McpError, _MCP_CONNECTION_CLOSED = None, -32000
+
+
+def _is_mcp_connection_closed(exc: Exception) -> bool:
+    """True when the MCP client itself reports the transport is gone: after the stdio bridge
+    child dies (a ``cua-driver`` daemon restart kills it), ``ClientSession.call_tool`` raises
+    ``MCPError(code=CONNECTION_CLOSED)``. Other MCPError codes are protocol/tool errors a
+    reconnect cannot fix, so they must stay unclassified here."""
+    return (_McpError is not None and isinstance(exc, _McpError)
+            and getattr(exc, "code", None) == _MCP_CONNECTION_CLOSED)
+
 
 class _AsyncBridge:
     """Runs one asyncio loop on a daemon thread; marshals coroutines from the caller."""
@@ -390,7 +405,8 @@ class _CuaDriverSession:
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
         return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+                or isinstance(exc, (BrokenPipeError, EOFError))
+                or _is_mcp_connection_closed(exc))
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:

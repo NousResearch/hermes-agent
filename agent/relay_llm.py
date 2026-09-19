@@ -22,6 +22,10 @@ _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset({"reasoning_content", "reasoning_de
 _RELAY_INTERNAL_PROVIDER_HEADERS = frozenset({"x-dynamo-parent-session-id", "x-dynamo-session-id"})
 _LogicalCall = tuple[relay_runtime.RelayTurnContext, Any, str]
 
+# Bound for awaiting a Relay stream's aclose() on the private loop: a wedged
+# close must not hang the worker thread or hold the runtime lease forever.
+_ACLOSE_TIMEOUT = 10.0
+
 
 # api_mode -> (Relay operation name, codec class name on ``relay.codecs``)
 _RELAY_PROTOCOL_BY_API_MODE = {
@@ -251,16 +255,31 @@ def stream_current(
     return managed.final_response if managed.final_response is not None else managed
 
 
-def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> None:
-    """Await ``stream.aclose()`` on ``loop`` when the stream exposes one."""
+def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
+    """Await ``stream.aclose()`` on ``loop`` when the stream exposes one, bounded by
+    ``_ACLOSE_TIMEOUT``. Returns False when the attempt is abandoned: the daemon
+    thread still owns the running loop, so the caller must leave it open rather
+    than ``loop.close()`` under it."""
     close = getattr(stream, "aclose", None)
     if not callable(close):
-        return
+        return True
 
     async def close_stream() -> None:  # create the coroutine on ``loop``, not the caller's thread
         await close()
 
-    loop.run_until_complete(close_stream())
+    try:
+        relay_runtime._run_on_daemon_thread(
+            lambda: loop.run_until_complete(close_stream()),
+            name="relay-llm-stream-aclose", timeout=_ACLOSE_TIMEOUT,
+            timeout_message="Relay stream aclose did not finish; abandoning the close attempt",
+        )
+    except TimeoutError:
+        logger.warning(
+            "Relay stream aclose exceeded %ss; abandoning the close attempt and its private loop",
+            _ACLOSE_TIMEOUT,
+        )
+        return False
+    return True
 
 
 class ManagedLlmStream(Iterator[Any]):
@@ -494,10 +513,12 @@ class ManagedLlmStream(Iterator[Any]):
         try:
             if loop is not None:
                 try:
-                    _aclose_on_loop(loop, relay_stream)
+                    completed = _aclose_on_loop(loop, relay_stream)
                 except Exception:
                     logger.debug("Relay stream cleanup failed during provider fallback", exc_info=True)
-                loop.close()
+                    completed = True
+                if completed:
+                    loop.close()
             self._finish_logical("success")
         finally:
             self._release_runtime_lease()
@@ -527,15 +548,16 @@ class ManagedLlmStream(Iterator[Any]):
         self._prefetched_chunks.clear()
         try:
             loop, self._loop = self._loop, None
+            close_loop = loop is not None
             if loop is None:
                 self._close_provider_resources()
             else:
                 try:
-                    _aclose_on_loop(loop, self._stream)
+                    close_loop = _aclose_on_loop(loop, self._stream)
                 except Exception as exc:
                     self._keep_first_close_error(exc)
             self._finish_logical(logical_outcome)
-            if loop is not None:
+            if close_loop:
                 loop.close()
         finally:
             self._release_runtime_lease()

@@ -252,7 +252,14 @@ def stream_current(
     if completed_response_predicate is not None:
         # Relay may defer the provider callback until the first pull; prime once (a real first chunk is buffered).
         managed._prime_completed_response()
-    return managed.final_response if managed.final_response is not None else managed
+    if managed.final_response is not None:
+        # The completed response replaces the stream, so finish it deterministically rather
+        # than leaving the loop, Relay stream, and lease for __del__/GC. The provider call
+        # succeeded, so the logical outcome is "success" as on normal exhaustion.
+        managed._finish_logical("success")
+        managed._close(logical_outcome="cancelled")
+        return managed.final_response
+    return managed
 
 
 def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:

@@ -1463,6 +1463,64 @@ def test_stream_current_streams_iterators_with_predicate(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_stream_current_completed_response_releases_managed_stream(relay_turn, monkeypatch):
+    """A completed response detected while Relay still emitted an item leaves
+    the managed stream open; returning final_response must close it
+    deterministically rather than leaving the loop, Relay stream, and runtime
+    lease for __del__/GC."""
+    relay, turn = relay_turn
+    completed = _completed_response()
+
+    async def inject_after_completion(
+        _name, request, callback, observe_chunk, finalizer, **_kwargs
+    ):
+        async def generate():
+            upstream = callback(request)
+            try:
+                yield await anext(upstream)
+            except StopAsyncIteration:
+                yield {"injected": "relay-chunk"}
+            finalizer()
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", inject_after_completion)
+
+    pop_outputs = []
+    real_pop = relay_runtime.pop_relay_scope
+    monkeypatch.setattr(
+        relay_runtime, "pop_relay_scope",
+        lambda *a, **k: pop_outputs.append(k.get("output")) or real_pop(*a, **k),
+    )
+
+    captured = []
+    real_stream = relay_llm.stream
+    monkeypatch.setattr(
+        relay_llm, "stream",
+        lambda *a, **k: captured.append(real_stream(*a, **k)) or captured[-1],
+    )
+
+    result = relay_llm.stream_current(
+        {"model": "test-model", "messages": [], "stream": True},
+        lambda request: completed,
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        metadata={"api_request_id": "request-completed-drop"},
+        completed_response_predicate=_choices_predicate,
+    )
+
+    assert result is completed
+    managed = captured[0]
+    assert managed._closed
+    assert managed._runtime_lease is None
+    assert turn.lease.host._operations_idle.is_set()
+    # The provider call succeeded, so its logical call completes as success,
+    # not the cancelled outcome __del__ would record.
+    assert turn.logical_llm_calls == {}
+    assert {"outcome": "success"} in pop_outputs
+
+
 def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
     """A lazy Relay stream must run once before Hermes decides its shape."""
     _relay, _turn = relay_turn
@@ -1473,6 +1531,12 @@ def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
 
         def _prime_completed_response(self):
             self.final_response = completed
+
+        def _finish_logical(self, _outcome):
+            pass
+
+        def _close(self, *, logical_outcome):
+            pass
 
     lazy_stream = LazyCompletedStream()
     monkeypatch.setattr(relay_llm, "stream", lambda *args, **kwargs: lazy_stream)

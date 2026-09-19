@@ -261,6 +261,13 @@ def main():
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
 
+    # Snapshot the checkout revision so risky lazy-import paths (model switching) can refuse
+    # with "restart required" after `hermes update` replaced the code under this long-lived
+    # process; the updater never restarts a stdio TUI backend (#86207 sibling).
+    from gateway.code_skew import record_boot_fingerprint
+
+    record_boot_fingerprint()
+
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
     # so it must start BEFORE the sweep.
     for start, what in (

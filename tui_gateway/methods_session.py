@@ -308,6 +308,9 @@ def _(rid, params: dict) -> dict:
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    # Verified identity for Computer Use bridge routing: from the transport, never from RPC params.
+    bound_transport = current_transport() or _stdio_transport
+    bound_principal, bridge_profile = _transport_desktop_bridge_identity(bound_transport, requested_profile=profile)
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -327,7 +330,7 @@ def _(rid, params: dict) -> dict:
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
-            "transport": current_transport() or _stdio_transport}
+            "profile": bridge_profile, "authenticated_principal": bound_principal, "transport": bound_transport}
         _register_session_cwd(_sessions[sid])
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
@@ -453,6 +456,10 @@ class _Resume:
         # ``profile`` (app-global remote mode): resume from another local profile's state.db.
         self.profile = (params.get("profile") or "").strip() or None
         self.profile_home = _profile_home(self.profile)
+        # Verified identity for Computer Use bridge routing: from the transport, never from RPC params.
+        self.transport = current_transport() or _stdio_transport
+        self.principal, self.bridge_profile = _transport_desktop_bridge_identity(
+            self.transport, requested_profile=self.profile)
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
@@ -472,7 +479,8 @@ class _Resume:
         return _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
-            profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+            profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd),
+            profile=self.bridge_profile, authenticated_principal=self.principal, transport=self.transport, **extra)
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
@@ -733,6 +741,8 @@ def _resume_cold(ctx: _Resume) -> dict:
 def _resume_eager(ctx: _Resume) -> dict:
     """Synchronous build OUTSIDE _session_resume_lock (it would stall session.close), then double-checked."""
     sid, source, _cwd = ctx.mint()
+    bridge_caller_token = _set_desktop_bridge_caller_for_session(
+        {"authenticated_principal": ctx.principal, "profile": ctx.bridge_profile, "transport": ctx.transport})
     with _profile_build_scope(ctx.profile_home):
         try:
             history, display_history, raw_history = ctx.restore()
@@ -746,6 +756,8 @@ def _resume_eager(ctx: _Resume) -> dict:
                 **stored_runtime_overrides)
         except Exception as e:
             return _err(ctx.rid, 5000, f"resume failed: {e}")
+        finally:
+            _reset_desktop_bridge_caller(bridge_caller_token)
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -755,7 +767,9 @@ def _resume_eager(ctx: _Resume) -> dict:
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd),
+                              profile=ctx.bridge_profile, authenticated_principal=ctx.principal,
+                              transport=ctx.transport)
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -1845,19 +1859,25 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
     branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
+    bridge_caller_token = _set_desktop_bridge_caller_for_session(session)
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
                                            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
+            # A branch inherits the parent's verified identity: same user, same window, same Desktop.
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
                           cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
-                          explicit_cwd=bool(session.get("explicit_cwd")))
+                          explicit_cwd=bool(session.get("explicit_cwd")),
+                          profile=_normalized_desktop_bridge_profile(session.get("profile")),
+                          authenticated_principal=_session_authenticated_principal(session),
+                          transport=current_transport() or session.get("transport"))
             _transfer_db_to_agent(agent, branch_db)
             branch_owns_db = False
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
         return agent
     finally:
+        _reset_desktop_bridge_caller(bridge_caller_token)
         if branch_owns_db and branch_db is not None:
             _release_db(branch_db)
 

@@ -81,13 +81,19 @@ class WSTransport:
     deadlock, so it detects that and fires-and-forgets. Loop-thread callers needing completion use ``write_async``."""
 
     def __init__(self, ws: Any, loop: asyncio.AbstractEventLoop, *, peer: str = "unknown",
-                 auth_identity: dict | None = None) -> None:
+                 auth_identity: dict | None = None, authenticated_principal: tuple[str, str] | None = None,
+                 desktop_bridge_profile: str | None = None, allow_desktop_bridge_profile_override: bool = False) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
         #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
         self.auth_identity = auth_identity
+        #: Computer Use bridge scope, set only by hermes_cli.web_server after consuming a verified WS ticket (or
+        #: checking the process-local dashboard token). RPC payloads cannot mutate it.
+        self.authenticated_principal = authenticated_principal
+        self.desktop_bridge_profile = desktop_bridge_profile
+        self.allow_desktop_bridge_profile_override = bool(allow_desktop_bridge_profile_override)
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
@@ -236,7 +242,9 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
+async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
+                    authenticated_principal: tuple[str, str] | None = None, desktop_bridge_profile: str | None = None,
+                    allow_desktop_bridge_profile_override: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
@@ -263,7 +271,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _note_dashboard_client_activity(force=True)
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
+        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity,
+                                authenticated_principal=authenticated_principal,
+                                desktop_bridge_profile=desktop_bridge_profile,
+                                allow_desktop_bridge_profile_override=allow_desktop_bridge_profile_override)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy

@@ -21,9 +21,10 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.computer_use_provider import ComputerUseProvider
-from agent.computer_use_registry import HOST_PROVIDER_NAME, UnknownComputerUseProvider, resolve_provider
+from agent.computer_use_registry import HOST_PROVIDER_NAME, UnknownComputerUseProvider, get_provider, resolve_provider
 from hermes_constants import hermes_home_key
 from tools.computer_use import host_provider  # noqa: F401 — registers the built-ins
+from tools.computer_use.bridge_providers import DESKTOP_BRIDGE_PROVIDER_NAME  # registers the bridge providers
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
 logger = logging.getLogger(__name__)
@@ -157,15 +158,29 @@ def active_computer_use_provider() -> ComputerUseProvider:
         provider = _provider_cache[key] = resolve_provider(_configured_provider_name())
         return provider
 
-def _new_backend(sid: str, permission_mode: str) -> ComputerUseBackend:
-    return active_computer_use_provider().create_backend(sid, permission_mode)
+def session_computer_use_provider() -> ComputerUseProvider:
+    """The provider for the execution in flight. ``computer_use.provider`` is the backend's own answer and holds
+    for a CLI, cron, or messaging turn. A Hermes Desktop client that attached its local bridge answers a
+    different question — whose keyboard, on THIS connection — and only for the principal and profile its socket
+    authenticated as. One process serves all of those at once, so it resolves per call from the caller's own
+    verified scope, and falls back the moment there is no live socket to match."""
+    bridge = get_provider(DESKTOP_BRIDGE_PROVIDER_NAME)
+    if bridge is not None and bridge.is_available():
+        return bridge
+    return active_computer_use_provider()
 
-def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+# Which provider built each cached backend: a backend cannot be re-pointed at a different machine, so a session
+# whose provider changes under it (a Desktop bridge attaching or dropping) needs a new one.
+_backend_providers: Dict[str, str] = {}
+
+def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str, routing: str = "") -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_call_locks[sid] = threading.RLock()
+    if routing:
+        _backend_providers[sid] = routing
     _backend = backend if sid == "" else _backend
     return backend
 
@@ -174,6 +189,7 @@ def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[thr
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
     _backend_permission_modes.pop(sid, None)
+    _backend_providers.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     if sid == "":
         backend = _backend if backend is None else backend
@@ -197,13 +213,18 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             permission_mode = _cua_permission_mode(sid)
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
+            provider = session_computer_use_provider()
+            routing = provider.routing_identity()
             if (cached := _backends.get(sid)) is None:
-                backend = _new_backend(sid, permission_mode)
+                backend = provider.create_backend(sid, permission_mode)
                 backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
-                return _install_backend(sid, backend, permission_mode)
-            if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                return _install_backend(sid, backend, permission_mode, routing)
+            if (_backend_permission_modes.get(sid, "standard") == permission_mode
+                    and _backend_providers.get(sid, routing) == routing):
                 return cached
-            # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
+            # Cua's mode is immutable after daemon startup, and a backend cannot change which machine it drives:
+            # a /yolo toggle, or a Desktop bridge attaching/dropping/returning as someone else, replaces only this
+            # session's backend.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
@@ -238,7 +259,7 @@ def _shutdown_backend_atexit() -> None:
         if _backend is not None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_providers.clear()
     with _approval_lock:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -795,6 +816,15 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
                                                  "vision_analysis_routed_via": "auxiliary.vision"})
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
+def _any_desktop_bridge_connected() -> bool:
+    """Whether any Desktop client holds a bridge socket on this backend."""
+    try:
+        from tools.computer_use.desktop_bridge import any_desktop_bridge_connected
+        return any_desktop_bridge_connected()
+    except Exception:  # noqa: BLE001 — availability must never raise
+        logger.debug("computer_use: desktop bridge probe failed", exc_info=True)
+        return False
+
 def check_computer_use_requirements() -> bool:
     """True iff the active provider can run computer_use.
 
@@ -802,7 +832,14 @@ def check_computer_use_requirements() -> bool:
     Another provider answers for its own runtime — a container pool supplies displays a headless gateway lacks,
     so the host platform gate is not applied on its behalf. A misconfigured provider keeps the tool: the
     dispatcher's error names what is missing, where a tool stripped from the schema leaves the model mute.
+
+    Registration is process-wide and TTL-cached, so the question here is "can anyone on this backend drive a
+    screen" — a live Desktop bridge from any client answers yes even on a headless gateway with no cua-driver.
+    Whether the CALLER may use it is answered per session by the GUI toolset gate and again, fail-closed, by the
+    scope match in ``session_computer_use_provider``.
     """
+    if _any_desktop_bridge_connected():
+        return True
     try:
         provider = active_computer_use_provider()
     except UnknownComputerUseProvider:

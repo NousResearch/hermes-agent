@@ -18,7 +18,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisco
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _get_console_executor, _legacy_pump, _ws_auth_ok, _ws_request_is_allowed,
+    _build_sidecar_url, _get_console_executor, _legacy_pump, _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -133,15 +133,69 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     return peer, mode, cred
 
 
+# --- Computer Use bridge scope -------------------------------------------------
+# A Hermes Desktop client can register a Computer Use bridge back to this backend; an agent turn reaches
+# it only by presenting the same (provider, principal, profile) the socket authenticated as. Identity comes
+# from the credential the WS upgrade carried — never from anything the peer asserted in a frame.
+
+#: Identity for an ungated loopback WS peer, which presents no signed-in user: "whoever can reach this
+#: port", which the bind + origin checks already bound to this machine.
+_LOOPBACK_WS_PROVIDER = "dashboard-token"
+_LOOPBACK_WS_PRINCIPAL = "local-session"
+
+
+def _ws_principal(ws: WebSocket, credential: str) -> tuple[str, str] | None:
+    """``(provider, principal)`` the accepted credential named, else None (authenticated but anonymous)."""
+    if credential == "token":
+        return _LOOPBACK_WS_PROVIDER, _LOOPBACK_WS_PRINCIPAL
+    identity = getattr(ws, "_hermes_auth_identity", None) or {}
+    provider, subject = str(identity.get("provider") or ""), str(identity.get("user_id") or "")
+    return (provider, subject) if provider and subject else None
+
+
+def _dashboard_launch_profile() -> str:
+    """The profile this server process itself was started under."""
+    from hermes_cli.profiles import get_active_profile_name
+    return get_active_profile_name() or "default"
+
+
+def _desktop_bridge_profile_scope(ws: WebSocket) -> str:
+    """Normalize and syntactically validate the requested routing scope."""
+    requested = str(ws.query_params.get("profile", "") or "").strip()
+    if not requested or requested.lower() == "current":
+        return _dashboard_launch_profile()
+    from hermes_cli import profiles as profiles_mod
+    normalized = profiles_mod.normalize_profile_name(requested)
+    profiles_mod.validate_profile_name(normalized)
+    return normalized
+
+
+def _desktop_bridge_profile_is_authorized(credential: str, profile: str) -> bool:
+    """A signed-in browser ticket says who the user is, not which profiles they administer, so it gets the
+    launch profile only. The loopback token and the internal credential are already whole-machine authority
+    (holding either means you could edit config.yaml), so they may name any profile the process serves."""
+    if credential in {"token", "internal"}:
+        return True
+    if not credential.startswith("ticket"):
+        return False
+    from hermes_cli import profiles as profiles_mod
+    return profiles_mod.normalize_profile_name(profile) == profiles_mod.normalize_profile_name(
+        _dashboard_launch_profile())
+
+
 async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
-    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
+    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth.
+    Records the accepted credential kind on ``ws._hermes_ws_credential`` (tickets are single-use, so the
+    check runs once)."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return False
-    if not _ws_auth_ok(ws):
+    reason, credential = _ws_auth_reason(ws)
+    if reason is not None:
         await ws.close(code=4401)
         return False
+    ws._hermes_ws_credential = credential
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return False
@@ -541,11 +595,45 @@ async def gateway_ws(ws: WebSocket) -> None:
     # The authenticated identity (ticket / internal credential) stamped by
     # _ws_auth_reason becomes the identity authority for privileged RPCs
     # (browser.controller.register). None on the legacy token path.
+    credential = str(getattr(ws, "_hermes_ws_credential", "") or "")
     await handle_ws(
         ws,
         auth_identity=getattr(ws, "_hermes_auth_identity", None),
         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+        authenticated_principal=_ws_principal(ws, credential),
+        desktop_bridge_profile=_dashboard_launch_profile(),
+        allow_desktop_bridge_profile_override=credential in {"token", "internal"},
     )
+
+
+@router.websocket("/api/tools/computer-use/desktop-bridge/ws")
+async def computer_use_desktop_bridge_ws(ws: WebSocket) -> None:
+    """Authenticated reverse channel from Hermes Desktop: proxies the backend's ``computer_use`` calls to a
+    loopback bridge on the user's machine, without the backend dialing the laptop or a manual SSH reverse
+    tunnel. The socket is filed under the identity its own credential carried, and an agent turn reaches it
+    only by matching that identity — a shared gateway cannot hand one person's keyboard to another's session.
+    Every other WS here moves data; this one moves clicks."""
+    reason, credential = _ws_auth_reason(ws)
+    identity = None if reason is not None else _ws_principal(ws, credential)
+    if identity is None:
+        # Rejected, or authenticated but anonymous — reachability proved, holder unknown, nothing to file under.
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    try:
+        profile = _desktop_bridge_profile_scope(ws)
+        _resolve_profile_dir(profile)
+    except Exception:
+        await ws.close(code=4400)
+        return
+    if not _desktop_bridge_profile_is_authorized(credential, profile):
+        await ws.close(code=4403)
+        return
+    from tools.computer_use.desktop_bridge import handle_desktop_bridge_ws
+    provider, principal = identity
+    await handle_desktop_bridge_ws(ws, provider=provider, principal=principal, profile=profile)
 
 
 # --- /api/pub + /api/events: the PTY-side tui_gateway.entry opens /api/pub

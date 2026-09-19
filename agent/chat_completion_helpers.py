@@ -1209,6 +1209,50 @@ def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
     return None
 
 
+# DeepSeek silently returns HTTP 400 on request bodies over ~880 KB.
+# Raise a descriptive payload-too-large error before we waste a round-trip
+# so conversation_loop can take FailoverReason.payload_too_large recovery.
+# (#30771, salvage of #30809)
+_DEEPSEEK_BODY_LIMIT_BYTES = 880_000
+
+
+class DeepSeekPayloadTooLargeError(Exception):
+    """Preflight body-size abort for api.deepseek.com.
+
+    Mimics HTTP 413 so ``classify_api_error`` maps to
+    ``FailoverReason.payload_too_large`` (``should_compress=True``) instead of
+    treating a bare ``ValueError`` as local non-retryable validation.
+    """
+
+    def __init__(self, message: str, *, body_bytes: int):
+        super().__init__(message)
+        self.status_code = 413
+        self.body_bytes = body_bytes
+
+
+def _deepseek_preflight_body_check(agent, api_kwargs: dict) -> None:
+    """Raise if the serialised body exceeds DeepSeek's ~880 KB limit.
+
+    Only runs when the configured base_url points at api.deepseek.com so
+    other providers are unaffected.
+    """
+    if not base_url_host_matches(getattr(agent, "base_url", "") or "", "api.deepseek.com"):
+        return
+    try:
+        body_bytes = len(json.dumps(api_kwargs, default=str, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        return  # serialisation failure — let the real call surface the error
+    if body_bytes >= _DEEPSEEK_BODY_LIMIT_BYTES:
+        raise DeepSeekPayloadTooLargeError(
+            (
+                f"Request entity too large: payload too large "
+                f"({body_bytes:,} bytes) exceeds DeepSeek's "
+                f"~{_DEEPSEEK_BODY_LIMIT_BYTES:,}-byte limit. "
+                "Compress the context with /compress or reduce max_tokens before retrying."
+            ),
+            body_bytes=body_bytes,
+        )
+
 
 def interruptible_api_call(agent, api_kwargs: dict):
     """Run the API call on a worker thread so the caller can detect interrupts
@@ -1216,6 +1260,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     per-request client (interrupts close only that one); a stale-call detector
     kills the connection and raises so the main retry loop can back off / rotate
     credentials / fall back."""
+    _deepseek_preflight_body_check(agent, api_kwargs)
     # Nested-pool contexts (cron, delegated children) wedge on a worker thread
     # (#62151): run inline. See should_use_direct_api_call.
     if should_use_direct_api_call(agent):
@@ -3599,6 +3644,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     streaming codex runner; cron turns and delegated children run inline."""
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
+    _deepseek_preflight_body_check(agent, api_kwargs)
     if agent.api_mode == "codex_responses":
         return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
     if agent.api_mode == "bedrock_converse":

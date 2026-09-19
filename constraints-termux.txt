@@ -5,6 +5,10 @@
 #
 # These pins keep the tested Android install path stable when upstream packages
 # move faster than Termux-compatible wheels / sdists.
+#
+# The Termux and termux-all extras intentionally omit Hermes' opt-in uvloop
+# extra. Uvicorn falls back to Python's stdlib asyncio event loop when uvloop
+# is absent, avoiding libuv's Android-incompatible configure step.
 
 ipython<10
 jedi>=0.18.1,<0.20

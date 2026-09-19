@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,86 @@ def _distribution_name(requirement: str) -> str:
     spec = spec.split("[", 1)[0]  # drop extras
     spec = re.split(r"[=<>!~]", spec, maxsplit=1)[0]  # drop any version operator
     return spec.strip().lower()
+
+
+def _project_metadata():
+    return tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+
+def _requirements(specs):
+    return [Requirement(spec) for spec in specs]
+
+
+def test_uvicorn_standard_components_are_explicit_and_bounded():
+    """Keep Uvicorn's usable standard components without requiring uvloop.
+
+    Uvicorn's ``standard`` extra includes uvloop, whose libuv configure step
+    cannot build on Termux. The components that remain useful there must be
+    direct, bounded dependencies so the base install has the same HTTP/reload
+    behavior without following that extra's Android-incompatible edge.
+    """
+    project = _project_metadata()
+    core = _requirements(project["dependencies"])
+    web = _requirements(project["optional-dependencies"]["web"])
+
+    uvicorn = [req for req in core if req.name == "uvicorn"]
+    assert len(uvicorn) == 1
+    assert not uvicorn[0].extras, "core Hermes must not request uvicorn[standard]"
+    assert uvicorn[0].specifier.contains("0.31.0")
+    assert not uvicorn[0].specifier.contains("1")
+    assert not any(req.name == "uvicorn" and req.extras for req in web)
+
+    core_by_name = {req.name: req for req in core}
+    for name, floor, ceiling in (
+        ("httptools", "0.8.0", "0.10"),
+        ("watchfiles", "0.20", "2"),
+    ):
+        requirement = core_by_name[name]
+        assert requirement.specifier.contains(floor)
+        assert not requirement.specifier.contains(ceiling), f"{name} needs an upper bound"
+
+    colorama = core_by_name["colorama"]
+    assert colorama.marker is not None
+    assert colorama.marker.evaluate({"sys_platform": "win32"})
+    assert not colorama.marker.evaluate({"sys_platform": "linux"})
+
+
+def test_uvloop_is_opt_in_and_excluded_from_termux_profiles():
+    """Keep uvloop for supported all-platform installs, not Android profiles."""
+    project = _project_metadata()
+    extras = project["optional-dependencies"]
+    uvloop = _requirements(extras["uvloop"])
+
+    assert len(uvloop) == 1
+    assert uvloop[0].name == "uvloop"
+    assert uvloop[0].specifier.contains("0.22.1")
+    assert not uvloop[0].specifier.contains("0.24")
+    assert uvloop[0].marker is not None
+    assert uvloop[0].marker.evaluate(
+        {"sys_platform": "linux", "platform_python_implementation": "CPython"}
+    )
+    assert not uvloop[0].marker.evaluate(
+        {"sys_platform": "android", "platform_python_implementation": "CPython"}
+    )
+    assert not uvloop[0].marker.evaluate(
+        {"sys_platform": "win32", "platform_python_implementation": "CPython"}
+    )
+    assert not uvloop[0].marker.evaluate(
+        {"sys_platform": "cygwin", "platform_python_implementation": "CPython"}
+    )
+    assert not uvloop[0].marker.evaluate(
+        {"sys_platform": "linux", "platform_python_implementation": "PyPy"}
+    )
+
+    for extra in ("termux", "termux-all", "web"):
+        requirements = _requirements(extras[extra])
+        assert not any(req.name == "uvloop" for req in requirements)
+        assert not any(
+            req.name == "uvicorn" and "standard" in req.extras for req in requirements
+        )
+
+    all_requirements = _requirements(extras["all"])
+    assert any(req.name == "hermes-agent" and "uvloop" in req.extras for req in all_requirements)
 
 
 def test_packaging_declared_as_core_dependency():

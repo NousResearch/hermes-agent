@@ -7,11 +7,14 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
+import { $pinnedSessionIds, $sidebarCardRows } from '@/store/layout'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
+
+import { SIDEBAR_ROW_CARD_MIN_H } from './row-geometry'
 
 import { ChatSidebar } from './index'
 
@@ -160,5 +163,48 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+})
+
+// Inbox style is a render variant, not a grouping — it rides whichever view is
+// active. The pinned section sits in the same flat column as recents, so both
+// must render the same row geometry: a section boundary is not a geometry
+// boundary (#116325).
+describe('ChatSidebar inbox style geometry', () => {
+  let disposeContributions: () => void
+
+  beforeEach(() => {
+    disposeContributions = registry.registerMany([])
+    $selectedStoredSessionId.set('tile-one')
+    $sessions.set(sessionRows)
+    $removedSessionIds.set(new Set())
+    $pinnedSessionIds.set(['tile-two'])
+  })
+
+  afterEach(() => {
+    cleanup()
+    disposeContributions()
+    $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    $removedSessionIds.set(new Set())
+    $pinnedSessionIds.set([])
+    $sidebarCardRows.set(false)
+  })
+
+  const row = (title: string) => screen.getByText(title).closest('.group.row-hover') as HTMLElement
+
+  it('renders the pinned row with the recents card geometry when Inbox style is on', () => {
+    $sidebarCardRows.set(true)
+    renderSidebar('/', 'chat')
+
+    expect(row('Tile two').className).toContain(SIDEBAR_ROW_CARD_MIN_H)
+    expect(row('Tile one').className).toContain(SIDEBAR_ROW_CARD_MIN_H)
+  })
+
+  it('leaves both sections inline when Inbox style is off', () => {
+    renderSidebar('/', 'chat')
+
+    expect(row('Tile two').className).not.toContain(SIDEBAR_ROW_CARD_MIN_H)
+    expect(row('Tile one').className).not.toContain(SIDEBAR_ROW_CARD_MIN_H)
   })
 })

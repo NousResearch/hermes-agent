@@ -1691,6 +1691,10 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
+                // Inbox style rides whichever view is active — pinned rows
+                // included, so one column never mixes card and inline
+                // geometry at the section boundary.
+                card={cardRows}
                 contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}

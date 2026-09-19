@@ -37,8 +37,12 @@ def test_private_files_content_and_persistence_are_separate(prepared):
 @pytest.mark.parametrize('recover', [True, False])
 def test_ordinary_text_keeps_pending_and_recovery_presentation(api, recover):
     calls = []
-    history = [{'role': 'assistant', 'content': 'prior', 'tool_calls': [{'id': 'call'}]},
-               {'role': 'tool', 'content': 'prior tool', 'tool_call_id': 'call'}] if recover else []
+    history = [{'role': 'system', 'content': 'stable system prefix'},
+               {'role': 'user', 'content': 'earlier request'},
+               {'role': 'assistant', 'content': 'prior'}]
+    if recover:
+        history[-1]['tool_calls'] = [{'id': 'call'}]
+        history.append({'role': 'tool', 'content': 'prior tool', 'tool_call_id': 'call'})
     frozen = copy.deepcopy(history)
     runner = SimpleNamespace(session_authority=None, _consume_pending_native_image_paths=lambda key: [],
         _pending_model_notes={'turn': 'model notice'}, _pending_skills_reload_notes={'turn': 'skills notice'},

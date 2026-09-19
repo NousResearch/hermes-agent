@@ -124,21 +124,3 @@ assumptions: |
 notes: |
   [rebase-refresh] ddf909f6c8: via_ci guards both full-suite and e2e; caller-specific concurrency closes cancellation race; no p0/p1
 ---
----
-recorded_at: 2026-09-19T05:21:00.000Z
-by: codex-independent
-verdict: pass
-mode: delta
-finding_ids: none
-simulation_verdict: pass
-spec_hash: 9145c40a89a0
-code_patch_id: 58ece4d2ab0ee73c8768aa3f7540e793c014f6342cd4e3a3900d59bf35b11ebd
-code_diff_hash: 6c11a5c5e1424264e7cea8d28117b1e87d8c1841231684f10133d7cc969e20e3
-head_sha: cf9255708e
-confusion: |
-  None.
-assumptions: |
-  Review is relative to origin/main; squash merge removes intermediate ftask snapshots.
-notes: |
-  [rebase-refresh] Independent final review: scoped gateway fix; full-suite/e2e via_ci guards and caller-specific concurrency are closed; focused tests 20/20; no p0/p1.
----

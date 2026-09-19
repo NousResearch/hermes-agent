@@ -101,20 +101,90 @@ def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
     return _found(_call_cron_for_profile(_job_profile(job_id, profile), "get_job", job_id))
 
 
-def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
-    """Run sessions produced by a cron job, newest first.
+def _ledger_rows_as_runs(job_id: str, limit: int, profile: Optional[str]) -> list:
+    """Execution-ledger rows shaped as SessionInfo, for jobs that produce no session.
 
-    Runs are ordinary sessions with id ``cron_{job_id}_{timestamp}`` (see
-    cron/scheduler.run_job); ``source='cron'`` plus the id prefix binds them to
-    this job. Same row shape as ``/api/sessions`` so the frontend reuses
-    SessionInfo. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
-    scan, so cost scales with the requested window, not total cron history.
+    A `no_agent` job runs a shell script: it records an execution but never opens
+    an agent session, so the session-backed query above returns nothing and the
+    UI shows "No runs yet" for a job that has run hundreds of times. The ledger
+    is the only record those jobs leave, and it carries what the panel needs —
+    when it ran, how it ended, and why if it failed.
+
+    Fields the frontend requires but a script run has no meaning for (tokens,
+    model, message counts) are zero/None rather than absent: SessionInfo treats
+    them as required, and a missing key renders as NaN in the panel.
+    """
+    from cron.executions import list_executions
+
+    def _epoch(value: Optional[str]) -> float:
+        if not value:
+            return 0.0
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(str(value)).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+
+    runs = []
+    for rec in list_executions(job_id=job_id, limit=limit):
+        started = _epoch(rec.get("started_at") or rec.get("claimed_at"))
+        ended = _epoch(rec.get("finished_at"))
+        status = str(rec.get("status") or "unknown")
+        error = rec.get("error")
+        runs.append({
+            "id": f"cron_exec_{rec.get('id', '')}",
+            "started_at": started,
+            "last_active": ended or started,
+            "ended_at": ended or None,
+            # A script run is over when the ledger says so; "claimed"/"running"
+            # with no finished_at is the only genuinely live state.
+            "is_active": status in {"claimed", "running"} and not ended,
+            "title": f"{status}" + (" · script" if rec.get("source") else ""),
+            "preview": error or f"{status} ({rec.get('source') or 'cron'})",
+            "source": "cron",
+            "model": None,
+            "message_count": 0,
+            "tool_call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cwd": None,
+            "archived": False,
+            "profile": profile,
+            # Marks the row as ledger-backed: there is no transcript to open.
+            "_cron_execution": True,
+            "_cron_status": status,
+        })
+    return runs
+
+
+def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
+    """Run history for a cron job, newest first.
+
+    Two backing stores, because two kinds of job leave two kinds of trace:
+
+    * An agent job opens a session ``cron_{job_id}_{timestamp}`` (see
+      cron/scheduler.run_job) — the rich path, with transcript, tokens, cost.
+    * A ``no_agent`` job runs a script and only appends to the execution
+      ledger. Reading sessions alone reports "No runs yet" for a job that has
+      run hundreds of times, which is what this fallback fixes.
+
+    Both are returned in the ``list_sessions_rich`` row shape so the frontend
+    reuses SessionInfo unchanged.
     """
     selected = profile or _find_cron_job_profile(job_id)
-    # job_id may be a human name; resolve to the canonical id used in run-session ids.
+    # job_id may be a human name; resolve to the canonical id used in run-session
+    # ids AND in the execution ledger. `get_job` matches on id only, so a name
+    # falls through to `resolve_job_ref` — without it both backing stores are
+    # queried with a key they do not index, and the panel reports "No runs yet"
+    # for a job that has run hundreds of times.
     canonical = job_id
     if selected:
         job = _call_cron_for_profile(selected, "get_job", job_id)
+        if not job:
+            try:
+                job = _call_cron_for_profile(selected, "resolve_job_ref", job_id)
+            except Exception:
+                job = None
         if job and job.get("id"):
             canonical = str(job["id"])
 
@@ -132,9 +202,15 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected
-        return {"runs": runs, "limit": limit_n}
     finally:
         db.close()
+
+    # Only when the session query found nothing: an agent job that has also run
+    # as a script keeps its transcripts rather than being diluted by ledger rows.
+    if not runs:
+        runs = _ledger_rows_as_runs(canonical, limit_n, selected)
+
+    return {"runs": runs, "limit": limit_n}
 
 
 _EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}

@@ -201,3 +201,50 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_anthropic_utilization_is_already_a_percent(monkeypatch):
+    """A 1%-used session must render as 1%, not 100%.
+
+    The Anthropic OAuth usage API reports ``utilization`` as a PERCENT (0-100).
+    Treating values <= 1 as a 0-1 fraction and scaling them by 100 turned a
+    barely-touched 5h window into a seemingly exhausted quota.
+    """
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat01-token")
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {"utilization": 1.0, "resets_at": "2026-09-16T11:50:00+00:00"},
+                "seven_day": {"utilization": 0.0, "resets_at": "2026-09-23T05:00:00+00:00"},
+                # Same payload, same units: the limits[] mirror says percent: 1.
+                "limits": [{"kind": "session", "group": "session", "percent": 1}],
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    session = next(w for w in snapshot.windows if w.label == "Current session")
+    assert session.used_percent == 1.0, "utilization 1.0 means 1%, not 100%"
+    week = next(w for w in snapshot.windows if w.label == "Current week")
+    assert week.used_percent == 0.0
+
+
+def test_fetch_account_usage_anthropic_full_window_still_reads_100(monkeypatch):
+    """The genuinely-exhausted case keeps reporting 100%."""
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat01-token")
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {"five_hour": {"utilization": 100.0, "resets_at": "2026-09-16T11:50:00+00:00"}}
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert snapshot.windows[0].used_percent == 100.0

@@ -1435,6 +1435,37 @@ function dynamicTitle(
   return fallback
 }
 
+// A tool that finishes after its turn settled can land its completion in a
+// fresh tail message (no active stream left to merge into), while the sealed
+// row in the earlier message keeps painting "Result unavailable" even though
+// the result sits in the same thread under the same tool_call_id. Re-resolve
+// sealed resultless parts against the thread's parts before painting the
+// fallback. Never manufactures a result: returns undefined when no sibling
+// part carries one. Callers must only invoke this for sealed parts
+// (`completedAt` set, `result` undefined); live rows keep their timers.
+export function resolveSealedToolResult(
+  messages: readonly { parts: readonly { type?: string; toolCallId?: string | null; result?: unknown }[] }[] | undefined,
+  toolCallId: string | undefined
+): unknown {
+  if (!messages || !toolCallId) {
+    return undefined
+  }
+
+  for (const message of messages) {
+    for (const candidate of message.parts ?? []) {
+      if (
+        candidate.type === 'tool-call' &&
+        candidate.toolCallId === toolCallId &&
+        candidate.result !== undefined
+      ) {
+        return candidate.result
+      }
+    }
+  }
+
+  return undefined
+}
+
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
   const resultRecord = toolResultRecord(part)

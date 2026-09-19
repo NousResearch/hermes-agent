@@ -4,7 +4,7 @@ Standalone subprocess spawned by ``process_manager.py``; configured via ``HERMES
 status + transcript written under ``$HERMES_MEET_OUT_DIR`` (filesystem is the only IPC).
 No WebRTC audio parsing: Meet's live captions are watched via a MutationObserver — lossy and
 English-biased, but deterministic (no STT billing) and stable thanks to the ARIA role.
-Debug: ``HERMES_MEET_URL=... HERMES_MEET_OUT_DIR=/tmp/x HERMES_MEET_HEADED=1 \\
+Debug: ``HERMES_MEET_URL=... HERMES_MEET_OUT_DIR=./meet-out HERMES_MEET_HEADED=1 \\
     python -m plugins.google_meet.meet_bot``
 """
 

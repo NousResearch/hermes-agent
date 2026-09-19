@@ -322,7 +322,7 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 from hermes_state import SessionDB
 
 db = SessionDB()                           # Default: ~/.hermes/state.db
-db = SessionDB(db_path=Path("/tmp/test.db"))  # Custom path
+db = SessionDB(db_path=Path("~/.hermes/cache/scratch/test.db").expanduser())  # Custom path
 ```
 
 ### Create and Manage Sessions

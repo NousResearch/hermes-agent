@@ -624,6 +624,14 @@ def _apply_profile_override() -> None:
 
 
 _apply_profile_override()
+# ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
+# at THIS home's scratch dir (a user-set TMPDIR is still left alone).
+try:
+    from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
+
+    _export_scratch_tmp_env()
+except Exception:
+    pass  # an unwritable home leaves the system temp dir in place; never block startup
 
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since

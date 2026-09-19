@@ -1243,8 +1243,8 @@ cronjob(action="create", name="process-feed",
 ```bash
 #!/bin/bash
 # ~/.hermes/scripts/flag-ready.sh
-if test -f /tmp/new-data-ready; then
-  rm -f /tmp/new-data-ready
+if test -f ~/.hermes/cache/scratch/new-data-ready; then
+  rm -f ~/.hermes/cache/scratch/new-data-ready
   echo '{"wakeAgent": true}'
 else
   echo '{"wakeAgent": false}'

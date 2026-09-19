@@ -443,7 +443,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 mcp_servers:
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 ```
 
 ### Recycling memory-heavy stdio servers

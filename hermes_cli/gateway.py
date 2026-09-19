@@ -3117,7 +3117,7 @@ def _temp_home_in_service_definition(definition: str) -> str | None:
     candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S)
     temp_roots = {
         Path(tempfile.gettempdir()).resolve(),
-        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),
+        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
     }
     for raw in candidates:
         try:

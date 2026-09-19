@@ -77,7 +77,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. |
+| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. | <!-- no-tmp: ok — documents the plugin's scope guard -->
 | `on_session_end` | If any test files were auto-tracked during the turn, run the safe `quick` cleanup and log a one-line summary. Stays silent otherwise. |
 
 **Deletion rules:**
@@ -111,6 +111,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
+<!-- no-tmp: ok — documents the plugin's scope guard -->
 **Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end. User project trees (`workspace/`, `projects/`, `plans/`, `home/`) are never tracked or swept at all: a `test_*.py` or `tmp_*` file inside your project is source code, not scratch. `kanban/` (task attachments and workspaces) is never tracked either, and a tracked *directory* under a protected top level such as `cache/` is never removed — only the files inside it age out.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).

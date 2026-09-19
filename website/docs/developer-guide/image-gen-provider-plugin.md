@@ -276,7 +276,7 @@ Drop a user plugin at `~/.hermes/plugins/image_gen/<name>/` with the same `name`
 ## Testing
 
 ```bash
-export HERMES_HOME=/tmp/hermes-imggen-test
+export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-imggen-test
 mkdir -p $HERMES_HOME/plugins/image_gen/my-backend
 # …copy __init__.py + plugin.yaml into that dir…
 

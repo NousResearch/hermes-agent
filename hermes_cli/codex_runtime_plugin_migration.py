@@ -325,7 +325,7 @@ def _query_codex_plugins(
 
 
 # pytest tempdir shapes: ``pytest-of-<user>/pytest-<n>/``, macOS ``/private/var/folders/…/T``.
-_TEST_TEMPDIR_NEEDLES = ("pytest-of-", "/pytest-", "/tmp/pytest", "/private/var/folders/")
+_TEST_TEMPDIR_NEEDLES = ("pytest-of-", "/pytest-", "/tmp/pytest", "/private/var/folders/")  # no-tmp: ok — detection needle for pytest temp homes
 
 
 def _looks_like_test_tempdir(path: str) -> bool:

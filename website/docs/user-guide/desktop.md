@@ -630,7 +630,7 @@ Point the app at a specific checkout, or sandbox it from your real config:
 
 ```bash
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=/tmp/throwaway npm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 

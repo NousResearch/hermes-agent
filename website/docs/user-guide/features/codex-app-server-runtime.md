@@ -242,7 +242,7 @@ Codex requests approval before executing commands or applying patches. These get
 - **Allow for this session** → Codex won't re-prompt for similar commands.
 - **Deny** → command is rejected; Codex continues in read-only mode.
 
-For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed (`1 add, 1 update: /tmp/new.py, /tmp/old.py`) when codex provides the data via the corresponding `fileChange` item.
+For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed (`1 add, 1 update: src/new.py, src/old.py`) when codex provides the data via the corresponding `fileChange` item.
 
 ## Permission profiles
 

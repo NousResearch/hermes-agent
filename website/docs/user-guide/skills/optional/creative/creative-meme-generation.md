@@ -78,9 +78,9 @@ python "$SKILL_DIR/scripts/generate_meme.py" --search "disaster"
    ```
 5. Run the generator:
    ```bash
-   python "$SKILL_DIR/scripts/generate_meme.py" <template_id> /tmp/meme.png "caption 1" "caption 2" ...
+   python "$SKILL_DIR/scripts/generate_meme.py" <template_id> ~/.hermes/cache/scratch/meme.png "caption 1" "caption 2" ...
    ```
-6. Return the image with `MEDIA:/tmp/meme.png`
+6. Return the image with `MEDIA:~/.hermes/cache/scratch/meme.png`
 
 ### Mode 2: Custom AI Image (when image_generate is available)
 
@@ -92,35 +92,35 @@ Use this when no classic template fits, or when the user wants something origina
 4. Run the script with `--image` to overlay text, choosing a mode:
    - **Overlay** (text directly on image, white with black outline):
      ```bash
-     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png /tmp/meme.png "top text" "bottom text"
+     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png ~/.hermes/cache/scratch/meme.png "top text" "bottom text"
      ```
    - **Bars** (black bars above/below with white text — cleaner, always readable):
      ```bash
-     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png --bars /tmp/meme.png "top text" "bottom text"
+     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png --bars ~/.hermes/cache/scratch/meme.png "top text" "bottom text"
      ```
    Use `--bars` when the image is busy/detailed and text would be hard to read on top of it.
 5. **Verify with vision** (if `vision_analyze` is available): Check the result looks good:
    ```
-   vision_analyze(image_url="/tmp/meme.png", question="Is the text legible and well-positioned? Does the meme work visually?")
+   vision_analyze(image_url="~/.hermes/cache/scratch/meme.png", question="Is the text legible and well-positioned? Does the meme work visually?")
    ```
    If the vision model flags issues (text hard to read, bad placement, etc.), try the other mode (switch between overlay and bars) or regenerate the scene.
-6. Return the image with `MEDIA:/tmp/meme.png`
+6. Return the image with `MEDIA:~/.hermes/cache/scratch/meme.png`
 
 ## Examples
 
 **"debugging production at 2 AM":**
 ```bash
-python generate_meme.py this-is-fine /tmp/meme.png "SERVERS ARE ON FIRE" "This is fine"
+python generate_meme.py this-is-fine ~/.hermes/cache/scratch/meme.png "SERVERS ARE ON FIRE" "This is fine"
 ```
 
 **"choosing between sleep and one more episode":**
 ```bash
-python generate_meme.py drake /tmp/meme.png "Getting 8 hours of sleep" "One more episode at 3 AM"
+python generate_meme.py drake ~/.hermes/cache/scratch/meme.png "Getting 8 hours of sleep" "One more episode at 3 AM"
 ```
 
 **"the stages of a Monday morning":**
 ```bash
-python generate_meme.py expanding-brain /tmp/meme.png "Setting an alarm" "Setting 5 alarms" "Sleeping through all alarms" "Working from bed"
+python generate_meme.py expanding-brain ~/.hermes/cache/scratch/meme.png "Setting an alarm" "Setting 5 alarms" "Sleeping through all alarms" "Working from bed"
 ```
 
 ## Listing Templates

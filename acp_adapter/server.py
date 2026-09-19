@@ -238,7 +238,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         "accept_edits": (
             "workspace_session",
             "Accept Edits",
-            "Auto-allow workspace and /tmp edits; still asks for sensitive paths.",
+            "Auto-allow workspace and temp-dir edits; still asks for sensitive paths.",
         ),
         "dont_ask": (
             "session", "Don't Ask", "Auto-allow file edits for this session except sensitive paths."

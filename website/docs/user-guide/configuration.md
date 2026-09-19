@@ -235,12 +235,22 @@ local backend — background-process logs/pid/exit files, code-execution
 sandboxes, and spilled tool results. When it's empty (the default), Hermes
 honors an explicit `TMPDIR`/`TMP`/`TEMP` from the environment and otherwise
 uses a managed directory on real storage at `~/.hermes/cache/terminal`
-instead of `/tmp` — on many distros (Arch-based setups in particular) `/tmp`
+instead of `/tmp` — on many distros (Arch-based setups in particular) `/tmp` <!-- no-tmp: ok — explains why /tmp is avoided -->
 is a small RAM-backed tmpfs that Hermes session artifacts can fill under
 load. The managed directory is auto-pruned: artifacts older than 72 hours are
 swept hourly by gateway housekeeping and once per process on CLI-only
 installs. Set `temp_dir` to an existing absolute path to redirect session
 temp anywhere else; user-set paths are never auto-pruned.
+
+Independently of `terminal.temp_dir`, every Hermes process (CLI, TUI, gateway, Desktop
+backend, cron) and every child it launches gets `TMPDIR`, `TMP` and `TEMP` pointed at
+**`~/.hermes/cache/scratch`** (per profile) at startup, so `tempfile.mkdtemp()`,
+`mktemp`, browser profiles and probe scripts all land on real storage instead of a
+RAM-backed system temp dir. The system prompt names this directory as the scratch
+directory. Hermes only sets these when they are not already set — a `TMPDIR` exported
+by you or by the OS (macOS `/var/folders`, Windows `%TEMP%`) is left alone. Entries
+older than 72 hours are pruned at startup (at most once per hour). `hermes doctor`
+reports the directory and its size.
 
 `desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
 
@@ -407,7 +417,7 @@ Parallel subagents spawned via `delegate_task(tasks=[...])` share this one conta
 - `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back
 - `--security-opt no-new-privileges`
 - `--pids-limit 256`
-- Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB)
+- Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB) <!-- no-tmp: ok — documents the sandbox's own tmpfs -->
 
 **Credential forwarding:** Env vars listed in `docker_forward_env` are resolved from your shell environment first, then `~/.hermes/.env`. Skills can also declare `required_environment_variables` which are merged automatically.
 
@@ -728,7 +738,7 @@ hermes config set terminal.persistent_shell false
 ```
 
 **What persists across commands:**
-- Working directory (`cd /tmp` sticks for the next command)
+- Working directory (`cd ~/project` sticks for the next command)
 - Exported environment variables (`export FOO=bar`)
 - Shell variables (`MY_VAR=hello`)
 

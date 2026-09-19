@@ -463,8 +463,8 @@ RUN_ID=<run_id>
 curl -s -L \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs \
-  -o /tmp/ci-logs.zip
-cd /tmp && unzip -o ci-logs.zip -d ci-logs
+  -o ~/.hermes/cache/scratch/ci-logs.zip
+cd ~/.hermes/cache/scratch && unzip -o ci-logs.zip -d ci-logs
 
 # Re-run a failed workflow
 curl -s -X POST \

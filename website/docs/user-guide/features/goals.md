@@ -249,31 +249,31 @@ The judge call is small (~200 output tokens) and runs once per turn, so a cheap 
 ## Example walkthrough
 
 ```
-You: /goal Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
+You: /goal Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
 
-  ⊙ Goal set (20-turn budget): Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
+  ⊙ Goal set (20-turn budget): Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
 
-Hermes: Creating /tmp/note_1.txt now.
-  💻 echo "1" > /tmp/note_1.txt   (0.1s)
-  I've created /tmp/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
+Hermes: Creating ~/.hermes/cache/scratch/note_1.txt now.
+  💻 echo "1" > ~/.hermes/cache/scratch/note_1.txt   (0.1s)
+  I've created ~/.hermes/cache/scratch/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
 
   ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
 
 Hermes: [Continuing toward your standing goal]
-  💻 echo "2" > /tmp/note_2.txt   (0.1s)
-  Created /tmp/note_2.txt. Two more to go.
+  💻 echo "2" > ~/.hermes/cache/scratch/note_2.txt   (0.1s)
+  Created ~/.hermes/cache/scratch/note_2.txt. Two more to go.
 
   ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
 
 Hermes: [Continuing toward your standing goal]
-  💻 echo "3" > /tmp/note_3.txt   (0.1s)
-  Created /tmp/note_3.txt.
+  💻 echo "3" > ~/.hermes/cache/scratch/note_3.txt   (0.1s)
+  Created ~/.hermes/cache/scratch/note_3.txt.
 
   ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
 
 Hermes: [Continuing toward your standing goal]
-  💻 echo "4" > /tmp/note_4.txt   (0.1s)
-  All four files have been created: /tmp/note_1.txt through /tmp/note_4.txt, each containing its number.
+  💻 echo "4" > ~/.hermes/cache/scratch/note_4.txt   (0.1s)
+  All four files have been created: ~/.hermes/cache/scratch/note_1.txt through ~/.hermes/cache/scratch/note_4.txt, each containing its number.
 
   ✓ Goal achieved: All four files were created with the specified content, completing the goal.
 

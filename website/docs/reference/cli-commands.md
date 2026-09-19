@@ -251,9 +251,9 @@ stdout is non-empty.
 `hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, the `completed` / `failed` / `partial` / `interrupted` flags and `turn_exit_reason` (why `completed` is false, e.g. `max_iterations_reached(3/3)`). Those top-level counters cover the **main agent loop** only. Auxiliary LLM calls made on the same run (title generation, vision, context compression, `web_extract`, background review, …) are reported separately under `auxiliary` — the same totals plus a per-task `by_task` map — and `total_including_auxiliary` (`estimated_cost_usd`, `total_tokens`, `api_calls`) is the grand total to bill on. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
 
 ```bash
-hermes -z "summarize this repo" --usage-file /tmp/usage.json
-jq .total_including_auxiliary.estimated_cost_usd /tmp/usage.json
-jq .auxiliary.by_task /tmp/usage.json      # what did title generation / vision cost?
+hermes -z "summarize this repo" --usage-file ~/.hermes/cache/scratch/usage.json
+jq .total_including_auxiliary.estimated_cost_usd ~/.hermes/cache/scratch/usage.json
+jq .auxiliary.by_task ~/.hermes/cache/scratch/usage.json      # what did title generation / vision cost?
 ```
 
 ## `hermes model`
@@ -495,15 +495,15 @@ If neither a positional `message` argument nor `--file` is provided, `hermes sen
 `--file` is for *text* bodies only. To deliver an image, document, video, or audio file as a native platform attachment, reference it inside the message text with the `MEDIA:<local_path>` directive:
 
 ```bash
-hermes send --to telegram "MEDIA:/tmp/screenshot.png"
-hermes send --to telegram "Build chart for today MEDIA:/tmp/chart.png"   # with caption
-hermes send --to discord:#ops "MEDIA:/tmp/report.pdf"
+hermes send --to telegram "MEDIA:~/.hermes/cache/scratch/screenshot.png"
+hermes send --to telegram "Build chart for today MEDIA:~/.hermes/cache/scratch/chart.png"   # with caption
+hermes send --to discord:#ops "MEDIA:~/.hermes/cache/scratch/report.pdf"
 ```
 
 By default, image files are sent as photos (platforms like Telegram recompress these). Add `[[as_document]]` to the message to deliver them as uncompressed file attachments instead:
 
 ```bash
-hermes send --to telegram "[[as_document]] MEDIA:/tmp/screenshot.png"
+hermes send --to telegram "[[as_document]] MEDIA:~/.hermes/cache/scratch/screenshot.png"
 ```
 
 Examples:
@@ -511,7 +511,7 @@ Examples:
 ```bash
 hermes send --to telegram "deploy finished"
 echo "RAM 92%" | hermes send --to telegram:-1001234567890
-hermes send --to discord:#ops --file /tmp/report.md
+hermes send --to discord:#ops --file ~/.hermes/cache/scratch/report.md
 hermes send --to slack:#eng --subject "[CI]" --file build.log
 hermes send --list                  # all platforms
 hermes send --list telegram         # filter by platform
@@ -1054,7 +1054,7 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 
 ```bash
 hermes backup                           # Full backup to ~/hermes-backup-*.zip
-hermes backup -o /tmp/hermes.zip        # Full backup to specific path
+hermes backup -o ~/backups/hermes.zip   # Full backup to specific path
 hermes backup --quick                   # Quick state-only snapshot
 hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
 ```

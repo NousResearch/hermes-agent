@@ -245,7 +245,7 @@ In the interactive CLI, dangerous commands show an inline approval prompt:
 
 ```
   ⚠️  DANGEROUS COMMAND: recursive delete
-      rm -rf /tmp/old-project
+      rm -rf ~/old-project
 
       [o]nce  |  [s]ession  |  [a]lways  |  [d]eny
 
@@ -548,6 +548,7 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "FOWNER",                        # Package managers need file ownership
     "--security-opt", "no-new-privileges",         # Block privilege escalation
     "--pids-limit", "256",                         # Limit process count
+    # no-tmp: ok — configures the sandbox's own tmpfs
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",  # No-exec /var/tmp
 ]

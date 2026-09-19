@@ -560,7 +560,15 @@ def _fetch_anthropic_account_usage(
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
-        details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
+        # The usage API reports extra-usage amounts in minor units, scaled by ``decimal_places``
+        # (credits = cents: amount_minor=30000, exponent=2 == $300). Zero-decimal currencies
+        # (JPY, KRW) report 0, and a missing field is no evidence of minor units at all — both
+        # render unscaled instead of guessing an exponent. (#94883)
+        decimal_places = extra.get("decimal_places")
+        scale = 10 ** int(decimal_places) if _is_num(decimal_places) else 1
+        details.append(
+            f"Extra usage: {used_credits / scale:.2f} / {monthly_limit / scale:.2f} "
+            f"{extra.get('currency') or 'USD'}")
     return _snapshot("anthropic", "oauth_usage_api", windows, details)
 
 

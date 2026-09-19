@@ -345,3 +345,76 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     assert snapshot is not None
     assert refresh_hints == ["pool-B-revoked"]
     assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]
+def _anthropic_extra_usage_payload(extra_usage: dict) -> dict:
+    """OAuth usage payload whose ``extra_usage`` row is the one under test."""
+    return {
+        "five_hour": None,
+        "seven_day": None,
+        "extra_usage": extra_usage,
+        "spend": {
+            "used": {"amount_minor": 10587, "currency": "USD", "exponent": 2},
+            "limit": {"amount_minor": 30000, "currency": "USD", "exponent": 2},
+            "percent": 35,
+            "enabled": True,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "extra_usage, expected",
+    [
+        pytest.param(
+            {"is_enabled": True, "monthly_limit": 30000, "used_credits": 10587.0,
+             "currency": "USD", "decimal_places": 2},
+            "Extra usage: 105.87 / 300.00 USD",
+            id="minor-units",
+        ),
+        pytest.param(
+            {"is_enabled": True, "monthly_limit": 30000, "used_credits": 10587,
+             "currency": "JPY", "decimal_places": 0},
+            "Extra usage: 10587.00 / 30000.00 JPY",
+            id="zero-decimal-currency",
+        ),
+        pytest.param(
+            {"is_enabled": True, "monthly_limit": 300, "used_credits": 105.87,
+             "currency": "USD"},
+            "Extra usage: 105.87 / 300.00 USD",
+            id="no-decimal-places-field",
+        ),
+    ],
+)
+def test_fetch_anthropic_usage_scales_extra_usage_by_decimal_places(
+    monkeypatch, extra_usage, expected
+):
+    """``extra_usage`` amounts are minor units scaled by ``decimal_places``. Zero (JPY, KRW) means
+    no minor unit at all, and a missing field is no evidence of one, so neither may divide by 100."""
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-oat01-test-token")
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient([], _anthropic_extra_usage_payload(extra_usage)),
+    )
+
+    snapshot = account_usage.fetch_account_usage("anthropic")
+
+    # OAuth-style token → real usage API path (not the API-key-only notice).
+    assert snapshot is not None
+    assert snapshot.source == "oauth_usage_api"
+    assert expected in snapshot.details
+
+
+def test_fetch_anthropic_usage_api_key_has_no_limits(monkeypatch):
+    """A plain API key has no usage API to read, so the fetch must not open a client at all."""
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "sk-ant-api03-test")
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: (_ for _ in ()).throw(AssertionError("no HTTP for API keys")),
+    )
+
+    snapshot = account_usage.fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert snapshot.source == "oauth_usage_api"
+    assert snapshot.unavailable_reason is not None
+    assert "OAuth-backed" in snapshot.unavailable_reason

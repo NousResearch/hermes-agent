@@ -570,7 +570,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                             return
                         continue
                     await self._seal_overflow_heads()
-                    await self._push_update(tick)
+                    # A seal clears the edit target MID-ITERATION, so the overflow gate
+                    # checked above is already stale. A buffer that still overflows then
+                    # reaches ``_push_update`` -> ``_first_send`` with no message to edit,
+                    # on a NON-final tick: the adapter publishes it as numbered, capped
+                    # chunks, and the turn-final lane later publishes the same text again
+                    # with a different denominator. Observed in production on Discord:
+                    # a single 36k-char turn delivered as ``(i/10)`` and ``(i/9)``, with
+                    # chunk 1 byte-identical between the two. Re-check the gate
+                    # and hand the leftover to the consumer's own splitter, which owns
+                    # sealing and the final ledger.
+                    if not self._use_native_streaming and self._first_send_overflows():
+                        if await self._split_first_send(tick):
+                            return
+                    else:
+                        await self._push_update(tick)
 
                 if tick.got_done:
                     await self._finalize_turn(tick)

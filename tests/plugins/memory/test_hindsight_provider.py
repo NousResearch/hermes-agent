@@ -292,6 +292,9 @@ class TestConfig:
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
+        # Reflect is unfiltered unless the user opts in: no reflect_tags, no tag filter.
+        assert provider._reflect_tags is None
+        assert provider._reflect_tags_match == "any"
         # Default recall narrowed to observation-only; world/experience are
         # aggregate facts that often crowd out concrete-event signal during
         # auto-recall. Users opt back in via the recall_types config key.
@@ -318,6 +321,8 @@ class TestConfig:
             retain_assistant_prefix="Assistant (fakeassistantname)",
             recall_tags=["recall-tag"],
             recall_tags_match="all",
+            reflect_tags="reflect-tag, other-tag",
+            reflect_tags_match="any_strict",
             auto_retain=False,
             auto_recall=False,
             retain_every_n_turns=3,
@@ -336,6 +341,9 @@ class TestConfig:
         assert p._retain_assistant_prefix == "Assistant (fakeassistantname)"
         assert p._recall_tags == ["recall-tag"]
         assert p._recall_tags_match == "all"
+        # CSV string is normalized (and deduplicated) like retain_tags.
+        assert p._reflect_tags == ["reflect-tag", "other-tag"]
+        assert p._reflect_tags_match == "any_strict"
         assert p._auto_retain is False
         assert p._auto_recall is False
         assert p._retain_every_n_turns == 3
@@ -542,6 +550,26 @@ class TestToolHandlers:
         ))
         assert result["result"] == "Synthesized answer"
 
+    def test_reflect_defaults_to_unfiltered(self, provider):
+        """Without reflect_tags the request carries no tag filter at all — the
+        pre-opt-in behavior, so existing deployments are unaffected."""
+        provider.handle_tool_call("hindsight_reflect", {"query": "summarize"})
+        call_kwargs = provider._client.areflect.call_args.kwargs
+        assert "tags" not in call_kwargs
+        assert "tags_match" not in call_kwargs
+
+    def test_reflect_passes_configured_tags(self, provider_with_config):
+        """reflect_tags/tags_match reach the server so a reflect can be scoped the
+        same way a recall is (unfiltered reflect walks the whole bank)."""
+        p = provider_with_config(
+            reflect_tags=["especialidad:audio-vintage"],
+            reflect_tags_match="any_strict",
+        )
+        p.handle_tool_call("hindsight_reflect", {"query": "summarize"})
+        call_kwargs = p._client.areflect.call_args.kwargs
+        assert call_kwargs["tags"] == ["especialidad:audio-vintage"]
+        assert call_kwargs["tags_match"] == "any_strict"
+
 
     def test_unknown_tool(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -605,6 +633,20 @@ class TestPrefetch:
         assert captured["query"] == "fix tests"       # current query, not ignored
         assert "fresh memory" in result
         p._client.arecall.assert_called_once()
+
+    def test_recall_sync_reflect_passes_configured_tags(self, provider_with_config):
+        """recall_prefetch_method=reflect goes through the same _reflect(), so the
+        reflect scope must hold on the synchronous prefetch path too."""
+        p = provider_with_config(
+            recall_sync=True,
+            recall_prefetch_method="reflect",
+            reflect_tags="especialidad:placas-base",
+            reflect_tags_match="any_strict",
+        )
+        p.prefetch("board does not post")
+        call_kwargs = p._client.areflect.call_args.kwargs
+        assert call_kwargs["tags"] == ["especialidad:placas-base"]
+        assert call_kwargs["tags_match"] == "any_strict"
 
     def test_recall_sync_skips_background_queue(self, provider_with_config):
         # With sync recall there's nothing to prime in the background.
@@ -1353,6 +1395,7 @@ class TestConfigSchema:
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",
+            "reflect_tags", "reflect_tags_match",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",

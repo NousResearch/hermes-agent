@@ -440,6 +440,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
+            {"key": "reflect_tags", "description": "Tags to filter when reflecting — applies to both the hindsight_reflect tool and recall_prefetch_method=reflect (comma-separated). Empty (default) reflects over the whole bank.", "default": ""},
+            {"key": "reflect_tags_match", "description": "Tag matching mode for reflect", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
@@ -717,10 +719,10 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s, reflect_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
-                     self._tags, self._recall_tags)
+                     self._tags, self._recall_tags, self._reflect_tags)
 
         if self._mode == "local_embedded":
             self._start_embedded_daemon()
@@ -786,6 +788,11 @@ class HindsightMemoryProvider(MemoryProvider):
         """Recall knobs are pure config too (``{}`` yields the defaults)."""
         self._recall_tags = cfg.get("recall_tags") or None
         self._recall_tags_match = cfg.get("recall_tags_match", "any")
+        # Reflect tags are OPT-IN and default to empty = unfiltered (today's behavior).
+        # A reflect can pull far more of the bank than a recall, so narrowing its
+        # evidence is a deliberate choice, never an implicit one.
+        self._reflect_tags = _normalize_retain_tags(cfg.get("reflect_tags")) or None
+        self._reflect_tags_match = cfg.get("reflect_tags_match", "any")
         self._auto_recall = cfg.get("auto_recall", True)
         self._recall_sync = bool(cfg.get("recall_sync", False))
         self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
@@ -895,9 +902,10 @@ class HindsightMemoryProvider(MemoryProvider):
         return resp.results or []
 
     def _reflect(self, query: str) -> str | None:
-        resp = self._run_hindsight_operation(
-            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
-        )
+        kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget}
+        if self._reflect_tags:
+            kwargs.update(tags=self._reflect_tags, tags_match=self._reflect_tags_match)
+        resp = self._run_hindsight_operation(lambda client: client.areflect(**kwargs))
         return resp.text
 
     def _do_recall(self, query: str) -> tuple[str, int]:

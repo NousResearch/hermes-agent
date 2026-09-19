@@ -1134,6 +1134,17 @@ def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional
     return safe_path
 
 
+def _media_file_identity(path: str) -> tuple:
+    """Stable identity for one on-disk file. Symlink / bind-mount aliases
+    collapse; distinct copies keep distinct identities so legitimate pairs
+    still send twice."""
+    try:
+        st = os.stat(path)
+        return ("ino", st.st_dev, st.st_ino)
+    except OSError:
+        return ("path", path)
+
+
 def _existing_regular_file(raw: str) -> bool:
     try:
         return Path(os.path.expanduser(raw)).is_file()
@@ -3073,16 +3084,35 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
-        return [
-            (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+        """Drop unsafe MEDIA paths, normalize accepted paths, one send per on-disk file."""
+        seen: set = set()
+        out: List[Tuple[str, bool]] = []
+        for media_path, is_voice in media_files or []:
+            safe_path = _validated_delivery_path(media_path, session_key, "MEDIA directive path")
+            if not safe_path:
+                continue
+            key = (_media_file_identity(safe_path), bool(is_voice))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((safe_path, bool(is_voice)))
+        return out
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
-        safe_paths = (_validated_delivery_path(p, session_key, "local file path") for p in file_paths or [])
-        return [p for p in safe_paths if p]
+        """Drop unsafe bare local file paths, normalize, one send per on-disk file."""
+        seen: set = set()
+        out: List[str] = []
+        for raw in file_paths or []:
+            safe_path = _validated_delivery_path(raw, session_key, "local file path")
+            if not safe_path:
+                continue
+            ident = _media_file_identity(safe_path)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            out.append(safe_path)
+        return out
 
     @staticmethod
     def _mask_protected_spans(content: str) -> str:
@@ -3142,15 +3172,21 @@ class BasePlatformAdapter(ABC):
         # - code blocks / inline code / blockquotes hold prose examples (#35695) - serialized JSON string
         #   values hold stored tool-result text (#34375) Both maskers are offset-preserving (chars ->
         #   spaces) so match offsets stay valid; chaining them masks the union of both protected regions.
-        # Dedupe on the expanded path (first occurrence wins) so the same file referenced twice in one
-        # response — e.g. a MEDIA tag inline AND in a summary footer — is uploaded once, not twice (#29131).
+        # Dedupe on path string AND on-disk identity (first occurrence wins).
+        # String-only seen_paths sent the same inode twice when a MEDIA tag and
+        # an extensionless recovery (or a bind-mount alias) named the same file
+        # via different path strings (#29131 covers identical strings only).
         seen_paths: set = set()
+        seen_idents: set = set()
 
         def _add(path: str) -> None:
             # is_voice only for audio: a voice-flagged image would leave the photo batch.
-            if path not in seen_paths:
-                seen_paths.add(path)
-                media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
+            ident = _media_file_identity(path)
+            if path in seen_paths or ident in seen_idents:
+                return
+            seen_paths.add(path)
+            seen_idents.add(ident)
+            media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
         for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
@@ -4098,8 +4134,19 @@ class BasePlatformAdapter(ABC):
 
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
-        _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
-        _image_paths += [p for p in local_files if _as_image(p)]
+        def _unique_paths(paths: list) -> list:
+            seen: set = set()
+            out = []
+            for path in paths:
+                ident = _media_file_identity(path)
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                out.append(path)
+            return out
+        _image_paths = _unique_paths(
+            [p for p, is_voice in media_files if not is_voice and _as_image(p)]
+            + [p for p in local_files if _as_image(p)])
         if _image_paths:
             await self._send_image_batch(
                 event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
@@ -4123,10 +4170,20 @@ class BasePlatformAdapter(ABC):
                                "media" if media_tag else "local file", ext, result.error)
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
-        queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
-        if queue:
-            logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
+        seen_q: set = set()
+        queue = []
+        for path, is_voice, media_tag in (
+            [(p, v, True) for p, v in media_files if v or not _as_image(p)]
+            + [(p, False, False) for p in local_files if not _as_image(p)]
+        ):
+            ident = (_media_file_identity(path), bool(is_voice))
+            if ident in seen_q:
+                continue
+            seen_q.add(ident)
+            queue.append((path, is_voice, media_tag))
+        media_n = sum(1 for _p, _v, tag in queue if tag)
+        if media_n:
+            logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, media_n)
         for path, is_voice, media_tag in queue:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)

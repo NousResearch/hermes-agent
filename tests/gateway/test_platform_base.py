@@ -249,6 +249,30 @@ class TestExtractMedia:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert media == [(f"{home}/foo.png", False)]
 
+    def test_extract_media_dedupes_same_inode_via_hardlink(self, tmp_path):
+        """Bind-mount / extra-name aliases share an inode but not a path string.
+
+        #29131 only collapsed identical expanded strings, so one PDF named two
+        ways was uploaded twice. First occurrence wins.
+        """
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{real}\nMEDIA:{alias}")
+        assert media == [(str(real), False)]
+
+    def test_extract_media_keeps_distinct_copies(self, tmp_path):
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a}\nMEDIA:{b}")
+        assert media == [(str(a), False), (str(b), False)]
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
@@ -601,6 +625,48 @@ class TestMediaDeliveryDefaultMode:
         os.utime(notes, (old_mtime, old_mtime))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(notes)) == str(notes.resolve())
+
+    def test_filter_media_collapses_same_inode_via_hardlink(self, tmp_path, monkeypatch):
+        """Two names, one inode: send once. resolve() does not collapse hard links."""
+        self._patch_roots(monkeypatch)
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(real), False), (str(alias), False)]
+        )
+        assert len(out) == 1
+        assert out[0] == (str(real.resolve()), False)
+
+    def test_filter_media_keeps_distinct_copies(self, tmp_path, monkeypatch):
+        self._patch_roots(monkeypatch)
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(a), False), (str(b), False)]
+        )
+        assert {(p, v) for p, v in out} == {
+            (str(a.resolve()), False),
+            (str(b.resolve()), False),
+        }
+
+    def test_filter_local_collapses_same_inode_via_hardlink(self, tmp_path, monkeypatch):
+        self._patch_roots(monkeypatch)
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        out = BasePlatformAdapter.filter_local_delivery_paths([str(real), str(alias)])
+        assert out == [str(real.resolve())]
 
 
     @pytest.mark.parametrize(

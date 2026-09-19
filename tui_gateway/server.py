@@ -229,6 +229,7 @@ class _SlashWorker:
     def __init__(self, session_key: str, model: str, profile_home: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
+        self.last_seed: str = ""
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
         argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
@@ -277,6 +278,7 @@ class _SlashWorker:
     def run(self, command: str) -> str:
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
+        self.last_seed = ""
         with self._lock:
             self._seq += 1
             rid = self._seq
@@ -293,6 +295,7 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self.last_seed = msg.get("seed", "") or ""
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")

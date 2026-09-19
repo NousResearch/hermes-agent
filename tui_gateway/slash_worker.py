@@ -64,10 +64,10 @@ def _start_parent_death_watchdog(original_ppid) -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
-def _run(cli: HermesCLI, command: str) -> str:
+def _run(cli: HermesCLI, command: str) -> dict:
     cmd = (command or "").strip()
     if not cmd:
-        return ""
+        return {"output": "", "seed": ""}
     buf = io.StringIO()
     # Rich Console captures its file handle at construction, so redirect_stdout won't affect it; swap
     # the console's file so self.console.print() is captured. cli._cprint is likewise redirected.
@@ -84,7 +84,9 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
-    return strip_ansi(buf.getvalue().rstrip())
+    output = strip_ansi(buf.getvalue().rstrip())
+    seed = getattr(cli, '_pending_agent_seed', None) or ""
+    return {"output": output, "seed": seed}
 
 
 def _sw_log(reason: str) -> None:
@@ -126,7 +128,8 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            _reply(id=rid, ok=True, output=_run(cli, req.get("command", "")))
+            result = _run(cli, req.get("command", ""))
+            _reply(id=rid, ok=True, output=result["output"], seed=result["seed"])
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

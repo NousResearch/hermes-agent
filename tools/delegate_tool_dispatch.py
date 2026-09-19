@@ -199,7 +199,7 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
+        "delegated worker, a finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
@@ -227,6 +227,15 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
     # approval/lifecycle marker without disabling terminal notify completions:
     # those have their own bounded exit linger and durable result receipts.
     if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return None
+
+    # A delegated worker inherits the coordinator's session context but owns no route of its own:
+    # a detached completion would be pushed at the coordinator's chat (or persisted into its
+    # server history) stamped with the worker's internal session id, while the tool call that
+    # asked for the work has already returned a bare handle. Run the nested batch inline so the
+    # result lands in this worker's own turn (#103486: depth >= 1 fans out synchronously by design).
+    from agent.delegation_context import is_delegated_child_context
+    if is_delegated_child_context():
         return None
 
     try:

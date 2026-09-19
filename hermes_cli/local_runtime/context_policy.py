@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes, physics_check)
+    HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes,
+    physics_check)
 
 FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
@@ -220,8 +221,12 @@ def spill_overrides(profile: ModelProfile) -> list[str]:
     n_head_kv==0 layers carry no KV worth protecting)."""
     if profile.moe:
         return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
-    if profile.recurrent_layer_count:
-        return ["-ot", r"blk\.\d+\.ffn_.*\.weight=CPU"]
+    recurrent = [str(i) for i, (kind, _) in enumerate(profile.layers)
+                 if kind == LayerKind.RECURRENT]
+    if recurrent:
+        # Name the recurrent indices; the block-agnostic pattern also evicted
+        # full-attention FFNs and cost ~2.4x generation speed (#113329).
+        return ["-ot", r"blk\.(%s)\.ffn_.*\.weight=CPU" % "|".join(recurrent)]
     return []  # dense: fit's back-to-front layer cut is the only axis
 
 
@@ -249,10 +254,12 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
 def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool, mtp_prefill: bool = False) -> int:
     """GPU logits/compute-buffer cost of the microbatch posture chosen by launch_args, priced from
     the model's own vocab and calibrated against measured server RSS (Qwen3.8 Q4, both postures,
-    three windows)."""
+    three windows). The lean posture prices the decode microbatch: no GPU-side n_ubatch x vocab
+    logits buffer materializes there (measured ~0.85 GiB total non-weight overhead vs the old
+    1.9 GiB term on a 248K-vocab hybrid, #113329)."""
     v = max(0, int(n_vocab))
     if mtp_capable and mtp_prefill:
         return int(2048 * v * 4 * 1.5)
     if mtp_capable:
         return 512 * v * 4 * 2
-    return 2048 * v * 4
+    return 512 * v * 4

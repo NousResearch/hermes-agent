@@ -418,7 +418,38 @@ def _replay_message_items(
     return replayed
 
 
-def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int) -> List[Dict[str, Any]]:
+class _WireCallIds:
+    """Per-request wire ids for replayed tool pairs.
+
+    Stored call ids are minted per turn (``terminal:0``, ``terminal:1``…), so the same id recurs on
+    later turns of one session. Replayed verbatim, strict Responses validators reject the whole
+    request with 400 "Duplicate function_call_output for call_id" and every retry of the turn fails
+    identically (#102629, #111231). Every occurrence past the first gets a ``_dup<n>`` wire id; the
+    matching tool output pops the id its ``function_call`` was given, in call order, so pairs stay
+    intact and the stored history is untouched.
+    """
+
+    def __init__(self) -> None:
+        self._seen: Dict[str, int] = {}
+        self._queue: Dict[str, List[str]] = {}
+
+    def for_call(self, call_id: str) -> str:
+        base = _clamp_responses_call_id(call_id)
+        n = self._seen.get(base, 0)
+        self._seen[base] = n + 1
+        wire = base if n == 0 else _clamp_responses_call_id(f"{base}_dup{n}")
+        self._queue.setdefault(base, []).append(wire)
+        return wire
+
+    def for_output(self, call_id: str) -> str:
+        base = _clamp_responses_call_id(call_id)
+        queue = self._queue.get(base)
+        return queue.pop(0) if queue else base
+
+
+def _replay_tool_call_items(
+    msg: Dict[str, Any], *, start_index: int, wire_ids: Optional[_WireCallIds] = None,
+) -> List[Dict[str, Any]]:
     """Convert an assistant message's ``tool_calls`` into ``function_call`` items."""
     replayed: List[Dict[str, Any]] = []
     for tc in _as_list(msg.get("tool_calls")):
@@ -431,13 +462,14 @@ def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int) -> List[Di
         index = start_index + len(replayed)
         call_id = _resolve_call_id(tc.get("call_id"), tc.get("id"), fn_name, str(arguments), index, canonicalize_fc=True)
         replayed.append({
-            "type": "function_call", "call_id": _clamp_responses_call_id(call_id),
+            "type": "function_call",
+            "call_id": wire_ids.for_call(call_id) if wire_ids else _clamp_responses_call_id(call_id),
             "name": _sanitize_replayed_fn_name(fn_name), "arguments": _coerce_arguments(arguments),
         })
     return replayed
 
 
-def _tool_output_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _tool_output_items(msg: Dict[str, Any], *, wire_ids: Optional[_WireCallIds] = None) -> List[Dict[str, Any]]:
     """Convert a tool-role message to ``[function_call_output]`` (``[]`` if unpairable)."""
     raw_tool_call_id = msg.get("tool_call_id")
     call_id, tool_response_item_id = _split_responses_tool_id(raw_tool_call_id)
@@ -453,7 +485,8 @@ def _tool_output_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
     tool_content = msg.get("content")
     is_parts = isinstance(tool_content, list)
     output_value: Any = (_chat_content_to_responses_parts(tool_content) or "") if is_parts else str(tool_content or "")
-    return [{"type": "function_call_output", "call_id": _clamp_responses_call_id(call_id), "output": output_value}]
+    wire_call_id = wire_ids.for_output(call_id) if wire_ids else _clamp_responses_call_id(call_id)
+    return [{"type": "function_call_output", "call_id": wire_call_id, "output": output_value}]
 
 
 def _chat_messages_to_responses_input(
@@ -506,6 +539,7 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    wire_ids = _WireCallIds()
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
@@ -514,7 +548,7 @@ def _chat_messages_to_responses_input(
             continue
         role = msg.get("role")
         if role == "tool":
-            emit(_tool_output_items(msg), msg)
+            emit(_tool_output_items(msg, wire_ids=wire_ids), msg)
             continue
         if role not in {"user", "assistant"}:
             continue
@@ -537,12 +571,18 @@ def _chat_messages_to_responses_input(
             msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
         )
         emit(message_items, msg)
+        fallback = None
         if not message_items:
-            # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
             fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
-            if fallback is not None:
-                emit([{"role": "assistant", "content": fallback}], msg)
-        emit(_replay_tool_call_items(msg, start_index=len(items)), msg)
+        tool_items = _replay_tool_call_items(msg, start_index=len(items) + (fallback is not None), wire_ids=wire_ids)
+        # A function_call already follows its reasoning. Inventing an empty assistant
+        # message between them changes the replayed turn (Muse can emit corrupt finals).
+        # Keep a follower only for reasoning with no other following item, and make it
+        # non-empty: strict Responses-compatible providers reject "" with 400.
+        if fallback is not None and not (fallback == "" and tool_items):
+            follower = " " if fallback == "" else fallback
+            emit([{"role": "assistant", "content": follower}], msg)
+        emit(tool_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
     # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.

@@ -75,6 +75,7 @@ Each session is tagged with its source platform:
 | Source | Description |
 |--------|-------------|
 | `cli` | Interactive CLI (`hermes` or `hermes chat`) |
+| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list` shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
@@ -96,6 +97,10 @@ Each session is tagged with its source platform:
 | `acp` | ACP editor integration |
 | `cron` | Scheduled cron jobs |
 | `batch` | Batch processing runs |
+| `kanban` | Kanban dispatcher workers (read on the board, hidden from session pickers) |
+| `tool` | Third-party integrations (`--source tool`), hidden from session pickers |
+
+A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility.
 
 ## CLI Session Resume
 
@@ -231,7 +236,8 @@ What happens:
    - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
-   - **WhatsApp / Signal / Matrix / SMS** — no native threads, falls back to the home channel directly.
+   - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
+   - **WhatsApp / Signal / SMS** — no native threads, falls back to the home channel directly.
 4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
 5. When the gateway acknowledges success, the CLI prints a `/resume` hint and exits cleanly:
 
@@ -251,7 +257,7 @@ What happens:
 - Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
 - `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
 
-**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.
+**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack / Matrix — by far the common case — so most setups never hit this.
 
 ## Session Naming
 
@@ -319,6 +325,8 @@ hermes sessions list --source telegram
 # Show more sessions
 hermes sessions list --limit 50
 ```
+
+When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 
 When sessions have titles, the output shows titles, previews, and relative timestamps:
 
@@ -537,9 +545,9 @@ Time values (`--older-than`, `--newer-than`, `--before`, `--after`) accept a
 duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
 timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
 the upper bound; `--newer-than`/`--after` set the lower bound. The
-`--older-than`/`--newer-than` pair uses latest message activity (falling back
-to session start for empty sessions); `--before`/`--after` explicitly uses
-session start time. Combine either pair for a window.
+`--older-than`/`--newer-than` pair uses last activity — the freshest of live
+activity, latest message, or session start — while `--before`/`--after`
+explicitly use session start time. Combine either pair for a window.
 
 Attribute filters: `--source` (platform, exact), `--title` / `--model` /
 `--branch` (case-insensitive substring), `--provider` (billing provider,
@@ -598,7 +606,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
 
 ### Repair Stranded Gateway Sessions
 
@@ -641,6 +649,52 @@ second history, choosing which thread it continues is your call. The stranded
 conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
+
+### Repair State Crossed Between Profiles
+
+Every profile owns one `state.db`, and every gateway session key names the
+profile that owns the conversation (`agent:main:…` for the default profile,
+`agent:<name>:…` for a named one). Older releases could leave the two
+disagreeing — a named profile's rows written into the default store, a child
+session inheriting from another profile's row, a routing row copied into the
+wrong store, a Telegram topic or `/voice` setting saved without the bot's
+profile. Current versions put new state in the right place; `hermes sessions
+repair-profiles` settles what is already crossed.
+
+```bash
+# Report only — every store is scanned, nothing is written
+hermes sessions repair-profiles
+
+# Perform the repairs (stop the gateway first; a snapshot of every store is taken)
+hermes sessions repair-profiles --apply
+
+# Machine-readable report
+hermes sessions repair-profiles --json
+```
+
+What it finds and does:
+
+| Finding | Repair |
+|---|---|
+| `profile_name` disagrees with the row's own session key | relabel from the key |
+| rows sitting in another profile's store | move (with all messages) to the owning profile's store |
+| `parent_session_id` pointing at another profile's row | sever the link; the row's own identity is kept |
+| routing rows outside the default store (under multiplexing) | move to the default store; an existing row there wins |
+| routing rows / `sessions.json` entries for a profile that no longer exists | delete |
+| Telegram topic bindings and voice-mode entries missing their bot's profile | relabel from the sessions that hold the chat |
+
+Two cases are reported but never repaired without being told what they are:
+rows keyed to a profile that does not exist (create the profile, or
+`hermes profile migrate-identity <old> <new>`), and `agent:main:…` rows inside
+a named profile's store. The latter are either the history of a gateway that
+used to run standalone for that profile (`--legacy-main rekey` gives them the
+profile's namespace) or default-profile chats that leaked in under a scoped
+write (`--legacy-main move` sends them to the default store) — the rows
+themselves cannot tell the two apart.
+
+`--apply` refuses while a gateway owns any of the stores (it holds the routing
+index in memory and would write it back), and is safe to re-run: a second run
+finds nothing.
 
 
 ## Importing Sessions from Claude Code and Codex CLI
@@ -788,7 +842,15 @@ By default, Hermes uses `group_sessions_per_user: true` in `config.yaml`. That m
 
 - Alice and Bob can both talk to Hermes in the same Discord channel without sharing transcript history
 - one user's long tool-heavy task does not pollute another user's context window
-- interrupt handling also stays per-user because the running-agent key matches the isolated session key
+- a running turn is keyed to the sender that started it, but `/stop` still reaches it — see below
+
+`/stop` means "stop what is running in this chat": it first tries the caller's own session key,
+then any live turn in this chat — other participants' runs in the caller's own thread included —
+authorization-gated, and never another room, workspace or profile. So an idle Alice's `/stop` can
+end a turn Bob (or a bot) started in the room she is in. A `/stop` sent from *inside* a thread is
+narrower: it reaches runs belonging to that thread and a room-wide run that carries no thread slot
+(the rolling-DM shape), but never another thread of the same channel and never a peer's per-sender
+top-level run.
 
 If you want one shared "room brain" instead, set:
 
@@ -924,16 +986,19 @@ Existing installs that already set any of these keys explicitly keep their
 values; only unset keys pick up the new defaults.
 
 Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
-regardless of age. Ended sessions are aged from their latest message, so a
-long-lived conversation used recently is not deleted merely because it began
-before the retention window.
+regardless of age. Ended sessions are aged from their last activity — the
+freshest of live activity, latest message, or session start — so a long-lived
+conversation used recently is not deleted merely because it began before the
+retention window.
 
 **Stale open sessions from automation.** Some producers — cron jobs, kanban
 workers, subagents, one-shot CLI runs — can die without ever marking their
 session ended, and pruning only deletes *ended* rows. To keep those from
 accumulating forever, each auto-prune pass also *closes* open sessions from
 those state-owned sources (`cli`, `cron`, `kanban`, `acp`, `api_server`,
-`subagent`, `tool`) whose last activity is older than `retention_days`
+`subagent`, `tool`, plus the `recovered` placeholders that
+`hermes sessions recover` synthesizes for orphaned messages) whose last
+activity is older than `retention_days`
 (`end_reason: startup_orphan_reap`). Closing is non-destructive — the
 session stays resumable — and the row is aged from its close, so it is only
 deleted by a *later* pass after a further full retention window. Messaging

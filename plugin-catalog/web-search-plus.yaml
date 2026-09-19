@@ -1,0 +1,16 @@
+name: web-search-plus
+repo: https://github.com/robbyczgw-cla/hermes-web-search-plus
+sha: 053fcce7432c58d7329ef556c971394c80040f98
+description: Multi-provider web search, URL extraction, quality reports, and opt-in research mode
+maintainer: robbyczgw-cla
+tier: community
+category: web
+docs_url: https://github.com/robbyczgw-cla/hermes-web-search-plus#readme
+capabilities:
+  provides_tools:
+  - web_extract_plus
+  - web_search_plus
+  provides_hooks:
+  - on_session_start
+  provides_middleware: []
+  requires_env: []

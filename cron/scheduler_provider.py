@@ -9,6 +9,7 @@ import contextlib
 import inspect
 import logging
 import threading
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -165,7 +166,9 @@ class CronScheduler(ABC):
         attempt (even if the job failed); False if the claim was lost or the job is gone.
         ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
         ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
-        misfire fires run the slot that is due and keep the stamp."""
+        misfire fires arriving at/after the due instant run that slot and keep the stamp; a fire
+        arriving BEFORE the stored instant is off-tick like ``manual`` and stays occurrence-free
+        (it cannot be the tick that owns a future slot)."""
         claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False
@@ -451,6 +454,7 @@ class InProcessCronScheduler(CronScheduler):
             )
         # EMFILE backoff: don't hammer the store while fds are exhausted; a clean tick resets it.
         consecutive_failures = 0
+        next_tick = time.monotonic()
         while not stop_event.is_set():
             ok = False
             try:
@@ -489,7 +493,14 @@ class InProcessCronScheduler(CronScheduler):
             if ok:
                 _guarded_store_write(clear_ticker_error, "error clear")
                 consecutive_failures = 0
-            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
+            wait_for = _backoff_wait_seconds(interval, consecutive_failures)
+            next_tick += wait_for
+            now = time.monotonic()
+            if next_tick < now:
+                # Tick overran interval or host was suspended; re-anchor to avoid
+                # burst-firing zero-length sleep cycles (#114467).
+                next_tick = now + wait_for
+            stop_event.wait(max(0.0, next_tick - now))
 
     def _start_multiplex(
         self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
@@ -544,6 +555,7 @@ class InProcessCronScheduler(CronScheduler):
                 )
 
         consecutive_failures = 0
+        next_tick = time.monotonic()
         while not stop_event.is_set():
             ok = False
             _tick_error = None
@@ -617,7 +629,14 @@ class InProcessCronScheduler(CronScheduler):
                         )
             if ok:
                 consecutive_failures = 0
-            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
+            wait_for = _backoff_wait_seconds(interval, consecutive_failures)
+            next_tick += wait_for
+            now = time.monotonic()
+            if next_tick < now:
+                # Tick overran interval or host was suspended; re-anchor to avoid
+                # burst-firing zero-length sleep cycles (#114467).
+                next_tick = now + wait_for
+            stop_event.wait(max(0.0, next_tick - now))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

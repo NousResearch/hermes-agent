@@ -1,13 +1,23 @@
 """Tests for Bug #12905 fixes in agent/anthropic_adapter.py — macOS Keychain support."""
 
 import json
+import platform
+import subprocess
 import threading
 import time
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent.anthropic_credentials import _read_claude_code_credentials_from_keychain, read_claude_code_credentials, _refresh_oauth_token
+from agent.anthropic_credentials import (
+    _read_claude_code_credentials_from_keychain,
+    read_claude_code_credentials,
+    _refresh_oauth_token,
+    _find_claude_code_keychain_item,
+    _keychain_mirror_command,
+    _merge_keychain_credential_payload,
+    _mirror_claude_code_credentials_to_keychain,
+)
 
 
 # This module exercises the reader itself with explicit platform and subprocess
@@ -343,3 +353,102 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         assert results == {"a": "fresh-access", "b": "fresh-access"}
         assert calls == ["stale-refresh"], calls
 
+
+class TestMergeKeychainCredentialPayload:
+    """``_merge_keychain_credential_payload`` — the pure merge a Keychain refresh write
+    performs over the existing entry (#98334): rotate the token triple, keep everything
+    Claude Code stores beside it."""
+
+    def test_rotates_triple_and_keeps_every_sibling(self):
+        existing = {
+            "claudeAiOauth": {
+                "accessToken": "old-access", "refreshToken": "old-refresh", "expiresAt": 1,
+                "scopes": ["user:inference", "user:profile"], "subscriptionType": "max",
+            },
+            "rateLimitTier": "tier-1",
+            # Claude Code keeps its MCP server OAuth tokens in the same item; a refresh that
+            # dropped them would log the user out of every MCP server at once.
+            "mcpOAuth": {f"srv{i}": {"accessToken": f"t{i}"} for i in range(24)},
+        }
+        merged = _merge_keychain_credential_payload(existing, "new-access", "new-refresh", 42)
+        oauth = merged["claudeAiOauth"]
+        assert (oauth["accessToken"], oauth["refreshToken"], oauth["expiresAt"]) == ("new-access", "new-refresh", 42)
+        # Everything except the rotated triple is byte-identical to the input.
+        assert {k: v for k, v in oauth.items() if k not in ("accessToken", "refreshToken", "expiresAt")} == {
+            "scopes": ["user:inference", "user:profile"], "subscriptionType": "max"}
+        assert {k: v for k, v in merged.items() if k != "claudeAiOauth"} == {
+            k: v for k, v in existing.items() if k != "claudeAiOauth"}
+        assert existing["claudeAiOauth"]["refreshToken"] == "old-refresh"  # input not mutated
+
+
+class TestKeychainMirrorCommand:
+    """``_keychain_mirror_command`` — host-agnostic: it builds the ``security`` invocation
+    without running it."""
+
+    def test_secret_travels_hex_encoded_on_stdin_under_the_items_own_account(self):
+        payload = {"claudeAiOauth": {"accessToken": "sk-ant-oat01-new", "refreshToken": 'r"q\\x'}, "mcpOAuth": {"a": 1}}
+        argv, line = _keychain_mirror_command("alice smith", payload)
+
+        # ``security -i`` reads the command from stdin: nothing secret on argv.
+        assert argv == ["security", "-i"]
+        assert "sk-ant-oat01-new" not in line and "-w" not in line.split()
+        # -U updates the item Claude Code reads (matched on account + service), never a second one.
+        assert line.startswith('add-generic-password -U -a "alice smith" -s "Claude Code-credentials" -X ')
+        hex_blob = line.split(" -X ", 1)[1].strip()
+        assert json.loads(bytes.fromhex(hex_blob)) == payload
+
+
+class TestFindClaudeCodeKeychainItem:
+    """``_find_claude_code_keychain_item`` parses one ``find-generic-password -g`` call. ``security``
+    prints plain-ASCII attributes quoted but UNescaped, anything else as ``0x<HEX>  "<echo>"``."""
+
+    @pytest.mark.macos_only
+    @pytest.mark.parametrize(
+        "acct_line, expected_account",
+        [
+            ('    "acct"<blob>="bob"', "bob"),
+            ('    "acct"<blob>="my "user" name"', 'my "user" name'),  # embedded quote, printed raw
+            ('    "acct"<blob>=0x616C2269636520C3BC  "al\\"ice \\303\\274"', 'al"ice \u00fc'),  # non-ASCII → hex form
+        ],
+    )
+    def test_reads_account_and_payload_in_both_output_encodings(self, monkeypatch, acct_line, expected_account):
+        payload = {"claudeAiOauth": {"refreshToken": "r"}, "mcpOAuth": {"a": 1}}
+        fake = MagicMock(returncode=0, stdout=f'keychain: "/Users/x/Library/Keychains/login.keychain-db"\n{acct_line}\n',
+                         stderr=f"password: 0x{json.dumps(payload).encode().hex()}  \"...\"\n")
+        monkeypatch.setattr(subprocess, "run", lambda argv, **k: fake)
+
+        assert _find_claude_code_keychain_item() == (expected_account, payload)
+
+
+class TestMirrorClaudeCodeCredentialsToKeychain:
+    """The #98334 write mirror shells out to ``security``; ``subprocess.run`` is mocked so no
+    real Keychain is touched."""
+
+    @pytest.mark.macos_only
+    def test_no_write_when_no_entry_exists(self, monkeypatch):
+        """Never create a Keychain item the user has not."""
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: None)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        _mirror_claude_code_credentials_to_keychain("a", "b", 1, spent_refresh_token="old")
+
+        run.assert_not_called()
+
+    @pytest.mark.macos_only
+    def test_only_the_item_holding_the_spent_pair_is_updated(self, monkeypatch):
+        """A different pair in the Keychain is another login or a rotation Claude Code already made;
+        overwriting it would be the bug in the other direction."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="not-R0")
+        run.assert_not_called()
+
+        _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+        (argv,), kwargs = run.call_args
+        assert argv == ["security", "-i"]
+        assert json.loads(bytes.fromhex(kwargs["input"].split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
+            "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}

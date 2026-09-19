@@ -9,7 +9,7 @@ description: "How to build a model provider (inference backend) plugin for Herme
 Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, a Codex-style Responses API, or a Bedrock-native surface — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own by dropping a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
 
 :::tip
-Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (cross-session knowledge) and [Context Engine Plugins](/developer-guide/context-engine-plugin) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
+Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](./memory-provider-plugin.md) (cross-session knowledge) and [Context Engine Plugins](./context-engine-plugin.md) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
 :::
 
 ## How discovery works
@@ -104,6 +104,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
+| `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
 | `default_aux_model` | str | Cheap model for auxiliary tasks (compression, vision, summarization) |
 
 ## Overridable hooks
@@ -316,12 +317,12 @@ skipped by the provider scan — they belong to the `PluginManager`. A broken
 entry point is isolated — it is logged at warning level and skipped, and never
 blocks discovery of the other providers.
 
-See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the full entry-points setup.
+See [Building a Hermes Plugin](./plugins/index.md#distribute-via-pip) for the full entry-points setup.
 
 ## Related pages
 
-- [Provider Runtime](/developer-guide/provider-runtime) — resolution precedence + where each layer reads the profile
-- [Adding Providers](/developer-guide/adding-providers) — end-to-end checklist for new inference backends (covers both the fast plugin path and the full CLI/auth integration)
-- [Memory Provider Plugins](/developer-guide/memory-provider-plugin)
-- [Context Engine Plugins](/developer-guide/context-engine-plugin)
-- [Building a Hermes Plugin](/developer-guide/plugins) — general plugin authoring
+- [Provider Runtime](./provider-runtime.md) — resolution precedence + where each layer reads the profile
+- [Adding Providers](./adding-providers.md) — end-to-end checklist for new inference backends (covers both the fast plugin path and the full CLI/auth integration)
+- [Memory Provider Plugins](./memory-provider-plugin.md)
+- [Context Engine Plugins](./context-engine-plugin.md)
+- [Building a Hermes Plugin](./plugins/index.md) — general plugin authoring

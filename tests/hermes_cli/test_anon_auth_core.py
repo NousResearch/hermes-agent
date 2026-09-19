@@ -7,7 +7,6 @@ the wire contract is exercised, never mocked away.
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import time
@@ -18,84 +17,12 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _load_auth_store, resolve_provider
-
-WELCOME = "https://welcome-api.nousresearch.com/v1"
-PORTAL = "https://portal.example.test"
-
-
-def _jwt(**claims) -> str:
-    def seg(obj):
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    payload = {"sub": "nas_user:1", "client_id": "nas-anonymous", "account_tier": "anonymous",
-               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 900, **claims}
-    return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
-
-
-class FakePortal:
-    """Minimal NAS anonymous surface. Records every call; scenarios flip its behaviour."""
-
-    def __init__(self):
-        self.calls: list[tuple[str, str]] = []
-        self.dead_tokens: set[str] = set()
-        self.gate_closed = False
-        self.minted = 0
-        # What the token exchange names as the inference host; None = an older NAS that omits it.
-        self.inference_base_url: str | None = WELCOME
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        self.calls.append((request.method, path))
-        if path.startswith("/api/anonymous/") and not request.headers.get("x-anonymous-api-secret"):
-            return httpx.Response(401, json={"error": "invalid_shared_secret"})
-        if self.gate_closed:
-            return httpx.Response(401, json={"error": "invalid_shared_secret"})
-        if path == "/api/anonymous/create":
-            self.minted += 1
-            return httpx.Response(201, json={"user_id": f"nas_user:{self.minted}", "org_id": "nas_org:1",
-                                             "token": f"anon_{self.minted:04d}", "idle_ttl_days": 14})
-        if path == "/api/anonymous/token":
-            token = json.loads(request.content)["token"]
-            if token in self.dead_tokens:
-                return httpx.Response(404, json={"error": "unknown_token"})
-            body = {"access_token": _jwt(), "token_type": "Bearer", "expires_in": 900,
-                    "user_id": "nas_user:1", "org_id": "nas_org:1"}
-            if self.inference_base_url:
-                body["inference_base_url"] = self.inference_base_url
-            return httpx.Response(200, json=body)
-        return httpx.Response(500, json={"error": f"unexpected {path}"})
+from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal, make_jwt as _jwt  # noqa: F401
 
 
 @pytest.fixture
 def portal(monkeypatch, tmp_path):
-    fake = FakePortal()
-    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
-    monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
-    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-    for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    from hermes_cli import auth_nous
-
-    def _client(timeout_seconds, verify):
-        return httpx.Client(transport=httpx.MockTransport(fake.handler), base_url=PORTAL)
-    monkeypatch.setattr(auth_nous, "_nous_http_client", _client)
-    # resolve_nous_access_token builds its own client; route it through the fake too.
-    real_client = httpx.Client
-
-    class _RoutedClient(real_client):
-        def __init__(self, *a, **kw):
-            kw.pop("verify", None)
-            kw["transport"] = httpx.MockTransport(fake.handler)
-            super().__init__(*a, **kw)
-    monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    anon_auth._mint_failed = False
-    from hermes_cli import free_tier_bootstrap as _fb
-    _fb.reset_for_tests()
-    # resolve_nous_access_token memoises the last token for 5 s per profile home (dict); a token minted
-    # by an earlier test must not be served to this one.
-    from hermes_cli import auth as auth_mod
-    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
-    return fake
+    return install_portal(monkeypatch, tmp_path)
 
 
 def _write_config(monkeypatch, **nous):

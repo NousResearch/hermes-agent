@@ -57,6 +57,59 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  it('reconnects a moved agent under its new team without replacing its saved identity or changing another default', async () => {
+    const saved = {
+      id: 'saved-b',
+      kind: 'cloud',
+      label: 'My agent',
+      url: 'https://moved.example',
+      authMode: 'oauth',
+      org: 'old-team'
+    }
+    registry.value = { connections: [saved] }
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      cloudOrg: 'old-team',
+      remoteUrl: 'https://other.example'
+    })
+    const calls: string[] = []
+    const oauthLogoutConnectionConfig = vi.fn(async () => {
+      calls.push('logout')
+    })
+    const agentSignIn = vi.fn(async () => {
+      calls.push('login')
+      return { connected: true }
+    })
+    const save = vi.fn(async () => {
+      calls.push('save')
+    })
+    const discover = vi.fn().mockResolvedValue({
+      needsOrgSelection: true,
+      orgs: [{ id: 'new-team', name: 'New team', role: 'OWNER' }]
+    })
+    Object.assign(window.hermesDesktop, {
+      oauthLogoutConnectionConfig,
+      connections: { save },
+      cloud: { status: vi.fn().mockResolvedValue({ signedIn: true }), discover, agentSignIn }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('New team')
+    discover.mockResolvedValue({
+      agents: [{ id: 'moved', name: 'Moved agent', dashboardUrl: saved.url }],
+      org: { id: 'new-team' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }))
+    await screen.findByRole('button', { name: 'Use gateway' })
+    expect(save).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Use gateway' }))
+    await waitFor(() => expect(selectConnection).toHaveBeenCalledWith(saved.id))
+    expect(calls).toEqual(['logout', 'login', 'save'])
+    expect(agentSignIn).toHaveBeenCalledWith(saved.url)
+    expect(save).toHaveBeenCalledWith({ ...saved, org: 'new-team' })
+    expect(saveConnectionConfig).not.toHaveBeenCalled()
+    registry.value = null
+  })
   it('keeps saved Cloud instances usable without discovery and marks the live source, not the default', async () => {
     getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: 'https://a.example' })
     registry.value = {

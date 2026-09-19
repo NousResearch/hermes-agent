@@ -278,15 +278,19 @@ export const en: Translations = {
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable',
       liveEnded: 'Live voice session ended',
+      liveEndedConnectionLost: 'The live voice session lost its connection.',
+      liveEndedClosed: 'The live voice session was closed by the service.',
       liveError: 'Live voice',
       liveDelegationFailed: 'Could not hand the request to Hermes',
       liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
+      approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
       inputTitle: 'Input needed',
+      inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
       turnDoneTitle: 'Hermes finished',
       turnDoneBody: '',
@@ -378,7 +382,7 @@ export const en: Translations = {
       'nav.commandCenter': 'Open command center',
       'nav.settings': 'Open settings',
       'nav.profiles': 'Open profiles',
-      'nav.skills': 'Open skills',
+      'nav.capabilities': 'Open skills',
       'nav.messaging': 'Open messaging',
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
@@ -406,10 +410,12 @@ export const en: Translations = {
       'composer.modelPicker': 'Open model picker',
       'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
+      'view.cycleSidebarGrouping': 'Cycle session grouping',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
       'view.toggleTabStrip': 'Toggle tabs',
+      'view.toggleProfileRail': 'Toggle profile rail',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -735,7 +741,7 @@ export const en: Translations = {
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
       tabStripTitle: 'Tab Strip',
-      tabStripDesc: 'Show tabs above a zone. Auto hides them when a zone holds a single pane.',
+      tabStripDesc: 'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
@@ -955,6 +961,29 @@ export const en: Translations = {
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       showOptions: 'Show options'
+    },
+    screenshot: {
+      enabledTitle: 'Screenshot shortcut',
+      enabledDesc:
+        'Press both Command keys together from any app to capture its frontmost window and attach it to your current Hermes draft. Never sends automatically. Off by default; applies only to this Mac. Window contents may be sensitive — review the attachment before sending.',
+      statusTitle: 'Screenshot shortcut status',
+      checking: 'Checking screenshot shortcut…',
+      disabled: 'Screenshot shortcut is off.',
+      starting: 'Starting the shortcut listener. It is not ready yet.',
+      ready: 'Shortcut is ready. Screenshots attach to your current draft without sending.',
+      inputPermission:
+        'Input Monitoring permission lets Hermes detect both Command keys while another app is active. Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then return here and retry.',
+      screenPermission:
+        'Screen Recording permission lets Hermes capture the frontmost app window when you use this shortcut. Allow Hermes in System Settings → Privacy & Security → Screen Recording, then return here and retry. Restart Hermes if macOS asks.',
+      openSettings: 'Open System Settings',
+      retry: 'Retry',
+      unavailable: 'The screenshot shortcut is unavailable. Retry, or turn it off.',
+      errorTitle: 'Screenshot shortcut error',
+      loadFailed: 'Could not read the shortcut status. Retry to check its current setting.',
+      saveFailed: 'Could not confirm the shortcut change. Retry to check its current setting.',
+      permissionFailed: 'Could not open System Settings. Open Privacy & Security manually, then retry.',
+      captureFailed: 'Could not capture the frontmost window. Nothing was attached or sent.',
+      contextChanged: 'The current draft changed during capture. The screenshot was not attached or sent.'
     },
     quickEntry: {
       enabledTitle: 'Quick Entry',
@@ -1343,7 +1372,11 @@ export const en: Translations = {
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preset',
+      moaDescription:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
       moaAggregator: 'Aggregator',
+      moaAggregatorBilled: 'acting model · billed for the run',
+      moaReferenceHint: 'advises once per turn by default',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         compression: { label: 'Compression', hint: 'Context compaction' },
@@ -1618,7 +1651,14 @@ export const en: Translations = {
         selectedTitle: 'Backend selected',
         selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
         failedSelect: backend => `Failed to select ${backend}`,
-        needsSetupHint: 'You can select this option now — commands will fail until setup is complete.',
+        needsSetupHint:
+          'This backend is currently selected without full setup — commands will fail until setup is complete.',
+        needsSetupConfirmTitle: backend => `Select ${backend} anyway?`,
+        needsSetupConfirmDescription: detail =>
+          `${detail} Sessions that start after this change will have no terminal or file tools until setup is finished.`,
+        needsSetupConfirmDescriptionGeneric:
+          "This backend isn't set up yet. Sessions that start after this change will have no terminal or file tools until setup is finished.",
+        needsSetupConfirmAction: 'Select anyway',
         unavailableTitle: 'Terminal commands are unavailable',
         unavailableMessage: backend =>
           `Hermes can't run shell commands right now: ${backend} isn't ready. Switch to Local, or finish setting up ${backend} and try again.`,
@@ -1727,6 +1767,9 @@ export const en: Translations = {
       desktopHalfPending: 'copying…',
       desktopHalfPendingTip:
         'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
+      desktopHalfRemote: 'unavailable (remote backend)',
+      desktopHalfRemoteTip:
+        "This package's desktop half is on the remote backend's disk, which this app cannot read. To use it here, run Install from Git with the package's repo URL and the Desktop target checked — that clones the desktop half onto this machine.",
       emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
@@ -1972,7 +2015,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
+      capabilities: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -2397,6 +2440,12 @@ export const en: Translations = {
     actions: 'Actions',
     color: 'Color…',
     colorFor: 'Color',
+    openInNewWindow: 'Open in new window',
+    setAsDefault: 'Set as default',
+    defaultProfile: 'Default profile',
+    defaultSet: name => `${name} is now the default`,
+    defaultDescription: 'Used when Hermes opens and for new chats. Existing sessions stay in their profiles.',
+    failedSetDefault: 'Could not set the default profile',
     setColor: color => `Set color ${color}`,
     autoColor: 'Auto',
     noProfiles: 'No profiles yet.',
@@ -2544,6 +2593,8 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
+    overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
     manage: 'Manage',
     showRuns: 'Show runs',
@@ -2681,9 +2732,10 @@ export const en: Translations = {
       reorder: 'Reorder group',
       actions: 'Group actions'
     },
+    profileRail: 'Profile rail',
     nav: {
       'new-session': 'New session',
-      skills: 'Capabilities',
+      capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
       cron: 'Scheduled jobs'
@@ -2784,6 +2836,7 @@ export const en: Translations = {
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
       toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+      showAllCount: count => `Show all ${count} sessions`,
       back: 'All projects'
     },
     newSessionIn: label => `New session in ${label}`,
@@ -2904,6 +2957,7 @@ export const en: Translations = {
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
+    wakeWord: phrase => `Wake word "${phrase}"`,
     wakeWordListening: phrase => `Wake word: "${phrase}" — listening`,
     wakeWordOff: phrase => `Wake word: "${phrase}" — off`,
     wakeWordPausedVoice: phrase => `Wake word: "${phrase}" — paused during voice chat`,
@@ -2945,6 +2999,8 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
+    restoredDraftNotice: 'Restored your unsent message',
+    restoredDraftUndo: 'Undo',
     queueEdit: 'Edit',
     queueSendNext: 'Next',
     queueSteer: 'Steer — redirect the live turn now',
@@ -3208,6 +3264,7 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry:
       "Hermes couldn't reach the update server. Check your internet connection and try again. If you use a remote Hermes, make sure it is online.",
+    gitUnusable: 'Hermes could not run Git on this computer, so it could not check for updates.',
     connectionSettings: 'Connection settings',
     openDownloadPage: 'Open download page',
     latestBody: 'You’re running the latest version.',
@@ -3477,15 +3534,39 @@ export const en: Translations = {
     notNow: 'Not now',
     tryAgain: 'Try again',
     startAgain: 'Start again',
-    didNotComplete: 'Sign-in did not complete',
-    rejectedBody: 'Sign-in was rejected in the browser. You are still on the free tier.',
-    supersededBody: 'A newer sign-in code replaced this one.',
-    timedOutHeading: 'Sign-in timed out',
-    timedOutBody: 'The code was not used in time. You are still on the free tier.',
-    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
-    errorBody: 'Sign-in did not complete; run it again.',
+    didNotComplete: "Sign-in didn't finish",
+    rejectedBody: "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
+    supersededBody: 'A newer sign-in code replaced this one. Use the newest one, or start again.',
+    timedOutHeading: 'That sign-in link has expired',
+    timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
+    retiredBody:
+      'Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you\'re ready.',
+    errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
+    busyHeading: 'Almost there',
+    busyBody: wait =>
+      `Hermes couldn't finish signing you in because the Nous service is busy. Try again in ${wait}. Your session is still here in the meantime.`,
+    unreachableBody:
+      "Hermes couldn't reach the Nous service to finish signing you in. Check your internet connection and try again. Your session is still here.",
     alreadySignedInHeading: 'Already signed in.',
-    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'
+    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.',
+    setupFailed: {
+      gateClosed:
+        "This version of Hermes can't start without a Nous account. Sign in or create one, it's free and only takes a minute.",
+      paused:
+        'Using Hermes without signing in is paused for a moment. Hermes will keep checking. Signing in is free and gets you going right now.',
+      rateLimited: wait =>
+        `Lots of people are getting started right now, so Hermes will try again in ${wait}. Signing in is free and skips the wait.`,
+      unreachable:
+        "Hermes couldn't reach the Nous service. Check your internet connection, then tap Try again. Or connect another provider for now.",
+      serverError: 'The Nous service had a hiccup. Tap Try again in a moment, or connect another provider for now.',
+      powRequired:
+        "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
+      locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
+      generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
+      signInBelow: 'Signing in is free. Pick Nous below.',
+      tryAgain: 'Try again',
+      retrying: 'Trying again…'
+    }
   },
 
   modelPicker: {
@@ -3683,6 +3764,8 @@ export const en: Translations = {
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
     collapseAll: 'Collapse all folders',
+    showIgnored: 'Show gitignored files',
+    hideIgnored: 'Hide gitignored files',
     previewUnavailable: 'Preview unavailable',
     couldNotPreview: path => `Could not preview ${path}`,
     noProjectTitle: 'No project',
@@ -4028,6 +4111,36 @@ export const en: Translations = {
         disk_full: {
           title: 'Disk full',
           body: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.'
+        },
+        // Nous free tier. The body is normally the backend's own sentence (it names the wait
+        // and the way forward); these bodies stand in for an older backend that sent none.
+        free_tier_disabled: {
+          title: 'Using Hermes without signing in is switched off right now',
+          body: "Sign in with a Nous account to keep chatting, it's free."
+        },
+        free_tier_rate_limited: {
+          title: "You've used up the allowance for chatting without signing in",
+          body: "It refreshes shortly. Sign in with a Nous account for a bigger allowance, it's free."
+        },
+        free_tier_at_capacity: {
+          title: 'Chatting without signing in is really busy right now',
+          body: "Sign in to skip the queue, it's free, or try again in a little while."
+        },
+        free_tier_model_not_free: {
+          title: "That model isn't available without signing in",
+          body: "Hermes uses the free model for now. Sign in with a Nous account for more models, it's free."
+        },
+        free_tier_route: {
+          title: "Hermes couldn't reach the free model on this route",
+          body: "Sign in with a Nous account, it's free, or check the NOUS_INFERENCE_BASE_URL setting."
+        },
+        free_tier_outage: {
+          title: 'The free model is having trouble responding right now',
+          body: 'Try sending your message again in a minute.'
+        },
+        free_tier_refused: {
+          title: "Hermes couldn't send that without signing in",
+          body: 'Signing in with a Nous account is free.'
         }
       },
       errorAuthKinds: {
@@ -4052,6 +4165,7 @@ export const en: Translations = {
       errorOpenHermesFolderFailed: 'Could not open the Hermes folder',
       errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorSignInFreeTier: 'Sign in with a Nous account',
       errorOauthExpired: provider =>
         `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
@@ -4329,7 +4443,13 @@ export const en: Translations = {
     cwdChangeFailed: 'Working directory change failed',
     cwdStagedTitle: 'Working directory staged',
     cwdStagedMessage: 'Restart the desktop backend to apply cwd changes to this active session.',
+    modelSwitchConfirmBody: 'This model switch needs confirmation.',
+    modelSwitchConfirmLabel: 'Switch anyway',
+    modelSwitchConfirmTitle: (model: string) => `Switch to ${model}?`,
+    modelSwitchConfirmTitleFallback: 'Switch models?',
     modelSwitchFailed: 'Model switch failed',
+    modelSwitchKeepLabel: 'Keep current model',
+    modelSwitchStaleNotice: 'Selection changed — the model switch was not applied.',
     hydrationSyncing: (profile: string) => `Syncing ${profile}\u2026`,
     sessionExported: 'Session exported',
     sessionExportFailed: 'Could not export session',

@@ -14,12 +14,14 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
+from agent.skill_utils import get_disabled_skill_names
 from tools import skill_usage
 from utils import atomic_json_write
 
@@ -118,11 +120,6 @@ def get_stale_after_days() -> int:
 
 def get_archive_after_days() -> int:
     return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
-
-
-def get_prune_builtins() -> bool:
-    """Bundled built-ins are curation candidates (ON by default); a suppression list keeps them archived across `hermes update` re-seeds. Hub skills are never pruned."""
-    return bool(_load_config().get("prune_builtins", True))
 
 
 def get_consolidate() -> bool:
@@ -386,7 +383,7 @@ CURATOR_REVIEW_PROMPT = (
     "Your toolset:\n"
     "  - skills_list, skill_view        — read the current landscape\n"
     "    READ BEFORE WRITE — enforced, not advisory. Before skill_manage "
-    "action=patch, action=edit, action=write_file on a file that already "
+    "action=patch, action=write_file on a file that already "
     "exists, or action=remove_file, call skill_view on that SAME target in "
     "this review turn — skill_view(name) for SKILL.md, "
     "skill_view(name, file_path=...) for a supporting file — and build the "
@@ -398,9 +395,11 @@ CURATOR_REVIEW_PROMPT = (
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
     "  - skill_manage action=delete     — archive a skill. MUST pass "
-    "`absorbed_into=<umbrella>` when you've merged its content into another "
-    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
-    "forwarding target. This drives cron-job skill-reference migration — "
+    "`absorbed_into=<umbrella>` naming the skill you merged its content "
+    "into (the umbrella must already exist). Deletes without a verified "
+    "forwarding target are refused — pruning with no absorption target is "
+    "the deterministic staleness pass's job, never this one's. "
+    "`absorbed_into` drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
     "  You have NO terminal access in this pass — every filesystem mutation "
     "goes through skill_manage above so it is ledgered and rollback-able "
@@ -438,17 +437,6 @@ CURATOR_REVIEW_PROMPT = (
     "summary of clusters processed, patches made, and decisions left alone."
 )
 
-
-CURATOR_PRUNE_BUILTINS_NOTE = (
-    "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
-    "ARE included in the candidate list below and MAY be "
-    "archived for staleness/irrelevance, overriding hard "
-    "rule #1 for bundled skills ONLY. Hub-installed skills "
-    "remain strictly off-limits. Treat a stale built-in the "
-    "same as a stale agent-created skill: archive it (never "
-    "delete). It will be restored on `hermes update` only if "
-    "the user explicitly restores it."
-)
 
 # --- Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/ ---
 
@@ -812,12 +800,29 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # --- Orchestrator — spawn a forked AIAgent for the LLM review pass ---
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of curator-managed skills with usage stats."""
-    rows = skill_usage.curated_report()
+    """Human/agent-readable list of LLM consolidation candidates.
+
+    Bundled built-ins are excluded even when ``curator.prune_builtins`` is
+    on. That flag makes them eligible for *deterministic archival*
+    (``apply_automatic_transitions`` → ``archive_skill``), not for the
+    rewrite/umbrella pass. Listing them here invites ``skill_manage``
+    writes that ``_background_review_write_guard`` unconditionally
+    refuses, burning tool calls until the loop guard aborts the run.
+
+    Skills in ``skills.disabled`` (global or platform list) are excluded for
+    the same reason on the read side: ``skill_view`` — the pass's only read
+    path — refuses them, so the fork retries the same refused read until
+    the same-tool-failure halt ends the run with zero findings.
+    """
+    disabled = get_disabled_skill_names()
+    rows = [
+        r for r in skill_usage.curated_report()
+        if not skill_usage.is_bundled(r["name"]) and r["name"] not in disabled
+    ]
     if not rows:
-        return "No curator-managed skills to review."
+        return "No agent-created skills to review."
     cron_referenced = _cron_referenced_skills()
-    return "\n".join([f"Curator-managed skills ({len(rows)}):\n"] + [
+    return "\n".join([f"Agent-created skills ({len(rows)}):\n"] + [
         f"- {r['name']}  provenance={r.get('provenance', 'agent')}  state={r['state']}  "
         f"pinned={'yes' if r.get('pinned') else 'no'}  cron={'yes' if r['name'] in cron_referenced else 'no'}  "
         f"activity={r.get('activity_count', 0)}  use={r.get('use_count', 0)}  view={r.get('view_count', 0)}  "
@@ -852,8 +857,11 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
             llm_meta = _llm_meta("skipped (no candidates)")
         else:
-            # With prune-builtins on, bundled skills are candidates too: relax hard rule #1 for them (archive only; hub stays off-limits).
-            prompt = f"{CURATOR_REVIEW_PROMPT}{CURATOR_PRUNE_BUILTINS_NOTE if get_prune_builtins() else ''}\n\n{candidate_list}"
+            # Bundled built-ins are not in the candidate list, even under
+            # prune_builtins: archival is the deterministic pass's job, and
+            # the bundled policy is archive-only. Hard rule #1 therefore
+            # stands unqualified.
+            prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)
@@ -889,15 +897,21 @@ def run_curator_review(
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
-        # Pre-mutation snapshot — best-effort, never blocks the run: a transient
-        # disk issue must not silently disable the curator forever.
-        try:
-            from agent import curator_backup
-            snap = curator_backup.snapshot_skills(reason="pre-curator-run")
-            if snap is not None:
-                _notify(on_summary, f"curator: snapshot created ({snap.name})")
-        except Exception as e:
-            logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        from agent import curator_backup
+        # The prune-only pass just renames directories into .archive/ (its own undo) and every edit is
+        # ledgered; only the LLM consolidation pass rewrites content in place, so only it earns a
+        # whole-tree snapshot. Retention still runs so old snapshots age out either way.
+        if consolidate:
+            # Best-effort, never blocks the run: a transient disk issue must not silently disable the curator forever.
+            try:
+                snap = curator_backup.snapshot_skills(reason="pre-curator-run")
+                if snap is not None:
+                    _notify(on_summary, f"curator: snapshot created ({snap.name})")
+            except Exception as e:
+                logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        else:
+            with contextlib.suppress(Exception):
+                curator_backup.prune_old_snapshots()
         counts = apply_automatic_transitions(now=start)
     auto_summary = ", ".join(
         f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
@@ -1047,6 +1061,15 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # write guards (external/bundled/hub) fire; turn_context binds this onto
         # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
+        # Seed a shared read-before-write marks store in THIS context before any
+        # tool worker spawns: workers run on copied contexts, so a store
+        # auto-created later stays private to one worker and every patch is
+        # refused ("content has not been loaded in this review turn") even after
+        # a fresh skill_view. Same seeding as agent/background_review.py.
+        with contextlib.suppress(Exception):
+            from tools.skill_manager_guards import _reset_background_review_read_marks
+
+            _reset_background_review_read_marks()
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
         with open(os.devnull, "w", encoding="utf-8") as devnull, \
              contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
@@ -1072,13 +1095,54 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
 # --- Public entrypoint for the session-start hook ---
 
+_CLAIM_STALE_SECONDS = 3600.0
+
+
+def _run_claim_path() -> Path:
+    return get_hermes_home() / "skills" / ".locks" / "curator-run"
+
+
+def _claim_run() -> bool:
+    """One automatic pass per home across processes: two CLIs launched seconds apart both saw the
+    weekly interval elapsed and both pruned the tree. O_EXCL create wins the claim; a claim older than
+    an hour is a crashed holder and is taken over. When the lock dir cannot be created, run anyway."""
+    lock = _run_claim_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return True
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            if time.time() - lock.stat().st_mtime > _CLAIM_STALE_SECONDS:
+                lock.unlink()
+                return _claim_run()
+        except OSError:
+            pass
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(str(os.getpid()))
+    return True
+
+
+def _release_run_claim() -> None:
+    with contextlib.suppress(OSError):
+        _run_claim_path().unlink()
+
+
 def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
     """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
         # Idle gating: only enforce when the caller provided a measurement.
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None
-        return run_curator_review(on_summary=on_summary)
+        if not _claim_run():
+            return None
+        try:
+            return run_curator_review(on_summary=on_summary)
+        finally:
+            _release_run_claim()
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None

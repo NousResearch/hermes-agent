@@ -48,6 +48,7 @@ from hermes_cli.doctor_tools import (
     _check_tool_availability,
 )
 from hermes_cli.doctor_state import (
+    _check_checkpoint_store,
     _check_directory_structure,
     _check_memory_provider,
     _check_profiles,
@@ -113,7 +114,7 @@ DOCTOR_CHECKS = (
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
-    ('Directory Structure', _check_directory_structure), (None, _check_state_db),
+    ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),

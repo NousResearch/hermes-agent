@@ -368,7 +368,7 @@ class GatewayModelCommandsMixin:
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
         )
-        adapter = self._adapter_for_source(ctx.source)
+        adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
@@ -618,7 +618,7 @@ class GatewayModelCommandsMixin:
     ) -> bool:
         """Send an interactive choice picker when the adapter *type* supports it (the /model gate);
         a failed send returns False (text fallback) instead of erroring."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
         try:

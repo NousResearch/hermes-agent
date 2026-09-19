@@ -19,12 +19,14 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
+from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
+from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_common import DEFAULT_READ_LIMIT
+from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from tools import file_state
-from agent.redact import redact_sensitive_text
+from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
@@ -209,6 +211,19 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return _is_blocked_device_path(resolved)
 
 
+def _resolved_match_path(path: str, task_id: str) -> str:
+    """Best-effort task-cwd resolution of a search hit's path.
+
+    Search backends may return cwd-relative paths while the process cwd differs, so both the
+    read-block filter and the redaction classifier must resolve against the task cwd. An
+    unresolvable path is used as-is (the raw path is still worth classifying).
+    """
+    try:
+        return str(_resolve_path_for_task(path, task_id))
+    except (OSError, ValueError, RuntimeError):
+        return path
+
+
 def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
     """Remove credential/cache/env paths from a SearchResult in-place; return the omitted count.
 
@@ -219,11 +234,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 
     def _allowed(path: str) -> bool:
         nonlocal omitted
-        try:
-            target = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError, RuntimeError):
-            target = path
-        if get_read_block_error(target):
+        if get_read_block_error(_resolved_match_path(path, task_id)):
             omitted += 1
             return False
         return True
@@ -459,7 +470,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
         rendered = result_dict["content"]
-        result_dict["content"] = redact_sensitive_text(rendered, file_read=True)
+        result_dict["content"] = redact_sensitive_text(
+            rendered, file_read=True,
+            secret_file=_is_secret_file_arg(str(_resolved)))
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
@@ -491,7 +504,11 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
             "still current. Proceed with your task using "
             "the information you already have.",
             path=path,
-            already_read=hits + 1)
+            already_read=hits + 1,
+            # A REFUSAL the harness chose, not a failure the tool hit: without the
+            # marker the failure classifiers count the block and a repeated read
+            # escalates to `repeated_exact_failure_block` over calls that never failed.
+            **{GUARDRAIL_REFUSAL_KEY: True})
 
     return json.dumps({
         "status": "unchanged",
@@ -562,7 +579,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
     device-path blocklist (no I/O) → stat-based special-file guard (host only)
-    → document extraction → binary-extension guard → Hermes internal denylist
+    → Hermes internal denylist → document extraction → binary-extension guard
     → negative-result cache → dedup stub → real read.
     """
     try:
@@ -596,6 +613,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
 
+        # Hermes internal denylist (prompt injection via catalog metadata,
+        # credential stores). Runs BEFORE document extraction so a
+        # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
+        # resolve() uses the process cwd and would miss a relative "auth.json".
+        block_error = get_read_block_error(str(_resolved))
+        if block_error:
+            return tool_error(block_error)
+
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
             return extracted
@@ -606,13 +631,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             return tool_error(
                 f"Cannot read binary file '{path}' ({_resolved.suffix.lower()}). "
                 "Use vision_analyze for images, or terminal to inspect binary files.")
-
-        # Hermes internal denylist (prompt injection via catalog metadata,
-        # credential stores). Pass the RESOLVED path: the denylist's own
-        # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
 
         resolved_str = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
@@ -628,7 +646,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
-        if cached_mtime is not None:
+        # Same rule as skill_view: the review fork shares the parent's task_id and its
+        # read-before-write guard needs a real read, which the stub path never records (#95976).
+        if cached_mtime is not None and not is_background_review():
             try:
                 if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
                     return _dedup_stub_or_block(task_data, dedup_key, path)
@@ -656,9 +676,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         redacted = False
         if result.content:
             unredacted = result.content
-            result.content = redact_sensitive_text(unredacted, file_read=True)
+            result.content = redact_sensitive_text(
+                unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
+
+        if result.content:
+            conflicts = count_conflict_blocks(result.content)
+            if conflicts:
+                result_dict["conflict_blocks"] = conflicts
+                result_dict["_hint"] = (
+                    f"{conflicts} unresolved git merge-conflict block(s) (<<<<<<< / ======= / >>>>>>>) in this "
+                    "range. Resolve them (keep one side or combine, delete the markers) before editing around them.")
 
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
                 and limit > 200 and result_dict.get("truncated")):
@@ -683,7 +712,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "The content has NOT changed. You already have this information. "
                 "STOP re-reading and proceed with your task.",
                 path=path,
-                already_read=count)
+                already_read=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
         if count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
@@ -998,7 +1028,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have NOT changed. You already have this information. "
                 "STOP re-searching and proceed with your task.",
                 pattern=pattern,
-                already_searched=count)
+                already_searched=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
 
         # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
         # trigger and the task-base join would hide the prefix (see read_file_tool).
@@ -1029,7 +1060,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
-                m.content = redact_sensitive_text(m.content, file_read=True)
+                m.content = redact_sensitive_text(
+                    m.content, file_read=True,
+                    secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
         result_dict = result.to_dict(densify=True)
 
         if omitted:
@@ -1081,7 +1114,7 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB. Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1277,8 +1310,13 @@ def _handle_search_files(args, **kw):
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    # The schema documents path='.'; a present-but-blank (or JSON null) value
+    # is not a missing key for dict.get, so apply the default here (#112424).
+    path = args.get("path", ".")
+    if path is None or (isinstance(path, str) and not path.strip()):
+        path = "."
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
         order=args.get("order", "discovery"), task_id=tid)

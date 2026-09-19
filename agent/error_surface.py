@@ -44,6 +44,9 @@ _REASON_TO_LAYER = {
 # Failures between us and the base_url (not a provider verdict); on a
 # custom/local endpoint they point at the user's endpoint config.
 _TRANSPORT_REASONS = {"timeout", "ssl_cert_verification"}
+# Free-tier kinds where a later send can succeed on its own (a wait, an outage clearing); the
+# rest need a sign-in or another provider.
+_FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 
 # Deterministic for the request — a bare "Retry" repeats the failure. Fallback
 # only: current backends stamp the classifier's verdict in ``failure_retryable``.
@@ -153,6 +156,15 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
+        # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
+        # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an
+        # OAuth re-login, and the chat sentence rides along as the card body.
+        if isinstance(free_tier := result.get("free_tier"), dict) and free_tier.get("kind"):
+            kind = str(free_tier["kind"])
+            surface = _surface(LAYER_PROVIDER, f"free_tier_{kind}", kind in _FREE_TIER_RETRYABLE_KINDS, provider, model)
+            if message := str(free_tier.get("message") or ""):
+                surface["message"] = message
+            return surface
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)
@@ -167,7 +179,9 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         return None
 
 
-def build_error_surface_from_exception(exc: BaseException, provider: str = "", model: str = "") -> Optional[dict]:
+def build_error_surface_from_exception(
+    exc: BaseException, provider: str = "", model: str = "", api_key: Any = None,
+) -> Optional[dict]:
     """Descriptor for an exception that escaped the turn dispatcher.
 
     API/transport exceptions go through ``classify_api_error`` (same taxonomy
@@ -183,7 +197,7 @@ def build_error_surface_from_exception(exc: BaseException, provider: str = "", m
 
         from agent.error_classifier import classify_api_error
 
-        classified = classify_api_error(exc, provider=provider, model=model)
+        classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
         surface = build_error_surface_from_result(synthetic, provider=provider, model=model)
         if surface is not None:

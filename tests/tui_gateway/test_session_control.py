@@ -39,7 +39,7 @@ def server(hermes_home, monkeypatch):
         mod = importlib.import_module("tui_gateway.server")
     monkeypatch.setattr(mod, "_hermes_home", hermes_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
-    monkeypatch.setattr(mod, "_cfg_mtime", None)
+    monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     mod._sessions.clear()
@@ -428,7 +428,7 @@ class TestUpdatePublication:
         emitted = self._capture(server, monkeypatch)
 
         class _InlineThread:
-            def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
                 self._t, self._a, self._k = target, args, kwargs or {}
 
             def start(self):

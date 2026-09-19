@@ -290,11 +290,13 @@ class TestRuntimeLockFirstLiveness:
             assert cron_cli._builtin_gateway_liveness() is True
 
     def test_running_multiplexer_counts_as_alive_for_named_profile(self):
-        """A satellite profile has no own PID; the default multiplexer ticks it."""
+        """A satellite needs its own fresh heartbeat as well as a live multiplexer."""
         from unittest.mock import patch
 
+        from cron.jobs import record_ticker_heartbeat
         import hermes_cli.cron as cron_cli
 
+        record_ticker_heartbeat(success=True)
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),

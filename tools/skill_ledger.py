@@ -35,7 +35,7 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 # support files first, so a disk-only capture would restore a hollow skill.
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
-_NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive"}
+_NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
 
 # Explicit actor override: the CLI sets "user", the curator walk sets "curator".
 _actor_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -243,6 +243,18 @@ def fill_snapshot_from_curator_backup(
     return out
 
 
+def _delta(before: List[Dict[str, str]], after: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """Drop paths whose hash is identical on both sides. ``rollback_entry`` writes every *before*
+    path and removes *after*-only paths, so unchanged files are dead weight there — and a full
+    package manifest per edit made a 4,000-file skill cost 1.5 MB of ledger per patch (650 MB
+    over one summer). Deletions/creations are preserved: a path present on one side only stays."""
+    b_sha = {str(i.get("path")): i.get("sha256") for i in before}
+    a_sha = {str(i.get("path")): i.get("sha256") for i in after}
+    same = {p for p, s in b_sha.items() if a_sha.get(p) == s}
+    return ([i for i in before if str(i.get("path")) not in same],
+            [i for i in after if str(i.get("path")) not in same])
+
+
 def append_entry(
     action: str, skill: str, before: Optional[List[Dict[str, str]]] = None,
     after: Optional[List[Dict[str, str]]] = None, actor: Optional[str] = None,
@@ -251,6 +263,9 @@ def append_entry(
     if not ledger_enabled():
         return None
     try:
+        # pre-rollback deliberately records before == after (the current state of every touched path).
+        if action != "pre-rollback":
+            before, after = _delta(before or [], after or [])
         entry = {
             "id": uuid.uuid4().hex[:12], "ts": datetime.now(timezone.utc).isoformat(),
             "actor": actor if actor in _VALID_ACTORS else derive_actor(),
@@ -264,6 +279,36 @@ def append_entry(
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
         return None
+
+
+def compact_ledger() -> Tuple[int, int, int]:
+    """Rewrite the ledger with every entry's unchanged paths dropped (see ``_delta``); ids, order and
+    rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
+    new file replaces the old only once fully written. Malformed lines are kept verbatim."""
+    path = ledger_path()
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return 0, 0, 0
+    out, kept = [], 0
+    for line in raw.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            out.append(line)
+            continue
+        if isinstance(row, dict) and row.get("action") != "pre-rollback":
+            row["before"], row["after"] = _delta(row.get("before") or [], row.get("after") or [])
+            line = json.dumps(row, ensure_ascii=False)
+        out.append(line)
+        kept += 1
+    data = ("\n".join(out) + "\n").encode("utf-8") if out else b""
+    tmp = path.with_name(path.name + ".compact.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return kept, len(raw), len(data)
 
 
 def record_mutation(

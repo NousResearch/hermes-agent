@@ -77,8 +77,14 @@ def _hermes_home_points_at_production(value: str) -> bool:
     if not value:
         return True
     try:
+        # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
+        # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
+        # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
+        # install so the state.db guard tripped on every store-touching test (#112692).
+        from hermes_state_guard import _real_platform_state_root
+
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
+        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
     if resolved == real_root:
@@ -723,6 +729,14 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         lambda *_args, **_kwargs: None,
         raising=False,
     )
+    # The #98334 refresh write also mirrors into the Keychain; keep that out of
+    # the real store in any test that hasn't explicitly opted in.
+    monkeypatch.setattr(
+        _mod,
+        "_mirror_claude_code_credentials_to_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
     return None
 
 
@@ -920,7 +934,7 @@ def _reset_tui_gateway_server_state():
     if mod is not None:
         snapshot = {
             "methods": dict(mod._methods),
-            "cfg": (mod._cfg_cache, mod._cfg_mtime, mod._cfg_path),
+            "cfg": (mod._cfg_cache, mod._cfg_sig, mod._cfg_path),
             "db": (mod._db, mod._db_error),
             "real_stdout": mod._real_stdout,
         }
@@ -951,7 +965,7 @@ def _reset_tui_gateway_server_state():
     if snapshot is not None:
         mod._methods.clear()
         mod._methods.update(snapshot["methods"])
-        mod._cfg_cache, mod._cfg_mtime, mod._cfg_path = snapshot["cfg"]
+        mod._cfg_cache, mod._cfg_sig, mod._cfg_path = snapshot["cfg"]
         mod._db, mod._db_error = snapshot["db"]
         mod._real_stdout = snapshot["real_stdout"]
     else:
@@ -959,7 +973,7 @@ def _reset_tui_gateway_server_state():
         # for the globals we could not snapshot (``_methods`` is left to
         # the importing file's fixture, see block comment above).
         mod._cfg_cache = None
-        mod._cfg_mtime = None
+        mod._cfg_sig = None
         mod._cfg_path = None
         mod._db = None
         mod._db_error = None
@@ -1227,8 +1241,77 @@ _OS_MARKS = {
 }
 
 
+def _relocate_basetemp_outside_operator_home(config) -> None:
+    """Move pytest's basetemp out of the operator's platform-native Hermes home.
+
+    Every per-test sandbox is ``<basetemp>/.../hermes_test``. ``get_default_hermes_root()``
+    prefers the platform-native home whenever ``HERMES_HOME`` sits *under* it, so a basetemp
+    inside ``~/.hermes`` (or ``%LOCALAPPDATA%\\hermes``, where ``TEMP`` commonly lives on
+    Windows) turns the sandbox back into the live install and ``get_profile_dir("default")``
+    writes fixtures over the operator's config.yaml / .env / MEMORY.md (#111101).
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    native = _get_platform_default_hermes_home().resolve()
+    factory = config._tmp_path_factory
+    given = factory._given_basetemp
+    candidate = given if given is not None else Path(
+        os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir()
+    )
+    if not candidate.resolve().is_relative_to(native):
+        return
+    # The system temp dir may itself be inside the home (Windows TEMP under the
+    # Hermes home). The repo is no escape either: the default install checks it
+    # out *inside* the home (~/.hermes/hermes-agent). A sibling of the native
+    # home is outside it by construction.
+    safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else native.parent
+    safe = Path(tempfile.mkdtemp(prefix="hermes-pytest-basetemp-", dir=safe_root))
+    assert not safe.resolve().is_relative_to(native), (
+        f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
+        "refusing to run the suite against the live install (pass --basetemp outside it)"
+    )
+    factory._given_basetemp = safe
+    config.option.basetemp = str(safe)
+
+
+def _pinned_mcp_sdk_version() -> str:
+    """The ``mcp==X`` pin carried by the ``[mcp]`` extra in pyproject.toml."""
+    import tomllib
+
+    with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    for req in extras["mcp"]:
+        if req.startswith("mcp=="):
+            return req.split("==", 1)[1].strip()
+    raise RuntimeError("pyproject.toml [mcp] extra no longer pins mcp==X")
+
+
+@pytest.fixture
+def require_mcp_2_sdk():
+    """Skip tests that pin mcp 2.0-only behaviour when an older SDK is installed.
+
+    The runtime deliberately supports both SDK generations (the dual streamable-client probe in
+    mcp_tool), so a stale ``mcp`` distribution imports fine and presence-only guards let these
+    tests through — where they fail later with opaque SDK errors. Compare the installed
+    distribution against the pin so the outcome is an explicit skip with an actionable reason.
+    """
+    from importlib.metadata import PackageNotFoundError, version as dist_version
+
+    from packaging.version import Version
+
+    pinned = _pinned_mcp_sdk_version()
+    try:
+        found = dist_version("mcp")
+    except PackageNotFoundError:
+        pytest.skip(f"requires mcp=={pinned} (not installed); install the [mcp] extra")
+    if Version(found) < Version(pinned):
+        pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
+
+
+@pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
+    _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "

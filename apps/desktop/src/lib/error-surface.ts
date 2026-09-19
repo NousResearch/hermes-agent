@@ -46,7 +46,16 @@ export const ERROR_CODE_KEYS = [
   'empty_response',
   'loop_error',
   'SESSION_NOT_OWNED',
-  'disk_full'
+  'disk_full',
+  // The Nous free tier refused or could not serve the turn (agent/error_surface.py
+  // `free_tier_<kind>`). The backend's sentence rides in `message` and is the card body.
+  'free_tier_disabled',
+  'free_tier_rate_limited',
+  'free_tier_at_capacity',
+  'free_tier_model_not_free',
+  'free_tier_route',
+  'free_tier_outage',
+  'free_tier_refused'
 ] as const
 
 export type ErrorCodeKey = (typeof ERROR_CODE_KEYS)[number]
@@ -72,6 +81,9 @@ export interface ErrorSurface {
    *  (OPENAI_API_KEY). Deep-links Settings → Keys to that row. Absent from
    *  older backends. */
   apiKeyEnv?: string
+  /** Free-tier codes: the backend's own plain sentence for this failure (it
+   *  names the wait, the model, the way forward). Shown as the card body. */
+  message?: string
 }
 
 /** Validate a wire payload into an ErrorSurface, or null when absent/garbled. */
@@ -85,6 +97,7 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     auth_kind?: unknown
     code?: unknown
     layer?: unknown
+    message?: unknown
     model?: unknown
     provider?: unknown
     provider_label?: unknown
@@ -105,8 +118,15 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     ...(typeof raw.model === 'string' && raw.model ? { model: raw.model } : {}),
     ...(raw.auth_kind === 'oauth' || raw.auth_kind === 'api_key' ? { authKind: raw.auth_kind } : {}),
     ...(typeof raw.provider_label === 'string' && raw.provider_label ? { providerLabel: raw.provider_label } : {}),
-    ...(typeof raw.api_key_env === 'string' && raw.api_key_env ? { apiKeyEnv: raw.api_key_env } : {})
+    ...(typeof raw.api_key_env === 'string' && raw.api_key_env ? { apiKeyEnv: raw.api_key_env } : {}),
+    ...(typeof raw.message === 'string' && raw.message.trim() ? { message: raw.message.trim() } : {})
   }
+}
+
+/** True when the Nous free tier refused or could not serve the turn: the way
+ *  forward is the free sign-in (or another provider), never an OAuth re-login. */
+export function isFreeTierSurface(surface: ErrorSurface | null | undefined): boolean {
+  return typeof surface?.code === 'string' && surface.code.startsWith('free_tier_')
 }
 
 /** True when the failed turn's provider rejected an OAuth grant — the
@@ -161,6 +181,8 @@ export interface ErrorRecoveryPlan {
   updateApiKey: boolean
   /** Re-run the provider's OAuth sign-in (auth, oauth). */
   signInAgain: boolean
+  /** Open the free-tier sign-in dialog (free_tier_* codes): signing in is free and lifts the refusal. */
+  signInFreeTier: boolean
   /** Settings → Models deep link. */
   switchProvider: boolean
 }
@@ -197,6 +219,7 @@ export function errorRecoveryPlan(surface: ErrorSurface | null | undefined): Err
     // natural second click.
     retry: !surface || surface.retryable || oauthReauth || apiKeyRejected,
     signInAgain: oauthReauth,
+    signInFreeTier: isFreeTierSurface(surface),
     startNewSession: false,
     switchProvider: surface != null && SWITCH_PROVIDER_LAYERS.includes(surface.layer),
     updateApiKey: apiKeyRejected

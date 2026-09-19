@@ -9,7 +9,7 @@ the real output directory — "cron output" alone sent operators hunting.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import display_hermes_home
 
@@ -59,7 +59,7 @@ _PROVIDER_FAILURE_ACTION: dict[str, str] = {
         "`hermes cron edit {job_id} --provider <name>`."
     ),
     "auth": (
-        "Sign in again with /login (or `hermes auth add <provider>` in a terminal), or pin a "
+        "Sign in again with /login (or `{relogin}` in a terminal), or pin a "
         "working provider with `hermes cron edit {job_id} --provider <name>`, then "
         "`hermes cron run {job_id}` to retry."
     ),
@@ -77,9 +77,10 @@ _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit
 
 
 def provider_failure_notice(
-    job_name: str, job_id: str, reason: str, *, backup_provider_phrase: str,
+    job_name: str, job_id: str, reason: str, *, backup_provider_phrase: str, provider: Any = None,
 ) -> Optional[str]:
-    """The notice for a provider-shaped ``reason``, or None when the reason is not one."""
+    """The notice for a provider-shaped ``reason``, or None when the reason is not one.
+    ``provider`` is the job's pinned slug (if any) so the auth action names its exact sign-in."""
     cause = _provider_failure_cause(reason)
     if cause is None:
         return None
@@ -89,7 +90,10 @@ def provider_failure_notice(
             f"`hermes cron run {job_id}` tries now."
         )
     else:
-        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(job_id=job_id)
+        from agent.turn_failure_copy import relogin_command_hint
+
+        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(
+            job_id=job_id, relogin=relogin_command_hint(provider))
     return (
         f"⚠️ Cron '{job_name}' failed: {cause}. {action} "
         f"Run log: `hermes cron runs {job_id}`."
@@ -130,6 +134,6 @@ def blocked_config_notice(job_name: str, reason: str) -> str:
         reason += "."
     return (
         f"⛔ Cron '{job_name}' did not run: {reason} Nothing was charged. Hermes will try again at "
-        "the next scheduled time once this is fixed and will not repeat this alert; check with "
+        "the next scheduled time and will not repeat this alert; check with "
         "`hermes cron doctor`."
     )

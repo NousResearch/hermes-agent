@@ -172,8 +172,12 @@ def _execute_console_line(
 
 async def _unwind_console_worker(worker: Any, scope: InterruptScope, reason: str) -> None:
     """Stop the command's worker after cancel/timeout: asyncio can only drop the waiter, so interrupt
-    any agent the command forked (closing its provider request) and wait for the thread to exit."""
-    scope.cancel(f"Console command {reason}")
+    any agent the command forked (closing its provider request) and wait for the thread to exit.
+    A user cancel is attributed to the user; only the timeout is a host-issued stop (#112647)."""
+    if reason == "cancelled":
+        scope.cancel(f"Console command {reason}", tool_reason=None)
+    else:
+        scope.cancel(f"Console command {reason}")
     if worker.cancel():  # still queued: never ran
         return
     exited = asyncio.wrap_future(worker)
@@ -518,7 +522,11 @@ async def pty_ws(ws: WebSocket) -> None:
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.
     if not await session.attach(ws, force_redraw=not _created):
-        await _close_stalled_pty_input(ws, path="keepalive-redraw")
+        # attach() detaches itself when the client dropped mid-replay, and a socket
+        # superseded during replay is already closed by its replacement; only a
+        # stalled redraw write leaves THIS socket attached and worth closing.
+        if session._ws is ws:
+            await _close_stalled_pty_input(ws, path="keepalive-redraw")
         PTY_REGISTRY.detach(attach_token, ws)
         return
 

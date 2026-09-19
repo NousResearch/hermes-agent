@@ -456,6 +456,12 @@ def _try_dispatch_background_run(
     Returns None when background delivery is unavailable (caller runs sync); ``{"claimed":
     False}`` on a lost claim; ``{"claimed": True, "dispatched": True, "delegation_id"}``; or
     ``{"claimed": True, "dispatched": False, ...}`` when the pool was full and it ran inline."""
+    job_id = job["id"]
+    job_name = str(job.get("name") or job_id)
+    # Reap BEFORE the async/sync branch: the one-shot `hermes cron run` path returns early
+    # below, and this is the only moment it heals a stale claim left by a killed prior run (#113923).
+    _reap_stale_executions(job_name)
+
     # Finite sessions cannot route a detached result back after the turn ends (delegate_task's gate).
     try:
         from gateway.session_context import async_delivery_supported
@@ -463,10 +469,6 @@ def _try_dispatch_background_run(
             return None
     except Exception:
         pass
-
-    job_id = job["id"]
-    job_name = str(job.get("name") or job_id)
-    _reap_stale_executions(job_name)
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).

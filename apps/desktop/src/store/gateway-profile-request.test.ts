@@ -111,6 +111,21 @@ describe('requestGatewayForProfile', () => {
     expect($gateway.get()).toBe(primary)
   })
 
+  it('dials the profile with foreground priority when a Settings-scoped caller asks for it (#111651)', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+
+    const getConnection = vi.fn(async (profile: null | string) =>
+      profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+    )
+
+    installDesktop(getConnection)
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForProfile('worker', 'vault.list', {}, undefined, undefined, { spawnPriority: 'foreground' })
+
+    expect(getConnection).toHaveBeenCalledWith('worker', { priority: 'foreground' })
+  })
+
   it('uses the primary socket and adds profile scope for a shared global remote route', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
@@ -660,6 +675,33 @@ describe('attached shared-remote group turns (#96493)', () => {
 
     expect(secondaryGateways).toHaveLength(0)
     expect(primary.request).toHaveBeenCalledOnce()
+  })
+
+  it('never collapses a pooled LOCAL profile onto the primary when its pool probe fails', async () => {
+    // A local Desktop primary is one `hermes serve --profile <primary>` child;
+    // pooled profiles get their own child. Sending `session.create` with
+    // `profile: sean` to the primary still succeeds (profile_home
+    // multiplexing), but the lease then belongs to the primary's pid while
+    // every later resume — after a renderer reload or a pool respawn — dials
+    // sean's pool backend and is refused with SESSION_NOT_OWNED.
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ mode: 'local', port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async () => {
+        throw new Error('Timed out connecting to profile "sean"')
+      }),
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://local/sean' })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    await expect(requestGatewayForAgent('local', 'sean', 'session.create', { title: 'g' })).rejects.toThrow(
+      /Timed out connecting to profile "sean"/
+    )
+
+    expect(primary.request).not.toHaveBeenCalled()
   })
 
   it('returning to an attached shared remote activates its socket without closing the other source', async () => {

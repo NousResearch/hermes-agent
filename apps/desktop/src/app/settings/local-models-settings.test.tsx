@@ -21,10 +21,14 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
   getLocalRuntimeJob: vi.fn(),
+  // The page imports the profile store (settings-scope chip), whose module
+  // body subscribes $activeGatewayProfile → setApiRequestProfile at load.
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
   quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -134,6 +138,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  // A running job arms the store's 700ms re-poll; drain it so the timer cannot
+  // fire into a torn-down test environment.
+  $localRuntimeJobs.set([])
 })
 
 describe('LocalModelsSettings', () => {

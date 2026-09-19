@@ -183,6 +183,22 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
   })
 
+  it('hides a persisted Discord triggering-message note but keeps the reply pointer (#114719)', () => {
+    const note =
+      '[Triggering message id: `1550380365858865156` — use as `message_id` for reply/react/pin via the discord tools.]'
+
+    const [plain, , replied, assistant] = toChatMessages([
+      { role: 'user', content: `${note}\n\nCreate a project plan for Q4`, timestamp: 1 },
+      { role: 'assistant', content: 'ok', timestamp: 2 },
+      { role: 'user', content: `[Replying to: "Create a project plan for Q4"]\n\n${note}\n\nyes do that`, timestamp: 3 },
+      { role: 'assistant', content: note, timestamp: 4 }
+    ])
+
+    expect(chatMessageText(plain)).toBe('Create a project plan for Q4')
+    expect(chatMessageText(replied)).toBe('[Replying to: "Create a project plan for Q4"]\n\nyes do that')
+    expect(chatMessageText(assistant)).toBe(note)
+  })
+
   it('renders MEDIA tags as assistant attachment links', () => {
     const [message] = toChatMessages([
       {

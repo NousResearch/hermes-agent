@@ -16,7 +16,7 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname
+from utils import base_url_hostname, file_signature
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -258,12 +258,17 @@ class CLIInfoMixin:
         # /help skills — the full list, kept out of the default view so core commands don't
         # scroll off screen.
         if arg.lower() in ("skills", "skill"):
-            if not skill_commands:
-                _cprint("\n  No skill commands installed.\n")
-                return
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
-            for cmd, info in sorted(skill_commands.items()):
-                _row(cmd, info['description'], 22)
+            from agent.skill_commands import skill_command_collision_note
+            from tools.skills_tool import _find_all_skills
+            if skill_commands:
+                _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+                for cmd, info in sorted(skill_commands.items()):
+                    _row(cmd, info['description'], 22)
+            else:
+                _cprint("\n  No skill commands installed.")
+            # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
+            for note in filter(None, (skill_command_collision_note(s["name"]) for s in _find_all_skills())):
+                _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
             return
 
@@ -818,13 +823,13 @@ class CLIInfoMixin:
         if not cfg_path.exists():
             return
         try:
-            mtime = cfg_path.stat().st_mtime
+            sig = file_signature(cfg_path.stat())
         except OSError:
             return
-        if mtime == self._config_mtime:
+        if sig == self._config_sig:
             return  # unchanged — fast path
 
-        self._config_mtime = mtime
+        self._config_sig = sig
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}

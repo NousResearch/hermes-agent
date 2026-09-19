@@ -69,9 +69,34 @@ def _resolve_target(path: str) -> Optional[Path]:
     return None
 
 
-def _home_and_resolved(path: str) -> tuple[str, str]:
-    """``(realpath(~), realpath(expanduser(path)))`` — the write-guard coordinate pair."""
-    return tuple(os.path.realpath(os.path.expanduser(p)) for p in ("~", str(path)))
+def _guard_homes(path: str = "") -> set[str]:
+    """Every home the write guards must cover. Process ``~`` alone is wrong whenever the
+    process HOME is not the OS user's real home — ``TERMINAL_HOME_MODE=profile``,
+    containers, and spawned workers pin ``HOME`` to ``{HERMES_HOME}/home``, which leaves
+    the real home's credential paths unguarded against absolute-path writes while file
+    tools happily write there (and ``_expand_tilde`` may route ``~`` to yet another
+    home). Deny/approval lists are built over the union: process home, real home,
+    subprocess home, and the profile home. A ``~name/...`` input resolves to a named
+    account's home, which joins the set so ``~root/.ssh/authorized_keys`` stays denied."""
+    homes = {os.path.expanduser("~")}
+    with suppress(Exception):
+        from hermes_constants import get_real_home, get_subprocess_home, _profile_home_path
+
+        for candidate in (get_real_home(), get_subprocess_home(), _profile_home_path()):
+            if candidate:
+                homes.add(str(candidate))
+    raw = str(path)
+    if len(raw) > 1 and raw.startswith("~") and raw[1] not in "/\\":
+        name = raw[1:].split("/", 1)[0].split("\\", 1)[0]
+        expanded = os.path.expanduser(f"~{name}")
+        if not expanded.startswith("~"):
+            homes.add(expanded)
+    return {os.path.realpath(h) for h in homes}
+
+
+def _homes_and_resolved(path: str) -> tuple[set[str], str]:
+    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair."""
+    return _guard_homes(path), os.path.realpath(os.path.expanduser(str(path)))
 
 
 # ---------------------------------------------------------------------------
@@ -157,11 +182,22 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Both the active-profile and top-level copies: overwriting the root .env leaks
-    # credentials across every profile that inherits from it; the root Anthropic
-    # PKCE store is still read by default/non-profile sessions when a profile is
-    # active; bws_cache.enc.json is the Bitwarden Secrets Manager encrypted cache.
-    hermes_files = (".env", ".anthropic_oauth.json", os.path.join("cache", "bws_cache.enc.json"))
+    # Secret material under HERMES_HOME, on both the active profile and the global
+    # root: overwriting the root .env leaks credentials across every profile that
+    # inherits it, and the root Anthropic PKCE store is still read by default /
+    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
+    # token store; both Bitwarden caches hold Secrets Manager material.
+    #
+    # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
+    # deliberately NOT here: #45947 freed those control files on purpose
+    # ("true containment belongs in Docker/remote backends and OS permissions,
+    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
+    hermes_files = (
+        ".env", ".anthropic_oauth.json",
+        os.path.join("auth", "google_oauth.json"),
+        os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
+    )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
         *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
@@ -203,8 +239,11 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/ and pairing/ hold credential material.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing")
+# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
+# browser-profile/ (copied cookies / Login Data) hold credential material.
+# Control files (auth.json, config.yaml, webhook_subscriptions.json) are
+# deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
@@ -214,15 +253,17 @@ def _classify_write_denial(path: str) -> Optional[str]:
     # prefixes defeat string-prefix denylist comparison after normalization.
     if is_nt_namespace_path(path):
         return "nt_namespace"
-    home, resolved = _home_and_resolved(path)
+    homes, resolved = _homes_and_resolved(path)
 
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if resolved in build_write_approval_paths(home):
+    if any(resolved in build_write_approval_paths(home) for home in homes):
         return None
 
-    if resolved in build_write_denied_paths(home) or any(
-        resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home)
+    if any(
+        resolved in build_write_denied_paths(home)
+        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home))
+        for home in homes
     ):
         return "credential"
 
@@ -261,8 +302,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
 def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
-    home, resolved = _home_and_resolved(path)
-    return resolved in build_write_approval_paths(home)
+    homes, resolved = _homes_and_resolved(path)
+    return any(resolved in build_write_approval_paths(home) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

@@ -22,8 +22,6 @@ on:
 permissions:
   contents: read
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
-  actions: read # needed by osv-scanner (SARIF upload)
-  security-events: write # needed by osv-scanner (SARIF upload)
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -215,10 +213,6 @@ jobs:
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
       supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
 
-  osv-scanner:
-    name: OSV scan
-    uses: ./.github/workflows/osv-scanner.yml
-
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
@@ -250,11 +244,10 @@ jobs:
       - profile-artifact-check
       - supply-chain
       - review-labels
-      # osv-scanner is deliberately NOT a dependency: osv-scanner.yml is
-      # detection-only (fail-on-vuln: false, findings go to the Security tab)
-      # and its SARIF upload trips GitHub's per-installation API rate limit
-      # during merge trains, which turned an advisory scan into a merge
-      # blocker for whole batches of unrelated PRs.
+      # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
+      # every PR was reporting the same repo-wide baseline of pinned-dep CVEs
+      # in its review comment, and the SARIF upload tripped GitHub's
+      # per-installation API rate limit during merge trains.
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this

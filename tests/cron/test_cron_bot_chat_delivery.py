@@ -6,6 +6,7 @@ preflight exemption, create-time validation, the subprocess delivery lane,
 and the delivery-targets listing used by UI pickers.
 """
 
+import locale
 import os
 import subprocess
 import sys
@@ -283,6 +284,49 @@ def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
         sched_delivery._run_bot_chat_turn(
             [sys.executable, "-c", "import time; time.sleep(30)"], _child_env(), str(tmp_path / "turn.json"), timeout=1)
     assert time.monotonic() - started < 8
+
+
+def test_windows_delivery_decodes_child_output_as_utf8_not_the_parent_locale(tmp_path):
+    """The child always writes UTF-8 on Windows (#115894); bare ``text=True`` instead decodes
+    with the parent's locale, which is cp1252 on the reported host. Reproduced here by forcing
+    the parent's own default text-mode codec to a non-UTF-8 locale ("C"/ASCII) while pretending
+    to be win32 - real UTF-8 bytes then either vanish (undecodable byte kills the drain thread,
+    same shape as the reported ``stdout = None``) or get mangled, unless the delivery lane pins
+    ``encoding="utf-8"`` for that platform the way ``scheduler_script.py`` already does."""
+    accented = "AÇÃO ÍNDICE: relatório nº 3"
+    child = "import sys; sys.stdout.buffer.write(%r.encode('utf-8') + b'\\n'); sys.stdout.flush()" % accented
+
+    import gateway.status  # noqa: F401 -- import before faking win32 below; its own
+    # module-level `if sys.platform == "win32": import msvcrt` must run for real once,
+    # not against the patched platform, or the conftest Popen guard trips on this host.
+
+    old_locale = locale.setlocale(locale.LC_ALL)
+    locale.setlocale(locale.LC_ALL, "C")
+    try:
+        with mock.patch.object(sched_delivery.sys, "platform", "win32"):
+            result = sched_delivery._run_bot_chat_turn(
+                [sys.executable, "-c", child], _child_env(), str(tmp_path / "turn.json"), timeout=10)
+    finally:
+        locale.setlocale(locale.LC_ALL, old_locale)
+
+    assert result.stdout == accented + "\n"
+
+
+def test_windows_delivery_pins_utf8_popen_kwargs_regardless_of_host_codec(tmp_path):
+    """Host-independent regression net for #115894, per review on #115910: on a Windows
+    Python already running in UTF-8 mode (``PYTHONUTF8=1``), ``locale.setlocale(LC_ALL, "C")``
+    does not change ``getpreferredencoding()``, so the real-subprocess test above can pass on
+    such a host even without the fix. Assert directly on the ``Popen`` call instead, which does
+    not depend on what codec this host's ``sys.flags.utf8_mode`` happens to pick."""
+    mock_proc = mock.Mock(pid=4242, returncode=0)
+    mock_proc.communicate.return_value = ("reply", "")
+
+    with mock.patch.object(sched_delivery.sys, "platform", "win32"), \
+         mock.patch.object(sched_delivery.subprocess, "Popen", return_value=mock_proc) as popen:
+        sched_delivery._run_bot_chat_turn(["hermes"], {}, str(tmp_path / "turn.json"), timeout=10)
+
+    assert popen.call_args.kwargs["encoding"] == "utf-8"
+    assert popen.call_args.kwargs["errors"] == "replace"
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

@@ -714,9 +714,16 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
     """
     from hermes_cli.quiet_single_query import read_turn_report
 
+    popen_kwargs: dict = {}
+    if sys.platform == "win32":
+        # The child always writes UTF-8 (hermes_bootstrap reconfigures its streams
+        # unconditionally on Windows), but the parent is not guaranteed to be, so bare
+        # text=True falls back to locale.getpreferredencoding() (cp1252) and either
+        # raises in the reader thread or silently mangles accented output (#115894).
+        popen_kwargs = {"encoding": "utf-8", "errors": "replace"}
     proc = subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, creationflags=windows_hide_flags())
+        env=env, creationflags=windows_hide_flags(), **popen_kwargs)
     streams: dict = {}
 
     def _drain() -> None:

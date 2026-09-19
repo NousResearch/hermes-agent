@@ -26,6 +26,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
+import { Messages, Pin } from '@/lib/icons'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -1695,6 +1696,7 @@ export function ChatSidebar({
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
+                labelIcon={<Pin className="size-3 text-(--theme-primary)" />}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
@@ -1866,6 +1868,11 @@ export function ChatSidebar({
                   </div>
                 }
                 label={sessionsLabel}
+                labelIcon={
+                  !inProject && !worktreeGroupingActive ? (
+                    <Messages className="size-3 text-(--theme-primary)" />
+                  ) : undefined
+                }
                 labelMeta={
                   worktreeGroupingActive ? (
                     reposScanning && !projectsSkeletonVisible ? (

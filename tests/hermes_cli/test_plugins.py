@@ -122,6 +122,83 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
 
+    def test_discover_plugins_returns_when_background_discovery_exceeds_bound(
+        self, monkeypatch
+    ):
+        from hermes_cli import plugins as plugins_mod
+
+        manager = PluginManager()
+        discovery_started = threading.Event()
+        release_discovery = threading.Event()
+        discovery_finished = threading.Event()
+        caller_finished = threading.Event()
+        calls = 0
+
+        def _blocked_discovery(self_inner):
+            nonlocal calls
+            calls += 1
+            discovery_started.set()
+            release_discovery.wait(timeout=5)
+            discovery_finished.set()
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        monkeypatch.setattr(plugins_mod, "_background_discovery_thread", None)
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _blocked_discovery)
+        original_join = plugins_mod._join_background_discovery
+        monkeypatch.setattr(
+            plugins_mod,
+            "_join_background_discovery",
+            lambda: original_join(timeout=0.05),
+        )
+
+        plugins_mod.start_background_plugin_discovery()
+        assert discovery_started.wait(timeout=2)
+        background_thread = plugins_mod._background_discovery_thread
+
+        caller = threading.Thread(
+            target=lambda: (plugins_mod.discover_plugins(), caller_finished.set()),
+            daemon=True,
+        )
+        caller.start()
+        try:
+            assert caller_finished.wait(timeout=2), (
+                "discover_plugins() re-entered the manager's locked discovery path"
+            )
+            assert background_thread is not None and background_thread.is_alive()
+            assert not discovery_finished.is_set()
+            assert calls == 1
+        finally:
+            release_discovery.set()
+            caller.join(timeout=2)
+            if background_thread is not None:
+                background_thread.join(timeout=2)
+
+        assert discovery_finished.is_set()
+        assert manager._discovered is True
+
+    def test_discover_plugins_preserves_healthy_background_completion(self, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+
+        manager = PluginManager()
+        discovery_finished = threading.Event()
+        calls = 0
+
+        def _healthy_discovery(self_inner):
+            nonlocal calls
+            calls += 1
+            discovery_finished.set()
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        monkeypatch.setattr(plugins_mod, "_background_discovery_thread", None)
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _healthy_discovery)
+
+        plugins_mod.start_background_plugin_discovery()
+        plugins_mod.discover_plugins()
+
+        assert discovery_finished.is_set()
+        assert manager._discovered is True
+        assert calls == 1
+
     def test_removed_relay_plugin_identity_cannot_be_reloaded(
         self, monkeypatch, caplog
     ):

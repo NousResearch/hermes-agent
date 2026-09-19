@@ -65,6 +65,15 @@ function persistBindings(bindings: KeybindBindings): void {
     }
   }
 
+  // Actions contributed after boot (plugins register late) are missing
+  // from the registry when the boot-time subscribe fires. Carry their
+  // stored overrides forward so the persist does not wipe them.
+  for (const [id, combos] of Object.entries(storedOverrides)) {
+    if (!(id in defaults)) {
+      diff[id] = combos
+    }
+  }
+
   persistString(STORAGE_KEY, JSON.stringify(diff))
 }
 

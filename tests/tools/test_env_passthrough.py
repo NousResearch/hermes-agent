@@ -65,6 +65,44 @@ class TestConfigPassthrough:
         assert "CONFIG_KEY" in all_pt
         assert "SKILL_KEY" in all_pt
 
+    def test_removed_var_stops_passthrough_without_restart(self, tmp_path, monkeypatch):
+        """Revoking a var in config.yaml must take effect in-process: the memo is
+        keyed on the config file signature, not memoized forever."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump({"terminal": {"env_passthrough": ["REVOKED_KEY", "KEPT_KEY"]}}),
+            encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _ep_mod._config_passthrough.clear()
+
+        assert is_env_passthrough("REVOKED_KEY")
+
+        config_path.write_text(
+            yaml.dump({"terminal": {"env_passthrough": ["KEPT_KEY"]}}),
+            encoding="utf-8")
+
+        assert not is_env_passthrough("REVOKED_KEY")
+        assert is_env_passthrough("KEPT_KEY")
+
+
+    def test_added_var_becomes_passthrough_without_restart(self, tmp_path, monkeypatch):
+        """Adding a var to config.yaml mid-process becomes visible on the next check."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump({"terminal": {"env_passthrough": ["FIRST_KEY"]}}),
+            encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _ep_mod._config_passthrough.clear()
+
+        assert is_env_passthrough("FIRST_KEY")
+        assert not is_env_passthrough("SECOND_KEY")
+
+        config_path.write_text(
+            yaml.dump({"terminal": {"env_passthrough": ["FIRST_KEY", "SECOND_KEY"]}}),
+            encoding="utf-8")
+
+        assert is_env_passthrough("SECOND_KEY")
+
 
 class TestProfileScopedResolution:
     def test_active_scope_overrides_process_fallback(self):

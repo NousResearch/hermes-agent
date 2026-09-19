@@ -8,26 +8,24 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 
 import pytest
 
 
 @pytest.fixture()
-def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
+def isolated_kanban_home(monkeypatch, purged_hermes_modules):
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    ``purged_hermes_modules`` (conftest) purges AND restores the hermes_cli
+    module objects; the kanban_db imported below binds against this fixture's
+    fresh HERMES_HOME for the test body, and teardown puts the originals back
+    so downstream files in a shared pytest process are unaffected (t_63128384).
+    """
     test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
     monkeypatch.setenv("HERMES_HOME", test_home)
-    # Force-reimport so the fresh HERMES_HOME is picked up.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
     from hermes_cli import kanban_db
     yield kanban_db, test_home
-    # Cleanup is best-effort; tempfile dir survives but pytest isolation
-    # gives each test its own monkeypatched HERMES_HOME so no cross-test
-    # contamination.
 
 
 def _fake_spawn(*args, **kwargs):

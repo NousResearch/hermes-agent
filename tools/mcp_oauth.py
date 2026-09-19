@@ -674,6 +674,25 @@ def _make_callback_handler() -> tuple[type, dict]:
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = _parse_redirect_query(urlparse(self.path).query)
+            if not parsed["code"] and not parsed["error"]:
+                # The browser follows the real /callback with queryless fetches
+                # (/favicon.ico); an unconditional update here clobbered the stored
+                # code before the 500ms waiter poll saw it (#116278).
+                self.send_response(404)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"<html><body><h2>Not Found</h2></body></html>")
+                return
+            if _result_taken(result):
+                # First terminal result (HTTP or paste) wins; a duplicate or
+                # page-refresh callback must not replace it.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h2>Authorization already received</h2>"
+                    b"<p>You can close this tab and return to Hermes.</p></body></html>")
+                return
             result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
             body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
                     else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
@@ -681,6 +700,10 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(f"<html><body>{body}</body></html>".encode())
+
+        def log_request(self, code: str = "-", size: str = "-") -> None:  # noqa: N802
+            # The request line's query carries the auth code — log the path only.
+            logger.debug("OAuth callback: %s %s", self.command, urlparse(self.path).path)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             logger.debug("OAuth callback: %s", fmt % args)

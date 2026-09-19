@@ -21,6 +21,12 @@ The security model has eight layers:
 7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
+## Official hosts
+
+### Official website and downloads
+
+Official Hermes Agent documentation and installers are hosted on `nousresearch.com` and its subdomains (for example `https://hermes-agent.nousresearch.com`). Download installers and documentation only from `hermes-agent.nousresearch.com` or the official GitHub repository [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Similarly named domains on other TLDs are not official and are not operated by Nous Research.
+
 ## Dangerous Command Approval
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.

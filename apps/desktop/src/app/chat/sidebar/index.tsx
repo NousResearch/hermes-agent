@@ -291,7 +291,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     _lineage_root_id: result.lineage_root ?? null,
     input_tokens: 0,
     is_active: false,
-    last_active: ts,
+    last_active: result.last_active ?? ts,
     message_count: 0,
     model: result.model ?? null,
     output_tokens: 0,
@@ -301,6 +301,53 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     title: null,
     tool_call_count: 0
   }
+}
+
+export function mergeSearchResults(
+  sortedSessions: readonly SessionInfo[],
+  query: string,
+  serverMatches: readonly SessionSearchResult[],
+  sessionByAnyId: ReadonlyMap<string, SessionInfo>,
+  searchPending: boolean
+): SessionInfo[] {
+  if (!query) {
+    return []
+  }
+
+  // While the request is in flight the client's own recency-ordered matches
+  // are all there is — instant feedback while typing. Once the ranked server
+  // response lands, it decides the order: the backend runs direct id matches
+  // before FTS content hits, so pasting a session's exact id must keep that
+  // hit on top instead of letting newer quoting sessions bury it.
+  const out = new Map<string, SessionInfo>()
+
+  if (searchPending || serverMatches.length === 0) {
+    for (const s of sortedSessions) {
+      if (sessionMatchesSearch(s, query)) {
+        out.set(s.id, s)
+      }
+    }
+  }
+
+  for (const match of serverMatches) {
+    if (out.has(match.session_id)) {
+      continue
+    }
+
+    const loaded = sessionByAnyId.get(match.session_id)
+    out.set(match.session_id, loaded ?? searchResultToSession(match))
+  }
+
+  // Client-only matches that the server didn't return (e.g. cwd/git-branch
+  // fields the FTS index doesn't cover) still deserve a row — after the
+  // ranked hits, in recency order.
+  for (const s of sortedSessions) {
+    if (!out.has(s.id) && sessionMatchesSearch(s, query)) {
+      out.set(s.id, s)
+    }
+  }
+
+  return [...out.values()]
 }
 
 interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
@@ -694,30 +741,10 @@ export function ChatSidebar({
     }
   }, [trimmedQuery])
 
-  const searchResults = useMemo(() => {
-    if (!trimmedQuery) {
-      return []
-    }
-
-    const out = new Map<string, SessionInfo>()
-
-    for (const s of sortedSessions) {
-      if (sessionMatchesSearch(s, trimmedQuery)) {
-        out.set(s.id, s)
-      }
-    }
-
-    for (const match of serverMatches) {
-      if (out.has(match.session_id)) {
-        continue
-      }
-
-      const loaded = sessionByAnyId.get(match.session_id)
-      out.set(match.session_id, loaded ?? searchResultToSession(match))
-    }
-
-    return [...out.values()]
-  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
+  const searchResults = useMemo(
+    () => mergeSearchResults(sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending),
+    [sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending]
+  )
 
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !isPinnedSession(s)),
@@ -1682,6 +1709,7 @@ export function ChatSidebar({
                 onToggleUnread={toggleUnread}
                 open
                 pinned={false}
+                preserveOrder
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
                 showProfileTags={showAllProfiles}

@@ -180,6 +180,11 @@ interface SidebarSessionsSectionProps {
   // pinned, messaging groups, and the project overview, where the order isn't
   // strictly by recency so a bucket would be misleading.
   grouping?: 'date' | 'none' | 'status'
+  // Keep the caller's row order instead of re-sorting by group recency
+  // (defaults to `pinned`, the only pre-ordered caller). The search results
+  // set it too: their order is the backend's ranking (exact id matches
+  // first), which recency re-sorting would bury under newer quoting rows.
+  preserveOrder?: boolean
   // Inbox style: render every flat session row as a three-line card (project ·
   // age / title / model · size). A render variant that composes with whichever
   // grouping is active — the flat recents list opts in; dense tree surfaces
@@ -230,6 +235,7 @@ export function SidebarSessionsSection({
   dndSensors,
   showProfileTags = false,
   grouping = 'none',
+  preserveOrder = pinned,
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
@@ -264,8 +270,8 @@ export function SidebarSessionsSection({
   // recency sort — the drag order is layered on per date group below, so the
   // buckets stay truthful and a reorder never costs the list its dividers.
   const displayEntries = useMemo(
-    () => flattenSessionsWithBranches(sessions, { preserveOrder: pinned }),
-    [sessions, pinned]
+    () => flattenSessionsWithBranches(sessions, { preserveOrder }),
+    [sessions, preserveOrder]
   )
 
   const renderRow = useCallback(

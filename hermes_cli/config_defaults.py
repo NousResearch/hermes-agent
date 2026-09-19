@@ -57,6 +57,13 @@ DEFAULT_CONFIG = {
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Optional operator-defined routes exposed through the config-gated `select_model` tool.
+        # Routes map a friendly name to an existing model alias plus bounded reasoning defaults.
+        # Disabled by default; enabling it changes only the active session, never the global model.
+        "model_selection": {
+            "enabled": False,
+            "routes": {},
+        },
         # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
         # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,

@@ -21,7 +21,7 @@ _HERMES_CORE_TOOLS = [
     "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
-    "todo_list", "memory",
+    "todo_list", "memory", "select_model",
     "session_search",
     "clarify",
     "execute_code", "delegate_task",

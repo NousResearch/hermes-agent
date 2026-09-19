@@ -73,7 +73,7 @@ The `.env` keys above supply **credentials only**. The active cloud browser is c
 
 Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
 
-**This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
+**This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through Hermes' managed `uvx` — the private `$HERMES_HOME/uv` copy, never a `uvx` on your own PATH), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
 
 The mode is a **driver** that composes with your configured browser backend: it drives Hermes' own headless Chromium, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
 

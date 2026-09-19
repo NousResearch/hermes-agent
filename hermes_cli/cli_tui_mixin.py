@@ -672,6 +672,32 @@ class CLITuiMixin:
                        for value, label in _picker_reasoning_rows()]
             choices += ["← Back", "Cancel"]
             hint = "Applies with the model switch (same scope) — Enter to choose"
+        elif state.get("stage") == "routing":
+            result = state.get("switch_result")
+            picked = getattr(result, "new_model", "") or "model"
+            title = f"⚙ Model Picker — Providers for {picked}"
+            rows = state.get("routing_rows") or []
+            labels = state.get("routing_labels") or []
+            checked = state.get("routing_checked") or set()
+            clear_idx = state.get("routing_clear_index")
+            choices = [f"[{'✓' if i in checked else ' '}] {labels[i]}"
+                       for i in range(min(len(rows), len(labels)))]
+            if len(labels) > len(rows):  # trailing clear row
+                choices.append(f"[{'✓' if clear_idx in checked else ' '}] {labels[-1]}")
+            hint = ("⚠ = no tool support · SPACE toggles · ENTER applies (empty = keep current) "
+                    "· ESC back")
+        elif state.get("stage") == "routing_sort":
+            from hermes_cli.cli_model_switch_mixin import _picker_routing_sort_rows
+            result = state.get("switch_result")
+            picked = getattr(result, "new_model", "") or "model"
+            title = f"⚙ Model Picker — Provider sort for {picked}"
+            current = str(state.get("routing_sort") or "")
+            choices = [f"{label}  ← current" if value and value == current else label
+                       for value, label in _picker_routing_sort_rows()]
+            pinned = state.get("routing_order") or []
+            choices += ["← Back", "Cancel"]
+            hint = (f"Pinned: {', '.join(pinned)} — applies when OpenRouter may fall back; "
+                    "ENTER applies · ESC back")
         else:
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
@@ -691,8 +717,10 @@ class CLITuiMixin:
                 hint = f"Select a model ({len(model_list)} available) — type to filter"
             else:
                 hint = "No models listed for this provider. Use Back or Cancel."
+        _wide = state.get("stage") in ("routing", "routing_sort")
         return self._render_scroll_list_panel(
-            state, title, hint, choices, min_width=46, max_width=84, indent='  ')
+            state, title, hint, choices,
+            min_width=60 if _wide else 46, max_width=126 if _wide else 84, indent='  ')
 
     def _get_command_palette_display_fragments(self):
         state = self._command_palette_state
@@ -1205,11 +1233,40 @@ class CLITuiMixin:
         elif state.get("stage") == "reasoning":
             from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
             max_idx = len(_picker_reasoning_rows()) + 1  # + Back + Cancel
+        elif state.get("stage") == "routing":
+            # Provider rows plus the trailing "clear" row.
+            max_idx = len(state.get("routing_rows") or [])
+        elif state.get("stage") == "routing_sort":
+            from hermes_cli.cli_model_switch_mixin import _picker_routing_sort_rows
+            max_idx = len(_picker_routing_sort_rows()) + 1  # + Back + Cancel
         else:
             # +1 for "← Back" and Cancel over the filtered visible rows.
             _fp = state.get("_filtered_pairs")
             max_idx = (len(_fp) if _fp is not None else len(state.get("model_list") or [])) + 1
         state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+        event.app.invalidate()
+
+    def _tui_model_picker_toggle(self, event):
+        """SPACE on the provider step: check/uncheck the row under the cursor.
+
+        The trailing "clear" row is exclusive — checking it unchecks every provider, and
+        checking a provider unchecks it, so intent is never ambiguous at ENTER.
+        """
+        state = self._model_picker_state
+        if not state or state.get("stage") != "routing":
+            return
+        rows = state.get("routing_rows") or []
+        clear_idx = state.get("routing_clear_index")
+        checked = set(state.get("routing_checked") or ())
+        cursor = state.get("selected", 0)
+        if cursor == clear_idx:
+            checked = set() if clear_idx in checked else {clear_idx}
+        elif 0 <= cursor < len(rows):
+            checked.symmetric_difference_update({cursor})
+            checked.discard(clear_idx)
+        else:
+            return
+        state["routing_checked"] = checked
         event.app.invalidate()
 
     def _tui_model_picker_up(self, event):
@@ -1225,14 +1282,18 @@ class CLITuiMixin:
         st["_scroll_offset"] = 0
 
     def _tui_model_picker_escape(self, event):
-        """ESC clears an active filter first, else steps back from the effort stage, else closes."""
+        """ESC clears an active filter first, else steps back one stage, else closes."""
         st = self._model_picker_state
         if st and st.get("stage") == "model" and (st.get("filter") or ""):
             self._tui_set_filter(st, "")
             event.app.invalidate()
             return
-        if st and st.get("stage") == "reasoning":
+        if st and st.get("stage") in ("reasoning", "routing"):
             st.update(stage="model", selected=0, _scroll_offset=0, switch_result=None)
+            event.app.invalidate()
+            return
+        if st and st.get("stage") == "routing_sort":
+            st.update(stage="routing", selected=0, _scroll_offset=0)
             event.app.invalidate()
             return
         self._close_model_picker()
@@ -2020,6 +2081,9 @@ class CLITuiMixin:
         for _ch in _TYPING_CHARS:
             kb.add(_ch, filter=_picker_typing)(self._tui_make_model_filter_char_handler(_ch))
         kb.add('backspace', filter=_picker_typing)(self._tui_model_picker_filter_backspace)
+        kb.add('space', filter=Condition(
+            lambda: bool(self._model_picker_state)
+            and self._model_picker_state.get("stage") == "routing"))(self._tui_model_picker_toggle)
         kb.add('escape', filter=_picker, eager=True)(self._tui_model_picker_escape)
 
         _palette = Condition(lambda: bool(self._command_palette_state))

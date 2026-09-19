@@ -196,6 +196,58 @@ def _picker_offers_reasoning(provider_data: dict, model: str) -> bool:
     return not (isinstance(entry, dict) and entry.get("reasoning") is False)
 
 
+def _picker_offers_routing(provider_data: dict, model: str) -> bool:
+    """True only for OpenRouter models with a real provider choice (>1 upstream endpoint).
+
+    A single-endpoint model (e.g. ``qwen/qwen3.7-flash`` → alibaba) gets no screen: a step that
+    cannot change anything is friction. Any lookup failure keeps the flow moving without it.
+    """
+    if str((provider_data or {}).get("slug") or "").strip().lower() != "openrouter":
+        return False
+    if not model:
+        return False
+    try:
+        from hermes_cli.provider_routing_picker import MIN_PROVIDERS, provider_rows
+        return len(provider_rows(model)) >= MIN_PROVIDERS
+    except Exception:
+        return False
+
+
+def _picker_routing_state(model: str) -> dict:
+    """Picker-stage state for the routing screen: rows, labels, current checks, config key."""
+    from hermes_cli.provider_routing_picker import (
+        CLEAR_LABEL, existing_model_routing, provider_rows, row_labels)
+    rows = provider_rows(model)
+    _key, existing = existing_model_routing(model)
+    pinned = [str(t).strip().lower() for t in (existing.get("order") or [])]
+    if not pinned:
+        pinned = [str(t).strip().lower() for t in (existing.get("only") or [])]
+    checked = {i for i, row in enumerate(rows) if row["tag"] in pinned}
+    sort = str(existing.get("sort") or "").strip().lower()
+    return {
+        "routing_rows": rows,
+        "routing_labels": row_labels(rows) + [CLEAR_LABEL],
+        "routing_checked": checked,
+        "routing_clear_index": len(rows),
+        "routing_sort": sort,
+    }
+
+
+def _picker_routing_sort_rows() -> list[tuple[str, str]]:
+    """``(value, label)`` rows for the sort step (empty value = OpenRouter's default ranking)."""
+    from hermes_cli.provider_routing_picker import SORT_ROWS
+    return list(SORT_ROWS)
+
+
+def _apply_picker_routing(model: str, order: list, sort: str, *, clear: bool = False) -> dict:
+    """Persist the routing screen's outcome for *model* and print a one-line summary."""
+    from cli import _cprint
+    from hermes_cli.provider_routing_picker import describe_routing, save_model_routing
+    stored = save_model_routing(model, {} if clear else {"order": list(order), "sort": sort})
+    _cprint(f"    Provider routing for {model}: {describe_routing(stored)}")
+    return stored
+
+
 def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
     """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
     agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
@@ -732,15 +784,22 @@ class CLIModelSwitchMixin:
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"))
-                if result.success and _picker_offers_reasoning(provider_data, result.new_model):
-                    # Third step: effort for the picked model (skipped for routes the catalog
-                    # marks reasoning-free). Rows come from the canonical level set.
-                    state.update(stage="reasoning", switch_result=result, selected=0, _scroll_offset=0)
+                if result.success and _picker_offers_routing(provider_data, result.new_model):
+                    # Second step: who serves the model and how OpenRouter ranks them. Skipped for
+                    # models with a single upstream endpoint (nothing to choose).
+                    state.update(stage="routing", switch_result=result, selected=0, _scroll_offset=0,
+                                 **_picker_routing_state(result.new_model))
                     self._invalidate(min_interval=0.0)
                     return
-                self._commit_picker_result(result, persist_global)
+                self._advance_after_model_pick(state, result, persist_global)
                 return
             self._close_model_picker()
+        if stage == "routing":
+            self._handle_picker_routing_stage(state, selected, persist_global)
+            return
+        if stage == "routing_sort":
+            self._handle_picker_routing_sort_stage(state, selected, persist_global)
+            return
         if stage == "reasoning":
             rows = _picker_reasoning_rows()
             result = state.get("switch_result")
@@ -752,6 +811,61 @@ class CLIModelSwitchMixin:
                 self._close_model_picker()
                 return
             self._commit_picker_result(result, persist_global, reasoning_effort=rows[selected][0])
+
+    def _advance_after_model_pick(self, state, result, persist_global: bool, reasoning_effort: str = "") -> None:
+        """Continue after the model — and its provider routing — are settled.
+
+        Effort step when the picked model has reasoning control (skipped for routes the catalog
+        marks reasoning-free), otherwise commit.
+        """
+        if result.success and _picker_offers_reasoning(state.get("provider_data") or {}, result.new_model):
+            state.update(stage="reasoning", switch_result=result, selected=0, _scroll_offset=0)
+            self._invalidate(min_interval=0.0)
+            return
+        self._commit_picker_result(result, persist_global, reasoning_effort=reasoning_effort)
+
+    def _handle_picker_routing_stage(self, state, selected: int, persist_global: bool) -> None:
+        """Provider checklist step (SPACE toggles a row, ENTER proceeds).
+
+        ENTER with nothing checked skips the write entirely — an existing pin of this model stays
+        as it is, which is the only way to leave routing alone without losing it.
+        """
+        del selected
+        result = state.get("switch_result")
+        if result is None:
+            self._close_model_picker()
+            return
+        rows = state.get("routing_rows") or []
+        checked = set(state.get("routing_checked") or ())
+        if state.get("routing_clear_index") in checked:
+            _apply_picker_routing(result.new_model, [], "", clear=True)
+            self._advance_after_model_pick(state, result, persist_global)
+            return
+        order = [rows[i]["tag"] for i in sorted(i for i in checked if 0 <= i < len(rows))]
+        if not order:
+            self._advance_after_model_pick(state, result, persist_global)
+            return
+        state.update(stage="routing_sort", routing_order=order, selected=0, _scroll_offset=0)
+        self._invalidate(min_interval=0.0)
+
+    def _handle_picker_routing_sort_stage(self, state, selected: int, persist_global: bool) -> None:
+        """Sort step for the providers just checked; the last row steps back to the checklist."""
+        rows = _picker_routing_sort_rows()
+        result = state.get("switch_result")
+        if result is None:
+            self._close_model_picker()
+            return
+        if selected == len(rows):  # ← Back to the provider checklist
+            state.update(stage="routing", selected=0, _scroll_offset=0)
+            self._invalidate(min_interval=0.0)
+            return
+        if selected > len(rows):
+            self._close_model_picker()
+            return
+        value = rows[selected][0]
+        _apply_picker_routing(result.new_model, state.get("routing_order") or [], value)
+        state["routing_sort"] = value
+        self._advance_after_model_pick(state, result, persist_global)
 
     def _commit_picker_result(self, result, persist_global: bool, reasoning_effort: str = "") -> None:
         """Close the picker and run the confirm+apply sequence for ``result``."""

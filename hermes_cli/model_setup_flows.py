@@ -71,6 +71,11 @@ def _model_flow_openrouter(config, current_model=""):
     selected = _prompt_model_selection(
         openrouter_models, current_model=current_model, pricing=pricing, confirm_provider="openrouter",
         confirm_base_url=OPENROUTER_BASE_URL, confirm_api_key=_resolved or existing_key)
+    if selected:
+        # Second step: who serves it and how OpenRouter ranks them. Skipped silently for
+        # single-endpoint models — there is nothing to choose there.
+        from hermes_cli.provider_routing_picker import configure_after_selection
+        configure_after_selection(selected, provider="openrouter", base_url=OPENROUTER_BASE_URL)
     _finish_model(selected, "openrouter", f"Default model set to: {selected} (via OpenRouter)",
                   base_url=OPENROUTER_BASE_URL, api_mode="chat_completions")
 

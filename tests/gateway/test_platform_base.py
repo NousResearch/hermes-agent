@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+import re
 import time
 from unittest.mock import patch
 
@@ -55,6 +56,48 @@ class TestInboundMediaSizeCap:
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")
+
+
+class TestImageCacheFilename:
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+
+    def test_preserves_a_sanitized_inbound_filename_stem(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(
+            self._PNG, ext=".png", filename="Screenshot 2026-09-15 at 11.12.26.png"
+        )
+
+        assert re.fullmatch(
+            r"img_[0-9a-f]{12}_Screenshot-2026-09-15-at-11.12.26\.png", os.path.basename(path)
+        )
+
+    def test_normalizes_runs_of_illegal_characters_to_one_separator(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(self._PNG, ext=".png", filename="--- Screen : 01 !!!.png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}_Screen-01\.png", os.path.basename(path))
+
+    def test_strips_path_components_and_falls_back_without_a_filename(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        named_path = cache_image_from_bytes(self._PNG, ext=".png", filename="../../outside.png")
+        unnamed_path = cache_image_from_bytes(self._PNG, ext=".png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}_outside\.png", os.path.basename(named_path))
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(unnamed_path))
+
+    def test_limits_the_sanitized_stem_to_64_characters(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(self._PNG, ext=".png", filename=f"{'a' * 80}.png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}_a{64}\.png", os.path.basename(path))
 
 
 class TestSecretCaptureGuidance:

@@ -573,30 +573,34 @@ def _looks_like_image(data: bytes) -> bool:
                or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
 
 
-def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string."""
-    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
+def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes,
+                      filename: str | None = None) -> str:
+    """Write data under a unique cache name, retaining a safe inbound stem when supplied."""
+    stem = Path(filename if isinstance(filename, str) else "").stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip(".-_")[:64]
+    suffix = f"_{stem}" if stem else ""
+    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{suffix}{ext}"
     filepath.write_bytes(data)
     return str(filepath)
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
     ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
     validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
-    return _write_cache_file(get_image_cache_dir(), "img", ext, data)
+    return _write_cache_file(get_image_cache_dir(), "img", ext, data, filename)
 
 
-async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Cache image bytes without blocking the caller's event loop."""
-    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext, filename)
 
 
 async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type: str, accept: str,
-                                cache_fn, log_label: str) -> str:
+                                cache_fn, log_label: str, filename: str | None = None) -> str:
     """Shared downloader behind ``cache_*_from_url``: SSRF-checked (pre-flight + per-redirect;
     raises ValueError), size-capped, linear-backoff retries on timeouts / 429 / 5xx."""
     from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
@@ -612,7 +616,8 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
                 async with client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
                     content = await _read_httpx_body_with_limit(response, media_type=media_type)
-                return await asyncio.to_thread(cache_fn, content, ext)
+                kwargs = {"filename": filename} if filename is not None else {}
+                return await asyncio.to_thread(cache_fn, content, ext, **kwargs)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -625,11 +630,13 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
                 raise
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+async def cache_image_from_url(
+    url: str, ext: str = ".jpg", retries: int = 2, filename: str | None = None,
+) -> str:
     """Download an image URL into the image cache; return the absolute path."""
     return await _cache_media_from_url(
         url, ext, retries, media_type="image", accept="image/*,*/*;q=0.8",
-        cache_fn=cache_image_from_bytes, log_label="Media")
+        cache_fn=cache_image_from_bytes, log_label="Media", filename=filename)
 
 
 def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:

@@ -626,7 +626,7 @@ class LineAdapter(BasePlatformAdapter):
         ext = _INBOUND_MEDIA_EXT.get(msg_type, ".bin")
         try:
             if msg_type == "image":
-                return await cache_image_from_bytes_async(data, ext=ext), "image/jpeg"
+                return await cache_image_from_bytes_async(data, ext=ext, filename=filename), "image/jpeg"
             if msg_type in _INBOUND_AV_CACHERS:
                 return await _INBOUND_AV_CACHERS[msg_type](data, ext=ext), mimetypes.guess_type(f"{msg_type}{ext}")[0] or f"{msg_type}/mp4"
             document_name = filename or f"line_file{ext}"

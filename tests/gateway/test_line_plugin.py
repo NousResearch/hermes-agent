@@ -211,7 +211,7 @@ class TestInboundMedia:
         ) as cache:
             asyncio.run(adapter._handle_message_event(self._event("image")))
 
-        cache.assert_awaited_once_with(b"line-bytes", ext=".jpg")
+        cache.assert_awaited_once_with(b"line-bytes", ext=".jpg", filename=None)
         event = self._captured_event(adapter)
         assert event.message_type is _line.MessageType.PHOTO
         assert event.media_urls == ["/cache/image.jpg"]
@@ -573,4 +573,3 @@ class TestMediaPublicUrlGuard:
         result = asyncio.run(ad.send_image_file("Uchat", str(img)))
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
-

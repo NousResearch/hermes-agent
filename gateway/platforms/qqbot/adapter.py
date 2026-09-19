@@ -990,7 +990,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if content_type.startswith("image/"):
             # Historical qqbot mapping: trust mimetypes' guess (never the shared table), fall back to .jpg.
             ext = ext_for_mime(content_type, use_defaults=False, use_mimetypes=True, fallback=".jpg") or ".jpg"
-            return await cache_image_from_bytes_async(data, ext)
+            return await cache_image_from_bytes_async(data, ext, original_name or None)
         if content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice is usually .amr/.silk — convert to .wav for STT engines.
             return await self._convert_audio_to_wav(data, url)

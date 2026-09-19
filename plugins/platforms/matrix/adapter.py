@@ -2217,7 +2217,9 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if msg_type == MessageType.PHOTO:
             ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}
-            cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext_map.get(media_type, ".jpg"))
+            cached_path = await cache_image_from_bytes_async(
+                file_bytes, ext=ext_map.get(media_type, ".jpg"), filename=body
+            )
             logger.info("[Matrix] Cached user image at %s", cached_path)
             return cached_path
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:

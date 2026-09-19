@@ -6386,7 +6386,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 image_bytes = await file_obj.download_as_bytearray()
                 image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                 try:
-                    cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
+                    cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext, filename=display)
                 except ValueError as e:
                     logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
                     return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")

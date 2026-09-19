@@ -3,15 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useSubmitPrompt } from '@/app/session/hooks/use-prompt-actions/submit'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
-import type { RpcEvent } from '@/types/hermes'
+import type { GatewayEvent } from '@hermes/shared'
 
 import { renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
-const input = (id: string, ref?: string, session = 's'): RpcEvent => ({
+const input = (id: string, ref?: string, session = 's'): GatewayEvent => ({
   type: 'message.input',
   session_id: session,
-  turn: { id: 'run' },
+  turn: { id: 'run', source: { kind: 'unknown' } },
   payload: {
     kind: 'redirect',
     input: { role: 'user', text: 'Same words', display_kind: 'steer' },
@@ -29,7 +29,7 @@ describe('shared correction observation', () => {
     vi.useFakeTimers()
     const h = renderMessageStream('s')
     act(() => {
-      h.handleEvent({ type: 'message.start', session_id: 's', turn: { id: 'run' } })
+      h.handleEvent({ type: 'message.start', session_id: 's', turn: { id: 'run', source: { kind: 'unknown' } } })
       h.handleEvent({ type: 'message.delta', session_id: 's', payload: { text: 'Before' } })
       h.handleEvent(input('one'))
       h.handleEvent(input('one')) // replay overlap
@@ -51,13 +51,13 @@ describe('shared correction observation', () => {
   it('recognizes its own optimistic row by reference and rejects foreign executions or unscoped input', () => {
     const h = renderMessageStream('s')
     act(() => {
-      h.handleEvent({ type: 'message.start', session_id: 's', turn: { id: 'run' } })
+      h.handleEvent({ type: 'message.start', session_id: 's', turn: { id: 'run', source: { kind: 'unknown' } } })
     })
     h.states.set('s', { ...h.state(), messages: [{ id: 'local-ref', role: 'user', parts: [textPart('Same words')] }] })
     act(() => {
       h.handleEvent(input('own', 'local-ref'))
       h.handleEvent(input('own', 'local-ref'))
-      h.handleEvent({ ...input('stale'), turn: { id: 'old-run' } })
+      h.handleEvent({ ...input('stale'), turn: { id: 'old-run', source: { kind: 'unknown' } } })
       h.handleEvent({ ...input('unscoped'), session_id: undefined })
       h.handleEvent({ ...input('hidden'), payload: { kind: 'redirect', input: null, inputs: [{ id: 'hidden' }] } })
     })
@@ -68,7 +68,7 @@ describe('shared correction observation', () => {
     expect(h.state().messages.map(chatMessageText)).toEqual(['Same words', 'Same words'])
     // A background session's correction belongs to its own state and never the focused chat.
     act(() => {
-      h.handleEvent({ type: 'message.start', session_id: 'background', turn: { id: 'run' } })
+      h.handleEvent({ type: 'message.start', session_id: 'background', turn: { id: 'run', source: { kind: 'unknown' } } })
       h.handleEvent(input('background', undefined, 'background'))
     })
     expect(h.state().messages).toHaveLength(2)
@@ -76,10 +76,10 @@ describe('shared correction observation', () => {
   })
 })
 
-const start = (execution: string, id: string, ref?: string, session = 's'): RpcEvent => ({
+const start = (execution: string, id: string, ref?: string, session = 's'): GatewayEvent => ({
   type: 'message.start',
   session_id: session,
-  turn: { id: execution },
+  turn: { id: execution, source: { kind: 'unknown' } },
   payload: {
     input: { role: 'user', text: 'Same words' },
     inputs: [{ id, ref }]
@@ -111,7 +111,7 @@ describe('shared starting input observation', () => {
     const streaming = h.state()
     act(() => {
       h.handleEvent(start('run', 'first')) // replay must not reset the live stream or correction ids
-      h.handleEvent({ ...input('foreign'), turn: { id: 'foreign-run' } })
+      h.handleEvent({ ...input('foreign'), turn: { id: 'foreign-run', source: { kind: 'unknown' } } })
       h.handleEvent({ ...start('unscoped-run', 'unscoped'), session_id: undefined })
       h.handleEvent(input('correction'))
     })
@@ -123,11 +123,11 @@ describe('shared starting input observation', () => {
       ['assistant', 'After']
     ])
     act(() => {
-      h.handleEvent({ type: 'message.complete', session_id: 's', turn: { id: 'run' }, payload: { text: 'After' } })
+      h.handleEvent({ type: 'message.complete', session_id: 's', turn: { id: 'run', source: { kind: 'unknown' } }, payload: { text: 'After' } })
       h.handleEvent({ type: 'session.info', session_id: 's', payload: { running: true } })
       h.handleEvent(start('second-run', 'second')) // same words, fresh execution and occurrence
       h.handleEvent(start('run', 'first')) // replay of a retired execution
-      h.handleEvent({ ...input('late-correction'), turn: { id: 'run' } })
+      h.handleEvent({ ...input('late-correction'), turn: { id: 'run', source: { kind: 'unknown' } } })
     })
     expect(h.state().observedExecutionId).toBe('second-run')
     expect(
@@ -140,7 +140,7 @@ describe('shared starting input observation', () => {
     const stopped = h.state()
     act(() => {
       h.handleEvent(start('interrupted-run', 'interrupted'))
-      h.handleEvent({ ...input('interrupted'), turn: { id: 'second-run' } })
+      h.handleEvent({ ...input('interrupted'), turn: { id: 'second-run', source: { kind: 'unknown' } } })
       h.handleEvent(start('background-run', 'background', undefined, 'background'))
     })
     expect(h.state()).toBe(stopped)
@@ -185,7 +185,7 @@ describe('shared starting input observation', () => {
         }))
       })
 
-      const event: RpcEvent = {
+      const event: GatewayEvent = {
         ...start('merged-run', 'first'),
         payload: {
           input: { role: 'user', text: 'Part 0\nPart 1\nPeer addition' },
@@ -300,7 +300,7 @@ describe('shared starting input observation', () => {
         [submittedRef, ['own-input'], 'Same words']
       ])
       act(() => {
-        h.handleEvent({ type: 'message.complete', session_id: 's', turn: { id: 'own-run' }, payload: { text: 'Done' } })
+        h.handleEvent({ type: 'message.complete', session_id: 's', turn: { id: 'own-run', source: { kind: 'unknown' } }, payload: { text: 'Done' } })
         h.handleEvent(start('retry-run', 'retry-input', submittedRef))
       })
       expect(

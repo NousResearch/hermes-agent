@@ -13,15 +13,15 @@ import { $providerWaitSessions, setSessionProviderWait } from '@/store/provider-
 import { $busy, $messages } from '@/store/session'
 import { $sessionStates, setSessionTileDelegate } from '@/store/session-states'
 import { $draftingToolSessions, setSessionDraftingTool } from '@/store/tool-drafting'
-import type { RpcEvent } from '@/types/hermes'
+import type { GatewayEvent } from '@hermes/shared'
 
 import { renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
-const start = (execution: string, text: string, ref?: string): RpcEvent => ({
+const start = (execution: string, text: string, ref?: string): GatewayEvent => ({
   type: 'message.start',
   session_id: 's',
-  turn: { id: execution },
+  turn: { id: execution, source: { kind: 'unknown' } },
   payload: { input: { role: 'user', text }, inputs: [{ id: `${execution}-input`, ref }] }
 })
 
@@ -192,7 +192,7 @@ describe('shared input integration boundaries', () => {
           h.handleEvent({
             type: 'message.input',
             session_id: 's',
-            turn: { id: 'peer' },
+            turn: { id: 'peer', source: { kind: 'unknown' } },
             payload: {
               kind: 'redirect',
               input: { role: 'user', text: 'Peer correction', display_kind: 'steer' },
@@ -280,7 +280,7 @@ describe('shared input integration boundaries', () => {
 
     h.updateSessionState('s', state => ({ ...state, messages: users }))
 
-    const event: RpcEvent = {
+    const event: GatewayEvent = {
       ...start('merged', ''),
       payload: {
         input: {

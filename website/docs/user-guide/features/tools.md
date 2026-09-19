@@ -22,6 +22,7 @@ High-level categories:
 |----------|----------|-------------|
 | **Web** | `web_search`, `web_extract` | Search the web and extract page content. |
 | **X Search** | `x_search` | Search X (Twitter) posts and threads via xAI's built-in `x_search` Responses tool — gated on xAI credentials (SuperGrok OAuth or `XAI_API_KEY`); off by default, opt in via `hermes tools` → 🐦 X (Twitter) Search. |
+| **Open Code Review** | `open_codereview` | Review a diff through [Open Code Review](https://open-codereview.ai)'s local command line tool and keep that tool pinned to the provider/model Hermes is using, so switching models never means re-configuring it by hand — gated on the review command resolving; off by default, opt in via `hermes tools` → 🔎 Open Code Review. |
 | **Terminal & Files** | `terminal`, `process`, `read_file`, `patch` | Execute commands and manipulate files. |
 | **Browser** | `browser_navigate`, `browser_snapshot`, `browser_vision` | Interactive browser automation with text and vision support. |
 | **Media** | `vision_analyze`, `image_generate`, `text_to_speech` | Multimodal analysis and generation. |

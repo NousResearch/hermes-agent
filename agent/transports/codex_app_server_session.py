@@ -22,6 +22,7 @@ from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import CodexAppServerClient, CodexAppServerError
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from tools import approval_context
 
 logger = logging.getLogger(__name__)
 
@@ -594,12 +595,26 @@ class CodexAppServerSession:
         if self._approval_callback is None:
             return "decline"
         command, description = prompt()
+        hook_kwargs = {
+            "command": redact_sensitive_text(command, force=True),
+            "description": redact_sensitive_text(description, force=True),
+            "pattern_key": "codex_runtime",
+            "pattern_keys": ["codex_runtime"],
+            "surface": "cli",
+        }
+        approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
         try:
             choice = self._approval_callback(command, description, allow_permanent=False)
-            return _approval_choice_to_codex_decision(choice)
         except Exception:
             logger.exception("approval_callback raised on %s", log_label)
+            approval_context._fire_approval_hook(
+                "post_approval_response", **hook_kwargs, choice="notify_failed"
+            )
             return "decline"
+        approval_context._fire_approval_hook(
+            "post_approval_response", **hook_kwargs, choice=choice
+        )
+        return _approval_choice_to_codex_decision(choice)
 
     def _decide_exec_approval(self, params: dict) -> str:
         def prompt() -> tuple[str, str]:

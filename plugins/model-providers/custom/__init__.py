@@ -49,18 +49,20 @@ class CustomProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
-        # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
-        # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
-        # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,
-        # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s); enabled
-        # without effort -> omit so the server default applies. Never emit
-        # think=True (Ollama-only flag).
+        # disabled -> omit reasoning controls for generic OpenAI-compatible
+        # custom endpoints.  Strict remotes (vLLM, Mistral, Volcengine ARK,
+        # user chat_template_kwargs) can 400 on reasoning_effort="none".  Only
+        # explicit Ollama endpoints need the dual disable: /v1 honours top-level
+        # reasoning_effort (#25758), while native/proxy paths use think=False
+        # (#14820). enabled+effort -> top-level reasoning_effort clamped to the
+        # OpenAI-compat wire (GLM/ARK, vLLM and SGLang all top out at "max";
+        # "ultra" verbatim 400s); enabled without effort -> omit so the server
+        # default applies. Never emit think=True (Ollama-only flag).
         if reasoning_config and isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
-                # See #14820.
-                top_level["reasoning_effort"] = "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
+                    top_level["reasoning_effort"] = "none"
                     extra_body["think"] = False
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)

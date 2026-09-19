@@ -25,7 +25,7 @@ from utils import fast_safe_load
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
-# path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
+# path -> (*user_signature, *managed_signature, *default_signature, effective, env_snapshot).
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
@@ -65,9 +65,10 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        cache_len = len(cache_sig) if cache_sig is not None else 0
+        if cached is not None and cache_sig is not None and cached[:cache_len] == cache_sig:
+            if all(_config._env_ref_lookup(k) == v for k, v in cached[cache_len + 1].items()):
+                return copy.deepcopy(cached[cache_len])
 
         raw: Dict[str, Any] = {}
         recovered = False
@@ -93,6 +94,8 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                 if config_path == _config.get_config_path():
                     from hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
+
+        raw = _config._deep_merge(_config._read_profile_default_raw(config_path), raw)
 
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()

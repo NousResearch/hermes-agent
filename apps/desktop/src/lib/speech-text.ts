@@ -1,7 +1,8 @@
+import { translateNow } from '@/i18n'
+
 const EMOJI_RE = /(?:[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]|[\u{FE0F}\u{200D}]|[\u{E0020}-\u{E007F}])+/gu
 
 const FENCED_CODE_RE = /```[\s\S]*?(?:```|$)/g
-const CODE_BLOCK_SUMMARY = ' code block omitted '
 const INLINE_CODE_RE = /`([^`]+)`/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
 const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
@@ -102,6 +103,7 @@ function parseMarkdownTableRow(line: string): MarkdownTableRow | null {
 function stripMarkdownTables(text: string): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const tableLines = new Set<number>()
+  const tableStarts = new Set<number>()
 
   let index = 1
 
@@ -121,6 +123,7 @@ function stripMarkdownTables(text: string): string {
       continue
     }
 
+    tableStarts.add(index - 1)
     tableLines.add(index - 1)
     tableLines.add(index)
 
@@ -139,7 +142,13 @@ function stripMarkdownTables(text: string): string {
     index = rowIndex
   }
 
-  return lines.filter((_, index) => !tableLines.has(index)).join('\n')
+  // Replace each table's header line with a spoken notice instead of removing
+  // it silently — otherwise table content vanishes from the audio with no
+  // indication anything was there.
+  return lines
+    .map((line, lineIndex) => (tableStarts.has(lineIndex) ? translateNow('assistant.thread.speechTableOmitted') : line))
+    .filter((_, lineIndex) => !tableLines.has(lineIndex) || tableStarts.has(lineIndex))
+    .join('\n')
 }
 
 function normalizeLineBreaks(text: string): string {
@@ -151,13 +160,16 @@ function normalizeLineBreaks(text: string): string {
     .replace(SOFT_BREAK_RE, ' ')
 }
 
+/** Locale-dependent: placeholders come from `translateNow`, which reads the
+ *  runtime i18n locale — callers outside the i18n runtime (or before locale
+ *  init) get the default locale's copy. */
 export function sanitizeTextForSpeech(text: string): string {
   return normalizeLineBreaks(stripMarkdownTables(text))
-    .replace(FENCED_CODE_RE, CODE_BLOCK_SUMMARY)
+    .replace(FENCED_CODE_RE, () => translateNow('assistant.thread.speechCodeBlockOmitted'))
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')
-    .replace(URL_RE, ' link ')
+    .replace(URL_RE, () => translateNow('assistant.thread.speechLink'))
     .replace(EMOJI_RE, ' ')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[*_~>#]/g, '')

@@ -466,6 +466,8 @@ class ProjectFacts:
 def detect_project_facts(root: Path) -> ProjectFacts:
     """Detect manifests, package manager(s), verify commands, context files (single source of truth)."""
     verify: list[str] = []
+    if (root / "scripts" / "quality-gate.sh").is_file():
+        verify.append("scripts/quality-gate.sh")
     if (root / "scripts" / "run_tests.sh").is_file():
         verify.append("scripts/run_tests.sh")
     if (root / "package.json").is_file():

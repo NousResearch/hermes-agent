@@ -156,6 +156,22 @@ class TestProjectFacts:
         assert facts.verify_commands == ["pnpm run test"]  # dev excluded
         assert facts.context_files == []
 
+    def test_detect_project_facts_includes_quality_gate(self, tmp_path):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "quality-gate.sh").write_text("#!/bin/sh\necho QUALITY_GATE_OK\n")
+        facts = cc.detect_project_facts(tmp_path)
+        assert "scripts/quality-gate.sh" in facts.verify_commands
+
+    def test_detect_project_facts_quality_gate_before_run_tests(self, tmp_path):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "quality-gate.sh").write_text("#!/bin/sh\n")
+        (scripts / "run_tests.sh").write_text("#!/bin/sh\n")
+        facts = cc.detect_project_facts(tmp_path)
+        assert facts.verify_commands[0] == "scripts/quality-gate.sh"
+        assert "scripts/run_tests.sh" in facts.verify_commands
+
     def test_project_facts_for_matches_prompt_block(self, tmp_path):
         # Invariant: the structured facts the UI consumes must not drift from the
         # commands the prompt snapshot renders — one detector feeds both.

@@ -236,7 +236,64 @@ class TestJudgeParseFailureAutoPause:
             assert "config.yaml" in d3["message"]
 
 
+class TestJudgeAuthPause:
+    """Auth denials must pause on the first turn. Timeouts still fail-open."""
 
+    def test_permission_denied_pauses_without_continuation(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="auth-deny-sid", default_max_turns=20)
+        mgr.set("rename leftover Battleground names")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge error: PermissionDeniedError", False, None, True),
+        ):
+            decision = mgr.evaluate_after_turn("The named goal is done.")
+
+        assert decision["should_continue"] is False
+        assert decision["status"] == "paused"
+        assert mgr.state.turns_used == 1
+        assert "PermissionDenied" in (mgr.state.paused_reason or mgr.state.last_reason)
+
+    def test_timeout_still_fail_opens(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="auth-timeout-sid", default_max_turns=20)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge error: TimeoutError", False, None, True),
+        ):
+            decision = mgr.evaluate_after_turn("still working")
+
+        assert decision["should_continue"] is True
+        assert decision["status"] == "active"
+        assert mgr.state.consecutive_transport_failures == 1
+
+
+class TestGoalResumeResetsJudgeFailures:
+    def test_resume_resets_consecutive_judge_failures(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="resume-strikes-sid", default_max_turns=20)
+        mgr.set("do a thing")
+        mgr.state.consecutive_transport_failures = 5
+        mgr.state.consecutive_parse_failures = 3
+        mgr.state.turns_used = 20
+        mgr.pause(reason="judge API unreachable 5 turns in a row")
+
+        mgr.resume()
+
+        assert mgr.state.status == "active"
+        assert mgr.state.turns_used == 0
+        assert mgr.state.consecutive_transport_failures == 0
+        assert mgr.state.consecutive_parse_failures == 0
 
 
 # ──────────────────────────────────────────────────────────────────────

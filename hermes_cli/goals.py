@@ -43,6 +43,22 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+# Auth denials will not recover by retrying the same token. Pause immediately instead of
+# fail-opening continue (which re-queues the Ralph loop until the strike cap).
+_JUDGE_AUTH_ERROR_MARKERS = (
+    "permissiondeniederror",
+    "authenticationerror",
+    "authorizationerror",
+    "unauthorizederror",
+    "invalid_grant",
+    "unauthenticated",
+)
+
+
+def _is_judge_auth_error(reason: str) -> bool:
+    """True when the judge error is a credential denial, not a transient blip."""
+    text = (reason or "").lower()
+    return any(marker in text for marker in _JUDGE_AUTH_ERROR_MARKERS)
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -1173,6 +1189,8 @@ class GoalManager:
         self._state.status = "active"
         self._state.paused_reason = None
         self._state.clear_wait()   # resuming starts fresh
+        self._state.consecutive_transport_failures = 0
+        self._state.consecutive_parse_failures = 0
         if reset_budget:
             self._state.turns_used = 0
         return self._save()
@@ -1504,6 +1522,15 @@ class GoalManager:
             state.status = "done"
             self._save()
             return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
+
+        if transport_failed and _is_judge_auth_error(reason):
+            return self._pause_decision(
+                f"judge API auth failed: {reason}",
+                "continue",
+                reason,
+                "⏸ Goal paused — the goal judge was denied by the provider. "
+                "Fix auxiliary.goal_judge credentials, then /goal resume.",
+            )
 
         # Persistent judge failures (API unreachable / unparseable output) auto-pause and point at the
         # goal_judge config so a broken judge can't burn the whole turn budget.

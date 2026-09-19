@@ -82,6 +82,14 @@ def _warn_once(flag_name: str, message: str, *args: Any) -> None:
         globals()[flag_name] = True
         logger.warning(message, *args)
 
+def _get_oneshot_max_children() -> int:
+    """delegation.oneshot_max_children (total children per finite one-shot session; 0 = unlimited)."""
+    return _knob(
+        "oneshot_max_children", None, lambda v: max(0, int(v)), 2,
+        "delegation.oneshot_max_children=%r is not a valid integer; using default 2",
+    )
+
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 

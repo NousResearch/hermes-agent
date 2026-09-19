@@ -31,7 +31,7 @@ beforeAll(() => {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
+  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean; description?: string } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -198,6 +198,30 @@ describe('PendingApprovalStack', () => {
 
     expect(screen.getByText(longCommand).className).toContain('max-h-40')
     expect(screen.getByText(longCommand).className).toContain('overflow-auto')
+  })
+
+  it('shows the backend reason, so the card is not just the command', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(container.querySelector('[data-slot="tool-approval-reason"]')?.textContent).toBe('dangerous command')
+  })
+
+  it('wraps a long reason instead of truncating it to one line', () => {
+    const reason = 'A gate verdict long enough that a single-line ellipsis would hide the point ' + 'x'.repeat(200)
+    setRequest('chmod -R 777 /tmp/x', undefined, { description: reason })
+    const { container } = render(<PendingApprovalStack />)
+
+    const line = container.querySelector('[data-slot="tool-approval-reason"]')
+    expect(line?.textContent).toBe(reason)
+    expect(line?.className).not.toContain('truncate')
+  })
+
+  it('renders no reason line when the backend sends an empty reason', () => {
+    setRequest('chmod -R 777 /tmp/x', undefined, { description: '' })
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(container.querySelector('[data-slot="tool-approval-reason"]')).toBeNull()
   })
 
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {

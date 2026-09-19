@@ -19,6 +19,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 from hermes_cli import setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
@@ -3949,12 +3950,57 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _path_is_on_external_volume(path: Path) -> bool:
+    """Return whether *path* resolves onto a macOS ``/Volumes`` mount.
+
+    launchd's xpcproxy pre-exec-opens StandardOutPath/StandardErrorPath; that
+    open can be denied on external volumes (posix_spawn EPERM → exit 78 /
+    EX_CONFIG). Resolution errors fail open to the normal Hermes log paths.
+    """
+    try:
+        resolved = Path(path).resolve()
+    except Exception:
+        return False
+    return resolved == Path("/Volumes") or str(resolved).startswith("/Volumes/")
+
+
+def _launchd_stdio_log_paths(hermes_home: Path) -> tuple[str, str]:
+    """Return safe launchd stdout/stderr paths for a gateway plist.
+
+    Hermes application logs remain under ``$HERMES_HOME/logs``. When the home
+    is external, launchd's own stdio is parked under the real account's
+    ``~/Library/Logs`` so xpcproxy can open it before exec. Any uncertainty
+    fails open to the existing paths rather than guessing a different account.
+    """
+    default_out = str(Path(hermes_home) / "logs" / "gateway.log")
+    default_err = str(Path(hermes_home) / "logs" / "gateway.error.log")
+    try:
+        if not _path_is_on_external_volume(Path(hermes_home)):
+            return default_out, default_err
+
+        import pwd
+
+        real_account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        suffix = _profile_suffix()
+        stem = f"hermes-gateway-{suffix}" if suffix else "hermes-gateway"
+        stdout_path = real_account_home / "Library" / "Logs" / f"{stem}.stdout.log"
+        stderr_path = real_account_home / "Library" / "Logs" / f"{stem}.stderr.log"
+        if _path_is_on_external_volume(stdout_path) or _path_is_on_external_volume(stderr_path):
+            return default_out, default_err
+        return str(stdout_path), str(stderr_path)
+    except Exception:
+        return default_out, default_err
+
+
 def generate_launchd_plist() -> str:
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log, stderr_log = _launchd_stdio_log_paths(get_hermes_home())
+    stdout_log_xml = xml_escape(stdout_log)
+    stderr_log_xml = xml_escape(stderr_log)
     label = get_launchd_label()
     venv_dir = _service_venv_dir()
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
@@ -4043,10 +4089,10 @@ def generate_launchd_plist() -> str:
     <integer>25</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{stdout_log_xml}</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{stderr_log_xml}</string>
 </dict>
 </plist>
 """

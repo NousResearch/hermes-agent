@@ -99,6 +99,8 @@ def admit_api_turn(adapter, **kwargs):
         from gateway.session_api import declared_api_session
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
+    # Pin the concrete Output consumer before preparation can yield/reenter.
+    output_authorizer = getattr(adapter, '_room_output_admission', None)
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
     if settings.get('room_dispatch') is not None:
         # Refuse unsupported targets before creating any hidden conversation.
@@ -154,7 +156,9 @@ def admit_api_turn(adapter, **kwargs):
                 row = admit_session_input(authority.db, **admission,
                     _authorize_write=lambda conn: authorize_dispatch(
                         adapter, authority, shared, conn, kwargs['_room_grant_token'],
-                        dispatch, settings['room_execution_policy']))
+                        dispatch, settings['room_execution_policy'],
+                        output_authorizer=output_authorizer,
+                        output_evidence=kwargs.get('_room_output_consent')))
         except RuntimeStoreError:
             raise
         except ValueError as exc:

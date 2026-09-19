@@ -1,6 +1,7 @@
 """Root RoomLink target binding and grant fences; no listener or executor."""
 from contextlib import contextmanager
 from pathlib import Path
+from types import MethodType
 
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
@@ -74,7 +75,8 @@ def grant_fence(adapter, profile='default'):
         yield authority, shared
 
 
-def authorize_dispatch(adapter, authority, shared, conn, token, dispatch, policy):
+def authorize_dispatch(adapter, authority, shared, conn, token, dispatch, policy, *,
+                       output_authorizer=None, output_evidence=None):
     from gateway.hosted_room_peer import verify_room_grant
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     current, _, actual = target_policy(adapter, dispatch.target_profile, connection=conn)
@@ -91,3 +93,29 @@ def authorize_dispatch(adapter, authority, shared, conn, token, dispatch, policy
         raise RuntimeStoreError('room_capability_catalog_changed')
     require_current_grant(shared, claims)
     require_current_grant(conn, claims)
+    _authorize_output_admission(adapter, authority, shared, conn, token, dispatch, policy,
+                                claims, output_authorizer, output_evidence)
+
+
+def _authorize_output_admission(adapter, authority, shared, conn, token, dispatch, policy,
+                                claims, provider, evidence):
+    """Concrete Output seam, called only by the protected NEW admission write.
+
+    Output installs a synchronous adapter-bound ``_room_output_admission``.
+    It must check its exact owner/evidence/current readiness on these already
+    fenced connections, without acquiring a grant store, committing, or doing
+    external work. Only literal True confirms consent; exceptions refuse NEW.
+    The pre-preparation provider must still be installed. Accepted replay never
+    reaches this seam. No provider is needed for the old four/five-right grants.
+    """
+    rights = {'artifact.read', 'artifact.ack'} & set(claims['permissions'])
+    if not rights:
+        if evidence is not None:
+            raise RuntimeStoreError('permission_denied')
+        return
+    if (rights != {'artifact.read', 'artifact.ack'}
+            or not isinstance(provider, MethodType) or provider.__self__ is not adapter
+            or getattr(adapter, '_room_output_admission', None) is not provider):
+        raise RuntimeStoreError('room_output_unavailable')
+    if provider(authority, shared, conn, token, dispatch, policy, evidence) is not True:
+        raise RuntimeStoreError('room_output_unavailable')

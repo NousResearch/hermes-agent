@@ -2336,7 +2336,11 @@ def run_job(
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+        output = (
+            f"**Result Chars:** {len(logged_response)}\n"
+            + _run_doc_header(job, job_name, job_id, prompt)
+            + f"## Response\n\n{logged_response}\n"
+        )
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
         return True, output, final_response, None
@@ -2357,9 +2361,12 @@ def run_job(
         if _audit is not None:
             _audit.write({}, error_msg)
         from cron.scheduler_diagnostics import format_run_error
+        error_section = format_run_error(e)
+        error_payload = error_section.removeprefix("## Error\n\n").removesuffix("\n")
         output = (
-            _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
-            + format_run_error(e)
+            f"**Result Chars:** {len(error_payload)}\n"
+            + _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
+            + error_section
         )
         return False, output, "", error_msg
 

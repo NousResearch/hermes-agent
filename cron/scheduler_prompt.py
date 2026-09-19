@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -63,6 +64,35 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
+def _extract_context_payload_from_job_output(raw_output: str) -> str:
+    """Reduce stored cron markdown to the most useful downstream context payload.
+
+    For chained cron jobs, the downstream agent usually needs the upstream
+    model/script result, not the full wrapper with repeated prompts and schedule
+    metadata. Prefer the ``## Response`` body, then ``## Error`` for failed runs,
+    otherwise fall back to the full stored text.
+    """
+    document = raw_output or ""
+    length_match = re.match(r"\A\*\*Result Chars:\*\*[ \t]*(\d+)[ \t]*\r?\n", document)
+    # A payload length cannot exceed its document; bound conversion of corrupt metadata.
+    if length_match and len(length_match.group(1)) <= len(str(len(document))):
+        result_chars = int(length_match.group(1))
+        content_end = len(document) - 1 if document.endswith("\n") else len(document)
+        if 0 < result_chars <= content_end:
+            return document[content_end - result_chars:content_end]
+
+    text = document.strip()
+    if not text:
+        return ""
+
+    headings = list(re.finditer(r"(?m)^## (?:Response|Error)[ \t]*\r?$", text))
+    if headings:
+        payload = text[headings[-1].end():].lstrip()
+        if payload:
+            return payload
+    return text
+
+
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     """Prepend the latest output of each ``context_from`` job; returns ``(prompt, injected)``."""
     context_from = job.get("context_from")
@@ -93,7 +123,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                candidate = output_file.read_text(encoding="utf-8")
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -102,8 +132,8 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if candidate and not silent_audit:
-                    latest_output = candidate
+                if candidate.strip() and not silent_audit:
+                    latest_output = _extract_context_payload_from_job_output(candidate)
                     break
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (

@@ -117,6 +117,38 @@ class WindowsGatewayService:
     gateway_create_time: float = 0.0
 
 
+
+def _foreign_user_systemd_gateway_pids(all_profiles: bool = False) -> set[int]:
+    """Gateway PIDs in another user's systemd manager, visible to root only through cgroups."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0 or not os.path.isdir("/proc"):
+        return set()
+    from gateway.status import looks_like_gateway_command_line
+
+    service = get_service_name()
+    pids: set[int] = set()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                command = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
+            with open(f"/proc/{pid}/cgroup", "rb") as f:
+                cgroup = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        if not looks_like_gateway_command_line(command):
+            continue
+        units = [line.rsplit("/", 1)[-1] for line in cgroup.splitlines() if "/user.slice/" in line]
+        if any(
+            unit == f"{service}.service"
+            or (all_profiles and (unit == "hermes-gateway.service" or unit.startswith("hermes-gateway-")))
+            for unit in units
+        ):
+            pids.add(pid)
+    return pids
+
+
 def _get_service_pids(all_profiles: bool = False) -> set:
     """PIDs managed by systemd/launchd gateway services (excluded from stale-process sweeps).
 
@@ -168,6 +200,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                         pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+        pids.update(_foreign_user_systemd_gateway_pids(all_profiles))
 
     # --- launchd (macOS) ---
     if is_macos():

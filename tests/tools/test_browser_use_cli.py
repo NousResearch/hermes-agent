@@ -300,6 +300,102 @@ class TestVaultEgressRedaction:
         assert secret not in serialized
         assert serialized.count("«redacted-vault-secret»") == 2
 
+    def test_vault_fill_exec_session_db_chain_under_profile(self, tmp_path, monkeypatch):
+        """Fixes #112693: producer (browser_vault_fill) → consumer (browser_exec) → persistence.
+
+        Registration must come from the real vault-fill seam under a non-default profile
+        home — not a manual register_vault_redaction_value call — and both the returned
+        tool payload and the persisted session row must carry only the redaction marker.
+        """
+        from unittest.mock import patch
+
+        from agent import redact
+        from agent.vault_store import VaultStore
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_state import SessionDB
+        from tools import browser_vault_tool
+
+        profile_home = tmp_path / "profiles" / "routed-worker"
+        profile_home.mkdir(parents=True)
+        canary = "plain vault canary nobody would flag 112693"
+        store = VaultStore(base_dir=profile_home / "vault")
+        meta = store.add_item(
+            kind="login",
+            label="Example login",
+            origin="https://example.com",
+            secret={
+                "identifier_type": "email",
+                "identifier": "user@example.com",
+                "password": canary,
+                "origin": "https://example.com",
+            },
+        )
+        controls = [
+            {
+                "autocomplete": "current-password",
+                "formIndex": 0,
+                "index": 0,
+                "label": "",
+                "name": "pw",
+                "type": "password",
+            },
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        cli = _fake_cli(
+            tmp_path,
+            f'cat > /dev/null\necho "stdout={canary}"\necho "stderr={canary}" >&2\n',
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            with (
+                patch("agent.vault_store.get_vault_store", return_value=store),
+                patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+                patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret),
+            ):
+                fill = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+            assert fill["success"] is True
+
+            raw = bu_cli.browser_exec("print(1)")
+            result = json.loads(raw)
+            serialized = json.dumps(result, ensure_ascii=False)
+            assert canary not in raw
+            assert canary not in serialized
+            assert serialized.count("«redacted-vault-secret»") == 2
+
+            db_path = profile_home / "state.db"
+            db = SessionDB(db_path=db_path)
+            try:
+                sid = "s-vault-112693"
+                db.create_session(session_id=sid, source="test", model="test/model")
+                db.append_message(
+                    sid,
+                    role="tool",
+                    content=raw,
+                    tool_name="browser_exec",
+                    tool_call_id="tc-vault-112693",
+                )
+                rows = db.get_messages(sid)
+                persisted = "\n".join(str(r.get("content") or "") for r in rows)
+            finally:
+                db.close()
+
+            assert canary not in persisted
+            assert "«redacted-vault-secret»" in persisted
+            assert canary.encode() not in db_path.read_bytes()
+        finally:
+            redact.clear_vault_redaction_values()
+            reset_hermes_home_override(token)
+
 
 class TestFindCli:
     """The tests/tools conftest pins _find_cli to None (host isolation);

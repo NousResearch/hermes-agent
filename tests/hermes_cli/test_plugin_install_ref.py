@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -349,6 +349,30 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
     assert list(target.parent.glob(".demo.remove-*")) == []
 
 
+def test_metadata_write_failure_restores_replaced_git_tree(monkeypatch, tmp_path):
+    from hermes_cli import plugins_cmd as pc
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _, _ = pc._install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
+    before = _metadata(home)
+    write_metadata = pc._write_install_metadata
+
+    def fail_new_metadata(metadata):
+        if metadata["demo"]["revision"] == new_sha:
+            raise OSError("disk full")
+        write_metadata(metadata)
+
+    monkeypatch.setattr(pc, "_write_install_metadata", fail_new_metadata)
+    with pytest.raises(OSError, match="disk full"):
+        pc._install_plugin_core(repo.as_uri(), force=True, ref=new_sha)
+
+    assert _git(target, "rev-parse", "HEAD") == old_sha
+    assert _metadata(home) == before
+    assert not any(path.is_dir() for path in target.parent.glob(".install-*"))
+
+
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
 
@@ -358,7 +382,9 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     target, _manifest, _name = _install_plugin_core(
         repo.as_uri(), force=False, ref=old_sha
     )
-    shutil.rmtree(target)
+    # TemporaryDirectory also clears read-only Git objects on Windows.
+    with tempfile.TemporaryDirectory(dir=tmp_path) as removed:
+        target.rename(Path(removed) / "removed-plugin")
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 

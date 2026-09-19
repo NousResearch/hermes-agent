@@ -199,6 +199,8 @@ class TestGitPullPluginDirAutostash:
         origin = tmp_path / "origin"
         origin.mkdir()
         git(origin, "init", "-q", "-b", "main")
+        # Match the updater's isolated Git environment, not host EOL settings.
+        git(origin, "config", "core.autocrlf", "false")
         git(origin, "config", "user.email", "t@t")
         git(origin, "config", "user.name", "t")
         pad = "\n".join(f"# pad {i}" for i in range(12))
@@ -210,6 +212,7 @@ class TestGitPullPluginDirAutostash:
 
         checkout = tmp_path / "checkout"
         git(tmp_path, "clone", "-q", str(origin), str(checkout))
+        git(checkout, "config", "core.autocrlf", "false")
         git(checkout, "config", "user.email", "t@t")
         git(checkout, "config", "user.name", "t")
         return origin, checkout, git

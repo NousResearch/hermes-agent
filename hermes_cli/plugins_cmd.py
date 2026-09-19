@@ -700,7 +700,9 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
         _write_install_metadata(new_metadata)
     except Exception:
         if target.exists():
-            shutil.rmtree(target)
+            # Move back under TemporaryDirectory: its cleanup handles Windows
+            # read-only Git objects without blocking restoration of the old tree.
+            os.replace(target, tmp_target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
         if old_metadata:

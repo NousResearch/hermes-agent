@@ -189,7 +189,7 @@ export class JsonRpcGatewayClient {
 
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
     this.socket = socket
-    this.stopHeartbeat()
+    this.channel.stopHeartbeat()
 
     socket.addEventListener('message', message => {
       if (this.socket !== socket) {
@@ -210,7 +210,7 @@ export class JsonRpcGatewayClient {
       }
 
       this.socket = null
-      this.stopHeartbeat()
+      this.channel.stopHeartbeat()
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
@@ -296,7 +296,7 @@ export class JsonRpcGatewayClient {
       socket.close()
     } finally {
       this.socket = null
-      this.stopHeartbeat()
+      this.channel.stopHeartbeat()
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     }
@@ -313,7 +313,13 @@ export class JsonRpcGatewayClient {
       return
     }
 
-    this.invalidateSocket(socket, new Error(message))
+    this.dropSocket(new Error(message))
+
+    try {
+      socket.close()
+    } catch {
+      // The generation was already invalidated; the reconnect owner can redial.
+    }
   }
 
   on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
@@ -467,12 +473,8 @@ export class JsonRpcGatewayClient {
 
     if (frame.method === 'event' && frame.params?.type) {
       if (frame.params.type === 'gateway.ready') {
-        if (this.gatewayReadyAdvertisesHeartbeat(frame.params.payload)) {
-          const socket = this.socket
-
-          if (socket) {
-            this.startHeartbeat(socket)
-          }
+        if (frame.params.payload?.heartbeat === true) {
+          this.channel.startHeartbeat()
         }
 
         const epoch = (frame.params.payload as { replay_epoch?: unknown } | undefined)?.replay_epoch
@@ -669,16 +671,8 @@ export class JsonRpcGatewayClient {
     this.replayInFlight = false
     this.replayHold = null
     this.socket = null
-    this.stopHeartbeat()
-
-    try {
-      socket.close()
-    } catch {
-      // The generation was already invalidated; the reconnect owner can redial.
-    }
-
+    this.channel.detach(error)
     this.setState('closed')
-    this.rejectAllPending(error)
   }
 
   private clearPending(id: GatewayRequestId): void {

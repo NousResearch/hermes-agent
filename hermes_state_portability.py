@@ -26,7 +26,7 @@ _IMPORT_SESSION_TEXT_FIELDS = (
 )
 # ``role`` is validated separately (non-empty string).
 _IMPORT_MESSAGE_TEXT_FIELDS = (
-    "tool_call_id", "tool_name", "effect_disposition", "finish_reason",
+    "tool_call_id", "tool_name", "effect_disposition", "finish_reason", "tool_result_format",
     "reasoning", "reasoning_content", "platform_message_id", "message_id",
 )
 _IMPORT_MESSAGE_JSON_FIELDS = ("reasoning_details", "codex_reasoning_items", "codex_message_items")

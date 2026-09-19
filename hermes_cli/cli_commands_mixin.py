@@ -207,7 +207,7 @@ _WORKTREE_SUBCOMMANDS = {
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
 _BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_details",
-                     "codex_reasoning_items", "codex_message_items", "timestamp")
+                     "codex_reasoning_items", "codex_message_items", "timestamp", "tool_result_format")
 
 _HATCH_PROGRESS = {"compose": "  ┊ composing spritesheet…", "save": "  ┊ saving…"}
 

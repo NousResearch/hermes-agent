@@ -257,7 +257,7 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | Advanced opt-in: mount the launch cwd into Docker `/workspace` (`true`/`false`, default: `false`) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
-| `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
+| `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image (registry image or Daytona snapshot name) |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |

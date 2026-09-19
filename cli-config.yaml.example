@@ -466,7 +466,7 @@ terminal:
 #   cwd: "~"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"   # registry image, or the name of a Daytona snapshot
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #

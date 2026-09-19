@@ -56,11 +56,20 @@ class CustomProfile(ProviderProfile):
         # without effort -> omit so the server default applies. Never emit
         # think=True (Ollama-only flag).
         if reasoning_config and isinstance(reasoning_config, dict):
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort == "none" or reasoning_config.get("enabled", True) is False:
-                # See #14820.
-                top_level["reasoning_effort"] = "none"
+            _effort = (reasoning_config.get("effort") or "").strip().lower()
+            _enabled = reasoning_config.get("enabled", True)
+            if _effort == "none" or _enabled is False:
+                # Ollama's /v1/chat/completions silently ignores
+                # extra_body.think (only /api/chat honours it — ollama#14820)
+                # but respects the top-level reasoning_effort field (#25758),
+                # so Ollama URLs emit reasoning_effort="none" + think=False.
+                # Everything else OMITS the parameter entirely: litellm-based
+                # proxies (e.g. UnsupportedParamsError 400s) reject the field
+                # even at "none", and omitting lets the endpoint apply its
+                # server-side thinking default — same wire shape as the
+                # desktop's disable-reasoning toggle.
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
+                    top_level["reasoning_effort"] = "none"
                     extra_body["think"] = False
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)

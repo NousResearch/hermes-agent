@@ -1069,8 +1069,39 @@ class TestWindowsLockedProfileCopy:
         assert bc._copy_auth_file(src, dst) is None
         assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
 
-    @pytest.mark.parametrize("locked", ["source", "destination"])
-    def test_copy_auth_file_bounds_locks_without_overwriting(self, tmp_path, locked):
+    def test_copy_auth_file_replaces_locked_destination_from_live_wal(self, tmp_path):
+        """A live Chrome WAL and a stale destination lock do not block a refresh."""
+        import hermes_cli.browser_connect as bc
+        import sqlite3
+
+        src = str(tmp_path / "Cookies")
+        with sqlite3.connect(src) as source:
+            source.execute("create table cookies(value)")
+            source.execute("insert into cookies values('checkpointed')")
+        # Keep a writer open after switching to WAL, as Chrome does. The immutable
+        # snapshot may use the last checkpoint but must still be readable.
+        source = sqlite3.connect(src)
+        source.execute("pragma journal_mode=WAL")
+        source.execute("insert into cookies values('live-wal')")
+        source.commit()
+
+        dst = str(tmp_path / "out" / "Cookies")
+        os.makedirs(os.path.dirname(dst))
+        with sqlite3.connect(dst) as stale:
+            stale.execute("create table stale(value)")
+        lock = sqlite3.connect(dst)
+        lock.execute("begin exclusive")
+        try:
+            with patch.object(bc.sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                assert bc._copy_auth_file(src, dst) is None
+            assert "mode=ro&immutable=1" in connect.call_args_list[0].args[0]
+        finally:
+            lock.rollback()
+            lock.close()
+            source.close()
+        assert sqlite3.connect(dst).execute("select value from cookies").fetchone()[0] == "checkpointed"
+
+    def test_copy_auth_file_replaces_locked_destination(self, tmp_path):
         import sqlite3
         import subprocess
         import sys
@@ -1083,7 +1114,7 @@ class TestWindowsLockedProfileCopy:
                 conn.execute("create table cookies(x)")
                 conn.execute("insert into cookies values(?)", (value,))
             conn.close()
-        holder = sqlite3.connect(src if locked == "source" else dst)
+        holder = sqlite3.connect(dst)
         holder.execute("begin exclusive")
         try:
             result = subprocess.run(
@@ -1093,12 +1124,12 @@ class TestWindowsLockedProfileCopy:
                  str(src), str(dst)],
                 capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
             assert result.returncode == 0, result.stderr
-            assert result.stdout.strip() == bc._AUTH_DB_LOCKED
+            assert result.stdout.strip() == "None"
         finally:
             holder.rollback()
             holder.close()
         with sqlite3.connect(dst) as conn:
-            assert conn.execute("select x from cookies").fetchall() == [(99,)]
+            assert conn.execute("select x from cookies").fetchall() == [(7,)]
         conn.close()
         assert bc._copy_auth_file(str(src), str(dst)) is None
         with sqlite3.connect(dst) as conn:
@@ -1131,7 +1162,8 @@ class TestWindowsLockedProfileCopy:
         try:
             assert bc._copy_auth_file(str(src), str(dst)) is None
             with sqlite3.connect(dst) as conn:
-                assert conn.execute("select x from cookies").fetchall() == [(8,)]
+                # immutable=1 reads the last checkpoint while Chrome owns its WAL.
+                assert conn.execute("select x from cookies").fetchall() == [(7,)]
             conn.close()
         finally:
             source.close()

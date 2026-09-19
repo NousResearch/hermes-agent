@@ -1269,3 +1269,227 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_create reasoning_effort (A-H)
+#
+# Public round-trips go through registry.dispatch; persisted values are
+# re-read through a fresh connection (closed with try/finally).
+# ---------------------------------------------------------------------------
+
+def _reasoning_ids():
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        return {r[0] for r in conn.execute("SELECT id FROM tasks")}
+    finally:
+        conn.close()
+
+
+def _reasoning_stored(tid):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        return task.reasoning_effort
+    finally:
+        conn.close()
+
+
+def _reasoning_task_count():
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _dispatch_json(name, args):
+    """Public round-trip through the registered tool; always a decoded dict."""
+    import tools.kanban_tools  # noqa: F401 -- importing registers kanban_* tools
+    from tools.registry import registry as _registry
+    out = _registry.dispatch(name, args)
+    return json.loads(out) if isinstance(out, str) else out
+
+
+def _reasoning_list_row(monkeypatch, tid):
+    """Find one task row via the public kanban_list (orchestrator-only)."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools.registry import invalidate_check_fn_cache
+    invalidate_check_fn_cache()
+    d = _dispatch_json("kanban_list", {"limit": 200})
+    assert d.get("tasks") is not None, d
+    for row in d["tasks"]:
+        if row["id"] == tid:
+            return row
+    raise AssertionError(f"task {tid} missing from kanban_list")
+
+
+def test_reasoning_effort_schema_exposes_shared_levels():
+    """A: optional string prop documents inherit/OFF/failure from the backend list."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    from tools.kanban_tools_schemas import KANBAN_CREATE_SCHEMA
+    params = KANBAN_CREATE_SCHEMA["parameters"]
+    assert "reasoning_effort" in params["properties"]
+    assert "reasoning_effort" not in params["required"]
+    prop = params["properties"]["reasoning_effort"]
+    assert prop["type"] == "string"
+    assert prop["enum"] == ["none", *VALID_REASONING_EFFORTS]
+    desc = prop["description"]
+    for level in VALID_REASONING_EFFORTS:
+        assert level in desc
+    lowered = desc.lower()
+    assert "none" in lowered
+    assert "inherit" in lowered
+    assert "null" in lowered
+    assert "fail" in lowered
+
+
+def test_reasoning_effort_create_persists_medium(worker_env):
+    """B: create persists medium and returns the persisted effort."""
+    d = _dispatch_json("kanban_create", {
+        "title": "reasoning b", "assignee": "peer", "reasoning_effort": "medium",
+    })
+    assert d.get("ok") is True, d
+    assert d.get("reasoning_effort") == "medium", d
+    assert _reasoning_stored(d["task_id"]) == "medium" == d["reasoning_effort"]
+
+
+def test_reasoning_effort_show_list_report(worker_env, monkeypatch):
+    """C: show and list report the persisted effort."""
+    created = _dispatch_json("kanban_create", {
+        "title": "reasoning c", "assignee": "peer", "reasoning_effort": "medium",
+    })
+    assert created.get("ok") is True, created
+    tid = created["task_id"]
+    shown = _dispatch_json("kanban_show", {"task_id": tid})
+    assert shown["task"]["reasoning_effort"] == "medium", shown
+    row = _reasoning_list_row(monkeypatch, tid)
+    assert row["reasoning_effort"] == "medium", row
+
+
+@pytest.mark.parametrize("effort", [None, "", "   "], ids=["omitted", "empty", "whitespace"])
+def test_reasoning_effort_omitted_inherits_null(worker_env, monkeypatch, effort):
+    """D: omitted/empty/whitespace stores NULL and reads back as explicit null."""
+    args: dict = {"title": f"reasoning d {effort!r}", "assignee": "peer"}
+    if effort is not None:
+        args["reasoning_effort"] = effort
+    d = _dispatch_json("kanban_create", args)
+    assert d.get("ok") is True, d
+    assert "reasoning_effort" in d and d["reasoning_effort"] is None, d
+    tid = d["task_id"]
+    assert _reasoning_stored(tid) is None
+    shown = _dispatch_json("kanban_show", {"task_id": tid})
+    assert "reasoning_effort" in shown["task"] and shown["task"]["reasoning_effort"] is None, shown
+    row = _reasoning_list_row(monkeypatch, tid)
+    assert "reasoning_effort" in row and row["reasoning_effort"] is None, row
+
+
+def test_reasoning_effort_none_persists(worker_env, monkeypatch):
+    """E: 'none' persists as thinking-OFF, distinct from NULL."""
+    d = _dispatch_json("kanban_create", {
+        "title": "reasoning e", "assignee": "peer", "reasoning_effort": "none",
+    })
+    assert d.get("ok") is True, d
+    assert d.get("reasoning_effort") == "none", d
+    tid = d["task_id"]
+    assert _reasoning_stored(tid) == "none"
+    shown = _dispatch_json("kanban_show", {"task_id": tid})
+    assert shown["task"]["reasoning_effort"] == "none", shown
+    assert _reasoning_list_row(monkeypatch, tid)["reasoning_effort"] == "none"
+
+
+def test_reasoning_effort_invalid_fails_closed(worker_env):
+    """F: invalid input fails closed and creates nothing."""
+    before = _reasoning_ids()
+    d = _dispatch_json("kanban_create", {
+        "title": "reasoning f", "assignee": "peer", "reasoning_effort": "extremely-hard",
+    })
+    assert "error" in d, d
+    assert "reasoning_effort" in d["error"], d
+    assert d.get("ok") is not True
+    assert "task_id" not in d
+    assert _reasoning_ids() == before
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        with pytest.raises(ValueError):
+            kb.create_task(conn, title="reasoning f direct", assignee="peer",
+                           reasoning_effort="extremely-hard")
+    finally:
+        conn.close()
+    assert _reasoning_ids() == before
+
+
+def test_reasoning_effort_without_model(worker_env):
+    """G: effort works with no model/provider override."""
+    d = _dispatch_json("kanban_create", {
+        "title": "reasoning g", "assignee": "peer", "reasoning_effort": "low",
+    })
+    assert d.get("ok") is True, d
+    assert d.get("reasoning_effort") == "low", d
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.reasoning_effort == "low"
+        assert task.model_override is None
+        assert task.provider_override is None
+    finally:
+        conn.close()
+
+
+def test_reasoning_effort_idempotent_returns_stored(worker_env):
+    """H: idempotent retries reflect the stored effort, never the latest request."""
+    key = "reasoning-effort-h"
+    first = _dispatch_json("kanban_create", {
+        "title": "reasoning h", "assignee": "peer",
+        "reasoning_effort": "medium", "idempotency_key": key,
+    })
+    assert first.get("ok") is True, first
+    tid = first["task_id"]
+    assert first.get("reasoning_effort") == "medium", first
+    count = _reasoning_task_count()
+    retry = _dispatch_json("kanban_create", {
+        "title": "reasoning h", "assignee": "peer",
+        "reasoning_effort": "high", "idempotency_key": key,
+    })
+    assert retry.get("task_id") == tid, retry
+    assert retry.get("reasoning_effort") == "medium", retry
+    omitted = _dispatch_json("kanban_create", {
+        "title": "reasoning h", "assignee": "peer", "idempotency_key": key,
+    })
+    assert omitted.get("task_id") == tid, omitted
+    assert omitted.get("reasoning_effort") == "medium", omitted
+    assert _reasoning_task_count() == count
+    assert _reasoning_stored(tid) == "medium"
+    bad = _dispatch_json("kanban_create", {
+        "title": "reasoning h", "assignee": "peer",
+        "reasoning_effort": "extremely-hard", "idempotency_key": key,
+    })
+    assert "error" in bad, bad
+    assert _reasoning_stored(tid) == "medium"
+    assert _reasoning_task_count() == count
+
+
+@pytest.mark.parametrize("level,expected", [
+    ("minimal", "minimal"), ("low", "low"), ("medium", "medium"),
+    ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
+    ("ultra", "ultra"), ("none", "none"), ("  HIGH ", "high"),
+])
+def test_reasoning_effort_valid_levels_normalize(worker_env, level, expected):
+    """Valid levels (shared constant + 'none' + mixed-case input) normalize."""
+    d = _dispatch_json("kanban_create", {
+        "title": f"reasoning compat {level!r}", "assignee": "peer",
+        "reasoning_effort": level,
+    })
+    assert d.get("ok") is True, d
+    assert d.get("reasoning_effort") == expected, d
+    assert _reasoning_stored(d["task_id"]) == expected

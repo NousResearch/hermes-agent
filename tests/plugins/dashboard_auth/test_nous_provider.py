@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import time
 import urllib.parse
 from typing import Any, Dict
@@ -178,6 +179,35 @@ class TestPluginRegister:
         ctx.register_dashboard_auth_provider.assert_not_called()
         # Skip reason is surfaced for the gate's fail-closed message.
         assert "HERMES_DASHBOARD_OAUTH_CLIENT_ID" in nous_plugin.LAST_SKIP_REASON
+
+    def test_missing_client_id_logs_warning(self, monkeypatch, caplog):
+        """Regression for upstream #98338: when no client_id is configured
+        (neither env var nor dashboard.oauth.client_id in config.yaml), the
+        skip must be logged at WARNING — not DEBUG — so operators see the
+        Portal disappear instead of it vanishing silently. The adjacent
+        client_id-set-but-malformed branch already logs WARNING; this one
+        must match. Before the fix this record was emitted at DEBUG and was
+        invisible at the default operable log level."""
+        monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_PORTAL_URL", raising=False)
+        ctx = MagicMock()
+        with caplog.at_level(logging.WARNING, logger=nous_plugin.__name__):
+            nous_plugin.register(ctx)
+        assert any(
+            rec.levelno == logging.WARNING
+            and "dashboard-auth-nous" in rec.message
+            for rec in caplog.records
+        ), (
+            "expected a WARNING log mentioning 'dashboard-auth-nous' when "
+            "client_id is missing; got: "
+            f"{[(r.levelname, r.message) for r in caplog.records]}"
+        )
+        # And it must NOT be a DEBUG-level record anymore.
+        assert not any(
+            rec.levelno == logging.DEBUG
+            and "dashboard-auth-nous" in rec.message
+            for rec in caplog.records
+        )
 
     def test_registers_with_default_portal_url_when_only_client_id_set(
         self, monkeypatch

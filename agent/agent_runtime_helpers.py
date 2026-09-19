@@ -1227,10 +1227,10 @@ def restore_primary_runtime(agent) -> bool:
         _rebind_primary_credential_pool(
             agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
-        # Older snapshots have no reasoning_config; keep the current value.
-        saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
-            agent.reasoning_config = dict(saved_reasoning)
+        # Older snapshots have no reasoning_config; an explicit None is a saved default.
+        if "reasoning_config" in rt:
+            saved_reasoning = rt["reasoning_config"]
+            agent.reasoning_config = dict(saved_reasoning) if isinstance(saved_reasoning, dict) else saved_reasoning
         agent._fallback_activated = False
         agent._fallback_index = 0
         agent._rate_limit_backoff_count = 0

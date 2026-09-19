@@ -1,3 +1,6 @@
+import concurrent.futures
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -8,6 +11,27 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
+
+
+def test_portal_account_timeout_does_not_join_stalled_worker(monkeypatch):
+    release = threading.Event()
+
+    def stalled_fetch(*, force_fresh: bool = False):
+        assert force_fresh is True
+        release.wait(timeout=3.0)
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        stalled_fetch,
+    )
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(concurrent.futures.TimeoutError):
+            account_usage._fetch_portal_account(0.05)
+        assert time.monotonic() - started < 2.0
+    finally:
+        release.set()
 
 
 @pytest.mark.parametrize(

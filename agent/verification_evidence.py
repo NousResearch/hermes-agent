@@ -27,6 +27,13 @@ _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 
 _INTERPRETERS = {"python", "python3", "node", "bash", "sh", "ruby", "perl"}
+# The same interpreter is reached as `python3`, `python3.12`, `/usr/bin/python3.12`, or
+# `env python3`. Matching only the bare token recorded no evidence for the invocation shapes
+# the verify-on-stop nudge itself hands the agent, so a passing run left the workspace
+# "unverified" and the nudge returned every turn.
+_INTERPRETER_NAME_RE = re.compile(
+    r"^(?:" + "|".join(sorted(_INTERPRETERS, key=len, reverse=True)) + r")(?:[0-9]+(?:\.[0-9]+)*)?$"
+)
 _TARGET_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java")
 _TARGET_PREFIXES = ("test_", "tests", "spec", "__tests__")
 # Ordered: first matching keyword group wins; "check" only counts when the
@@ -302,6 +309,16 @@ def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
     return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
 
 
+def _is_interpreter_token(token: str) -> bool:
+    """Whether a command word names a shell interpreter.
+
+    ``python3``, ``python3.12`` and ``/usr/bin/python3.12`` are the same interpreter; matching
+    only the bare token left the ad-hoc branch blind to the invocation shapes the nudge hands
+    the agent, so a passing run recorded no evidence and the workspace stayed ``unverified``.
+    """
+    return bool(_INTERPRETER_NAME_RE.match(Path(token).name))
+
+
 def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:
     candidate_tokens = _strip_command_prefix(tokens)
     if not candidate_tokens:
@@ -309,7 +326,10 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     command = candidate_tokens[0]
     if _is_temp_script_path(command, root):
         return candidate_tokens[1:]
-    if command in _INTERPRETERS:
+    if Path(command).name == "env" and len(candidate_tokens) > 1 and _is_interpreter_token(candidate_tokens[1]):
+        # `/usr/bin/env python3 script` names the same interpreter as `python3 script`.
+        candidate_tokens, command = candidate_tokens[1:], candidate_tokens[1]
+    if _is_interpreter_token(command):
         # Skip interpreter flags; the first positional must be the script.
         for idx, token in enumerate(candidate_tokens[1:], start=1):
             if _is_temp_script_path(token, root):

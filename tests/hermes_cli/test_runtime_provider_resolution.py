@@ -1971,3 +1971,78 @@ def test_removed_keyless_free_provider_points_at_its_replacements(name):
     assert excinfo.value.code == "invalid_provider"
     message = str(excinfo.value)
     assert "opencode-zen" in message and "opencode-go" in message
+
+
+def test_resolve_runtime_provider_openai_direct_alias_with_explicit_key():
+    """provider: openai with explicit api_key resolves via direct-API alias ladder rung."""
+    resolved = rp.resolve_runtime_provider(
+        requested="openai",
+        explicit_api_key="sk-explicit-key-12345",
+        target_model="gpt-4o",
+    )
+    assert resolved["provider"] == "custom"
+    assert resolved["requested_provider"] == "openai"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "sk-explicit-key-12345"
+
+
+def test_resolve_runtime_provider_openai_direct_alias_with_env_key(monkeypatch):
+    """provider: openai reads OPENAI_API_KEY from environment."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai-key-54321")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="openai", target_model="gpt-4o-mini")
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "sk-env-openai-key-54321"
+
+
+def test_resolve_runtime_provider_openai_direct_alias_honors_openai_base_url_env(monkeypatch):
+    """OPENAI_BASE_URL overrides the default api.openai.com endpoint."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-key-999")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.internal.corp/v1")
+    resolved = rp.resolve_runtime_provider(requested="openai")
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://proxy.internal.corp/v1"
+    assert resolved["api_key"] == "sk-env-key-999"
+
+
+def test_resolve_runtime_provider_openai_direct_alias_honors_explicit_base_url(monkeypatch):
+    """explicit_base_url takes precedence for direct-API alias."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-key-999")
+    resolved = rp.resolve_runtime_provider(
+        requested="openai",
+        explicit_base_url="https://gateway.custom.com/v1",
+    )
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.custom.com/v1"
+    assert resolved["api_key"] == "sk-env-key-999"
+
+
+def test_resolve_runtime_provider_openai_direct_alias_missing_key_raises_auth_error(monkeypatch):
+    """Direct alias openai targeting openai.com raises AuthError if credentials are missing."""
+    from hermes_cli.auth import AuthError
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(AuthError) as excinfo:
+        rp.resolve_runtime_provider(requested="openai", target_model="gpt-4o")
+    assert excinfo.value.provider == "openai"
+    assert "OPENAI_API_KEY" in str(excinfo.value)
+
+
+def test_resolve_runtime_provider_openai_named_custom_takes_precedence(monkeypatch):
+    """If user defined providers.openai in config, named custom provider takes precedence."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda name: {
+            "name": "openai",
+            "base_url": "https://custom-openai-mirror.internal/v1",
+            "api_key": "custom-mirror-key",
+            "model": "gpt-custom",
+        } if name == "openai" else None,
+    )
+    resolved = rp.resolve_runtime_provider(requested="openai")
+    assert resolved["base_url"] == "https://custom-openai-mirror.internal/v1"
+    assert resolved["api_key"] == "custom-mirror-key"
+

@@ -5884,10 +5884,12 @@ def _get_cached_client(
     return client, _compat_model(client, model, default_model)
 
 
-# Aliases for direct REST APIs not modeled in PROVIDER_REGISTRY, so ``auxiliary.<task>.provider:
-# openai`` resolves to a working ``custom`` endpoint (OPENAI_API_KEY + api.openai.com) instead of
-# silently falling back to the main provider and sending OpenAI model names elsewhere.
-_AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {"openai": "https://api.openai.com/v1"}
+# Direct REST API aliases (e.g. openai) now live natively in hermes_cli.runtime_provider.
+# Retain aliases here for backwards compatibility.
+from hermes_cli.runtime_provider import (
+    _DIRECT_API_BASE_URLS as _AUX_DIRECT_API_BASE_URLS,
+    expand_direct_api_alias as _expand_direct_api_alias,
+)
 
 
 # MoA virtual provider: an *explicit* `provider: moa` override (either the caller-passed `provider` arg or
@@ -5907,25 +5909,6 @@ def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[s
     if agg_provider and agg_model:
         return agg_provider, agg_model
     return prov, mdl
-
-
-def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """``provider: openai`` → custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
-
-    A ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url and
-    key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over the
-    public endpoint — sending the proxy key to api.openai.com 401s and then quarantines a valid key.
-    """
-    if not prov:
-        return prov, existing_base
-    target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
-    if target_base is None:
-        return prov, existing_base
-    with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-        if _get_named_custom_provider(prov) is not None:
-            return prov, existing_base
-    return "custom", existing_base or _scoped_key_env("OPENAI_BASE_URL").rstrip("/") or target_base
 
 
 def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:

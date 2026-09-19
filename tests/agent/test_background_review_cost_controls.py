@@ -173,3 +173,37 @@ def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
     with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         assert br.load_background_review_settings()[0] is False
+
+
+def test_routing_openai_provider_with_api_key_resolves_and_routes(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-valid-openai-key-12345")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    agent = _FakeAgent(provider="openai-codex", model="gpt-5.5")
+    cfg = {"auxiliary": {"background_review": {
+        "provider": "openai", "model": "gpt-4o",
+    }}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is True
+    assert rt["provider"] == "custom"
+    assert rt["model"] == "gpt-4o"
+    assert rt["base_url"] == "https://api.openai.com/v1"
+    assert rt["api_key"] == "sk-test-valid-openai-key-12345"
+
+
+def test_routing_openai_provider_missing_credentials_logs_warning_and_falls_back(monkeypatch, caplog):
+    import logging
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    agent = _FakeAgent(provider="openai-codex", model="gpt-5.5")
+    cfg = {"auxiliary": {"background_review": {
+        "provider": "openai", "model": "gpt-4o",
+    }}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        with caplog.at_level(logging.WARNING):
+            rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "openai-codex"
+    assert any("background-review aux routing failed for provider 'openai'" in record.message for record in caplog.records)
+

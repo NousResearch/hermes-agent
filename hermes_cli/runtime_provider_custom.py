@@ -427,7 +427,7 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
         return pool_result
     # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
     # Ollama Cloud resolved no key at all.
-    candidates = [(explicit_api_key or "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True)]
+    candidates = [(explicit_api_key or "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True, requested_provider=requested_provider)]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
 
@@ -450,7 +450,8 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
-def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
+def _resolve_named_custom_runtime(*, requested_provider: str, effective_provider: Optional[str] = None,
+                                  explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
@@ -463,7 +464,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # GitHub #27132: provider aliases that resolve to "custom" at runtime (ollama, vllm, llamacpp, …) are
     # treated identically here, so a YAML `provider: ollama` with a LAN/WireGuard `base_url` doesn't
     # silently fall through to OpenRouter.
-    requested_norm = (requested_provider or "").strip().lower()
+    lookup_prov = effective_provider or requested_provider
+    requested_norm = (lookup_prov or "").strip().lower()
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
         return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):

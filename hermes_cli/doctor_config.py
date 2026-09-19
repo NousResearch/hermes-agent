@@ -172,6 +172,9 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
         from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider as resolve_auth
         known = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "moa"}
     with warn_on_error(""):
+        from hermes_cli.runtime_provider import _DIRECT_API_BASE_URLS
+        known.update(str(k).strip().lower() for k in _DIRECT_API_BASE_URLS)
+    with warn_on_error(""):
         from hermes_cli.config import get_compatible_custom_providers
         from hermes_cli.providers import custom_provider_aliases as aliases, normalize_provider as normalize, resolve_provider_full as resolve_full
         with warn_on_error(""):
@@ -202,6 +205,9 @@ def _provider_has_credentials(runtime_provider: str) -> bool:
     if runtime_provider == "openrouter":
         from hermes_cli.config import get_env_value
         return any(str(get_env_value(k) or "").strip() for k in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"))
+    if runtime_provider == "openai":
+        from hermes_cli.config import get_env_value
+        return bool(str(get_env_value("OPENAI_API_KEY") or "").strip())
     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
     pconfig = PROVIDER_REGISTRY.get(runtime_provider)
     if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
@@ -261,6 +267,68 @@ def _validate_model_config(config_path, issues: list) -> None:
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
 
 
+def _validate_auxiliary_config(config_path, issues: list) -> None:
+    """Validate configured auxiliary.<task> blocks against known providers and credentials."""
+    from hermes_cli.config import read_user_config_raw
+    cfg = read_user_config_raw(config_path)
+    aux_section = cfg.get("auxiliary")
+    if not isinstance(aux_section, dict):
+        return
+    known_providers, custom_providers, resolve_auth, normalize, resolve_full = _known_provider_ids(cfg)
+    valid_provider_ids = set(known_providers)
+    for known_provider in known_providers if normalize is not None else ():
+        try:
+            valid_provider_ids.add(normalize(known_provider))
+        except Exception:
+            continue
+
+    for task_name, task_cfg in aux_section.items():
+        if not isinstance(task_cfg, dict):
+            continue
+        prov_raw = (task_cfg.get("provider") or "").strip()
+        if not prov_raw:
+            continue
+        prov_lower = prov_raw.lower()
+        accept = {prov_lower}
+        runtime_prov = catalog_prov = prov_lower
+        if prov_lower and prov_lower not in {"auto", "custom"}:
+            if resolve_auth is not None:
+                try:
+                    runtime_prov = resolve_auth(prov_lower)
+                    accept.add(runtime_prov)
+                except Exception:
+                    runtime_prov = prov_lower
+            if resolve_full is not None:
+                provider_def = resolve_full(prov_lower, cfg.get("providers"), custom_providers)
+                catalog_prov = provider_def.id if provider_def is not None else None
+                accept.update({catalog_prov} - {None})
+        if prov_lower != "auto" and (catalog_prov is None or (known_providers and not (accept & valid_provider_ids))):
+            known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
+            _fail_and_issue(
+                f"auxiliary.{task_name}.provider '{prov_raw}' is not a recognised provider",
+                f"(known: {known_list})",
+                f"auxiliary.{task_name}.provider '{prov_raw}' is unknown. Valid providers: {known_list}.",
+                issues,
+            )
+        elif prov_lower and prov_lower not in ("auto", "custom"):
+            has_explicit_key = bool(str(task_cfg.get("api_key") or "").strip())
+            task_base = str(task_cfg.get("base_url") or "").strip()
+            with warn_on_error(""):
+                requires_key = True
+                if runtime_prov == "openai" and task_base:
+                    from hermes_cli.runtime_provider import base_url_host_matches
+                    requires_key = base_url_host_matches(task_base, "openai.com")
+                if requires_key and not has_explicit_key and not _provider_has_credentials(runtime_prov):
+                    from hermes_cli.doctor import _DHH
+                    _fail_and_issue(
+                        f"auxiliary.{task_name}.provider '{runtime_prov}' is set but no API key is configured",
+                        f"(add it to {_DHH}/.env or run 'hermes setup')",
+                        f"No credentials found for auxiliary.{task_name}.provider '{runtime_prov}'. "
+                        f"Set the provider's API key in {_DHH}/.env or configure auxiliary.{task_name}.api_key.",
+                        issues,
+                    )
+
+
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
@@ -270,6 +338,8 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
+        with warn_on_error("Could not validate auxiliary config"):
+            _validate_auxiliary_config(config_path, f.issues)
     elif (PROJECT_ROOT / 'cli-config.yaml').exists():
         check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:

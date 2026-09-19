@@ -256,7 +256,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
-        logger.debug("background-review aux routing failed (%s); using main model", e)
+        logger.warning("background-review aux routing failed for provider '%s' (%s); using main model", task_provider, e)
         return parent
 
 

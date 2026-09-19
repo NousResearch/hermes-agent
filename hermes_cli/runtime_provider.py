@@ -54,6 +54,28 @@ def _loopback_hostname(host: str) -> bool:
     return (host or "").lower().rstrip(".") in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
+_DIRECT_API_BASE_URLS: Dict[str, str] = {"openai": "https://api.openai.com/v1"}
+
+
+def expand_direct_api_alias(provider: Optional[str], existing_base: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """``provider: openai`` -> custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
+
+    A ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url and
+    key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over the
+    public endpoint.
+    """
+    if not provider:
+        return provider, existing_base
+    norm = provider.strip().lower()
+    target_base = _DIRECT_API_BASE_URLS.get(norm)
+    if target_base is None:
+        return provider, existing_base
+    if _get_named_custom_provider(provider) is not None:
+        return provider, existing_base
+    env_base = (get_secret_str("OPENAI_BASE_URL", "") or "").strip().rstrip("/")
+    return "custom", (existing_base or "").strip().rstrip("/") or env_base or target_base
+
+
 def _resolves_to_custom(name: str) -> bool:
     """True when a provider alias (ollama, vllm, llamacpp, …) resolves to ``custom``."""
     try:
@@ -344,12 +366,19 @@ def _host_derived_api_key(base_url: str) -> str:
     return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
 
 
-def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
+def _host_gated_env_key_candidates(base_url: str, *, ollama: bool, requested_provider: str = "") -> list:
     """Env API keys gated on their authoritative hosts, then the host-derived ``<VENDOR>_API_KEY``.
     Sending OPENAI/OPENROUTER/OLLAMA keys to an unrelated endpoint leaks credentials
     (GHSA-76xc-57q6-vm5m); match on HOST, not substring. ``_host_derived_api_key`` skips OLLAMA, so
     callers that want it opt in via ``ollama``."""
-    is_openai = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
+    env_openai_base = (get_secret_str("OPENAI_BASE_URL", "") or "").strip().rstrip("/")
+    req_norm = (requested_provider or "").strip().lower()
+    is_openai = (
+        base_url_host_matches(base_url, "openai.com")
+        or base_url_host_matches(base_url, "openai.azure.com")
+        or (bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base)
+        or req_norm == "openai"
+    )
     candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
     return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
                          get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
@@ -812,6 +841,7 @@ def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_bas
     alias's own server. ``llamacpp`` fails fast on its own managed-server rung."""
     requested_norm = (requested_provider or "").strip().lower()
     if (requested_norm in ("", "custom") or requested_norm in _LLAMACPP_ALIASES
+            or requested_norm in _DIRECT_API_BASE_URLS
             or not _resolves_to_custom(requested_norm)):
         return
     if str(explicit_base_url or "").strip() or get_secret_str("CUSTOM_BASE_URL", "").strip():
@@ -911,8 +941,10 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
-    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
-    _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    effective_provider, effective_base_url = expand_direct_api_alias(requested_provider, explicit_base_url)
+    runtime = next(r for r in _ladder_rungs(requested_provider, effective_provider, explicit_api_key, effective_base_url, target_model) if r)
+    _raise_for_credentialless_bare_custom(effective_provider, runtime)
+    _raise_for_missing_direct_api_key(requested_provider, runtime)
     return runtime
 
 
@@ -936,24 +968,38 @@ def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict
     )
 
 
-def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):
+def _raise_for_missing_direct_api_key(requested_provider: str, runtime: Dict[str, Any]) -> None:
+    """Reject direct-API alias requests (e.g. openai) that resolved against official endpoints without credentials."""
+    norm = (requested_provider or "").strip().lower()
+    if norm == "openai" and base_url_host_matches(str(runtime.get("base_url") or ""), "openai.com"):
+        key = str(runtime.get("api_key") or "").strip()
+        if not key or key == "no-key-required" or not has_usable_secret(key):
+            raise AuthError(
+                "No usable credentials found for provider 'openai'. Set OPENAI_API_KEY.",
+                provider="openai",
+                code="missing_api_key",
+            )
+
+
+def _ladder_rungs(requested_provider, effective_provider, explicit_api_key, effective_base_url, target_model):
     """Ladder rungs 2-8, yielded lazily so each is evaluated only when the previous one returned
     nothing; the last rung (OpenRouter / bare-custom fallback) always yields a runtime."""
-    yield _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model)
-    yield _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
-                                             explicit_base_url=explicit_base_url, target_model=target_model), requested_provider)
+    yield _resolve_requested_shortcuts(effective_provider, explicit_api_key, effective_base_url, target_model)
+    yield _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, effective_provider=effective_provider,
+                                             explicit_api_key=explicit_api_key,
+                                             explicit_base_url=effective_base_url, target_model=target_model), requested_provider)
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url pointing at a custom/local
     # endpoint (e.g. Ollama at localhost:11434), route through the OpenAI-compatible resolver instead of
     # letting resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from the environment and
     # send the request to a cloud API. Fixes #3846.
-    if not explicit_base_url and not explicit_api_key:
-        yield _local_endpoint_bypass(requested_provider, explicit_api_key, explicit_base_url)
-    provider = resolve_provider(requested_provider, explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url)
+    if not effective_base_url and not explicit_api_key:
+        yield _local_endpoint_bypass(effective_provider, explicit_api_key, effective_base_url)
+    provider = resolve_provider(effective_provider, explicit_api_key=explicit_api_key, explicit_base_url=effective_base_url)
     model_cfg = _get_model_config()
     yield _resolve_explicit_runtime(provider=provider, requested_provider=requested_provider, model_cfg=model_cfg,
-                                    explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
+                                    explicit_api_key=explicit_api_key, explicit_base_url=effective_base_url,
                                     target_model=target_model)
-    yield _resolve_from_pool(provider, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+    yield _resolve_from_pool(provider, requested_provider, model_cfg, explicit_api_key, effective_base_url, target_model)
     swallowed_auth_error = None
     if provider in _OAUTH_RUNTIME_PROVIDERS:
         try:
@@ -976,7 +1022,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
-    fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    fallback = _openrouter_fallback(requested_provider, explicit_api_key, effective_base_url)
     if swallowed_auth_error is not None and not fallback.get("api_key"):
         fallback["auth_error"] = swallowed_auth_error
     yield fallback

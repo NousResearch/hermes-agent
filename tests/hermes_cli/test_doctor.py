@@ -1835,3 +1835,73 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls == [["/usr/bin/docker", "version"]]
+
+
+def test_validate_auxiliary_config_recognizes_openai_with_credentials(tmp_path, monkeypatch):
+    import yaml
+    from hermes_cli.doctor_config import _validate_auxiliary_config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-valid-key")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "auxiliary": {
+            "background_review": {"provider": "openai", "model": "gpt-4o"},
+        },
+    }))
+    issues = []
+    _validate_auxiliary_config(cfg_file, issues)
+    assert issues == []
+
+
+def test_validate_auxiliary_config_fails_on_unknown_provider(tmp_path):
+    import yaml
+    from hermes_cli.doctor_config import _validate_auxiliary_config
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "auxiliary": {
+            "background_review": {"provider": "non_existent_provider_xyz", "model": "test"},
+        },
+    }))
+    issues = []
+    _validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1
+    assert "non_existent_provider_xyz" in issues[0]
+
+
+def test_validate_auxiliary_config_flags_missing_api_key_for_openai(tmp_path, monkeypatch):
+    import yaml
+    from hermes_cli.doctor_config import _validate_auxiliary_config
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "auxiliary": {
+            "background_review": {"provider": "openai", "model": "gpt-4o"},
+        },
+    }))
+    issues = []
+    _validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1
+    assert "auxiliary.background_review.provider 'openai'" in issues[0]
+
+
+def test_validate_auxiliary_config_allows_openai_with_custom_endpoint_without_api_key(tmp_path, monkeypatch):
+    import yaml
+    from hermes_cli.doctor_config import _validate_auxiliary_config
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "auxiliary": {
+            "background_review": {
+                "provider": "openai",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            },
+        },
+    }))
+    issues = []
+    _validate_auxiliary_config(cfg_file, issues)
+    assert issues == []
+

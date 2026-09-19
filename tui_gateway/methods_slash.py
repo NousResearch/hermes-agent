@@ -44,7 +44,7 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     runtime_token = _current_runtime_session_record.set(session)
     try:
         from agent.review_engine import format_dispatch_note, start_review
-        result = start_review(agent, snapshot, arg or "")
+        result = start_review(agent, snapshot, arg or "", cwd=_session_cwd(session))
     except ValueError as exc:
         return str(exc)
     except Exception as exc:

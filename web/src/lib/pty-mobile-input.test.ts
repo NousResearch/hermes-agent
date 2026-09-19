@@ -7,10 +7,20 @@ import {
 } from "./pty-mobile-input";
 
 describe("shouldTreatInputAsMobileReplacement", () => {
-  it("recognizes explicit browser replacement input", () => {
+  it("recognizes explicit browser replacement input regardless of platform", () => {
     expect(shouldTreatInputAsMobileReplacement("insertReplacementText", "Kain", false)).toBe(true);
-    expect(shouldTreatInputAsMobileReplacement("insertFromComposition", "Kain", false)).toBe(true);
-    expect(shouldTreatInputAsMobileReplacement("insertCompositionText", "Kain", false)).toBe(true);
+    expect(shouldTreatInputAsMobileReplacement("insertReplacementText", "Kain", true)).toBe(true);
+  });
+
+  it("treats IME composition commits as replacement-like only on mobile-like keyboards", () => {
+    // Desktop IME (e.g. macOS/Windows CJK input) fires the same
+    // insertFromComposition/insertCompositionText inputTypes as a mobile
+    // keyboard. Only mobile keyboards get Gboard-style replacement
+    // handling — desktop commits must pass through unchanged (#106487).
+    expect(shouldTreatInputAsMobileReplacement("insertFromComposition", "Kain", true)).toBe(true);
+    expect(shouldTreatInputAsMobileReplacement("insertCompositionText", "Kain", true)).toBe(true);
+    expect(shouldTreatInputAsMobileReplacement("insertFromComposition", "你好", false)).toBe(false);
+    expect(shouldTreatInputAsMobileReplacement("insertCompositionText", "你好", false)).toBe(false);
   });
 
   it("treats multi-character mobile insertText as replacement-like", () => {

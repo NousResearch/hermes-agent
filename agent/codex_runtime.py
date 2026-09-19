@@ -913,8 +913,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)
         logger.warning("Codex Responses request failed: serialized_request_body_bytes=%s stream_opened=%s "
-                       "exception_chain=%s model=%s", "unknown" if request_body_bytes is None else request_body_bytes,
-                       str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"))
+                       "exception_chain=%s model=%s attempt=%s", "unknown" if request_body_bytes is None else request_body_bytes,
+                       str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"),
+                       f"{attempt + 1}/{max_stream_retries + 1}")
 
     def _codex_stream_created(_raw_stream: Any) -> None:
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
@@ -1005,6 +1006,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     return event_stream.final_response
                 raise
             except _APIConnectionError as exc:
+                # The SDK wraps every connect/receive failure (``raise APIConnectionError from err``), so the
+                # raw ``transport_errors`` branch above never sees a pre-stream failure. Before the stream
+                # opened nothing is billed, so one fresh physical request is safe (#103673); once the writer
+                # token is claimed the inference may already be billed, so mid-stream failures still raise.
+                if (attempt < max_stream_retries and writer_token["value"] is None
+                        and isinstance(exc.__cause__, _httpx.TransportError)):
+                    logger.debug(
+                        "Codex Responses pre-stream connect failed (attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
+                    )
+                    continue
                 _log_failure(exc)
                 raise
             if not agent._interrupt_requested:

@@ -236,3 +236,15 @@ jobs:
             git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
           done
           python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+
+      # Advisory: files on the PR whose content is byte-identical to a version main has already moved PAST.
+      # A stale branch (or an agent writing back its old copy) undoes a landed commit with no conflict and no
+      # red test, because "this merge reverts landed work" is a property of the history, not the tree
+      # (AGENTS.md § Commits, Merges, PRs). Reuses the deepened refs fetched by the step above.
+      - name: Silent-revert check vs base (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          git merge-base "origin/${{ github.base_ref }}" origin/pr-head >/dev/null 2>&1 || exit 0
+          python scripts/ci/check_silent_revert.py --base "origin/${{ github.base_ref }}" --head origin/pr-head

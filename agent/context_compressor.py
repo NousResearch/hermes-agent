@@ -1348,7 +1348,11 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+    """Shrink long string leaves while retaining bounded head and tail context.
+
+    Invalid argument JSON is returned unchanged: compaction must fail open rather
+    than alter a payload it cannot safely reconstruct.
+    """
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
@@ -1356,7 +1360,11 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            if len(obj) <= head_chars:
+                return obj
+            head_length = head_chars // 2
+            tail_length = head_chars - head_length
+            return obj[:head_length] + "...[truncated]" + obj[-tail_length:]
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):

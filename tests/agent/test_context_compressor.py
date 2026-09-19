@@ -2370,7 +2370,8 @@ class TestTruncateToolCallArgsJson:
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        content = _json.loads(original)["content"]
+        assert parsed["content"] == content[:100] + "...[truncated]" + content[-100:]
         assert len(shrunk) < len(original)
 
 
@@ -2391,7 +2392,34 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        assert parsed["note"] == "z" * 100 + "...[truncated]" + "z" * 100
+
+    def test_large_nested_strings_keep_head_and_tail_without_touching_short_values(self):
+        import json as _json
+
+        shrink = self._helper()
+        payload_data = {
+            "short": "keep me",
+            "nested": {
+                "body": "HEAD-" + "x" * 600 + "-TAIL",
+                "items": ["small", "LIST-HEAD-" + "y" * 600 + "-LIST-TAIL"],
+            },
+        }
+        payload = _json.dumps(payload_data)
+
+        parsed = _json.loads(shrink(payload))
+        assert parsed["short"] == "keep me"
+        assert parsed["nested"]["items"][0] == "small"
+        body = payload_data["nested"]["body"]
+        list_item = payload_data["nested"]["items"][1]
+        assert parsed["nested"]["body"] == body[:100] + "...[truncated]" + body[-100:]
+        assert parsed["nested"]["items"][1] == list_item[:100] + "...[truncated]" + list_item[-100:]
+
+    def test_helper_leaves_malformed_json_unchanged(self):
+        shrink = self._helper()
+        malformed = '{"path": "unterminated'
+
+        assert shrink(malformed) == malformed
 
 
 
@@ -2429,7 +2457,41 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert parsed["content"] == huge_content[:100] + "...[truncated]" + huge_content[-100:]
+
+    def test_pass3_compacts_each_large_call_but_leaves_threshold_and_malformed_args(self):
+        import json as _json
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor("test/model", quiet_mode=True)
+        below_threshold = _json.dumps({"body": "s" * 488})
+        assert len(below_threshold) == 500
+        large_first = _json.dumps({"body": "FIRST-HEAD-" + "a" * 600 + "-FIRST-TAIL"})
+        malformed = '{"body": "broken' + "b" * 600
+        large_second = _json.dumps({"body": "SECOND-HEAD-" + "c" * 600 + "-SECOND-TAIL"})
+        messages = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "first", "function": {"name": "write", "arguments": large_first}},
+                {"id": "short", "function": {"name": "write", "arguments": below_threshold}},
+                {"id": "broken", "function": {"name": "write", "arguments": malformed}},
+                {"id": "second", "function": {"name": "write", "arguments": large_second}},
+            ]},
+            {"role": "user", "content": "continue"},
+        ]
+
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=1)
+        args_by_id = {
+            call["id"]: call["function"]["arguments"]
+            for call in result[0]["tool_calls"]
+        }
+        assert args_by_id["short"] == below_threshold
+        assert args_by_id["broken"] == malformed
+        for call_id in ("first", "second"):
+            body = _json.loads(args_by_id[call_id])["body"]
+            original = _json.loads(
+                large_first if call_id == "first" else large_second
+            )["body"]
+            assert body == original[:100] + "...[truncated]" + original[-100:]
 
 
 class TestLazyContextResolution:

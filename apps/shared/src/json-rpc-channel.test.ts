@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport } from './json-rpc-channel.js'
+import { JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport, type ServerRequest } from './json-rpc-channel.js'
 
 const spyTransport = () => {
   const sent: string[] = []
@@ -209,6 +209,49 @@ describe('JsonRpcRequestChannel', () => {
     expect(frames[1].id).toBe('srq-2')
     expect(frames[1].error?.code).toBe(-32601)
     expect(unhandled).toEqual(['tour'])
+  })
+
+  it.each(['respond', 'fail'] as const)('ignores a stale %s after reconnect while the replay can still answer', async reply => {
+    const delivered: ServerRequest[] = []
+    const channel = new JsonRpcRequestChannel()
+    const oldConnection = spyTransport()
+    const newConnection = spyTransport()
+    const request = { id: 'srq-1', method: 'clarify', params: { session_id: 's1' } }
+
+    channel.attach(oldConnection.transport)
+    channel.onRequest(req => void delivered.push(req))
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', ...request }))
+    channel.detach(new Error('connection lost'))
+    channel.attach(newConnection.transport)
+
+    const resume = channel.request('session.resume', { session_id: 's1' })
+
+    channel.handleFrame(
+      JSON.stringify({
+        id: newConnection.last().id,
+        jsonrpc: '2.0',
+        result: { open_requests: [request], session_id: 's1' }
+      })
+    )
+    await resume
+    expect(delivered).toHaveLength(2)
+    expect(delivered[1].replayed).toBe(true)
+
+    if (reply === 'respond') {
+      delivered[0].respond({ answer: 'stale' })
+    } else {
+      delivered[0].fail(-32603, 'stale failure')
+    }
+
+    expect(oldConnection.sent).toEqual([])
+    expect(newConnection.sent).toHaveLength(1) // Only session.resume, no stale reply.
+
+    delivered[1].respond({ answer: 'current' })
+    delivered[1].respond({ answer: 'duplicate' })
+    delivered[1].fail(-32603, 'duplicate failure')
+    expect(newConnection.sent.slice(1).map(text => JSON.parse(text))).toEqual([
+      { id: request.id, jsonrpc: '2.0', result: { answer: 'current' } }
+    ])
   })
 
   it('re-delivers open_requests from a response before the caller sees the result, tagged replayed', async () => {

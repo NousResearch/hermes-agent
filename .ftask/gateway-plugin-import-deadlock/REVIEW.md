@@ -52,3 +52,21 @@ assumptions: |
 notes: |
   [rebase-refresh] Rebase-refresh: canonical caller and reusable workflow both expose full-suite job ids in separate namespaces; needs references consistent; no runner, command, permission, concurrency, or trigger changes; no new p0.
 ---
+---
+recorded_at: 2026-09-19T04:52:51.270Z
+by: claude
+verdict: pass
+mode: delta
+finding_ids: none
+simulation_verdict: pass
+spec_hash: 9145c40a89a0
+code_patch_id: c6607af703b22456a99785de11983ddb9eb36be5c5bd7673ab462f5a86cedc79
+code_diff_hash: 9a712dbca394630abe61dfcb22bbd97574481f36ac4ce158f88fb2f751e7a6e7
+head_sha: 445996b367ee229d144c74fdedcbe595fca915ec
+confusion: |
+  Only non-executable comments mention old filename.
+assumptions: |
+  GitHub Actions local reusable workflow path follows repository rename.
+notes: |
+  [rebase-refresh] Terminal refresh: existing canonical workflow renamed tests.yml to ftask-full-suite.yml at 99% similarity; one caller; caller/internal job/aggregator consistently full-suite; provisioning, pins, permissions, concurrency, runner and command unchanged; no executable stale references.
+---

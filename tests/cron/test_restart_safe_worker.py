@@ -570,6 +570,47 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
 
 
 @pytest.mark.linux_only
+def test_external_worker_keeps_venv_interpreter_symlink_path(tmp_path, monkeypatch):
+    """A worker launched from a venv must retain its lexical venv executable."""
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    venv_python = tmp_path / "venv" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True)
+    runtime_python = tmp_path / "runtime" / "python3.11"
+    runtime_python.parent.mkdir()
+    runtime_python.touch(mode=0o755)
+    venv_python.symlink_to(runtime_python)
+    monkeypatch.setattr(scheduler.sys, "prefix", str(venv_python.parent.parent))
+    monkeypatch.setattr(scheduler.sys, "base_prefix", str(runtime_python.parent.parent))
+    monkeypatch.setattr(scheduler.sys, "executable", str(runtime_python.resolve()))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_kwargs: GatewayChildDispatch("scoped", command),
+    )
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(
+        scheduler, monkeypatch
+    )
+
+    assert scheduler._launch_external_cron_worker(
+        {"id": "job-venv", "execution_id": "exec-1", "prompt": "work"}
+    ) is True
+    assert spawned[0][0][0] == str(venv_python)
+
+
+def test_external_worker_uses_sys_executable_without_venv(monkeypatch):
+    import cron.scheduler as scheduler
+
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(scheduler.sys, "prefix", "/usr/local")
+    monkeypatch.setattr(scheduler.sys, "base_prefix", "/usr/local")
+    monkeypatch.setattr(scheduler.sys, "executable", "/usr/local/bin/python3")
+
+    assert scheduler._external_cron_worker_python() == "/usr/local/bin/python3"
+
+
+@pytest.mark.linux_only
 def test_launch_external_worker_degrades_by_default_with_real_helper(
     tmp_path, monkeypatch,
 ):

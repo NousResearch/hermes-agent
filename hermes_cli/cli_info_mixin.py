@@ -458,6 +458,33 @@ class CLIInfoMixin:
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
         return self._busy_inline_command(text, has_images, ("bg", "btw"))
 
+    def _should_handle_goal_control_command_inline(
+        self, text: str, has_images: bool = False) -> bool:
+        """Return True for goal controls that are safe to dispatch while the agent runs.
+
+        These only mutate goal state via GoalManager and are safe mid-run, matching the
+        gateway's ``busy_policy="dispatch"`` plus ``is_goal_control`` whitelist. A
+        ``/goal <new goal text>`` stays queued so it cannot race a second continuation
+        against the running turn, mirroring ``gateway/run_busy.py::_busy_goal_command``.
+        """
+        from cli import _looks_like_slash_command
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            from hermes_cli.goal_command import is_goal_control
+            parts = text.split(None, 1)
+            cmd = resolve_command(parts[0].lower().lstrip('/'))
+            arg = parts[1] if len(parts) > 1 else ""
+            return bool(cmd and (
+                cmd.name == "subgoal" or
+                (cmd.name == "goal" and is_goal_control(arg))
+            ))
+        except Exception:
+            return False
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 

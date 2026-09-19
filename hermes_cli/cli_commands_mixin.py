@@ -2289,7 +2289,13 @@ class CLICommandsMixin:
             _cp(f"  {line}")
         if result.prompt:
             queued = self._kick_goal(result.prompt)
-            if not result.kickoff:
+            if result.kickoff and getattr(self, "_agent_running", False):
+                # Mid-run /goal resume: the process loop is blocked inside chat(), so the
+                # continuation would sit in _pending_input until the turn ends. The running
+                # turn's goal hook re-judges after it finishes anyway — note the deferral
+                # instead of claiming the prompt is being consumed now.
+                _cp(_dim_line('Turn in progress — the continuation runs after it finishes.'))
+            elif not result.kickoff:
                 _cp(_dim_line('Continuing now — taking the next step.' if queued else
                               'Send any message to kick off the next step.'))
 

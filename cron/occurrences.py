@@ -29,7 +29,7 @@ def completed_occurrence(job, instant):
     # A skewed early fire (see claim_job_for_fire) legitimately completes just before its slot.
     earliest_real = datetime.fromisoformat(instant) - timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)
     try:
-        with _transaction() as conn:
+        with _transaction(write=False) as conn:
             rows = conn.execute(
                 "SELECT id, finished_at, claimed_at FROM executions "
                 "WHERE job_id=? AND scheduled_instant=? "

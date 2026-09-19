@@ -58,8 +58,8 @@ export function wrapForMultiplexer(sequence: string): string {
  * - 'native': pbcopy (or equivalent) will run — high-confidence system
  *   clipboard write. tmux buffer may also be loaded as a bonus.
  * - 'tmux-buffer': tmux load-buffer will run, but no native tool — paste
- *   with prefix+] works. System clipboard depends on tmux's set-clipboard
- *   option + outer terminal OSC 52 support; can't know from here.
+ *   with prefix+] works. In remote sessions, the explicit DCS-wrapped OSC 52
+ *   write below also targets the outer terminal clipboard.
  * - 'osc52': only the raw OSC 52 sequence will be written to stdout.
  *   Best-effort; iTerm2 disables OSC 52 by default.
  *
@@ -99,7 +99,11 @@ export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env
     return false
   }
 
-  return !!env['SSH_CONNECTION'] || (!env['TMUX'] && !env['STY'])
+  // tmux panes can outlive and be restored before the SSH client attaches, so
+  // their process environment may never contain SSH_CONNECTION. Always emit
+  // the DCS-wrapped sequence in tmux; allow-passthrough decides whether the
+  // outer terminal receives it, while the tmux paste buffer remains available.
+  return !!env['SSH_CONNECTION'] || !!env['TMUX'] || !env['STY']
 }
 
 /**
@@ -128,13 +132,10 @@ export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env
  *
  *     The TMUX/STY guard is important: detectTerminal() in utils/env.ts
  *     prefers TERM_PROGRAM over TMUX, so a tmux session inside Ghostty
- *     reports terminal='ghostty'. But inside tmux setClipboard() doesn't
- *     emit raw OSC 52 — it goes through tmux load-buffer (which loads
- *     the tmux paste buffer and, with -w, asks tmux to forward an OSC 52
- *     to the OUTER terminal via its own emission path). The native
- *     safety net is still useful there because tmux load-buffer's
- *     outer-terminal forwarding depends on `set -g set-clipboard` and
- *     `allow-passthrough`, which many users don't have configured.
+ *     reports terminal='ghostty'. Inside tmux setClipboard() loads the tmux
+ *     paste buffer; remote sessions also emit an explicit DCS-wrapped OSC 52.
+ *     The native safety net remains useful for local tmux sessions where OSC
+ *     52 is suppressed by default.
  *
  *     The OSC-52-will-emit guard matters too: if the user has set
  *     HERMES_TUI_FORCE_OSC52=0, no OSC 52 sequence will be written. If
@@ -150,13 +151,8 @@ export function shouldUseNativeClipboard(
     return false
   }
 
-  // Inside tmux/screen, OSC 52 is normally suppressed and we rely on
-  // tmux load-buffer instead — so the wl-copy/OSC-52 race usually doesn't
-  // apply. Even when HERMES_TUI_FORCE_OSC52=1 forces a tmux-passthrough
-  // OSC 52 emission, we keep native enabled as a safety net: tmux's
-  // outer-terminal forwarding depends on `allow-passthrough` in the
-  // user's tmux config, so a forced OSC 52 may silently never reach the
-  // host terminal. Native (pbcopy/wl-copy/xclip) covers that gap.
+  // Inside tmux/screen, OSC 52 is normally suppressed and we rely on the
+  // multiplexer paste buffer, so keep native enabled as the local safety net.
   if (env.TMUX || env.STY) {
     return true
   }
@@ -183,11 +179,14 @@ function tmuxPassthrough(payload: string): string {
   return `${ESC}Ptmux;${payload.replaceAll(ESC, ESC + ESC)}${ST}`
 }
 
+/** Load text into tmux's paste buffer before the explicit OSC 52 write. */
+export const TMUX_LOAD_BUFFER_ARGS = ['load-buffer', '-'] as const
+
 /**
  * Load text into tmux's paste buffer via `tmux load-buffer`.
- * -w (tmux 3.2+) propagates to the outer terminal's clipboard via tmux's
- * own OSC 52 emission. -w is dropped for iTerm2: tmux's OSC 52 emission
- * crashes the iTerm2 session over SSH.
+ * Do not use `-w`: setClipboard() immediately emits an explicit DCS-wrapped
+ * OSC 52 sequence, and tmux's additional clipboard write can race it and
+ * leave WezTerm's clipboard empty over SSH.
  *
  * Returns true if the buffer was loaded successfully.
  */
@@ -196,9 +195,7 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
     return false
   }
 
-  const args = process.env['LC_TERMINAL'] === 'iTerm2' ? ['load-buffer', '-'] : ['load-buffer', '-w', '-']
-
-  const { code } = await execFileNoThrow('tmux', args, {
+  const { code } = await execFileNoThrow('tmux', [...TMUX_LOAD_BUFFER_ARGS], {
     input: text,
     useCwd: false,
     timeout: 2000,
@@ -214,14 +211,10 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  * OSC 52 clipboard write: ESC ] 52 ; c ; <base64> BEL/ST
  * 'c' selects the clipboard (vs 'p' for primary selection on X11).
  *
- * When inside tmux ($TMUX set), `tmux load-buffer -w -` is the primary
- * path. tmux's buffer is always reachable — works over SSH, survives
- * detach/reattach, immune to stale env vars. The -w flag (tmux 3.2+) tells
- * tmux to also propagate to the outer terminal via its own OSC 52 path,
- * which tmux wraps correctly for the attached client. On older tmux, -w is
- * ignored and the buffer is still loaded. -w is dropped for iTerm2 (#22432)
- * because tmux's own OSC 52 emission (empty selection param: ESC]52;;b64)
- * crashes iTerm2 over SSH.
+ * When inside tmux ($TMUX set), `tmux load-buffer -` stores a durable tmux
+ * paste buffer that survives detach/reattach. It deliberately omits `-w`:
+ * tmux's own clipboard write can race the explicit OSC 52 write below and
+ * leave WezTerm's clipboard empty over SSH.
  *
  * After load-buffer succeeds, we ALSO return a DCS-passthrough-wrapped
  * OSC 52 for the caller to write to stdout. Our sequence uses explicit `c`
@@ -236,8 +229,8 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  * Outside tmux, write raw OSC 52 to stdout (caller handles the write).
  *
  * Local (no SSH_CONNECTION): also shell out to a native clipboard utility.
- * OSC 52 and tmux -w both depend on terminal settings — iTerm2 disables
- * OSC 52 by default, VS Code shows a permission prompt on first use. Native
+ * OSC 52 depends on terminal settings — iTerm2 disables it by default and
+ * VS Code shows a permission prompt on first use. Native
  * utilities (pbcopy/wl-copy/xclip/xsel/clip.exe) always work locally. Over
  * SSH these would write to the remote clipboard — OSC 52 is the right path there.
  *

@@ -2,11 +2,21 @@ import { describe, expect, it } from 'vitest'
 
 import { env, supportsOsc52Clipboard } from '../../utils/env.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { shouldEmitClipboardSequence, shouldUseNativeClipboard, TMUX_LOAD_BUFFER_ARGS } from './osc.js'
+
+describe('tmuxLoadBuffer', () => {
+  it('loads only the tmux paste buffer before the explicit OSC 52 write', () => {
+    expect(TMUX_LOAD_BUFFER_ARGS).toEqual(['load-buffer', '-'])
+    expect(TMUX_LOAD_BUFFER_ARGS).not.toContain('-w')
+  })
+})
 
 describe('shouldEmitClipboardSequence', () => {
-  it('suppresses local multiplexer clipboard OSC by default', () => {
-    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)).toBe(false)
+  it('emits through tmux even when a restored pane lacks SSH environment variables', () => {
+    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)).toBe(true)
+  })
+
+  it('suppresses screen clipboard OSC by default', () => {
     expect(shouldEmitClipboardSequence({ STY: '1234.pts-0.host' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
@@ -29,11 +39,8 @@ describe('shouldEmitClipboardSequence', () => {
     ).toBe(false)
   })
 
-  it('HERMES_TUI_FORCE_OSC52 takes precedence over TMUX suppression', () => {
-    // Without the override, local-in-tmux suppresses the OSC 52 sequence
-    // so the terminal multiplexer path wins. FORCE_OSC52=1 flips that
-    // back on for users whose tmux config supports passthrough.
-    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv)).toBe(false)
+  it('HERMES_TUI_FORCE_OSC52 keeps the tmux sequence enabled', () => {
+    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv)).toBe(true)
     expect(
       shouldEmitClipboardSequence({
         HERMES_TUI_FORCE_OSC52: '1',
@@ -128,10 +135,8 @@ describe('shouldUseNativeClipboard', () => {
 
   it('returns true inside tmux even on allowlisted outer terminal', () => {
     // detectTerminal() prefers TERM_PROGRAM over TMUX, so a tmux session
-    // inside Ghostty reports terminal='ghostty'. But setClipboard() goes
-    // through tmux load-buffer there, not raw OSC 52 — the wl-copy race
-    // doesn't apply. Native is still useful since tmux's outer-terminal
-    // forwarding depends on `set -g set-clipboard` + `allow-passthrough`.
+    // inside Ghostty reports terminal='ghostty'. Local tmux suppresses OSC 52
+    // by default, so native remains the safety net alongside its paste buffer.
     expect(shouldUseNativeClipboard({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'ghostty')).toBe(true)
     expect(shouldUseNativeClipboard({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'kitty')).toBe(true)
     expect(shouldUseNativeClipboard({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'WezTerm')).toBe(true)
@@ -161,8 +166,7 @@ describe('shouldUseNativeClipboard', () => {
     // race-avoidance still applies.
     expect(
       shouldUseNativeClipboard({ HERMES_TUI_FORCE_OSC52: '1', TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'ghostty')
-      // TMUX guard wins — native still fires because we're going through
-      // tmux load-buffer, not raw OSC 52 to the terminal.
+      // TMUX guard wins — native still fires as a local safety net.
     ).toBe(true)
   })
 

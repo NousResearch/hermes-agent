@@ -3738,7 +3738,26 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+def _resolve_archive_actor(conn: sqlite3.Connection, task_id: str, by: Optional[str]) -> str:
+    """``by`` if given, else the claimer recorded on the task, else the OS user.
+
+    Never falls back to the literal string ``"default"`` — that value means
+    "profile could not be resolved" elsewhere in this module and is not a
+    meaningful audit label for who archived a task.
+    """
+    if by is not None and by.strip():
+        return by.strip()
+    row = conn.execute("SELECT claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["claim_lock"]:
+        return row["claim_lock"]
+    return os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
+
+
+def archive_task(
+    conn: sqlite3.Connection, task_id: str, *, signal_fn=None,
+    by: Optional[str] = None, reason: Optional[str] = None,
+    superseded_by: Optional[str] = None,
+) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
@@ -3751,7 +3770,18 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     dispatcher can spawn a duplicate worker off the released claim. The
     termination outcome lands as its own ``archive_worker_termination`` event so
     the ``archived`` event stays atomic with the status flip.
+
+    ``by``, ``reason`` and ``superseded_by`` are optional so every existing
+    caller keeps working unchanged. When supplied they land on the ``archived``
+    event payload; ``superseded_by`` additionally gets a mirrored ``superseded``
+    event on the successor task in the SAME transaction, so the supersession is
+    visible on the successor's own event log rather than only inside this
+    task's payload.
     """
+    if reason is not None and not reason.strip():
+        raise ValueError("archive reason must not be empty or whitespace-only")
+    if superseded_by is not None and not superseded_by.strip():
+        raise ValueError("superseded_by must not be empty or whitespace-only")
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -3761,6 +3791,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             return False
         was_running = row["status"] == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+        actor = _resolve_archive_actor(conn, task_id, by)
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -3773,7 +3804,13 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        payload = {"by": actor, "reason": reason, "superseded_by": superseded_by}
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
+        if superseded_by is not None:
+            _append_event(
+                conn, superseded_by, "superseded",
+                {"supersedes": task_id, "by": actor, "reason": reason},
+            )
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):

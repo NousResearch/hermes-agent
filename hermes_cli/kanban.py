@@ -1102,12 +1102,25 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         return _err("choose either task_ids to archive or --rm archived task_ids")
     if not ids and not purge_ids:
         return _err("at least one task_id is required")
+    reason = getattr(args, "reason", None)
+    if reason is not None and not reason.strip():
+        return _err("--reason must not be empty or whitespace-only")
+    superseded_by = getattr(args, "superseded_by", None)
+    if superseded_by is not None and not superseded_by.strip():
+        return _err("--supersedes must not be empty or whitespace-only")
     with kbc.connect_closing() as conn:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
-        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
-                           lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
+
+        def op(tid: str) -> bool:
+            try:
+                return kb.archive_task(conn, tid, reason=reason, superseded_by=superseded_by)
+            except ValueError as exc:
+                print(f"cannot archive {tid}: {exc}", file=sys.stderr)
+                return False
+
+        return _bulk_apply(ids, op, lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

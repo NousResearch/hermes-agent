@@ -2067,3 +2067,85 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_archive_records_reason_and_superseded_by(kanban_home):
+    """Passing ``by``/``reason``/``superseded_by`` writes them onto the ``archived``
+    event payload, and mirrors a ``superseded`` event on the successor task so the
+    supersession is visible on its own event log, not just inside the payload."""
+    import json
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        successor = kb.create_task(conn, title="y", assignee="a")
+
+        assert kb.archive_task(
+            conn, t, by="tester", reason="superseded by a better approach",
+            superseded_by=successor,
+        ) is True
+
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'archived'", (t,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        assert payload["by"] == "tester"
+        assert payload["reason"] == "superseded by a better approach"
+        assert payload["superseded_by"] == successor
+
+        sup_row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'superseded'",
+            (successor,),
+        ).fetchone()
+        assert sup_row is not None
+        sup_payload = json.loads(sup_row["payload"])
+        assert sup_payload["supersedes"] == t
+        assert sup_payload["by"] == "tester"
+        assert sup_payload["reason"] == "superseded by a better approach"
+
+
+def test_archive_with_no_arguments_writes_null_provenance(kanban_home):
+    """Existing callers that archive with no keyword arguments keep working: the
+    ``archived`` event still gets the same payload shape (``by``/``reason``/
+    ``superseded_by``) with ``reason``/``superseded_by`` null and ``by`` resolved
+    through the actor fallback chain — never the literal string ``"default"``."""
+    import json
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        assert kb.archive_task(conn, t) is True
+
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'archived'", (t,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        assert set(payload.keys()) == {"by", "reason", "superseded_by"}
+        assert payload["reason"] is None
+        assert payload["superseded_by"] is None
+        assert payload["by"]
+        assert payload["by"] != "default"
+
+        sup_row = conn.execute("SELECT 1 FROM task_events WHERE kind = 'superseded'").fetchone()
+        assert sup_row is None
+
+
+def test_archive_refuses_empty_superseded_by(kanban_home):
+    """An empty or whitespace-only ``superseded_by`` is refused, symmetric with the
+    ``reason`` guard: it must never write an ``archived`` payload with a blank
+    successor id or an orphan ``superseded`` event against an empty task id."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+
+        with pytest.raises(ValueError, match="superseded_by"):
+            kb.archive_task(conn, t, superseded_by="")
+        with pytest.raises(ValueError, match="superseded_by"):
+            kb.archive_task(conn, t, superseded_by="   ")
+
+        assert kb.get_task(conn, t).status != "archived"
+        row = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'archived'", (t,),
+        ).fetchone()
+        assert row is None
+        orphan = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = '' AND kind = 'superseded'",
+        ).fetchone()
+        assert orphan is None

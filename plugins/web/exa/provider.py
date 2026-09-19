@@ -2,6 +2,12 @@
 
 Env: ``EXA_API_KEY`` (https://exa.ai). Both methods are sync — Exa's SDK is
 sync-only; the dispatcher threads extract when the caller is async.
+
+Config (``web.exa_max_age_hours``, unset by default): freshness bound passed
+through to ``get_contents(max_age_hours=...)`` on the keyed extract path.
+Unset keeps Exa's cache-first Contents default; 0 forces an always-live
+crawl (Exa serves its own cached copy otherwise, so disabling Hermes'
+extract cache alone doesn't guarantee fresh content).
 """
 
 from __future__ import annotations
@@ -27,6 +33,26 @@ def _get_exa_client() -> Any:
         return client
 
     return cached_sdk_client("_exa_client", "EXA_API_KEY", _MISSING_KEY, "search.exa", _factory)
+
+
+def _get_exa_max_age_hours() -> Any:
+    """Resolve ``web.exa_max_age_hours`` as a non-negative float, else None.
+
+    Unset / non-numeric / negative values all fall back to None (= Exa's
+    cache-first default, no kwarg sent). Read through
+    :func:`tools.web_tools._load_web_config` — the one seam every other
+    web-config reader uses — so tests patch config at a single place.
+    """
+    try:
+        import tools.web_tools as _wt
+
+        configured = _wt._load_web_config().get("exa_max_age_hours")
+        if configured is None:
+            return None
+        value = float(configured)
+        return value if value >= 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 class ExaWebSearchProvider(BaseWebSearchProvider):
@@ -56,7 +82,11 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
             if use_keyless("exa", provider_env("EXA_API_KEY")):
                 return keyless_extract("Exa", "exa", urls, logger)
             logger.info("Exa extract: %d URL(s)", len(urls))
-            response = _get_exa_client().get_contents(urls, text=True)
+            get_kwargs: Dict[str, Any] = {"text": True}
+            max_age_hours = _get_exa_max_age_hours()
+            if max_age_hours is not None:
+                get_kwargs["max_age_hours"] = max_age_hours
+            response = _get_exa_client().get_contents(urls, **get_kwargs)
             return [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
 
         return run_extract("Exa", logger, urls, _body, sdk=True)

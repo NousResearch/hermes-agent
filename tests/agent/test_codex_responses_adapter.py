@@ -23,26 +23,47 @@ _HARMONY_SOURCE_SNIPPET = (
 )
 
 
-def test_responses_tools_preserve_explicit_boolean_strictness():
-    def tool(name, strict_marker=None):
-        fn = {"name": name, "parameters": {"type": "object", "properties": {}}}
-        if strict_marker is not None:
-            fn["strict"] = strict_marker
-        return {"type": "function", "function": fn}
+def _strict_tool(name, strict_marker=None):
+    fn = {"name": name, "parameters": {"type": "object", "properties": {}}}
+    if strict_marker is not None:
+        fn["strict"] = strict_marker
+    return {"type": "function", "function": fn}
 
-    converted = _responses_tools([
-        tool("default"),
-        tool("strict", True),
-        tool("non_strict", False),
-        tool("invalid", "true"),
-    ])
 
-    assert [(item["name"], item["strict"]) for item in converted] == [
-        ("default", False),
-        ("strict", True),
-        ("non_strict", False),
-        ("invalid", False),
-    ]
+_STRICTNESS_TOOLS = [
+    _strict_tool("default"),
+    _strict_tool("strict", True),
+    _strict_tool("non_strict", False),
+    _strict_tool("invalid", "true"),
+]
+_EXPECTED_STRICTNESS = [("default", False), ("strict", True), ("non_strict", False), ("invalid", False)]
+
+
+def _main_transport_wire_tools():
+    from agent.transports.codex import ResponsesApiTransport
+
+    return ResponsesApiTransport().build_kwargs(
+        "gpt-5.5", [{"role": "user", "content": "hi"}], _STRICTNESS_TOOLS
+    )["tools"]
+
+
+def _auxiliary_adapter_wire_tools():
+    from agent.auxiliary_client import _CodexCompletionsAdapter
+
+    adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url="https://example.com/v1"), "gpt-5.5")
+    resp_kwargs, _, _ = adapter._build_responses_kwargs(
+        {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}], "tools": _STRICTNESS_TOOLS}
+    )
+    return resp_kwargs["tools"]
+
+
+@pytest.mark.parametrize(
+    "wire_tools", [_main_transport_wire_tools, _auxiliary_adapter_wire_tools], ids=["main_transport", "auxiliary"]
+)
+def test_responses_wire_tools_preserve_explicit_boolean_strictness(wire_tools):
+    # Drives the production entry points (main-loop build_kwargs and the auxiliary adapter), not the
+    # helper: an explicit ``strict: True`` must reach kwargs["tools"] on both routes (#105401 parity).
+    assert [(item["name"], item["strict"]) for item in wire_tools()] == _EXPECTED_STRICTNESS
 
 
 def test_chat_content_drops_images_from_assistant_role():

@@ -262,6 +262,52 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     return {"parents": _ids("parent_id", "child_id"), "children": _ids("child_id", "parent_id")}
 
 
+# A worker publishes its branch's PR as ``metadata.published_pr`` on the run
+# handoff; PR acceptance then rewrites ``tasks.completion_contract`` from
+# ``owner/repo`` to that same URL. Either one IS the card's PR, so the UI never
+# has to read run metadata by eye to find it.
+_PR_URL_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*")
+
+
+def _pr_url(value: Any) -> Optional[str]:
+    """The GitHub PR URL in *value* (a string, or a run ``metadata`` mapping);
+    None when it holds none."""
+    if isinstance(value, dict):
+        value = value.get("published_pr")
+    if not isinstance(value, str):
+        return None
+    match = _PR_URL_RE.search(value)
+    return match.group(0) if match else None
+
+
+def _run_pr_url(metadata: Any) -> Optional[str]:
+    """``_pr_url`` over a run's metadata, which reaches us as JSON text from
+    SQLite and as a dict once ``Run.from_row`` has parsed it."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return None
+    return _pr_url(metadata)
+
+
+def _pr_urls_by_task(conn: sqlite3.Connection, task_id: Optional[str] = None) -> dict[str, str]:
+    """``{task_id: PR url}`` from the newest run that published one. One
+    aggregate query for the whole board, so a card carries its PR without the
+    drawer's per-task fetch; scoped to *task_id* when given."""
+    sql = "SELECT task_id, metadata FROM task_runs WHERE metadata LIKE '%published_pr%'"
+    params: tuple = ()
+    if task_id is not None:
+        sql += " AND task_id = ?"
+        params = (task_id,)
+    urls: dict[str, str] = {}
+    for row in conn.execute(sql + " ORDER BY id", params):
+        url = _run_pr_url(row["metadata"])
+        if url:
+            urls[row["task_id"]] = url  # ORDER BY id -> the newest publication wins
+    return urls
+
+
 # --- GET /board -------------------------------------------------------------
 
 def get_board(
@@ -297,12 +343,14 @@ def get_board(
         # One window-function query for latest summaries (avoids N+1); cards get a
         # truncated preview, the full text comes from /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        pr_urls = _pr_urls_by_task(conn)
         for t in tasks:
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            d["pr_url"] = _pr_url(t.completion_contract) or pr_urls.get(t.id)
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 
@@ -356,6 +404,7 @@ def get_task(
         child_summaries = kanban_db.latest_summaries(conn, links["children"])
         children = filter(None, (kanban_db.get_task(conn, cid) for cid in links["children"]))
         _attach_diagnostics(task_d, _compute_task_diagnostics(conn, task_ids=[task_id]).get(task_id) or [])
+        task_d["pr_url"] = _pr_url(task.completion_contract) or _pr_urls_by_task(conn, task_id).get(task_id)
         return {
             "task": task_d,
             "comments": [asdict(c) for c in kanban_db.list_comments(conn, task_id)],

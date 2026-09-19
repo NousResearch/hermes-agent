@@ -150,6 +150,7 @@ def _snap(
 _BEDROCK_URL = "https://aws.amazon.com/bedrock/pricing/"
 _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
+_ZAI_URL = "https://docs.z.ai/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
@@ -217,6 +218,14 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     }),
     ("minimax", None, "minimax-pricing-2026-04", {"minimax-m2.7": ("0.30", "1.20")}),
     ("minimax-cn", None, "minimax-pricing-2026-04", {"minimax-m2.7": ("0.30", "1.20")}),
+    ("z-ai", _ZAI_URL, "z-ai-pricing-2026-07", {
+        ("glm-5.3", "glm-5.2", "glm-5.1"): ("1.40", "4.40", "0.26"),
+        ("glm-5", "glm-5-turbo", "glm-5v-turbo"): ("1.00", "3.20", "0.20"),
+        "glm-5.3-flash": ("0.15", "0.50", "0.03"),
+        ("glm-4.7", "glm-4.5"): ("0.60", "2.20", "0.12"),
+        "glm-4.5-air": ("0.20", "1.10", "0.04"),
+        ("glm-4.7-flash", "glm-4.5-flash", "glm-4-flash"): ("0.00", "0.00", "0.00"),
+    }),
     # Fireworks AI serverless (Standard tier) publishes a per-model cached_input
     # rate (→ cache_read) but no separate cache_write rate. Fast/turbo tiers are
     # exposed as accounts/fireworks/routers/<name>, so rsplit("/", 1) yields
@@ -268,7 +277,7 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _ZAI_URL, _OPUS, _SONNET
 
 # GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
 # (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
@@ -279,6 +288,9 @@ for _provider, _alias, _canonical in (
     *((("openai", f"{m}-{suffix}", m) for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna") for suffix in ("pro", "900k"))),
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
+    ("z-ai", "glm-5p3", "glm-5.3"),
+    ("z-ai", "glm-5p2", "glm-5.2"),
+    ("z-ai", "glm-5p1", "glm-5.1"),
 ):
     _OFFICIAL_DOCS_PRICING[(_provider, _alias)] = _OFFICIAL_DOCS_PRICING[(_provider, _canonical)]
 del _provider, _alias, _canonical
@@ -315,10 +327,12 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
 # api.openai.com). Google and Fireworks are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
     "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "minimax": "minimax", "minimax-cn": "minimax-cn",
+    "z-ai": "z-ai", "zai": "z-ai", "glm": "z-ai", "z.ai": "z-ai", "zhipu": "z-ai",
 }
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
+_ZAI_PROVIDER_NAMES = {"z-ai", "zai", "glm", "z.ai", "zhipu"}
 
 
 def resolve_billing_route(
@@ -329,7 +343,7 @@ def resolve_billing_route(
     model = (model_name or "").strip()
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)
-        if inferred_provider in {"anthropic", "openai", "google"}:
+        if inferred_provider in {"anthropic", "openai", "google", "z-ai", "zai", "glm", "z.ai"}:
             provider_name = inferred_provider
             model = bare_model
 
@@ -356,6 +370,8 @@ def resolve_billing_route(
             snapshot_provider = "google"
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
+        elif provider_name in _ZAI_PROVIDER_NAMES or host("api.z.ai") or host("bigmodel.cn") or host("open.bigmodel.cn"):
+            snapshot_provider = "z-ai"
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
@@ -388,9 +404,21 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
 
 
+def _normalize_zai_model_name(model: str) -> str:
+    """Strip vendor prefixes and normalize GLM variants (e.g. glm-5p3 -> glm-5.3, glm-5-3 -> glm-5.3)."""
+    name = _strip_prefix(model.lower().strip(), ("z-ai/", "zai/", "z.ai/"))
+    name = re.sub(r"^glm-(\d+)p(\d+)", r"glm-\1.\2", name)
+    name = re.sub(r"^glm-(\d+)-(\d+)", r"glm-\1.\2", name)
+    return name
+
+
 # Anthropic dot-notation (opus-4.7) and Bedrock region-prefixed ids need
 # normalizing before a second lookup.
-_MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
+_MODEL_NORMALIZERS = {
+    "anthropic": _normalize_anthropic_model_name,
+    "bedrock": _normalize_bedrock_model_name,
+    "z-ai": _normalize_zai_model_name,
+}
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:

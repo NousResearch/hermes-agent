@@ -22,7 +22,7 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.retry_utils import reset_delay_from_message
 from agent.credential_persistence import (
-    fingerprint_secret_value,
+    credential_secret_fingerprints,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
@@ -2100,6 +2100,66 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 # --- Seeding --------------------------------------------------------------
 
 
+def _incoming_token_is_a_rotation(
+    existing: PooledCredential, provider: str, payload: Dict[str, Any]
+) -> bool:
+    """True when *payload* carries a genuinely different secret than *existing*.
+
+    Owned entries persist their secret, so a direct comparison answers this.
+    Borrowed ones (env vars, external CLIs) do not: ``to_dict`` runs them
+    through :func:`sanitize_borrowed_credential_payload`, which strips the raw
+    value and leaves a non-reversible ``secret_fingerprint`` behind for exactly
+    this comparison. Comparing the incoming token against their stored — always
+    empty — ``access_token`` reported a rotation on every single
+    :func:`load_pool` call, which cleared the exhaustion state below and
+    re-persisted the pool each time: a 429 cooldown never survived a reload,
+    and the resulting ``auth.json`` rewrite invalidated every provider's cached
+    model list (its fingerprint folds in that file's mtime).
+
+    An absent secret on both sides is "nothing to compare", not a rotation.
+
+    The stored side is a single fingerprint of whichever field
+    ``_credential_secret_fingerprint`` preferred when the entry was written, so
+    the incoming side is compared against *every* fingerprint its secret fields
+    can produce rather than against that same preference. Otherwise a borrowed
+    payload that grows a higher-priority field (an ``agent_key`` next to its
+    ``access_token``) would fingerprint a different field than the stored entry
+    did and silently read as a rotation on every load again — the very bug this
+    function exists to fix, reintroduced by a payload shape change alone.
+    """
+    incoming = payload.get("access_token")
+    if incoming is None:
+        return False
+    if existing.access_token:
+        return incoming != existing.access_token
+    stored_fingerprint = (existing.extra or {}).get("secret_fingerprint")
+    if not stored_fingerprint:
+        # Pre-fingerprint entry: nothing on disk identifies the old secret.
+        return False
+    if not is_borrowed_credential_source(payload.get("source") or existing.source, provider):
+        # Owned entries persist their secret; an empty stored token with a
+        # fingerprint beside it is not a shape this comparison can read.
+        return False
+    incoming_fingerprints = credential_secret_fingerprints(payload)
+    if not incoming_fingerprints:
+        logger.debug(
+            "credential-pool: %s/%s has a stored secret fingerprint but the incoming "
+            "payload carries no fingerprintable secret; keeping its status "
+            "(unknown is not changed)",
+            provider,
+            existing.source,
+        )
+        return False
+    if stored_fingerprint in incoming_fingerprints:
+        return False
+    logger.debug(
+        "credential-pool: %s/%s secret fingerprint changed; clearing its status as a rotation",
+        provider,
+        existing.source,
+    )
+    return True
+
+
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
     matching_indices = [idx for idx, entry in enumerate(entries) if entry.source == source]
     existing_idx = matching_indices[0] if matching_indices else None
@@ -2118,17 +2178,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     field_updates: Dict[str, Any] = {}
     extra_updates: Dict[str, Any] = {}
     _field_names = {f.name for f in fields(existing)}
-    incoming_token = payload.get("access_token")
-    token_changed = incoming_token is not None and incoming_token != existing.access_token
-    if token_changed and not existing.access_token:
-        # Borrowed sources (claude_code, env-backed rows) are written to
-        # auth.json without their secret, so a reloaded entry carries only a
-        # ``secret_fingerprint``. Comparing against the empty string reported
-        # a rotation on EVERY load and cleared the DEAD/exhausted state the
-        # previous process had just persisted. Compare fingerprints instead.
-        known_fingerprint = existing.extra.get("secret_fingerprint")
-        if isinstance(known_fingerprint, str) and known_fingerprint:
-            token_changed = fingerprint_secret_value(incoming_token) != known_fingerprint
+    token_changed = _incoming_token_is_a_rotation(existing, provider, payload)
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None or (key == "label" and existing.label):
             continue

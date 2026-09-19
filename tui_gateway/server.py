@@ -2270,7 +2270,24 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         # Live supervisor beat any persisted loopback URL for this identity.
         overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
+    if any(overrides.values()):
+        _rederive_per_model_route(model, resolution.runtime)
     return model, resolution.runtime
+
+
+def _rederive_per_model_route(model: str, runtime: dict) -> None:
+    """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
+    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
+    or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
+    other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
+    from hermes_cli.model_switch import model_derived_api_mode
+    from hermes_cli.models import normalize_opencode_base_url
+    provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
+    api_mode = model_derived_api_mode(provider, model)
+    if api_mode is None:
+        return
+    runtime["api_mode"] = api_mode
+    runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:

@@ -59,7 +59,18 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
-    return stored_model, provider, base_url, (runtime.get("api_mode") or None), provider_changed
+    api_mode = runtime.get("api_mode") or None
+    # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
+    # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
+    # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
+    # model (#96066) — the CLI/oneshot twin of tui_gateway's _rederive_per_model_route.
+    from hermes_cli.model_switch import model_derived_api_mode
+    derived = model_derived_api_mode(provider or "", stored_model)
+    if derived is not None:
+        from hermes_cli.models import normalize_opencode_base_url
+        api_mode = derived
+        base_url = normalize_opencode_base_url(provider, api_mode, base_url) or None
+    return stored_model, provider, base_url, api_mode, provider_changed
 
 
 def _heal_bare_custom_provider(provider, *, base_url, model):

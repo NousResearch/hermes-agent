@@ -1569,11 +1569,22 @@ _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
+def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
+    """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
+    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
+    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    from hermes_cli.models import opencode_provider_family
+    key = str(provider or "").strip().lower()
+    override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
+    return override(key, model, api_key) if override is not None else None
+
+
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
-    override = _PROVIDER_API_MODE_OVERRIDES.get(st.target_provider)
-    if override is not None:
-        st.api_mode = override(st.target_provider, st.new_model, st.api_key)
+    derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
+    if derived is not None:
+        st.api_mode = derived
     if not st.api_mode:
         st.api_mode = determine_api_mode(st.target_provider, st.base_url, model=st.new_model)
 

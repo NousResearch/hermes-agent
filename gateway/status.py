@@ -604,6 +604,10 @@ def _pid_exists(pid: int) -> bool:
     try:
         import psutil  # type: ignore
         # Best-effort zombie check: status-read failures fall through to pid_exists().
+        # Windows has no POSIX zombies, and this probe costs ~7 ms per call — once per
+        # registry entry inside the session file lock (#115578). Skip it on Windows and
+        # let pid_exists() below (or the ctypes fallback) decide.
+        probe_zombie = os.name != "nt"
         try:
             # A zombie (defunct) process is still in the process table, so ``psutil.pid_exists()`` returns
             # True for it — but it is already dead: SIGKILL has no effect and it cannot be a running
@@ -613,7 +617,7 @@ def _pid_exists(pid: int) -> bool:
             # #42126). Report zombies as dead so the takeover proceeds. Best-effort: any failure to read
             # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
             # ``pid_exists()`` below rather than raising.
-            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+            if probe_zombie and psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
             return False

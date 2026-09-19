@@ -584,21 +584,32 @@ export interface Translations extends NoticeTranslations {
     composerSend: {
       title: string
       description: string
-      modeEnter: string
-      modeDoubleEnter: string
-      modePause: string
-      modeModEnter: string
+      gateLabel: string
+      gateDescription: string
+      newlineLabel: string
+      newlineDescription: string
+      gesturesTitle: string
+      gesturesDisabled: string
+      gestureDoubleTap: string
+      gesturePause: string
+      gestureHold: string
+      gestureIdle: string
+      gestureDoubleTapDesc: string
+      gesturePauseDesc: string
+      gestureHoldDesc: string
+      gestureIdleDesc: string
       doubleTapTitle: string
       doubleTapDescription: string
       doubleTapUnit: string
       holdMsTitle: string
       holdMsDescription: string
       holdMsUnit: string
+      idleMsTitle: string
+      idleMsDescription: string
+      idleMsUnit: string
       typingIdleTitle: string
       typingIdleDescription: string
       typingIdleUnit: string
-      holdToggleTitle: string
-      holdToggleDescription: string
       graceTitle: string
       graceDescription: string
       gracePopoverHint: string
@@ -2958,6 +2969,8 @@ export interface Translations extends NoticeTranslations {
     placeholderSendDoubleTap: string
     placeholderSendChord: (chord: string) => string
     placeholderSendEnterSends: string
+    placeholderSendHold: string
+    placeholderSendIdle: string
     placeholderSendPause: string
     sendHold: string
     newSessionPlaceholders: readonly string[]

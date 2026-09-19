@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import { $registryVersion } from '@/contrib/registry'
-import { $composerSendMode } from '@/store/composer-send'
+import { $composerSendPrefs } from '@/store/composer-send'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 
 import { readonlyShortcuts } from './actions'
@@ -16,7 +16,7 @@ export function useKeybindHint(actionId: string): string | null {
   // Composer rows are mode-dependent, so the hint has to follow the setting —
   // otherwise the Send button keeps advertising Enter after the user moved
   // sending to ⌘Enter.
-  const sendMode = useStore($composerSendMode)
+  const sendPrefs = useStore($composerSendPrefs)
 
   // `bindingsFor`, not a raw `bindings[id]`: $bindings is seeded at module init
   // from the actions known THEN, so a plugin action contributed later isn't in
@@ -31,7 +31,7 @@ export function useKeybindHint(actionId: string): string | null {
     return formatCombo(rebindable)
   }
 
-  const readonly = readonlyShortcuts(sendMode).find(entry => entry.id === actionId)
+  const readonly = readonlyShortcuts(sendPrefs).find(entry => entry.id === actionId)
 
   if (readonly) {
     const [first, second] = readonly.keys

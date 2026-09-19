@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -13,13 +12,15 @@ import {
   $composerSendPrefs,
   clampDoubleEnterMs,
   clampHoldMs,
+  clampIdleSendMs,
   clampSendGraceMs,
   clampTypingIdleMs,
-  type ComposerSendMode,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
   HOLD_MAX_MS,
   HOLD_MIN_MS,
+  IDLE_SEND_MAX_MS,
+  IDLE_SEND_MIN_MS,
   SEND_GRACE_MAX_MS,
   SEND_GRACE_MIN_MS,
   SEND_GRACE_REASONS,
@@ -30,7 +31,7 @@ import {
 } from '@/store/composer-send'
 import { notify } from '@/store/notifications'
 
-import { composerSendModeHint } from '../chat/composer/send-mode-hint'
+import { composerSendHint } from '../chat/composer/send-hint'
 
 import { ListRow } from './primitives'
 
@@ -100,13 +101,20 @@ function MsField({ clamp, label, max, min, onChange, unit, value }: MsFieldProps
 
 /** Settings → Keyboards: how a draft gets committed, and which sends wait.
  *
- *  Two things here are deliberately NOT modes: the long press is a switch that
- *  rides alongside whichever mode is chosen (a double-tap user should not have
- *  to give that up to get it), and the grace window is one checkbox per
- *  situation, because a second tap and a long press are things the user DID —
- *  only the send the app worked out on their behalf is worth holding by default.
- *  Every numeric row names the JSON file main persists to, so the hand-edit path
- *  is discoverable rather than folklore. */
+ *  Three kinds of setting, deliberately not one control:
+ *
+ *  1. the gate — whether a lone Enter is allowed to send at all. The primary
+ *     control, and a switch rather than a remap: the feature exists to stop
+ *     accidental sends, so the row states what it prevents;
+ *  2. the newline — what a press does instead, once the gate is closed. A
+ *     separate question, because a break and a send are different outcomes and
+ *     "nothing at all" is a third answer;
+ *  3. the gestures that ALSO commit a draft — independent, because they overlap
+ *     freely and an enum could only ever arm one.
+ *
+ *  The newline row and the gestures are hidden while a bare Enter sends, since
+ *  neither can matter then. Values are kept, so switching back restores what was
+ *  chosen. */
 export function ComposerSendSettings() {
   const { t } = useI18n()
   const k = t.keybinds.composerSend
@@ -114,30 +122,25 @@ export function ComposerSendSettings() {
   const configPath = useStore($composerSendConfigPath)
 
   const fileHint = configPath ? k.fileHint(configPath) : undefined
+  const gesturesLocked = prefs.enterSends
 
-  const commitMode = (mode: ComposerSendMode) => {
-    triggerHaptic('selection')
-    void setComposerSendPrefs({ mode })
-
-    // Say what the switch did. The gesture is invisible until the user types,
-    // and the placeholder hint only exists while the composer is empty — this
-    // is the one moment they are looking at the setting and can be told.
+  // Say what the settings currently amount to. The gestures are invisible until
+  // someone types, and the placeholder hint only exists while the composer is
+  // empty — this is the one moment they are looking at the panel and can be told.
+  const announce = (changed: string) => {
     notify({
       kind: 'info',
-      message: composerSendModeHint(mode, {
+      message: composerSendHint($composerSendPrefs.get(), {
         chord: t.composer.placeholderSendChord,
         doubleTap: t.composer.placeholderSendDoubleTap,
         enterSends: t.composer.placeholderSendEnterSends,
+        hold: t.composer.placeholderSendHold,
+        idle: t.composer.placeholderSendIdle,
         newline: t.composer.placeholderSendNewline,
         pause: t.composer.placeholderSendPause
       }),
-      title: k.title
+      title: changed
     })
-  }
-
-  const setHold = (sendOnHold: boolean) => {
-    triggerHaptic('selection')
-    void setComposerSendPrefs({ sendOnHold })
   }
 
   const toggleGrace = (reason: SendGraceReason, enabled: boolean) => {
@@ -166,92 +169,141 @@ export function ComposerSendSettings() {
         ? k.graceAll
         : k.graceSome(String(delayed), String(SEND_GRACE_REASONS.length))
 
-  return (
+  /** One gesture: the switch, and its window once it is on. */
+  const gesture = (
+    key: 'doubleTap' | 'hold' | 'idle' | 'pause',
+    title: string,
+    description: string,
+    pref: 'sendOnDoubleTap' | 'sendOnHold' | 'sendOnIdle' | 'sendOnPause',
+    timing: { clamp: (value: unknown) => number; max: number; min: number; pref: 'doubleEnterMs' | 'holdMs' | 'idleSendMs' | 'typingIdleMs'; title: string; unit: string; description: string }
+  ) => (
     <>
       <ListRow
         action={
-          <SegmentedControl
-            onChange={commitMode}
-            options={[
-              { id: 'enter', label: k.modeEnter },
-              { id: 'double-enter', label: k.modeDoubleEnter },
-              { id: 'pause', label: k.modePause },
-              { id: 'mod-enter', label: k.modeModEnter }
-            ]}
-            value={prefs.mode}
+          <Switch
+            aria-label={title}
+            checked={prefs[pref]}
+            disabled={gesturesLocked}
+            onCheckedChange={checked => {
+              triggerHaptic('selection')
+              void setComposerSendPrefs({ [pref]: checked })
+              announce(title)
+            }}
           />
         }
-        description={k.description}
-        title={k.title}
+        description={description}
+        title={title}
+      />
+      {prefs[pref] && (
+        <ListRow
+          action={
+            <MsField
+              clamp={timing.clamp}
+              label={timing.title}
+              max={timing.max}
+              min={timing.min}
+              onChange={value => void setComposerSendPrefs({ [timing.pref]: value })}
+              unit={timing.unit}
+              value={prefs[timing.pref]}
+            />
+          }
+          description={timing.description}
+          hint={fileHint}
+          title={timing.title}
+        />
+      )}
+    </>
+  )
+
+  return (
+    <>
+      {/* The primary control is the GATE, not a remap: the feature exists to stop
+          accidental sends, so the row states what it prevents rather than what
+          the key does instead. Stored the natural way round (`enterSends`) and
+          inverted here, once, on purpose. */}
+      <ListRow
+        action={
+          <Switch
+            aria-label={k.gateLabel}
+            checked={!prefs.enterSends}
+            onCheckedChange={checked => {
+              triggerHaptic('selection')
+              void setComposerSendPrefs({ enterSends: !checked })
+              announce(k.gateLabel)
+            }}
+          />
+        }
+        description={k.gateDescription}
+        title={k.gateLabel}
       />
 
-      {/* Not offered in `enter`: the press has already committed by the time a
-          hold could register, so the switch would be a lie there. */}
-      {prefs.mode !== 'enter' && (
+      {/* What the press does instead, as its own question: a line break and a
+          send are different outcomes, and "nothing at all" is a third answer. */}
+      {!prefs.enterSends && (
         <ListRow
-          action={<Switch aria-label={k.holdToggleTitle} checked={prefs.sendOnHold} onCheckedChange={setHold} />}
-          description={k.holdToggleDescription}
-          title={k.holdToggleTitle}
+          action={
+            <Switch
+              aria-label={k.newlineLabel}
+              checked={prefs.enterNewline}
+              onCheckedChange={checked => {
+                triggerHaptic('selection')
+                void setComposerSendPrefs({ enterNewline: checked })
+                announce(k.newlineLabel)
+              }}
+            />
+          }
+          description={k.newlineDescription}
+          title={k.newlineLabel}
         />
       )}
 
-      {prefs.sendOnHold && prefs.mode !== 'enter' && (
-        <ListRow
-          action={
-            <MsField
-              clamp={clampHoldMs}
-              label={k.holdMsTitle}
-              max={HOLD_MAX_MS}
-              min={HOLD_MIN_MS}
-              onChange={holdMs => void setComposerSendPrefs({ holdMs })}
-              unit={k.holdMsUnit}
-              value={prefs.holdMs}
-            />
-          }
-          description={k.holdMsDescription}
-          hint={fileHint}
-          title={k.holdMsTitle}
-        />
-      )}
+      {gesturesLocked && <ListRow description={k.gesturesDisabled} title={k.gesturesTitle} />}
 
-      {/* `pause` measures its mid-flow presses against the same window as
-          `double-enter`, so it needs the same knob. */}
-      {(prefs.mode === 'double-enter' || prefs.mode === 'pause') && (
-        <ListRow
-          action={
-            <MsField
-              clamp={clampDoubleEnterMs}
-              label={k.doubleTapTitle}
-              max={DOUBLE_ENTER_MAX_MS}
-              min={DOUBLE_ENTER_MIN_MS}
-              onChange={doubleEnterMs => void setComposerSendPrefs({ doubleEnterMs })}
-              unit={k.doubleTapUnit}
-              value={prefs.doubleEnterMs}
-            />
-          }
-          description={k.doubleTapDescription}
-          hint={fileHint}
-          title={k.doubleTapTitle}
-        />
-      )}
+      {/* Hidden, not disabled, while Enter sends on the press: none of them
+          can fire, and a row of dead switches reads as a broken panel. The
+          values are kept, so switching back restores what was chosen. */}
+      {!gesturesLocked && (
+        <>
+          {gesture('doubleTap', k.gestureDoubleTap, k.gestureDoubleTapDesc, 'sendOnDoubleTap', {
+            clamp: clampDoubleEnterMs,
+            description: k.doubleTapDescription,
+            max: DOUBLE_ENTER_MAX_MS,
+            min: DOUBLE_ENTER_MIN_MS,
+            pref: 'doubleEnterMs',
+            title: k.doubleTapTitle,
+            unit: k.doubleTapUnit
+          })}
 
-      {prefs.mode === 'pause' && (
-        <ListRow
-          action={
-            <MsField
-              clamp={clampTypingIdleMs}
-              label={k.typingIdleTitle}
-              max={TYPING_IDLE_MAX_MS}
-              min={TYPING_IDLE_MIN_MS}
-              onChange={typingIdleMs => void setComposerSendPrefs({ typingIdleMs })}
-              unit={k.typingIdleUnit}
-              value={prefs.typingIdleMs}
-            />
-          }
-          description={k.typingIdleDescription}
-          hint={fileHint}
-          title={k.typingIdleTitle}
-        />
+          {gesture('pause', k.gesturePause, k.gesturePauseDesc, 'sendOnPause', {
+            clamp: clampTypingIdleMs,
+            description: k.typingIdleDescription,
+            max: TYPING_IDLE_MAX_MS,
+            min: TYPING_IDLE_MIN_MS,
+            pref: 'typingIdleMs',
+            title: k.typingIdleTitle,
+            unit: k.typingIdleUnit
+          })}
+
+          {gesture('hold', k.gestureHold, k.gestureHoldDesc, 'sendOnHold', {
+            clamp: clampHoldMs,
+            description: k.holdMsDescription,
+            max: HOLD_MAX_MS,
+            min: HOLD_MIN_MS,
+            pref: 'holdMs',
+            title: k.holdMsTitle,
+            unit: k.holdMsUnit
+          })}
+
+          {gesture('idle', k.gestureIdle, k.gestureIdleDesc, 'sendOnIdle', {
+            clamp: clampIdleSendMs,
+            description: k.idleMsDescription,
+            max: IDLE_SEND_MAX_MS,
+            min: IDLE_SEND_MIN_MS,
+            pref: 'idleSendMs',
+            title: k.idleMsTitle,
+            unit: k.idleMsUnit
+          })}
+        </>
       )}
 
       {/* One checkbox per situation, in a popover: four switches would swamp the

@@ -102,6 +102,24 @@ export const forceRedraw = (stdout: NodeJS.WriteStream = process.stdout): boolea
 }
 
 /**
+ * Escalation beyond forceRedraw: leave the alternate screen before entering
+ * it again so the terminal allocates a clean buffer. This is the ?1049l then
+ * ?1049h reset behind Ctrl+T and the /hardreset slash command. Returns false
+ * owns this stdout.
+ */
+export const hardResetScreen = (stdout: NodeJS.WriteStream = process.stdout): boolean => {
+  const instance = instances.get(stdout)
+
+  if (!instance) {
+    return false
+  }
+
+  instance.hardResetScreen()
+
+  return true
+}
+
+/**
  * Mount a component and render the output.
  */
 export const renderSync = (node: ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance => {

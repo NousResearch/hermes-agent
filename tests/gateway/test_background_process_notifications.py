@@ -359,6 +359,121 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("origin_store", ["persisted", "cached"])
+@pytest.mark.parametrize("thread_id", [None, "24296"])
+@pytest.mark.parametrize("reply_anchor", [None, "777"])
+async def test_background_continuation_does_not_inherit_session_reply_anchor(
+    monkeypatch, tmp_path, origin_store, thread_id, reply_anchor,
+):
+    """A completion spawning another job must not resurrect the first chat message.
+
+    Regression for #90280; validates the synthetic-source fix in PR #100728.
+    """
+    from gateway.platforms.base import _thread_metadata_for_event
+    from gateway.session import SessionContext, SessionSource, build_session_key
+    from gateway.session_context import get_session_env
+    from tools.terminal_tool_background import _stamp_gateway_routing
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    origin = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        user_id="1", thread_id=thread_id, message_id="2",
+    )
+    session_key = build_session_key(origin)
+    if origin_store == "persisted":
+        runner.session_store.get_or_create_session(origin)
+    else:
+        runner._cache_session_source(session_key, origin)
+
+    await runner._inject_watch_notification(
+        "Background process finished",
+        {"session_key": session_key, "message_id": reply_anchor},
+    )
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_id == reply_anchor
+    assert origin.message_id == "2"
+    assert runner._reply_anchor_for_event(event) == reply_anchor
+    metadata = _thread_metadata_for_event(event) or {}
+    assert metadata.get("telegram_reply_to_message_id") == (
+        reply_anchor if thread_id else None
+    )
+
+    context = SessionContext(
+        source=event.source, connected_platforms=[], home_channels={},
+        session_key=session_key,
+    )
+    tokens = runner._set_session_env(context)
+    try:
+        next_process = SimpleNamespace()
+        _stamp_gateway_routing(next_process, get_session_env)
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert next_process.watcher_chat_id == origin.chat_id
+    assert next_process.watcher_thread_id == (thread_id or "")
+    assert next_process.watcher_message_id == ""
+    assert event.source.to_dict() == {
+        key: value for key, value in origin.to_dict().items() if key != "message_id"
+    }
+    await runner._inject_watch_notification(
+        "Next background process finished",
+        {"session_key": session_key, "message_id": next_process.watcher_message_id},
+    )
+    next_event = adapter.handle_message.await_args.args[0]
+    assert runner._reply_anchor_for_event(next_event) is None
+    assert "telegram_reply_to_message_id" not in (
+        _thread_metadata_for_event(next_event) or {}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin_store", ["persisted", "cached"])
+@pytest.mark.parametrize("synthetic_thread", [True, False])
+async def test_slack_background_continuation_preserves_cron_thread_provenance(
+    monkeypatch, tmp_path, origin_store, synthetic_thread,
+):
+    """Slack needs the source message ID to distinguish a session key from a real thread."""
+    from gateway.session import SessionContext, SessionSource, build_session_key
+    from tools.cronjob_job_args import _origin_from_env
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters.pop(Platform.TELEGRAM)
+    runner.adapters[Platform.SLACK] = adapter
+    message_id = "171.111"
+    thread_id = message_id if synthetic_thread else "171.000"
+    origin = SessionSource(
+        platform=Platform.SLACK, chat_id="D123", chat_type="dm",
+        user_id="U123", scope_id="T123", thread_id=thread_id,
+        message_id=message_id,
+    )
+    session_key = build_session_key(origin)
+    if origin_store == "persisted":
+        runner.session_store.get_or_create_session(origin)
+    else:
+        runner._cache_session_source(session_key, origin)
+
+    await runner._inject_watch_notification(
+        "Background process finished", {"session_key": session_key},
+    )
+    event = adapter.handle_message.await_args.args[0]
+    context = SessionContext(
+        source=event.source, connected_platforms=[], home_channels={},
+        session_key=session_key,
+    )
+    tokens = runner._set_session_env(context)
+    try:
+        cron_origin = _origin_from_env()
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert cron_origin is not None
+    assert cron_origin["chat_id"] == origin.chat_id
+    assert cron_origin["thread_id"] == (None if synthetic_thread else thread_id)
+    assert origin.message_id == message_id
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_loads_session_store_off_loop(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

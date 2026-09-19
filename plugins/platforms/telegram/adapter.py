@@ -965,7 +965,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return cls._dm_topic_fallback(metadata) and cls._metadata_reply_to_message_id(metadata) is not None
         if metadata and metadata.get("telegram_dm_topic_created_for_send"):
             return False
+        # General is the topic-less destination (id 1), so it needs no reply
+        # anchor. Match _message_thread_id_for_send rather than rejecting a
+        # synthetic completion before its normal General send can run.
+        if str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
+            return False
         return bool(thread_id) and cls._dm_topic_fallback(metadata)
+
+    @classmethod
+    def _is_named_dm_topic_route(cls, metadata: Optional[Dict[str, Any]]) -> bool:
+        """Whether fallback must retain a private-chat topic, even without a reply anchor."""
+        thread_id = cls._metadata_thread_id(metadata)
+        return bool(
+            thread_id and str(thread_id) != cls._GENERAL_TOPIC_THREAD_ID
+            and (cls._dm_topic_fallback(metadata) or (metadata or {}).get("telegram_dm_topic_created_for_send"))
+        )
 
     @staticmethod
     def _dm_topic_missing_anchor_error() -> str:
@@ -1095,18 +1109,18 @@ class TelegramAdapter(BasePlatformAdapter):
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
         cls, error: Exception, metadata: Optional[Dict[str, Any]], reply_to_message_id: Optional[int]) -> bool:
-        """True when a DM-topic send should be retried with routing stripped: (1) stale anchor — reply
-        target deleted; (2) anchor-less synthetic send whose ``direct_messages_topic_id`` Bot API rejects.
+        """Whether a DM-topic failure permits retrying with routing stripped.
 
-        2. The synthetic-event case (added when #27937 introduced ``direct_messages_topic_id`` fallback for
-        sends without an anchor): if Bot API rejects the topic id itself with any BadRequest that mentions
-        topic/thread routing, we retry without routing rather than dropping the message.
+        Anchorless named-topic notifications cannot recover by moving to General. Existing
+        anchored media and native direct-message-topic recovery retain their fallback policy.
         """
         if not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error):
             return False
         err_lower = str(error).lower()
         if reply_to_message_id is not None and "message to be replied not found" in err_lower:
             return True
+        if reply_to_message_id is None and cls._is_named_dm_topic_route(metadata):
+            return False
         if not metadata.get("direct_messages_topic_id"):  # topic id rejected → plain DM send
             return False
         topic_markers = (
@@ -3345,7 +3359,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
                     if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                        if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
+                        if private_dm_topic_send or self._is_named_dm_topic_route(metadata):
                             return SendResult(success=False, error=str(send_err), retryable=False)
                         # One-off "thread not found" flakes recover on immediate retry: same thread_id once.
                         if not retried_thread_not_found:
@@ -3361,7 +3375,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if "message to be replied not found" in str(send_err).lower() and reply_to_id is not None:
                         safe_send_error = _redact_telegram_error_text(send_err)
-                        if private_dm_topic_send:
+                        if private_dm_topic_send or self._is_named_dm_topic_route(metadata):
                             return SendResult(success=False, error=safe_send_error, retryable=False)
                         # Reply target deleted; private-topic fallback sends drop anchor + topic id together.
                         logger.warning("[%s] Reply target deleted, retrying without reply_to: %s", self.name, safe_send_error)

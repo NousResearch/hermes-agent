@@ -52,6 +52,15 @@ _DURABLE_CLAIM_OPS = {
 }
 
 
+def _without_telegram_reply_anchor(source: SessionSource) -> SessionSource:
+    """Copy Telegram's durable route without its old inbound message identity."""
+    # Other adapters use message_id to interpret the route: Slack compares it
+    # with thread_id when capturing a cron origin from a top-level message.
+    if source.platform != Platform.TELEGRAM:
+        return source
+    return dataclasses.replace(source, message_id=None)
+
+
 def _raw_process_event_session_id(evt: dict) -> str:
     """Recognize API routes, not malformed structured or partial messaging routes."""
     session_key = str(evt.get("session_key") or "").strip()
@@ -959,7 +968,8 @@ class GatewayNotificationsMixin:
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
 
-        Prefer the persisted session-store origin; the active foreground event causes cross-topic bleed.
+        Prefer the persisted session-store route; the active foreground event causes cross-topic bleed.
+        Telegram's stored message ID must not reach this completion or the jobs it starts.
         """
         from gateway.run import _parse_session_key
         session_key = str(evt.get("session_key") or "").strip()
@@ -969,12 +979,12 @@ class GatewayNotificationsMixin:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    return _without_telegram_reply_anchor(entry.origin)
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
-                return cached_source
+                return _without_telegram_reply_anchor(cached_source)
             derived = _parse_session_key(session_key) or {}
         profile = derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()

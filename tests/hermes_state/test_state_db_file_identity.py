@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import hermes_state
 from hermes_state import (
     SessionDB,
     StateDbReplacedError,
@@ -175,15 +176,41 @@ def test_copyfile_same_inode_fails_loudly_without_fts_repair(tmp_path):
     db.close()
 
 
-def test_divert_session_transcript_jsonl_appends(tmp_path, monkeypatch):
+def test_divert_session_transcript_jsonl_caps_default_limit(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    messages = [{"role": "user", "content": str(index)} for index in range(20_001)]
+
+    path = divert_session_transcript_jsonl("sess-jsonl", messages)
+
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 20_000
+    assert "capped at 20,000" in caplog.text
+
+
+def test_divert_session_transcript_jsonl_caps_configured_limit(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 2)
+
+    path = divert_session_transcript_jsonl(
+        "sess-jsonl",
+        [{"role": "user", "content": "one"}, {"role": "user", "content": "two"},
+         {"role": "user", "content": "three"}],
+    )
+
+    assert [json.loads(line)["content"] for line in path.read_text(encoding="utf-8").splitlines()] == ["one", "two"]
+    assert "capped at 2" in caplog.text
+
+
+def test_divert_session_transcript_jsonl_appends_and_allows_unlimited(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 0)
     path = divert_session_transcript_jsonl(
         "sess-jsonl",
         [{"role": "user", "content": "hello-jsonl"}],
     )
+    divert_session_transcript_jsonl("sess-jsonl", [{"role": "assistant", "content": "still-appended"}])
     assert path == tmp_path / "sessions" / "sess-jsonl.jsonl"
     lines = path.read_text(encoding="utf-8").strip().splitlines()
-    assert json.loads(lines[-1])["content"] == "hello-jsonl"
+    assert [json.loads(line)["content"] for line in lines] == ["hello-jsonl", "still-appended"]
     assert divert_session_transcript_jsonl("sess-jsonl", []) is None
 
 

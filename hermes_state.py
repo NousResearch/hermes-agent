@@ -411,18 +411,28 @@ def _close_time_checkpoint_configurable() -> bool:
 
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
-    live process). Returns the path, or None if nothing to write."""
+    live process). The export guard bounds each diverted batch; 0 disables the guard. Returns the
+    path, or None if nothing to write."""
     sid = str(session_id or "").strip()
     if not sid or not messages:
         return None
+    limit = resolved_max_export_messages()
     sessions_dir = get_hermes_home() / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     path = sessions_dir / f"{sid}.jsonl"
+    written = 0
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:
             if msg is not None:
+                if limit and written >= limit:
+                    logger.warning(
+                        "JSONL divert for session %s capped at %s messages; discarding remaining pending messages",
+                        sid, f"{limit:,}",
+                    )
+                    break
                 record = msg if isinstance(msg, dict) else {"content": str(msg)}
                 handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+                written += 1
     return path
 
 

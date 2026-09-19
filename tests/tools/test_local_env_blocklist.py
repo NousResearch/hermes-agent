@@ -976,8 +976,14 @@ class TestPythonpathSelectiveStrip:
             captured["env"] = kwargs.get("env", {})
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
-            proc.stdout.read.return_value = b""
-            proc.stderr.read.return_value = b""
+            # The strict-mode session kernel spawns daemon readers that consume
+            # the buffered-stream read1() API (tools.code_kernel._stdout_reader /
+            # _stderr_reader).  An unconfigured MagicMock.read1() returns truthy
+            # mocks forever, so both readers spin endlessly and the pytest
+            # process never exits.  EOF both streams instead: _stdout_reader
+            # posts {"status": "kernel-eof"} and both threads return.
+            proc.stdout.read1.return_value = b""
+            proc.stderr.read1.return_value = b""
             proc.wait.return_value = 0
             proc.returncode = 0
             proc.poll.return_value = 0

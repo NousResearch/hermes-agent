@@ -225,3 +225,27 @@ def test_scope_construction_failure_restores_the_launch_home(homes, monkeypatch)
 
     assert get_hermes_home() == before, (
         f"scope must unwind on construction failure; thread left scoped to {get_hermes_home()}")
+
+
+def test_unresolvable_launch_home_does_not_stop_the_satellite_sweep(homes, monkeypatch):
+    """Launch-home resolution runs BEFORE the satellite loop and Path.resolve() raises
+    RuntimeError (not OSError) on a cyclic symlink, so without its own boundary one bad
+    launch path stops every healthy served profile being swept. Review P2 on #110405."""
+    launch, sat = homes
+    swept = []
+    _patch_registry(monkeypatch, swept)
+
+    import hermes_constants
+
+    class _CyclicPath(type(launch)):
+        def resolve(self, *a, **k):
+            raise RuntimeError("Symlink loop from 'launch'")
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: _CyclicPath(launch))
+
+    from gateway.run import _housekeeping_auto_archive
+
+    _housekeeping_auto_archive(_Runner({"default": launch, "work": sat}))
+
+    assert sat / "state.db" in {p for p, _ in swept}, (
+        f"an unresolvable launch home must not stop the satellite sweep; swept={swept}")

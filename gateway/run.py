@@ -4539,10 +4539,17 @@ def _housekeeping_auto_archive(runner=None) -> None:
 
     from hermes_constants import get_hermes_home
 
+    # Same failure boundary as the satellite loop below, for the same reason: Path.resolve()
+    # raises RuntimeError (not OSError) on a cyclic symlink, and this runs BEFORE the loop — so
+    # one bad launch path would stop every healthy served profile being swept this tick (#110405
+    # review). launch_home is only used to skip a duplicate sweep, so None simply means "cannot
+    # dedupe"; _auto_archive_one_home is idempotent under the min_interval_hours gate.
+    launch_home = None
     try:
-        launch_home = get_hermes_home().resolve()
-    except OSError:
         launch_home = get_hermes_home()
+        launch_home = launch_home.resolve()
+    except Exception as exc:
+        logger.debug("Auto-archive tick could not resolve the launch home: %s", exc)
     for _name, _home in homes.items():
         # Path construction and resolution are INSIDE the boundary: a cyclic profile symlink makes
         # Path.resolve() raise RuntimeError (not OSError) on 3.11, which would escape the tick and
@@ -4552,7 +4559,7 @@ def _housekeeping_auto_archive(runner=None) -> None:
                 home = _Path(_home).resolve()
             except (OSError, RuntimeError, ValueError):
                 home = _Path(_home)
-            if home == launch_home:
+            if launch_home is not None and home == launch_home:
                 continue  # already swept above as this process's own store
             # Scope construction itself (secret hydration, terminal policy) can fail.
             with _profile_runtime_scope(home):

@@ -10,6 +10,12 @@ This page documents Hermes' built-in tools, grouped by toolset. Availability var
 
 **Quick counts (current registry):** ~86 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 12 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour`, `tip` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
+`desktop_ui` belongs to the desktop app session, not to a conversation regardless of where it
+began. Consequently, resuming or continuing a desktop conversation in the CLI or TUI removes
+preview-pane tools such as `read_preview` and `drive_preview`; it does not transfer the rendered
+pane to that surface. TUI and CLI sessions can still use the separate `browser` toolset with
+`/browser connect <url>` to drive a Chromium-family browser through CDP.
+
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
 :::
@@ -205,7 +211,9 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 
 Enabled for sessions whose source is the Hermes desktop app, on any backend it
 is connected to (local, SSH, URL, or Hermes Cloud). Absent from CLI, TUI,
-messaging, and cron sessions.
+messaging, and cron sessions. Changing a conversation from the desktop app to
+one of those surfaces therefore removes the preview-pane tools rather than
+silently providing a browser view outside the desktop app.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -395,5 +403,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

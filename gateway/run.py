@@ -900,8 +900,9 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), and the local Python toolchain probe (#106064). Context files remain lazy because they
-    need the active turn's agent and model context."""
+    TTL cache), the local Python toolchain probe (#106064), and the default route's context-window
+    metadata (#105986) — a catalog HTTP probe that must not sit between the first inbound turn and its
+    inference request. Context files remain lazy because they need the active turn's agent."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
@@ -915,6 +916,13 @@ def _warm_turn_machinery_sync() -> int:
         from tools.env_probe import get_environment_probe_line
 
         get_environment_probe_line()
+    try:
+        # Same route/credential/profile rules as the turn itself; primes the process-local catalog
+        # caches (codex OAuth, OpenRouter) so AIAgent construction on the first turn is a cache hit.
+        ctx = _resolve_gateway_model_context()
+        logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
+    except Exception:
+        logger.debug("model-context warm-up failed (non-fatal)", exc_info=True)
     return len(tool_defs)
 
 

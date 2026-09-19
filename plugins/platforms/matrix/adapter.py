@@ -2738,16 +2738,28 @@ class MatrixAdapter(BasePlatformAdapter):
         self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
-        thread_id = str((metadata or {}).get("thread_id") or "")
+        meta = metadata or {}
+        thread_id = str(meta.get("thread_id") or "")
+        fallback_to = str(
+            meta.get("matrix_thread_fallback_event_id")
+            or meta.get("thread_fallback_event_id")
+            or ""
+        )
         if reply_to:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            if reply_to:
+                # A rich reply inside a thread is not a fallback relation.
+                relates_to.setdefault("m.in_reply_to", {"event_id": reply_to})
+                relates_to["is_falling_back"] = False
+            elif fallback_to:
+                # Only explicit compatibility anchors should be marked as
+                # fallback replies for clients that do not render threads.
+                relates_to["m.in_reply_to"] = {"event_id": fallback_to}
+                relates_to["is_falling_back"] = True
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

@@ -30,6 +30,7 @@ import {
   $profileCreateRequest,
   $profileOrder,
   $profiles,
+  $profilesByConnection,
   $showAllProfiles,
   ALL_PROFILES,
   normalizeProfileKey,
@@ -63,6 +64,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const p = t.profiles
   const navigate = useNavigate()
   const profiles = useStore($profiles)
+  const profilesByConnection = useStore($profilesByConnection)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const gatewayProfile = useStore($activeGatewayProfile)
@@ -92,6 +94,9 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   }, [createRequest])
 
   const connections = registry?.connections
+  // A resolved registry gateway owns its own profile list. Keep the current
+  // aggregate list as the legacy fallback while no gateway is selected.
+  const gatewayProfiles = activeConnectionId ? (profilesByConnection.get(activeConnectionId) ?? profiles) : profiles
 
   const restGroups = useMemo(
     () =>
@@ -100,15 +105,15 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   )
 
   const activeKey = normalizeProfileKey(gatewayProfile)
-  const defaultProfile = profiles.find(profile => profile.is_default)
+  const defaultProfile = gatewayProfiles.find(profile => profile.is_default)
 
   const named = sortByProfileOrder(
-    profiles.filter(profile => !profile.is_default),
+    gatewayProfiles.filter(profile => !profile.is_default),
     order
   )
 
   const ordered = defaultProfile ? [defaultProfile, ...named] : named
-  const active = showAll ? undefined : profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)
+  const active = showAll ? undefined : gatewayProfiles.find(profile => normalizeProfileKey(profile.name) === activeKey)
   const value = showAll ? ALL_PROFILES : (active?.name ?? '')
 
   const choose = (name: string) => {
@@ -185,7 +190,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
             ))}
             {/* Nothing to widen to with one profile: the ALL view only exists
                 once a second profile does (the rail hides its toggle then too). */}
-            {profiles.length > 1 && (
+            {gatewayProfiles.length > 1 && (
               <DropdownMenuRadioItem className="min-w-0" value={ALL_PROFILES}>
                 <span className="flex min-w-0 items-center gap-1.5">
                   <Codicon aria-hidden="true" className="text-(--ui-text-tertiary)" name="layers" size="0.875rem" />

@@ -29,6 +29,22 @@ from hermes_cli.inventory import (
 )
 
 
+def test_capabilities_expose_declared_reasoning_vocabulary(monkeypatch):
+    """Known provider vocabularies reach pickers; unknown models remain unrestricted."""
+    from hermes_cli import inventory
+    from providers import get_provider_profile
+
+    monkeypatch.setattr(inventory, "_reasoning_catalog_reader", lambda _slug: None)
+    monkeypatch.setattr("hermes_cli.models.model_supports_fast_mode", lambda _model: False)
+    profile = get_provider_profile("kilocode")
+    monkeypatch.setattr("providers.get_provider_profile", lambda _slug: profile)
+    rows = [{"slug": "kilocode", "models": ["deepseek/deepseek-v4.1-flash", "new-model"]}]
+    inventory._apply_capabilities(rows)
+    caps = rows[0]["capabilities"]
+    assert caps["deepseek/deepseek-v4.1-flash"]["reasoning_efforts"] == ["none", "low", "high", "max"]
+    assert "reasoning_efforts" not in caps["new-model"]
+
+
 # ─── load_picker_context ───────────────────────────────────────────────
 
 
@@ -681,7 +697,5 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
     with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
         inventory._apply_featured(rows)
-
-
 
 

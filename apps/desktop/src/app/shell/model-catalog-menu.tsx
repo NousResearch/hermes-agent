@@ -589,6 +589,7 @@ export function ModelCatalogMenu({
                           }
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
+                          reasoningEfforts={caps?.reasoning_efforts ?? undefined}
                         />
                       </DropdownMenuSub>
                     )

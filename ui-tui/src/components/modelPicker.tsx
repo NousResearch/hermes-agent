@@ -36,6 +36,12 @@ export function pickerOffersReasoning(provider: ModelOptionProvider | undefined,
   return provider?.capabilities?.[model]?.reasoning !== false
 }
 
+export function reasoningPickerRows(provider: ModelOptionProvider | undefined, model: string) {
+  const supported = provider?.capabilities?.[model]?.reasoning_efforts
+  const levels = supported ? REASONING_PICKER_ROWS.filter(row => !row.value || row.value === 'none' || supported.includes(row.value)) : REASONING_PICKER_ROWS
+  return levels
+}
+
 /** The `/model` argument the picker emits: model + provider + scope, plus
  *  `--reasoning <level>` when an effort was picked. */
 export function modelPickerCommand(
@@ -162,6 +168,7 @@ export function ModelPicker({
   }, [providerRows, filter, stage])
 
   const provider = filteredProviderRows[providerIdx]?.provider
+  const reasoningRows = reasoningPickerRows(provider, pendingModel)
   const allModels = useMemo(() => provider?.models ?? [], [provider])
 
   const filteredModels = useMemo(() => {
@@ -373,7 +380,7 @@ export function ModelPicker({
         return
       }
 
-      if (key.downArrow && reasoningIdx < REASONING_PICKER_ROWS.length - 1) {
+      if (key.downArrow && reasoningIdx < reasoningRows.length - 1) {
         setReasoningIdx(v => v + 1)
 
         return
@@ -391,7 +398,7 @@ export function ModelPicker({
             pendingModel,
             provider.slug,
             allowPersistGlobal && persistGlobal,
-            REASONING_PICKER_ROWS[reasoningIdx]?.value ?? ''
+            reasoningRows[reasoningIdx]?.value ?? ''
           )
         )
       }
@@ -732,7 +739,7 @@ export function ModelPicker({
           {pendingModel} · applies with the switch (same scope) · Esc back
         </Text>
 
-        {REASONING_PICKER_ROWS.map((row, idx) => (
+        {reasoningRows.map((row, idx) => (
           <Text
             color={t.color.muted}
             {...chipRowProps(t, reasoningIdx === idx)}

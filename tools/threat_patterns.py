@@ -43,8 +43,9 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (rf'output\s+{_FILLER}(system|initial)\s+prompt', "leak_system_prompt", "context"),
     (rf'(respond|answer|reply)\s+without\s+{_FILLER}(restrictions|limitations|filters|safety)', "remove_filters", "context"),
     (rf'you\s+have\s+been\s+{_FILLER}(updated|upgraded|patched)\s+to', "fake_update", "context"),
-    # Brainworm tell: identity override via spec. Verb pair anchored so "name your variables" is safe.
-    (r'\bname\s+yourself\s+\w+', "identity_override", "context"),
+    # Brainworm tell: identity override via spec. Coordinated naming rules such as "name
+    # yourself and your recipient" describe message metadata, not a new identity.
+    (r'\bname\s+yourself\s+(?!and\b)\w+', "identity_override", "context"),
 
     # ── C2 / Brainworm-style promptware (context scope) ──────────────
     # Anchored on C2 vocabulary. "register as a node" appears in legitimate distributed-systems

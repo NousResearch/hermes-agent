@@ -159,7 +159,7 @@ class TestInstallArgConstruction:
 
         def fake_run(cmd, *a, **k):
             # The pip --version probe must look healthy so we reach install.
-            if "--version" in cmd:
+            if list(cmd) == [sys.executable, "-m", "pip", "--version"]:
                 return subprocess.CompletedProcess(cmd, 0, "pip 24.0", "")
             captured["cmd"] = cmd
             return subprocess.CompletedProcess(cmd, 0, "ok", "")
@@ -186,7 +186,7 @@ class TestInstallArgConstruction:
         captured = {}
 
         def fake_run(cmd, *a, **k):
-            if "--version" in cmd:
+            if list(cmd) == [sys.executable, "-m", "pip", "--version"]:
                 return subprocess.CompletedProcess(cmd, 0, "pip 24.0", "")
             captured["cmd"] = cmd
             return subprocess.CompletedProcess(cmd, 0, "ok", "")

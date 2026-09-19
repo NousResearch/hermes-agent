@@ -8,7 +8,19 @@
  * controls without either surface importing the other.
  */
 
-import { Button, cn, Codicon, host, Input, RowButton, Textarea, useI18n, useValue } from '@hermes/plugin-sdk'
+import {
+  Button,
+  cn,
+  Codicon,
+  host,
+  Input,
+  isImeComposing,
+  isSubmitEnter,
+  RowButton,
+  Textarea,
+  useI18n,
+  useValue
+} from '@hermes/plugin-sdk'
 import type { ClipboardEvent } from 'react'
 import { useRef, useState } from 'react'
 
@@ -299,10 +311,8 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         onKeyDown={event => {
           // IME composition guard (same as the core composer): Enter here
           // confirms the composed Chinese/Japanese/Korean text — it must not
-          // insert a mention nor submit the draft. nativeEvent.isComposing
-          // covers Chromium; keyCode 229 covers macOS Chinese IMEs that fire
-          // Enter after compositionend with isComposing already false.
-          if (event.nativeEvent?.isComposing || event.keyCode === 229) {
+          // insert a mention nor submit the draft.
+          if (isImeComposing(event)) {
             return
           }
 
@@ -556,12 +566,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                 }))
               }}
               onKeyDown={event => {
-                // IME guard: Enter confirming a composed word must not submit.
-                if (event.nativeEvent?.isComposing || event.keyCode === 229) {
-                  return
-                }
-
-                if (event.key === 'Enter' && questions.length === 1) {
+                if (isSubmitEnter(event) && questions.length === 1) {
                   event.preventDefault()
                   void submit()
                 }

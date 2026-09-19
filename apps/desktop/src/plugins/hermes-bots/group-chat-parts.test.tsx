@@ -238,6 +238,22 @@ describe('keyboard (#89884)', () => {
 
     expect(onSubmitDraft).not.toHaveBeenCalled()
   })
+
+  // The behavioral assertion above also passes against a hand-rolled
+  // `isComposing || keyCode === 229` check, since jsdom mirrors both onto a
+  // React SyntheticEvent identically to the real DOM event either way — it
+  // cannot tell the shared helper and a duplicated inline check apart. This
+  // is the actual regression the shared helper (#93528's fourth+ sibling
+  // fix) guards: every composition guard routes through ONE place instead of
+  // drifting into N hand-rolled copies.
+  it('routes its composition guard through the shared isImeComposing helper', async () => {
+    const sdk = await import('@hermes/plugin-sdk')
+    const { input } = await mount()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(sdk.isImeComposing).toHaveBeenCalled()
+  })
 })
 
 // #91706: a command approval in a room could be SELECTED but never sent — the
@@ -274,5 +290,60 @@ describe('approval card (#91706)', () => {
 
     await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1))
     expect(answer).toHaveBeenCalledWith(entry, MEMBERS[0], 'once')
+  })
+})
+
+// A single free-text clarify question submits its typed draft on Enter — but
+// an IME composition Enter (confirming composed CJK text) must not submit it.
+describe('clarify free-text answer', () => {
+  const entry = {
+    at: 1,
+    choices: [] as string[],
+    group: 'Core',
+    kind: 'clarify' as const,
+    member: 'alpha',
+    memberKey: 'alpha',
+    multiSelect: false,
+    question: 'What should the title be?',
+    requestId: 'req-2',
+    sessionId: 'sid-1',
+    thread: 't1'
+  }
+
+  it('submits the typed draft on Enter, routed through the shared isSubmitEnter helper', async () => {
+    const sdk = await import('@hermes/plugin-sdk')
+    const answer = vi.fn(async () => undefined)
+    vi.doMock('./group-turns', () => ({ answerGroupClarify: answer }))
+    vi.doMock('./group-chat', () => ({ appendGroupChatEntry: vi.fn() }))
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    render(<GroupClarifyCard entry={entry} members={MEMBERS} />)
+    const input = screen.getByRole('textbox')
+
+    fireEvent.change(input, { target: { value: 'a great title' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1))
+    expect(answer).toHaveBeenCalledWith(entry, MEMBERS[0], 'a great title')
+    // The regression a duplicated hand-rolled check can't catch (see the
+    // mention-input test above): this call site must go through the ONE
+    // shared predicate, not its own parallel isComposing/keyCode-229 copy.
+    expect(sdk.isSubmitEnter).toHaveBeenCalled()
+  })
+
+  it('swallows an IME composition Enter instead of submitting', async () => {
+    const answer = vi.fn(async () => undefined)
+    vi.doMock('./group-turns', () => ({ answerGroupClarify: answer }))
+    vi.doMock('./group-chat', () => ({ appendGroupChatEntry: vi.fn() }))
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    render(<GroupClarifyCard entry={entry} members={MEMBERS} />)
+    const input = screen.getByRole('textbox')
+
+    fireEvent.change(input, { target: { value: '中文' } })
+    fireEvent.keyDown(input, { isComposing: true, key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+
+    expect(answer).not.toHaveBeenCalled()
   })
 })

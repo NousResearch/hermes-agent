@@ -431,6 +431,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  const ime = await import('@/lib/ime')
 
   return {
     atom: nanostores.atom,
@@ -442,6 +443,12 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
     host,
+    // Spies that call through to the real predicates: the room modules' IME
+    // guards must behave like every other plugin field (actual isComposing /
+    // keyCode-229 semantics), and a test can still assert the guard actually
+    // DELEGATES to the shared helper instead of a parallel hand-rolled check.
+    isImeComposing: vi.fn(ime.isImeComposing),
+    isSubmitEnter: vi.fn(ime.isSubmitEnter),
     SkillsView: undefined,
     MessageTextContent: undefined,
     Streamdown: undefined,

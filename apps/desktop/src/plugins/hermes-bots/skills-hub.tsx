@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, host, Input } from '@hermes/plugin-sdk'
+import { Button, host, Input, isSubmitEnter } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -208,12 +208,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
           className="h-7 flex-1 text-xs"
           onChange={event => setQuery(event.target.value)}
           onKeyDown={event => {
-            // IME guard: Enter confirming a composed word must not search.
-            if (event.nativeEvent?.isComposing || event.keyCode === 229) {
-              return
-            }
-
-            if (event.key === 'Enter') {
+            if (isSubmitEnter(event)) {
               event.preventDefault()
               void search()
             }

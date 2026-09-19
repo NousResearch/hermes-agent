@@ -1798,6 +1798,10 @@ export * as icons from '@/lib/icons'
  *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
  *  text field whose bare Enter performs an action. */
 export { isSubmitEnter } from '@/lib/ime'
+/** The composition-in-progress check `isSubmitEnter` is built on, exposed on its own for a
+ *  handler that must guard more than bare Enter (e.g. arrow-key navigation sharing the same
+ *  `onKeyDown`) — so it doesn't have to hand-roll `isComposing`/keyCode 229 checks either. */
+export { isImeComposing } from '@/lib/ime'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across

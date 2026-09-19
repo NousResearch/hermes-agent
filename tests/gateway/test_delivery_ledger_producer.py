@@ -15,7 +15,8 @@ import pytest
 
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -62,7 +63,8 @@ def _event(text="hello agent"):
 def _rows():
     with dl._connect() as conn:
         return conn.execute(
-            "SELECT obligation_id, state, content FROM delivery_obligations"
+            """SELECT obligation_id, state, content, adapter_profile
+               FROM delivery_obligations"""
         ).fetchall()
 
 
@@ -121,6 +123,33 @@ class TestProducerHook:
         rows = _rows()
         assert len(rows) == 1
         assert rows[0][1] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_late_transient_failure_signals_reconnected_runner(self):
+        """A replacement installed mid-send must trigger another ledger sweep."""
+        adapter = _Adapter()
+        adapter._owner_profile = "reviewer"
+        replacement = _Adapter()
+        replacement._owner_profile = "reviewer"
+        runner = MagicMock()
+        runner._adapter_for_source.side_effect = [adapter, replacement]
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
+        adapter.gateway_runner = runner
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            )
+        )
+
+        await _run(adapter, _event())
+
+        assert _rows()[0][1] == "failed"
+        assert _rows()[0][3] == "reviewer"
+        runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
+            Platform.SLACK, profile="reviewer"
+        )
 
 
     @pytest.mark.asyncio

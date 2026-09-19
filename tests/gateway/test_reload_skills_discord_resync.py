@@ -22,6 +22,7 @@ data the live callbacks already read from.
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 
@@ -69,11 +70,11 @@ class TestRefreshSkillGroup:
             )
 
         monkeypatch.setattr(
-            "hermes_cli.commands.discord_skill_commands_by_category",
+            "hermes_cli.commands_platforms.discord_skill_commands_by_category",
             fake_collector,
         )
 
-        new_count, hidden = adapter.refresh_skill_group()
+        new_count, hidden = asyncio.run(adapter.refresh_skill_group())
 
         assert new_count == 1
         assert hidden == 0
@@ -113,7 +114,7 @@ class TestRegisterSkillGroupUsesInstanceState:
                 0,
             )
         monkeypatch.setattr(
-            "hermes_cli.commands.discord_skill_commands_by_category",
+            "hermes_cli.commands_platforms.discord_skill_commands_by_category",
             fake_collector,
         )
 

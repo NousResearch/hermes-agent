@@ -15,14 +15,14 @@ AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/audiocraft-audio-generation` |
-| Path | `optional-skills/creative/audiocraft-audio-generation` |
+| Path | `optional-skills/creative\audiocraft-audio-generation` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
 | Platforms | linux, macos |
 | Tags | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
-| Related skills | [`heartmula`](/docs/user-guide/skills/optional/creative/creative-heartmula), [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
+| Related skills | [`heartmula`](./creative-heartmula.md), [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md) |
 
 ## Reference: full SKILL.md
 
@@ -32,7 +32,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # AudioCraft: Audio Generation
 
-Comprehensive guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.
+Guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.
 
 ## When to use AudioCraft
 
@@ -576,8 +576,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

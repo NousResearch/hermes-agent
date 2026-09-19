@@ -1,4 +1,8 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import {
+  buildHermesWebSocketUrl,
+  type ModelOptionProvider,
+  type ModelOptionsResult,
+} from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -24,6 +28,7 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
+import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -79,6 +84,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // OAuth/account state is profile-owned too: status, login sessions, polling,
+  // cancellation, and disconnect must all follow the selected management
+  // profile rather than silently targeting the dashboard process's profile.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -111,15 +120,26 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (cause) {
+    // fetch() only rejects when the request never got a response: the
+    // backend is down, the port is closed, or the network dropped. Tell the
+    // user that in words instead of `TypeError: Failed to fetch`.
+    const err = apiErrorFromNetworkFailure(cause, url);
+    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
+    console.warn("[api]", err.details);
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -177,7 +197,9 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    const err = apiErrorFromResponse(res.status, text, url);
+    console.warn("[api]", err.details);
+    throw err;
   }
   return res.json();
 }
@@ -205,7 +227,7 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+    throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), "/api/auth/ws-ticket");
   }
   return res.json();
 }
@@ -385,7 +407,10 @@ export const api = {
   },
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        profile,
+      ),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
@@ -449,11 +474,18 @@ export const api = {
     source?: string,
     profile = getManagementProfile(),
   ) =>
-    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
-    }),
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
@@ -529,7 +561,7 @@ export const api = {
     // desktop chat pickers (#56974), so opt in explicitly here.
     qs.set("include_unconfigured", "1");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
     fetchJSON<AuxiliaryModelsResponse>(
@@ -861,8 +893,10 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
+  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -942,6 +976,10 @@ export const api = {
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  getGatewayMigratePlan: () =>
+    fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
+  migrateGatewayToMultiplex: () =>
+    fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -960,6 +998,9 @@ export const api = {
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
   getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
+
+  getPluginsCatalog: () =>
+    fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
     fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
@@ -1338,6 +1379,16 @@ export interface AuthMeResponse {
   expires_at: number;
 }
 
+/** Preflight for `hermes gateway migrate --multiplex` (mirrors the CLI plan JSON). */
+export interface GatewayMigratePlan {
+  already_multiplexed: boolean;
+  blockers: string[];
+  command: string;
+  eligible: boolean;
+  notices: string[];
+  profiles: { profile: string; pid: number | null; service: { kind: string; system: boolean } | null }[];
+}
+
 export interface ActionResponse {
   archive?: string;
   name: string;
@@ -1559,6 +1610,8 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
+  ingress_url?: string | null;
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;
@@ -1858,11 +1911,13 @@ export interface StatusResponse {
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
   /** Supported dashboard auth flows for the client to choose from. In gated
-   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
-   * brokerable OAuth provider is registered, signalling that the desktop can
-   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
-   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
-   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
+   * interactive session provider is registered (OAuth providers broker the
+   * IDP redirect; password providers complete at /login in the system
+   * browser), signalling that the desktop can use the RFC 8252
+   * system-browser + loopback + PKCE flow (no embedded webview, no session
+   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
+   * desktop falls back to the embedded-webview flow. */
   auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
@@ -1872,15 +1927,57 @@ export interface StatusResponse {
   env_path: string;
   gateway_exit_reason: string | null;
   gateway_health_url: string | null;
+  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
+   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
+   * null when healthy; absent on older backends. */
+  gateway_heartbeat_stale_s?: number | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
+  /** Every profile the gateway process serves when the managed profile is carried by the
+   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
+   * gateway or an older backend. */
+  gateway_shared_with?: string[] | null;
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** NS-656: memory-pressure rollup from the gateway heartbeat +
+   * lifecycle ledger. Absent on older gateways. */
+  memory?: MemoryPressureStatus;
+  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
+   * older gateways. */
+  disk?: DiskPressureStatus;
   release_date: string;
   version: string;
+}
+
+/** NS-656: coarse memory telemetry served by /api/status. */
+export interface MemoryPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  gateway_rss_mb?: number | null;
+  system_total_mb?: number | null;
+  system_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  sampled_at?: string | null;
+  /** Previous gateway life died without running any exit path. */
+  last_boot_unclean?: boolean;
+  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
+   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
+  last_boot_suspected_oom?: boolean;
+  /** Identity of the current gateway life (sentinel started_at). Changes on
+   * every restart; keys per-incident banner dismissal. */
+  boot_id?: string | null;
+}
+
+/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
+ * sample of the HERMES_HOME volume — no staleness dimension, so no
+ * sampled_at. */
+export interface DiskPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  total_mb?: number | null;
+  free_mb?: number | null;
+  used_percent?: number | null;
 }
 
 export interface SessionInfo {
@@ -1898,6 +1995,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2004,6 +2104,12 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  pagination?: {
+    limit: number;
+    offset: number;
+    order: "latest" | "oldest";
+    returned: number;
+  };
 }
 
 export interface LogsResponse {
@@ -2128,6 +2234,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;
@@ -2220,9 +2327,12 @@ export interface CronJob {
   workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
+  last_fire_error?: { at?: string | null; detail?: string | null } | null;
 }
 
 export interface CronDeliveryTarget {
@@ -2351,23 +2461,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  is_user_defined?: boolean;
-  source?: string;
-  warning?: string;
-  authenticated?: boolean;
-}
-
-export interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
+export type { ModelOptionProvider, ModelOptionsResult };
 
 export interface AuxiliaryTaskAssignment {
   task: string;
@@ -2399,9 +2493,7 @@ export interface MoaConfigResponse {
     aggregator_temperature: number;
     reference_timeout: number | null;
     degraded_reference_policy: "loud" | "silent";
-    max_tokens: number;
-    /** Optional advisor output cap — round-tripped, not edited here. */
-    reference_max_tokens?: number | null;
+
     /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
     enabled: boolean;
@@ -2412,7 +2504,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number;
   reference_timeout: number | null;
   degraded_reference_policy: "loud" | "silent";
-  max_tokens: number;
+
   enabled: boolean;
 }
 
@@ -2564,6 +2656,8 @@ export interface HubAgentPluginRow {
   auth_required: boolean;
   auth_command: string;
   user_hidden: boolean;
+  /** Reason string when this plugin is on the catalog removed blocklist. */
+  removed_reason?: string | null;
 }
 
 export interface PluginsHubProviders {
@@ -2583,6 +2677,8 @@ export interface AgentPluginInstallRequest {
   identifier: string;
   force?: boolean;
   enable?: boolean;
+  /** Install by curated-catalog name (resolves repo + pinned SHA server-side). */
+  catalog_name?: string;
 }
 
 export interface AgentPluginInstallResponse {
@@ -2593,6 +2689,48 @@ export interface AgentPluginInstallResponse {
   after_install_path?: string | null;
   enabled?: boolean;
   error?: string;
+}
+
+// ── Plugin catalog types ───────────────────────────────────────────────
+
+export interface CatalogCapabilities {
+  provides_tools: string[];
+  provides_hooks: string[];
+  provides_middleware: string[];
+  requires_env: string[];
+}
+
+export interface CatalogEntry {
+  name: string;
+  description: string;
+  repo: string;
+  sha: string;
+  sha_short: string;
+  tier: "official" | "community";
+  maintainer: string;
+  requires_hermes: string;
+  platforms: string[];
+  capabilities: CatalogCapabilities;
+  docs_url: string;
+  capability_summary: string;
+  /** Installed-state merge (computed server-side). */
+  installed: boolean;
+  installed_sha: string | null;
+  update_available: boolean;
+  runtime_status: "disabled" | "enabled" | "inactive" | null;
+}
+
+export interface CatalogRemovedEntry {
+  name: string;
+  repo: string;
+  reason: string;
+  date: string;
+}
+
+export interface CatalogResponse {
+  entries: CatalogEntry[];
+  removed: CatalogRemovedEntry[];
+  generated_at: string;
 }
 
 export interface AgentPluginUpdateResponse {

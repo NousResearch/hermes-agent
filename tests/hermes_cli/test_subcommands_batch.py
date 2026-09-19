@@ -35,7 +35,6 @@ from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.update import build_update_parser
-from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 
@@ -67,7 +66,6 @@ SINGLE_HANDLER_CASES = [
     ("backup", build_backup_parser, "cmd_backup", ["backup"]),
     ("import", build_import_cmd_parser, "cmd_import", ["import", "/tmp/x.zip"]),
     ("config", build_config_parser, "cmd_config", ["config"]),
-    ("version", build_version_parser, "cmd_version", ["version"]),
     ("update", build_update_parser, "cmd_update", ["update"]),
     ("uninstall", build_uninstall_parser, "cmd_uninstall", ["uninstall"]),
     ("gui", build_gui_parser, "cmd_gui", ["gui"]),

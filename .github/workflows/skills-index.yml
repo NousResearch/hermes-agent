@@ -20,7 +20,12 @@ jobs:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Critical path (Sep 2026): clawhub walk ∥ github taps ~8 min, then skills.sh
+    # resolve ~6 min, then a bounded 8 min owner enrichment. 15 min cancelled every
+    # scheduled run for two months and left the live index frozen; on Sep 17 ClawHub
+    # page latency went from ~2.5 s to ~10 s, so the ~400-page walk alone runs 60-70 min
+    # and 50 min cancelled it again (#114525). The cron is 12-hourly; 120 min leaves headroom.
+    timeout-minutes: 120
     environment: trusted-automation
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -46,11 +51,21 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/build_skills_index.py
 
+      # Plugin-catalog star counts follow the same rule as the index: GitHub is consulted
+      # only here, on the schedule (one GraphQL request for every catalog repo), and docs
+      # deploys reuse the artifact / live copy without touching the API.
+      - name: Probe plugin catalog stars
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python website/scripts/fetch-plugin-stars.py --probe
+
       - name: Upload index artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: skills-index
-          path: website/static/api/skills-index.json
+          path: |
+            website/static/api/skills-index.json
+            website/static/api/plugin-stars.json
           retention-days: 7
 
   # Re-trigger the docs deploy so the refreshed index lands on the live site.
@@ -63,12 +78,19 @@ jobs:
     timeout-minutes: 15
     environment: trusted-automation
     steps:
+      # Required: `Get GitHub App token` is a LOCAL composite action
+      # (./.github/actions/get-app-token) and cannot resolve without the repo
+      # checked out. `build-index` above already does this; this job did not,
+      # so the scheduled deploy re-trigger never fired.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Get GitHub App token
         id: app-token
         uses: ./.github/actions/get-app-token
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Trigger Deploy Site workflow
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

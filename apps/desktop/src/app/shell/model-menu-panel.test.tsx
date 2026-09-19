@@ -57,11 +57,19 @@ afterEach(() => {
 function renderPanel(onSelectModel = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
+  const requestGateway = vi.fn(async (method: string) => {
+    if (method === 'model.options') {
+      return getGlobalModelOptions()
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  })
+
   const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={vi.fn() as never} />
+          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
@@ -398,5 +406,111 @@ describe('ModelMenuPanel provider collapse', () => {
 
     expect($collapsedProviders.get()).toContain('google')
     expect($collapsedProviders.get()).toContain('deepseek')
+  })
+
+  it('keeps the current pick when Refresh Models no longer lists it', async () => {
+    // Rows are hints (discovered / curated / capped); a custom slug the row
+    // lacks is still what the user selected. Only the gateway may reject it.
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        model: 'glm-4.5-air',
+        provider: 'zhipu',
+        providers: [{ models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' }, MOA_PROVIDER]
+      })
+      .mockResolvedValueOnce({
+        model: 'glm-4.5-air',
+        provider: 'zhipu',
+        providers: [DEEPSEEK_PROVIDER, MOA_PROVIDER]
+      })
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText(/Glm 4\.5 Air/i)
+
+    fireEvent.click(await content.findByText('Refresh models'))
+
+    await vi.waitFor(() => {
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+    })
+    expect(onSelectModel).not.toHaveBeenCalled()
+    expect($currentModel.get()).toBe('glm-4.5-air')
+    expect($currentProvider.get()).toBe('zhipu')
+  })
+
+  it('does not switch when Refresh Models still lists the current pick', async () => {
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText(/Deepseek V4 Pro/i)
+    fireEvent.click(await content.findByText('Refresh models'))
+
+    await vi.waitFor(() => {
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+    })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('does not rewrite the provider when Refresh Models lists the same model id elsewhere', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+
+    const catalog = {
+      model: 'glm-4.5-air',
+      provider: 'zhipu',
+      providers: [
+        { models: ['glm-4.5-air', 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' },
+        { models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' },
+        MOA_PROVIDER
+      ]
+    }
+
+    getGlobalModelOptions.mockResolvedValue(catalog)
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findAllByText(/Glm 4\.5 Air/i)
+    fireEvent.click(await content.findByText('Refresh models'))
+
+    await vi.waitFor(() => {
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+    })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('marks only the matching provider row current when two providers share a model id', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'glm-4.5-air',
+      provider: 'zhipu',
+      providers: [
+        { models: ['glm-4.5-air', 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' },
+        { models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' },
+        MOA_PROVIDER
+      ]
+    })
+
+    const { content, onSelectModel } = renderPanel()
+
+    const rows = await content.findAllByText(/Glm 4\.5 Air/i)
+    const items = [...new Set(rows.map(row => row.closest('[role="menuitem"]')))]
+
+    expect(items).toHaveLength(2)
+
+    const checked = items.filter(item => item?.querySelector('.codicon-check'))
+    expect(checked).toHaveLength(1)
+    expect(checked[0]?.closest('[role="group"]')?.textContent).toContain('智谱2')
+    expect(
+      items.find(item => !item?.querySelector('.codicon-check'))?.closest('[role="group"]')?.textContent
+    ).toContain('OpenRouter')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSelectModel).not.toHaveBeenCalled()
   })
 })

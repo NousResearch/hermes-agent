@@ -1,12 +1,15 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
+import copy
 
 from agent.prompt_caching import (
     _apply_cache_marker,
     _build_marker,
     _can_carry_marker,
+    _count_cache_markers,
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
+    effective_cache_ttl,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
@@ -85,7 +88,7 @@ def test_t20880_tool_heavy_native_loop_reproduction():
 
     assert final_tool_marked
     assert shared_transaction_endpoint
-    assert after_exchange.marker_count <= 4
+    assert _count_cache_markers(after_exchange.messages, after_exchange.tools) <= 4
 
 
 class TestPromptCachePlan:
@@ -111,7 +114,7 @@ class TestPromptCachePlan:
         assert plan.tools is not tools
         assert "cache_control" not in tools[-1]
         assert plan.tools[-1]["cache_control"] == MARKER
-        assert plan.marker_count == 4
+        assert _count_cache_markers(plan.messages, plan.tools) == 4
 
     def test_unmarkable_endpoint_does_not_consume_a_slot(self):
         messages = [
@@ -126,7 +129,7 @@ class TestPromptCachePlan:
             direct_native_tool_cache=True,
         )
 
-        assert plan.marker_count == 2
+        assert _count_cache_markers(plan.messages, plan.tools) == 2
         assert "cache_control" not in plan.messages[-1]
 
     def test_static_prefix_equal_to_whole_prompt_emits_no_empty_block(self):
@@ -164,6 +167,25 @@ class TestPromptCachePlan:
 
         assert "cache_control" in tools[-1]
         assert "cache_control" not in stripped[-1]
+
+    def test_direct_tool_cache_with_no_tools_falls_back_safely(self):
+        """direct_native_tool_cache=True with an empty tools list must fall
+        back to the message-only layout: exactly one marker per message here
+        (system + user + assistant), none on tools.
+        """
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            [],
+            native_anthropic=True,
+            direct_native_tool_cache=True,
+        )
+        assert _count_cache_markers(plan.messages, plan.tools) == 3
+        assert len(plan.tools) == 0
 
 
 class TestApplyCacheMarker:
@@ -204,6 +226,12 @@ class TestCanCarryMarker:
         assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=False) is False
         assert _can_carry_marker({"role": "tool", "content": "result"}, native_anthropic=False) is True
         assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=False) is False
+
+    def test_native_anthropic_empty_assistant_still_carries_marker(self):
+        """Native envelope can attach a top-level marker even to an empty
+        assistant turn; only the OpenRouter-style layout must skip it.
+        """
+        assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=True) is True
 
     def test_openrouter_list_carrier_requires_last_part_dict(self):
         """Carrier predicate must agree with _apply_cache_marker, which only marks
@@ -398,9 +426,9 @@ class TestNormalizationOrdering:
         """Ordering invariant, locked against regression."""
         import inspect
 
-        from agent import conversation_loop
+        from agent import turn_request_assembly
 
-        src = inspect.getsource(conversation_loop)
+        src = inspect.getsource(turn_request_assembly)
         # Anchor on the call-block request plan, not the retry helper.
         anchor = src.index("Build the request-local cache sections")
         mark = src.index("build_prompt_cache_plan(\n", anchor)
@@ -465,5 +493,392 @@ class TestStripAnthropicCacheControl:
         assert content[1]["type"] == "image_url"
 
 
+class TestEffectiveCacheTtl:
+    """#84733: Qwen/Alibaba routes document a 5-minute context cache only.
+
+    ``effective_cache_ttl`` clamps a requested ``1h`` tier down to ``5m`` on
+    those routes so the marker the provider would ignore/reject is never
+    shipped and no false 1h-cache expectation survives.
+    """
+
+    def test_none_resolves_to_default_5m(self):
+        assert effective_cache_ttl(None) == "5m"
+        assert effective_cache_ttl(None, provider="anthropic", model="claude-x") == "5m"
+
+    def test_5m_passthrough_everywhere(self):
+        assert effective_cache_ttl("5m") == "5m"
+        assert effective_cache_ttl("5m", provider="opencode", model="qwen3.6-plus") == "5m"
+
+    def test_1h_preserved_on_non_qwen_routes(self):
+        assert effective_cache_ttl("1h", provider="anthropic", model="claude-opus-4.8") == "1h"
+        assert effective_cache_ttl("1h", provider="openrouter", model="claude-3-5-sonnet") == "1h"
+        assert effective_cache_ttl("1h", provider="", model="") == "1h"
+
+    def test_1h_clamped_for_qwen_model_on_any_route(self):
+        assert effective_cache_ttl("1h", provider="openrouter", model="qwen3.6-plus") == "5m"
+        assert effective_cache_ttl("1h", provider="anthropic", model="Qwen-Max") == "5m"
+
+    def test_1h_clamped_for_alibaba_family_providers(self):
+        # opencode-go is excluded: MEASURED to honour the 1h tier, see
+        # test_1h_preserved_on_measured_opencode_go_route. The rest stay
+        # clamped because they are unmeasured, not because they are known bad.
+        for provider in ("opencode", "opencode-zen", "alibaba"):
+            assert effective_cache_ttl("1h", provider=provider, model="qwen-max") == "5m", provider
+            assert effective_cache_ttl("1h", provider=provider.upper(), model="claude-x") == "5m", provider
+
+    def test_1h_preserved_on_measured_opencode_go_route(self):
+        """opencode-go was MEASURED to honour the 1h tier (#84733 follow-up).
+
+        Controlled run: identical request, only the ttl flag varying, read back
+        after 11 minutes with no intervening call (a read renews the window and
+        masks expiry).
+
+            qwen3.8-max   ttl=1h -> cache_read 2122  SURVIVED
+            qwen3.8-max   ttl=-  -> cache_read    0  EXPIRED   <- control
+            glm-5.2       ttl=1h -> cache_read 2092  SURVIVED
+            minimax-m2.5  ttl=1h -> cache_read    0  EXPIRED
+
+        NB the provider labels every write ``ephemeral_5m_input_tokens``
+        regardless of the ttl requested; that label is not evidence of the
+        retention window.
+        """
+        assert effective_cache_ttl("1h", provider="opencode-go", model="qwen3.8-max") == "1h"
+        assert effective_cache_ttl("1h", provider="opencode-go", model="glm-5.2") == "1h"
+
+    def test_1h_clamped_for_measured_no_1h_model_even_on_allowed_route(self):
+        assert effective_cache_ttl("1h", provider="opencode-go", model="minimax-m2.5") == "5m"
+        # aggregator-prefixed spelling resolves to the same bare id
+        assert effective_cache_ttl("1h", provider="opencode-go", model="vendor/MiniMax-M2.5") == "5m"
+
+    def test_unmeasured_opencode_routes_stay_clamped(self):
+        # Not "known bad" -- simply not measured. Do not widen without a run.
+        assert effective_cache_ttl("1h", provider="opencode", model="qwen3.6-plus") == "5m"
+        assert effective_cache_ttl("1h", provider="opencode-zen", model="qwen3.6-plus") == "5m"
+
+    def test_ttl_allowlist_is_separate_from_cache_layout_optin(self):
+        """Regression guard for the trap in the original shared-set design.
+
+        ALIBABA_FAMILY_PROVIDERS drives the cache-marker-layout OPT-IN. Reusing
+        it for the TTL clamp means narrowing the clamp DISABLES caching instead
+        of extending its TTL.
+        """
+        from agent.prompt_caching import (
+            ALIBABA_FAMILY_PROVIDERS,
+            MEASURED_1H_PROVIDERS,
+        )
+
+        assert "opencode-go" in ALIBABA_FAMILY_PROVIDERS
+        assert "opencode-go" in MEASURED_1H_PROVIDERS
+        assert not (MEASURED_1H_PROVIDERS & {"alibaba"})
+
+    def test_marker_built_from_clamped_ttl_has_no_1h_key(self):
+        marker = _build_marker(effective_cache_ttl("1h", provider="opencode", model="qwen3.6-plus"))
+        assert marker == {"type": "ephemeral"}
+        marker = _build_marker(effective_cache_ttl("1h", provider="anthropic", model="claude-x"))
+        assert marker == {"type": "ephemeral", "ttl": "1h"}
 
 
+class TestApplyIdempotency:
+    """apply_anthropic_cache_control on pre-decorated input (#90971).
+
+    Before the idempotency fix, a second call on already-marked messages
+    pushed the marker total to 5, reproducing the ``cache_control can only
+    be specified up to 4 times`` HTTP 400.
+    """
+
+    @staticmethod
+    def _fixture_messages():
+        messages = [{"role": "system", "content": "STATIC_PREFIX rest of the prompt"}]
+        for i in range(8):
+            messages.append({"role": "user", "content": f"Hello {i}"})
+            messages.append({"role": "assistant", "content": f"Hi {i}"})
+        return messages
+
+    def test_empty_messages_is_noop(self):
+        assert apply_anthropic_cache_control([]) == []
+
+    def test_repeated_apply_is_idempotent_and_keeps_exact_layout(self):
+        """Repeated calls on the function's own output (no intervening
+        strip_anthropic_cache_control) must converge to the exact same
+        marker placement AND keep the intended four-breakpoint layout.
+        Structural equality alone would still pass if a later round moved
+        the breakpoints or dropped every marker; the exact count pins the
+        layout.
+        """
+        messages = self._fixture_messages()
+
+        round1 = apply_anthropic_cache_control(messages, static_system_prefix="STATIC_PREFIX")
+        round2 = apply_anthropic_cache_control(round1, static_system_prefix="STATIC_PREFIX")
+        round3 = apply_anthropic_cache_control(round2, static_system_prefix="STATIC_PREFIX")
+
+        assert round1 == round2 == round3
+        assert _count_cache_markers(round1, []) == 4
+
+    def test_does_not_mutate_caller_messages_with_stale_top_level_markers(self):
+        """A caller's live message list must never be mutated in place, even
+        when it already carries stale cache_control markers (e.g. replayed
+        history). The function's contract is copy-on-write.
+        """
+        caller_history = [
+            {"role": "user", "content": f"u{i}", "cache_control": {"type": "ephemeral"}}
+            for i in range(5)
+        ]
+        snapshot = copy.deepcopy(caller_history)
+
+        apply_anthropic_cache_control(caller_history)
+
+        assert caller_history == snapshot
+
+    def test_does_not_mutate_caller_messages_with_stale_part_markers(self):
+        """Same contract for the other detection branch: markers living on
+        content parts (the shape decoration itself produces), where part-dict
+        aliasing is the mutation risk.
+        """
+        caller_history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"u{i}", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "tail"},
+                ],
+            }
+            for i in range(5)
+        ]
+        snapshot = copy.deepcopy(caller_history)
+
+        result = apply_anthropic_cache_control(caller_history)
+
+        assert caller_history == snapshot
+        assert _count_cache_markers(result, []) <= 4
+
+
+
+
+class TestOpenCodeGoOneHourPrecedence:
+    """Precedence + eligibility guards for the opencode-go 1h allowance.
+
+    The historical repair (payload ``d6b33faae1``, merged as ``a43fe4918d``)
+    is not on the current upstream lineage, so ``effective_cache_ttl`` had
+    regressed to evaluating the generic :func:`is_qwen_model` clamp *before*
+    any route allowance. That ordering silently turned a configured
+    ``prompt_caching.cache_ttl: 1h`` back into ``5m`` for every Qwen model on
+    opencode-go.
+
+    These tests pin the two things the historical suite left implicit:
+
+    * the allowance must win over the generic Qwen clamp (ordering), and
+    * restoring the 1h tier must not cost prompt-cache *eligibility* —
+      the tempting "just drop opencode-go from ALIBABA_FAMILY_PROVIDERS"
+      repair disables caching outright rather than extending its window,
+      because that same set is the cache-marker-layout opt-in in
+      ``agent_runtime_helpers.anthropic_prompt_cache_policy``.
+
+    Evidence scope, stated honestly: the wire measurement behind the
+    allowance was taken on ``qwen3.8-max`` and ``glm-5.2``. The rule is keyed
+    on the *route*, not the model, so the currently deployed
+    ``qwen3.7-plus`` is covered by it — but ``qwen3.7-plus`` itself has not
+    been measured against a >5-minute delayed read. That claim stays open
+    until field validation closes it.
+    """
+
+    DEPLOYED_MODEL = "qwen3.7-plus"
+
+    # -- the deployed case ---------------------------------------------------
+
+    def test_deployed_qwen37_plus_keeps_configured_1h(self):
+        assert effective_cache_ttl(
+            "1h", provider="opencode-go", model=self.DEPLOYED_MODEL
+        ) == "1h"
+
+    def test_deployed_qwen37_plus_marker_carries_ttl_1h(self):
+        """M2/M6: the emitted marker must actually say ``ttl: "1h"``.
+
+        A correct return value that never reaches the wire marker is the
+        whole defect restated one layer down.
+        """
+        marker = _build_marker(
+            effective_cache_ttl("1h", provider="opencode-go", model=self.DEPLOYED_MODEL)
+        )
+        assert marker == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_caching_remains_enabled_for_opencode_go_qwen(self):
+        """M1': prompt caching must stay ON, not merely be re-tiered.
+
+        Guards the dangerous naive repair. Dropping ``opencode-go`` from
+        ``ALIBABA_FAMILY_PROVIDERS`` would make ``effective_cache_ttl``
+        return ``1h`` while ``anthropic_prompt_cache_policy`` stops opting
+        the route in at all — 5-minute caching quietly becomes *no* caching.
+        Asserting the TTL alone cannot see that.
+        """
+        from agent.agent_runtime_helpers import (
+            anthropic_prompt_cache_policy,
+            blank_cache_policy_stub,
+        )
+
+        stub = blank_cache_policy_stub(cache_disabled=False)
+        # Built-in route: keep the catalog/config fallback out of the test.
+        stub._custom_providers = []
+
+        should_cache, native_layout = anthropic_prompt_cache_policy(
+            stub,
+            provider="opencode-go",
+            base_url="",
+            api_mode="chat_completions",
+            model=self.DEPLOYED_MODEL,
+        )
+        assert should_cache is True, "opencode-go/qwen lost prompt-cache eligibility"
+        assert native_layout is False, "opencode-go takes the envelope layout"
+        assert effective_cache_ttl(
+            "1h", provider="opencode-go", model=self.DEPLOYED_MODEL
+        ) == "1h"
+
+    # -- precedence ----------------------------------------------------------
+
+    def test_route_allowance_precedes_generic_qwen_clamp(self):
+        """M8: kills the ordering mutation.
+
+        The same model is clamped off-route and preserved on-route. That can
+        only hold if the route allowance is evaluated *before*
+        :func:`is_qwen_model`; hoisting the generic clamp back above it turns
+        the second assertion red.
+        """
+        for model in ("qwen3.7-plus", "qwen3.8-max", "Qwen-Max"):
+            assert effective_cache_ttl("1h", provider="openrouter", model=model) == "5m", model
+            assert effective_cache_ttl("1h", provider="opencode-go", model=model) == "1h", model
+
+    def test_measured_no_1h_model_still_beats_route_allowance(self):
+        """Model-level denial wins inside the allowed route."""
+        assert effective_cache_ttl("1h", provider="opencode-go", model="minimax-m2.5") == "5m"
+
+    def test_no_1h_denial_does_not_leak_off_the_measured_route(self):
+        """The denial is scoped to the route it was measured on.
+
+        ``minimax-m2.5`` was observed ignoring the tier *on opencode-go*. That
+        says nothing about MiniMax on its own Anthropic-compatible endpoint,
+        which is a separate and genuinely cache-eligible route
+        (``anthropic_prompt_cache_policy`` opts it in by provider id / host
+        match). Consulting ``NO_1H_TIER_MODELS`` globally silently regressed
+        that route's configured 1h to 5m off the back of an unrelated
+        observation — an out-of-scope behaviour change this repair must not
+        make.
+        """
+        for provider in ("minimax", "minimax-cn", "anthropic", "openrouter"):
+            assert effective_cache_ttl("1h", provider=provider, model="MiniMax-M2.5") == "1h", provider
+
+    def test_route_allowance_is_not_restricted_to_the_measured_models(self):
+        """Records a real consequence of a route-keyed rule.
+
+        Before this change ``opencode-go`` + a Claude model clamped to ``5m``
+        via the family branch; it now keeps ``1h`` like everything else on the
+        route. That is deliberate — the allowance is keyed on the route, not
+        on the two models the delayed-read run happened to cover — but it is a
+        behaviour change outside the measurement set, so it is pinned here
+        rather than left as an uncovered side effect. opencode-go serves
+        Claude over ``anthropic_messages``, so this route is reachable.
+        """
+        assert effective_cache_ttl("1h", provider="opencode-go", model="claude-sonnet-5") == "1h"
+        assert effective_cache_ttl("1h", provider="OPENCODE-GO", model="claude-x") == "1h"
+
+    # -- negative controls ---------------------------------------------------
+
+    def test_generic_qwen_clamp_negative_control(self):
+        """§9: 1h must NOT become global. Off-route Qwen stays at 5m."""
+        for provider in ("openrouter", "anthropic", "together", ""):
+            assert effective_cache_ttl("1h", provider=provider, model="qwen3.7-plus") == "5m", provider
+        assert _build_marker(
+            effective_cache_ttl("1h", provider="openrouter", model="qwen3.7-plus")
+        ) == {"type": "ephemeral"}
+
+    def test_1h_not_granted_to_the_rest_of_the_alibaba_family(self):
+        """M3: the allowance is one measured route, not the whole family."""
+        from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, MEASURED_1H_PROVIDERS
+
+        assert MEASURED_1H_PROVIDERS == frozenset({"opencode-go"})
+        for provider in sorted(ALIBABA_FAMILY_PROVIDERS - MEASURED_1H_PROVIDERS):
+            assert effective_cache_ttl("1h", provider=provider, model="qwen3.7-plus") == "5m", provider
+
+    def test_allowance_is_provider_wide_not_pinned_to_one_model(self):
+        """M5: repairing only the deployed model would leave siblings clamped."""
+        for model in ("qwen3.7-plus", "qwen3.8-max", "qwen3.6-plus", "qwen-max", "glm-5.2"):
+            assert effective_cache_ttl("1h", provider="opencode-go", model=model) == "1h", model
+
+    def test_provider_spelling_variants_hit_the_allowance(self):
+        """M7: alias/normalization must not route around the allow-list."""
+        for spelling in ("opencode-go", "OpenCode-Go", "OPENCODE-GO"):
+            assert effective_cache_ttl("1h", provider=spelling, model=self.DEPLOYED_MODEL) == "1h", spelling
+
+    def test_lower_tiers_are_untouched_by_the_allowance(self):
+        assert effective_cache_ttl("5m", provider="opencode-go", model=self.DEPLOYED_MODEL) == "5m"
+        assert effective_cache_ttl(None, provider="opencode-go", model=self.DEPLOYED_MODEL) == "5m"
+
+    # -- call-site coverage --------------------------------------------------
+
+    def test_destination_planner_emits_1h_marker_on_opencode_go(self):
+        """M4 (behavior form): the shared destination planner honours the tier.
+
+        ``plan_cache_sections_for_destination`` is the fan-in for the MoA
+        aggregator and auxiliary senders; the conversation-loop and moa_loop
+        call sites clamp through :func:`effective_cache_ttl` themselves (their
+        emitted plans are covered by the marker tests above). Driving the
+        planner end-to-end asserts the *wire artifact* — the marker's ``ttl``
+        — instead of regex-scanning source files for the clamp call.
+        """
+        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+
+        def _markers(messages, tools):
+            found = []
+            for msg in messages:
+                if isinstance(msg.get("cache_control"), dict):
+                    found.append(msg["cache_control"])
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and isinstance(
+                            part.get("cache_control"), dict
+                        ):
+                            found.append(part["cache_control"])
+            for tool in tools or []:
+                if isinstance(tool, dict) and isinstance(
+                    tool.get("cache_control"), dict
+                ):
+                    found.append(tool["cache_control"])
+            return found
+
+        history = [
+            {"role": "system", "content": "sys prompt"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+
+        planned_messages, planned_tools = plan_cache_sections_for_destination(
+            history,
+            [],
+            provider="opencode-go",
+            base_url="",
+            api_mode="chat_completions",
+            model=self.DEPLOYED_MODEL,
+            cache_disabled=False,
+            cache_ttl="1h",
+        )
+        markers = _markers(planned_messages, planned_tools)
+        assert markers, "opencode-go/qwen must stay cache-eligible"
+        assert all(m.get("ttl") == "1h" for m in markers), markers
+
+        # Clamped-route negative control through the same production path:
+        # ``opencode`` is cache-eligible (alibaba family) but unmeasured, so
+        # the central clamp strips the 1h tier and the emitted markers carry
+        # no ttl key at all (5m is the wire default).
+        planned_messages, planned_tools = plan_cache_sections_for_destination(
+            history,
+            [],
+            provider="opencode",
+            base_url="",
+            api_mode="chat_completions",
+            model=self.DEPLOYED_MODEL,
+            cache_disabled=False,
+            cache_ttl="1h",
+        )
+        markers = _markers(planned_messages, planned_tools)
+        assert markers, "opencode/qwen stays cache-eligible"
+        assert all("ttl" not in m for m in markers), markers

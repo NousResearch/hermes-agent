@@ -63,7 +63,8 @@ class TestRedactApprovalCommand:
 class TestApprovalCommandWiring:
     """Guard the production wiring on BOTH approval-notify transports:
     1. the chat-platform path (_approval_notify_sync in gateway/run.py), and
-    2. the SSE/API path (_approval_notify in gateway/platforms/api_server.py),
+    2. the SSE/API path (_approval_notify in
+       gateway/platforms/api_server_runs.py),
     each of which must route the command through _redact_approval_command and
     REASSIGN the redacted value before any send/enqueue (so the raw command
     cannot reach a client). Uses AST (not char-offset string slicing) so a
@@ -111,14 +112,16 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run as run
+        import gateway.run_turn_runner as run
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 
     def test_sse_api_path_redacts_before_enqueue(self):
-        from gateway.platforms import api_server
+        from gateway.platforms import api_server_runs
 
-        self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+        self._assert_redacts_then_uses(
+            api_server_runs, "_approval_notify", "put_nowait"
+        )
 
 
 class TestApprovalTextFallbackContract:
@@ -135,4 +138,15 @@ class TestApprovalTextFallbackContract:
         assert "approve session" not in text
         assert "approve always" not in text
 
+    def test_text_fallback_says_silence_means_no(self, monkeypatch):
+        """Surfaces without buttons get the same deadline line as the button card."""
+        from gateway.run import _format_exec_approval_fallback
+
+        monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+        text = _format_exec_approval_fallback("rm -rf /", "recursive delete", "/")
+        assert "Hermes wants to run a command that needs your OK" in text
+        assert "Why it was flagged: recursive delete" in text
+        assert "If you don't answer within 5 minutes it will NOT run." in text
+        for step in ("`/approve`", "`/approve session`", "`/approve always`", "`/deny`"):
+            assert step in text
 

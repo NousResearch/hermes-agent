@@ -1,0 +1,6 @@
+# Blocklist for plugins pulled from the catalog for security or policy
+# reasons. The installer refuses to install anything whose name or repo URL
+# matches an entry here (unless the caller explicitly bypasses the check).
+# Each entry: {name, repo, reason, date}. Removals land via reviewed PRs,
+# same as additions.
+removed: []

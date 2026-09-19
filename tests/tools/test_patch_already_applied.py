@@ -140,3 +140,27 @@ class TestV4AAlreadyApplied:
         r = _patch_tool(mode="patch", patch=patch_content, task_id="t-v4a")
         assert r["success"] is True, r
         assert f.read_text() == "STATUS = 'migrated_to_v2_schema'\n"
+
+    def test_degenerate_identical_hunk_skipped_in_validation(self, workdir):
+        """A hunk whose -/+ lines are identical is a no-op: the apply phase
+        skips it, so validation must not fail the patch (previously it
+        reached fuzzy_find_and_replace, whose identical-strings error names
+        old_string/new_string — parameters that don't exist in patch mode).
+        The short text also dodges is_already_applied's >=8-char rescue."""
+        f = workdir / "degen.py"
+        f.write_text("A = 1\nB = 2\n")
+        patch_content = (
+            "*** Begin Patch\n"
+            f"*** Update File: {f}\n"
+            "-A = 1\n"
+            "+A = 1\n"
+            "@@ B @@\n"
+            "-B = 2\n"
+            "+B = 3\n"
+            "*** End Patch\n"
+        )
+        r = _patch_tool(mode="patch", patch=patch_content, task_id="t-v4a")
+        assert r["success"] is True, r
+        text = f.read_text()
+        assert "A = 1" in text  # degenerate hunk left intact
+        assert "B = 3" in text  # live hunk applied

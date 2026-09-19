@@ -25,12 +25,16 @@ from gateway.platforms.yuanbao import MessageSender, YuanbaoAdapter
 # Helpers
 # ---------------------------------------------------------------------------
 
-class _OutboundStub:
-    async def start_slow_notifier(self, chat_id):  # noqa: ANN001
+class _SlowNotifierStub:
+    async def start(self, chat_id):  # noqa: ANN001
         pass
 
-    def cancel_slow_notifier(self, chat_id):  # noqa: ANN001
+    def cancel(self, chat_id):  # noqa: ANN001
         pass
+
+
+class _OutboundStub:
+    slow_notifier = _SlowNotifierStub()
 
 
 def _bare_adapter():

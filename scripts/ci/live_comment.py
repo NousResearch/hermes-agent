@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live-updating CI review comment.
 
-Polls the GitHub Actions API for job statuses in the current run, assembles
+Polls the GitHub Actions API for job statuses in the CI run, assembles
 the review comment from whatever results are available, and upserts it as a
 PR comment. Repeats every ``--interval`` seconds until all jobs are
 completed (or ``--timeout`` is reached), so the comment updates in real time
@@ -11,6 +11,18 @@ The comment is identified by the ``<!-- hermes-ci-review-bot -->`` marker
 — the same one ``assemble_review_comment.py`` uses — so it replaces any
 previous comment from an earlier run.
 
+This runs from ``.github/workflows/ci-review-comment.yml``, a separate
+``workflow_run`` workflow. Thus ``CI_RUN_ID`` names the CI run to report
+on, not the run that contains this script. (The variable cannot be
+called ``GITHUB_RUN_ID``: the Actions runner sets the ``GITHUB_*``
+defaults itself and ignores an ``env:`` override, so that name would
+silently resolve to the poller's own run — which stays ``in_progress``
+for as long as the poller runs, deadlocking it against itself.)
+The poller reports on runs that
+it does not belong to. This is also how it covers a workflow that CI does
+not contain: ``WATCH_WORKFLOWS`` names sibling workflows that the same
+commit triggered (the Docker image build). Their jobs join the comment.
+
 Architecture:
 
   - :func:`classify_jobs` (pure, testable) — takes a list of raw API job
@@ -18,10 +30,13 @@ Architecture:
     is a ``{name: result}`` dict (for :func:`assemble_review_comment.assemble`)
     and ``pending`` is a list of job names still running.
 
+  - :func:`select_watched_runs` (pure, testable) — picks the sibling runs
+    to merge in, newest attempt per workflow.
+
   - :func:`find_comment_id` / :func:`upsert_comment` — thin API wrappers.
 
   - :func:`fetch_all_review_statuses` — lists all ``review-status-*``
-    artifacts on the orchestrator run (GitHub attaches reusable-workflow
+    artifacts on the CI run (GitHub attaches reusable-workflow
     artifacts to the caller run), downloads each, parses the
     ``review_status=`` line from ``review-status.json``, and merges into
     one array. Recomputed from source every poll cycle, so statuses
@@ -172,55 +187,108 @@ def _api_get_paginated(url: str, token: str, list_key: str | None = None) -> lis
     return results
 
 
-def collect_run_jobs(token: str, repo: str, run_id: str) -> list[dict]:
-    """Collect all jobs in the orchestrator run + sub-workflow runs.
+def select_watched_runs(
+    runs: list[dict], watch_names: list[str], exclude_run_id: str = "",
+) -> list[dict]:
+    """Pick the sibling runs whose jobs belong in the comment.
 
-    Returns a flat list of job dicts (same shape as the API returns, plus
-    ``_workflow_name`` on sub-workflow jobs).
+    ``runs`` is the API's run list for one commit. ``watch_names`` holds
+    workflow names from ``WATCH_WORKFLOWS``. One commit can have more than
+    one run of the same workflow, after a rerun or a new push. Thus this
+    keeps only the newest run for each workflow name. An older attempt
+    reports results that a rerun replaced.
+
+    ``exclude_run_id`` removes the CI run itself when its name is also in
+    ``watch_names``.
+    """
+    newest: dict[str, dict] = {}
+    wanted = {n.strip() for n in watch_names if n.strip()}
+
+    for candidate in runs:
+        name = str(candidate.get("name", ""))
+        if name not in wanted:
+            continue
+        if exclude_run_id and str(candidate.get("id", "")) == str(exclude_run_id):
+            continue
+        current = newest.get(name)
+        if current is None or str(candidate.get("created_at", "")) > str(current.get("created_at", "")):
+            newest[name] = candidate
+
+    return list(newest.values())
+
+
+def runs_all_completed(runs: list[dict]) -> bool:
+    """True only when every run in the list reports ``status: completed``.
+
+    The job list alone cannot answer "is CI done": a run that GitHub just
+    created has no jobs yet, and a mid-run poll can catch the moment where
+    every visible job finished but a downstream sub-workflow has not
+    spawned its jobs. Both look identical to "all done" at the job level.
+    The run's own ``status`` is the authoritative signal, so the poller
+    must not exit while any relevant run is still ``queued`` or
+    ``in_progress``. An empty list is not done — it means the poller has
+    no run information at all.
+    """
+    return bool(runs) and all(str(r.get("status", "")) == "completed" for r in runs)
+
+
+def collect_run_jobs(
+    token: str, repo: str, run_id: str, watch_workflows: list[str] | None = None,
+) -> tuple[list[dict], bool]:
+    """Collect all jobs in the CI run + any watched sibling runs.
+
+    Returns ``(jobs, runs_completed)``: a flat list of job dicts (same
+    shape as the API returns, plus ``_workflow_name`` on jobs from a
+    watched run), and whether the CI run and every selected watched run
+    report ``status: completed`` (see :func:`runs_all_completed`).
+
+    Reusable-workflow (``workflow_call``) jobs need no special handling:
+    GitHub flattens them into the caller run's job list, already named
+    ``\"Workflow / job\"``. Watched runs are separate top-level runs
+    (the Docker image build), so their jobs are fetched per run and
+    prefixed here.
     """
     owner, repo_name = repo.split("/")
     run_info = _api_request(f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}", token)
-    created_at = run_info.get("created_at", "")
     head_sha = run_info.get("head_sha", "")
 
-    # Orchestrator jobs
+    # CI run jobs (includes every reusable-workflow job).
+    all_jobs: list[dict] = []
     orch_jobs = _api_get_paginated(
         f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
         token, list_key="jobs",
     )
 
-    # Sub-workflow runs (workflow_call)
-    sub_runs = _api_get_paginated(
-        f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs?head_sha={head_sha}&event=workflow_call&per_page=100",
-        token, list_key="workflow_runs",
-    )
-    sub_runs = [r for r in sub_runs if r.get("created_at", "") >= created_at]
-
-    all_jobs: list[dict] = []
-    # Orchestrator jobs: skip workflow-call placeholder steps (they're
-    # sub-workflow triggers, not review signal), but KEEP in_progress /
-    # queued jobs so the poller knows they're still running.
+    # Skip workflow-call placeholder steps (they're sub-workflow triggers,
+    # not review signal), but KEEP in_progress / queued jobs so the poller
+    # knows they're still running.
     for job in orch_jobs:
         steps = job.get("steps") or []
         if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue
         all_jobs.append(job)
 
-    # Sub-workflow jobs (workflow_call).
-    # These runs may not exist yet on the first few polls — that's fine,
-    # classify_jobs() will just show 0 pending for them.
-    for sr in sub_runs:
-        sr_id = sr["id"]
-        sr_name = sr.get("name", "")
-        sr_jobs = _api_get_paginated(
-            f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{sr_id}/jobs",
+    if not watch_workflows or not head_sha:
+        return all_jobs, runs_all_completed([run_info])
+
+    # Watched sibling runs for the same commit. A run can be absent on the
+    # first polls. Then classify_jobs() shows nothing for it.
+    sibling_runs = _api_get_paginated(
+        f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs?head_sha={head_sha}&per_page=100",
+        token, list_key="workflow_runs",
+    )
+    relevant_runs = [run_info]
+    for watched in select_watched_runs(sibling_runs, watch_workflows, exclude_run_id=run_id):
+        relevant_runs.append(watched)
+        watched_jobs = _api_get_paginated(
+            f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{watched['id']}/jobs",
             token, list_key="jobs",
         )
-        for j in sr_jobs:
-            j["_workflow_name"] = sr_name
-            all_jobs.append(j)
+        for job in watched_jobs:
+            job["_workflow_name"] = watched.get("name", "")
+            all_jobs.append(job)
 
-    return all_jobs
+    return all_jobs, runs_all_completed(relevant_runs)
 
 
 def find_comment_id(token: str, repo: str, pr_number: str) -> int | None:
@@ -446,6 +514,7 @@ def build_comment_body(
     job_urls: dict[str, str],
     review_statuses_json: str,
     commit_info: str = "",
+    waiting: bool = False,
 ) -> str:
     """Assemble the comment body from current job states + static inputs."""
     needs_json = json.dumps(completed) if completed else ""
@@ -457,10 +526,11 @@ def build_comment_body(
         review_statuses_json=review_statuses_json,
         pending_jobs=pending if pending else None,
         commit_info=commit_info,
+        waiting=waiting,
     )
 
 
-def _commit_info_for_state(commit_info: str, pending: list[str]) -> str:
+def _commit_info_for_state(commit_info: str, pending: bool) -> str:
     """Use past tense in the final comment after every CI job completes."""
     if pending:
         return commit_info
@@ -482,12 +552,13 @@ def run(
     interval: int = 15,
     timeout: int = 1800,
     dry_run: bool = False,
+    watch_workflows: list[str] | None = None,
 ) -> int:
     """Poll for job statuses and update the PR comment until all done.
 
-    Returns 0 on success; 1 when all jobs completed but a dependency
-    failed (so ``gh run rerun --failed`` can pick it up). Comment posting
-    is best-effort.
+    Always returns 0. The poller reports on the CI run from a different run.
+    Thus a failed CI job is not a failure of this job. The CI run has its
+    own gate, which reports that. Comment posting is best-effort.
     """
     asm = _import_assembler()
     start = time.time()
@@ -504,7 +575,7 @@ def run(
             break
 
         try:
-            jobs = collect_run_jobs(token, repo, run_id)
+            jobs, runs_completed = collect_run_jobs(token, repo, run_id, watch_workflows)
         except Exception as e:
             print(f"  API error collecting jobs: {e}", file=sys.stderr)
             time.sleep(interval)
@@ -538,12 +609,17 @@ def run(
         prev_artifact_count = len(artifact_statuses)
 
         merged_json = json.dumps(artifact_statuses) if artifact_statuses else ""
-        current_commit_info = _commit_info_for_state(commit_info, pending)
+        # The run status is authoritative for "done": an empty job list on
+        # a run that is still queued/in_progress means GitHub has not
+        # spawned the jobs yet, not that everything passed.
+        all_done = not pending and runs_completed
+        current_commit_info = _commit_info_for_state(commit_info, pending=not all_done)
 
         body = build_comment_body(
             asm, completed, pending, run_url, job_urls,
             merged_json,
             current_commit_info,
+            waiting=not runs_completed,
         )
 
         if body != last_body:
@@ -581,28 +657,61 @@ def run(
         prev_completed = completed
         prev_pending = pending
 
-        if not pending and not quiet_grace_used:
+        if all_done and not quiet_grace_used:
             quiet_grace_used = True
-            print("  No visible jobs pending — waiting 10s for downstream jobs to appear.")
+            print("  No jobs pending and runs report completed — "
+                  "waiting 10s for downstream jobs to appear.")
             time.sleep(10)
             continue
 
-        if not pending:
-            # Check if any dependency failed. If so, exit non-zero so the
-            # run shows as failed — this lets ``gh run rerun --failed``
-            # (e.g. from label-rerun.yml) pick up and rerun the failed jobs.
-            failed_deps = [name for name, result in completed.items() if result == "failure"]
-            if failed_deps:
-                print(f"  All jobs done, but {len(failed_deps)} failed: {', '.join(failed_deps)}")
-                print("  Exiting with error so the run can be rerun via --failed.")
-                return 1
-            print("  All jobs completed — done.")
+        if all_done:
+            failed = [name for name, result in completed.items() if result == "failure"]
+            if failed:
+                print(f"  All jobs done, {len(failed)} failed: {', '.join(failed)}")
+            else:
+                print("  All jobs completed — done.")
             break
+
+        if not pending:
+            print("  No visible jobs pending, but a run is still queued or "
+                  "in progress — waiting for its jobs to appear.")
 
         quiet_grace_used = False
         time.sleep(interval)
 
     return 0
+
+
+def parse_watch_workflows(raw: str) -> list[str]:
+    """Parse the ``WATCH_WORKFLOWS`` value into workflow names.
+
+    One name per line. Not comma-separated: a workflow name can contain a
+    comma ("Docker Build, Test, and Publish").
+    """
+    return [name.strip() for name in raw.splitlines() if name.strip()]
+
+
+def resolve_pr_number(token: str, repo: str, head_sha: str) -> str:
+    """Find the PR number for a commit when the event payload has none.
+
+    ``workflow_run.pull_requests`` is empty for some runs. The poller has no
+    comment to post without a number.
+    """
+    if not head_sha:
+        return ""
+    owner, repo_name = repo.split("/")
+    try:
+        results = _api_get_paginated(
+            f"{API_BASE}/repos/{owner}/{repo_name}/commits/{head_sha}/pulls",
+            token,
+        )
+    except Exception as e:
+        print(f"  API error resolving PR number: {e}", file=sys.stderr)
+        return ""
+    for item in results:
+        if isinstance(item, dict) and item.get("state") == "open":
+            return str(item.get("number", ""))
+    return ""
 
 
 def main() -> int:
@@ -617,9 +726,13 @@ def main() -> int:
 
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
-    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_id = os.environ.get("CI_RUN_ID", "")
     pr_number = os.environ.get("PR_NUMBER", "")
     run_url = os.environ.get("RUN_URL", "")
+
+    # Sibling workflows to merge into the comment, one name per line. Their
+    # runs are separate from the CI run, so the poller resolves them by name.
+    watch_workflows = parse_watch_workflows(os.environ.get("WATCH_WORKFLOWS", ""))
 
     if not args.dry_run:
         if not token:
@@ -629,16 +742,25 @@ def main() -> int:
             print("GITHUB_REPOSITORY is required", file=sys.stderr)
             return 1
         if not run_id:
-            print("GITHUB_RUN_ID is required", file=sys.stderr)
-            return 1
-        if not pr_number:
-            print("PR_NUMBER is required", file=sys.stderr)
+            print("CI_RUN_ID is required", file=sys.stderr)
             return 1
 
-    # Build commit info line from env vars (set by ci.yml).
+    # Build commit info line from env vars (set by ci-review-comment.yml).
     commit_sha = os.environ.get("COMMIT_SHA", "")
     commit_msg = os.environ.get("COMMIT_MESSAGE", "")
+
+    if not pr_number and not args.dry_run:
+        pr_number = resolve_pr_number(token, repo, commit_sha)
+        if not pr_number:
+            print("No PR number found — nothing to comment on.", file=sys.stderr)
+            return 0
+        print(f"Resolved PR #{pr_number} from commit {commit_sha[:7]}")
+
     commit_url = os.environ.get("COMMIT_URL", "")
+    if not commit_url and commit_sha and pr_number:
+        server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+        commit_url = f"{server}/{repo}/pull/{pr_number}/commits/{commit_sha}"
+
     commit_info = ""
     if commit_sha:
         short_sha = commit_sha[:7]
@@ -664,6 +786,7 @@ def main() -> int:
         interval=args.interval,
         timeout=args.timeout,
         dry_run=args.dry_run,
+        watch_workflows=watch_workflows,
     )
 
 

@@ -95,7 +95,7 @@ def test_register_auxiliary_task_basic():
 
 
 def test_all_aux_tasks_includes_plugin_registered(patched_manager):
-    from hermes_cli.main import _AUX_TASKS, _all_aux_tasks
+    from hermes_cli.main_provider_setup import _AUX_TASKS, _all_aux_tasks
 
     manifest = PluginManifest(name="hindsight")
     ctx = PluginContext(manifest, patched_manager)
@@ -129,7 +129,7 @@ def test_reset_aux_to_auto_resets_plugin_tasks(tmp_path, monkeypatch, patched_ma
     """Plugin task with non-auto config gets reset alongside built-ins."""
     from pathlib import Path
     from hermes_cli.config import load_config, save_config
-    from hermes_cli.main import _reset_aux_to_auto
+    from hermes_cli.main_provider_setup import _reset_aux_to_auto
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

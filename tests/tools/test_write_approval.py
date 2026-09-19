@@ -48,6 +48,18 @@ def test_invalid_subsystem_is_off(hermes_home):
     assert wa.write_approval_enabled("bogus") is False
 
 
+def test_list_pending_skips_non_dict_record(hermes_home):
+    """A parseable-but-non-object pending file must be skipped, not crash the sort."""
+    from tools import write_approval as wa
+    wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
+                   summary="ok", origin="foreground")
+    pending_dir = wa._pending_path("memory", "").parent
+    (pending_dir / "bad.json").write_text('"not a record"', encoding="utf-8")
+    records = wa.list_pending("memory")
+    assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
+    assert wa.get_pending("memory", "bad") is None
+
+
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
     # Real bools pass through.
@@ -108,22 +120,27 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
 
-def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypatch):
-    """load_on_disk_store() must read memory.memory_char_limit /
-    user_char_limit from config so approvals applied without a live agent
-    enforce the SAME caps as the live agent (agent_init.py). Falls back to
-    defaults when config can't be loaded.
-    """
+def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
+    """Fresh approval stores must match the live agent's limits and target gates."""
     from tools.memory_tool import load_on_disk_store
 
-    # Config override path: helper picks up the configured limits.
+    # Config override path: helper picks up configured limits and store flags.
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
-        lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
+        lambda: {
+            "memory": {
+                "memory_char_limit": 999,
+                "user_char_limit": 444,
+                "memory_enabled": False,
+                "user_profile_enabled": True,
+            }
+        },
     )
     store = load_on_disk_store()
     assert store.memory_char_limit == 999
     assert store.user_char_limit == 444
+    assert store.memory_enabled is False
+    assert store.user_profile_enabled is True
 
     # Failure path: config raises → defaults, never blows up.
     def _boom():
@@ -133,6 +150,8 @@ def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypat
     fallback = load_on_disk_store()
     assert fallback.memory_char_limit == 2200
     assert fallback.user_char_limit == 1375
+    assert fallback.memory_enabled is True
+    assert fallback.user_profile_enabled is True
 
 
 # ---------------------------------------------------------------------------

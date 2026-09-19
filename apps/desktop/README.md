@@ -48,9 +48,25 @@ hermes update
 
 ---
 
+## Screenshot shortcut (macOS)
+
+Enable **Settings → Keyboard Shortcuts → Screenshot shortcut**, then press the
+left and right Command keys together in any app. Hermes captures that app's
+frontmost window and attaches the image to the last-active Hermes composer,
+including split-pane chats. It does not send the draft or capture the whole
+screen. Release both keys before taking another screenshot.
+
+The shortcut is off by default and saved only on this Mac. macOS requires
+**Input Monitoring** and **Screen & System Audio Recording** permission; the
+settings row links to the relevant system pane and offers Retry. If macOS asks
+to restart the app after granting access, do so before retrying. Review the
+attachment before sending, especially when the captured window is sensitive.
+
 ## Requirements
 
 The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+macOS source builds also require Xcode Command Line Tools to compile the native
+shortcut helper. Prebuilt installers include it; no compiler is needed at runtime.
 
 ---
 
@@ -147,6 +163,32 @@ In remote mode the gateway host is the execution boundary: agent tools,
 terminal commands, and file operations run against the remote Hermes host, not
 the computer displaying the Desktop UI.
 
+Remote gateways that sit behind an access proxy may require extra headers on
+every HTTP and WebSocket request. Configure them per connection in Settings →
+Connections (Extra gateway headers), or add a `headers` object to Desktop's
+Electron `userData/connection.json` remote block:
+
+```json
+{
+  "mode": "remote",
+  "remote": {
+    "url": "https://hermes.example.com",
+    "authMode": "token",
+    "token": { "encoding": "safeStorage", "value": "..." },
+    "headers": {
+      "CF-Access-Client-Id": { "encoding": "safeStorage", "value": "..." },
+      "CF-Access-Client-Secret": { "encoding": "safeStorage", "value": "..." }
+    }
+  }
+}
+```
+
+Per-profile remote entries under `profiles[name].headers` use the same shape.
+Desktop applies these headers only to matching remote gateway requests, treats
+`https` and `wss` as the same gateway origin for WebSocket upgrades, and drops
+transport- or Hermes-managed header names such as `Authorization`, `Cookie`,
+`Host`, `Origin`, `Referer`, and `X-Hermes-Session-Token`.
+
 Projects are the workspace abstraction. A project may own multiple folders,
 repositories, worktrees, and sessions; a bare new chat remains detached unless
 the user enters a project or configures a default project directory. Use the
@@ -156,7 +198,9 @@ Changing profiles or connection modes is a soft workspace switch, not another
 cold boot. The shell and current management overlay remain mounted while
 gateway-bound nanostores are wiped, query-backed data is invalidated, and the
 new connection repopulates skeletons. This prevents rows or transcripts from
-the previous gateway bleeding into the next one.
+the previous gateway bleeding into the next one. Switching changes only the
+foreground view and request route: it does not cancel turns or stop a backend,
+and retained background sockets continue receiving events from running jobs.
 
 ### Verification
 

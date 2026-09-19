@@ -24,7 +24,16 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from hermes_state import SessionDB
 
-REAL_ROOT = (Path.home() / ".hermes").resolve()
+# Must match the root the guard itself computes.  Hardcoding ``~/.hermes``
+# silently disarmed every assertion below on Windows, where the real root is
+# ``%LOCALAPPDATA%\hermes``: the paths under test were then *correctly*
+# classified as non-production, so the guard never raised and the whole
+# TestProductionPathRefused class failed for the wrong reason (#82770).
+REAL_ROOT = hermes_state._real_platform_state_root()
+if REAL_ROOT is None:  # pragma: no cover - no resolvable home on this platform
+    pytest.skip(
+        "no real platform state root to assert against", allow_module_level=True
+    )
 
 
 class TestProductionPathRefused:
@@ -45,7 +54,7 @@ class TestProductionPathRefused:
 
     def test_unnormalized_production_path_raises(self):
         """Symlink-free but unnormalized spellings still resolve and refuse."""
-        sneaky = Path.home() / "subdir" / ".." / ".hermes" / "state.db"
+        sneaky = REAL_ROOT.parent / "subdir" / ".." / REAL_ROOT.name / "state.db"
         with pytest.raises(RuntimeError, match="live-system guard"):
             SessionDB(db_path=sneaky)
 

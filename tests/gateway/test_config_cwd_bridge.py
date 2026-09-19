@@ -13,7 +13,7 @@ import os
 import json
 
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
-from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+from hermes_cli.config import _is_ssh_remote_tilde_cwd
 
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):

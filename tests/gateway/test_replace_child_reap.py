@@ -66,7 +66,6 @@ def _fake_psutil(monkeypatch, *, wait_gone=None, wait_alive=None):
 
 class TestReapGatewayChildren:
     def test_reaps_orphaned_children_sigterm_then_wait(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         fake = _fake_psutil(monkeypatch)
         orphans = [_FakeChild(101, ppid=1), _FakeChild(102, ppid=1)]
 
@@ -78,7 +77,6 @@ class TestReapGatewayChildren:
         fake.wait_procs.assert_called_once()
 
     def test_survivors_of_sigterm_get_sigkill(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         stubborn = _FakeChild(103, ppid=1)
         _fake_psutil(monkeypatch, wait_gone=[], wait_alive=[stubborn])
 
@@ -91,7 +89,6 @@ class TestReapGatewayChildren:
 
 class TestSnapshotGatewayChildren:
     def test_snapshot_walks_descendants_recursively(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         fake = _fake_psutil(monkeypatch)
         kids = [_FakeChild(201), _FakeChild(202)]
         fake.Process.return_value.children.return_value = kids
@@ -201,6 +198,21 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
     monkeypatch.setattr(
         "gateway.status.remove_pid_file",
         lambda: _pid_state.update(alive=False),
+    )
+    # Ownership guard (#89315): legitimate same-home replace fixture —
+    # bound record for target pid 42 in this home.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
         "gateway.status.release_all_scoped_locks", lambda **kwargs: 0

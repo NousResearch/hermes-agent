@@ -44,10 +44,16 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      - name: Check cross-page links resolve on GitHub and on the site
+        run: python3 website/scripts/check_doc_links.py
+
       - name: Lint docs diagrams
         run: npm run lint:diagrams
         working-directory: website
 
       - name: Build Docusaurus
-        run: npm run build
+        # Build only the default (en) locale in CI — the full bilingual
+        # build runs in deploy-site.yml on push-to-main / release.
+        # Same pattern Docusaurus uses internally (build:fast --locale en).
+        run: npm run build:fast
         working-directory: website

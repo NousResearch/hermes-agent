@@ -6,6 +6,14 @@ description: "Step-by-step guide to running Hermes Agent entirely on your own ma
 
 # Run Hermes Locally with Ollama — Zero API Cost
 
+:::tip Desktop users: there's a one-click path
+On the Hermes desktop app, **Settings → Providers → Local Models** installs
+and manages a local llama.cpp server for you — model downloads, memory
+fitting, and context sizing included. See [Local Models](../user-guide/local-models.md).
+This guide is for manual setup: Ollama specifically, CLI-first workflows,
+or servers you want to run yourself.
+:::
+
 ## The Problem
 
 Cloud LLM APIs charge per token. A heavy coding session can cost $5–20. For personal projects, learning, or privacy-sensitive work, that adds up — and you're sending every conversation to a third party.
@@ -260,6 +268,16 @@ This way, 90% of your usage is free (local), and only the hard tasks hit the pai
 
 ## Troubleshooting
 
+### "provider 'ollama' has no endpoint configured"
+
+`hermes chat --provider ollama` (or `vllm`) stops with this error when no endpoint is configured for that alias anywhere — no `providers.ollama.base_url`, no `model.base_url`. Hermes refuses to send the request rather than fall back to OpenRouter with a cloud key (`OPENROUTER_API_KEY` / `OPENAI_API_KEY`) that happens to be set. Add the endpoint:
+
+```yaml
+providers:
+  ollama:
+    base_url: "http://localhost:11434/v1"
+```
+
 ### "Connection refused" on startup
 
 Ollama isn't running. Start it:
@@ -289,13 +307,13 @@ What helps:
 
 ### Model doesn't follow tool calls
 
-Smaller models (3B, 7B) sometimes ignore tool-call instructions and produce plain text instead of structured function calls. Solutions:
+Models without tool-call support produce plain text instead of structured function calls. Solutions:
 
-- **Use a bigger model** — `gemma4:31b` or `gemma2:27b` handle tool calls much better than 3B/7B models.
+- **Use a model with tool-call support** — of the models listed above, only `gemma4:31b` has reliable tool calling.
 - **Hermes has auto-repair** — it detects malformed tool calls and attempts to fix them automatically.
 - **Set up a fallback** — if the local model fails 3 times, Hermes falls back to a cloud provider.
 
-If the model prints raw JSON like `{"name": "web_search", ...}` in its reply instead of actually running the tool, that's usually the *server*, not the model — tool calling isn't enabled or the tool-call format isn't parsed. See the per-server fix table in [Tool calls appear as text instead of executing](/integrations/providers#tool-calls-appear-as-text-instead-of-executing) (llama.cpp needs `--jinja`, vLLM needs `--enable-auto-tool-choice --tool-call-parser hermes`, and so on).
+If the model prints raw JSON like `{"name": "web_search", ...}` in its reply instead of actually running the tool, that's usually the *server*, not the model — tool calling isn't enabled or the tool-call format isn't parsed. See the per-server fix table in [Tool calls appear as text instead of executing](../integrations/providers.md#tool-calls-appear-as-text-instead-of-executing) (llama.cpp needs `--jinja`, vLLM needs `--enable-auto-tool-choice --tool-call-parser hermes`, and so on).
 
 ### Context window errors
 

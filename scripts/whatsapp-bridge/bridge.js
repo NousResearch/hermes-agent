@@ -25,7 +25,7 @@ import rateLimit from 'express-rate-limit';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync, realpathSync, statSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -34,6 +34,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { resolveAllowedMediaPath } from './media_paths.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -113,29 +114,6 @@ const rateLimitSendMedia = rateLimit({
   legacyHeaders: false,
   message: { error: 'Media send rate limit exceeded' },
 });
-
-function resolveAllowedMediaPath(candidate) {
-  if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) return null;
-  const absoluteCandidate = path.resolve(candidate);
-
-  for (const root of BRIDGE_MEDIA_ROOTS) {
-    const normalizedRoot = path.resolve(root);
-    if (absoluteCandidate !== normalizedRoot && !absoluteCandidate.startsWith(`${normalizedRoot}${path.sep}`)) continue;
-
-    try {
-      const resolvedRoot = realpathSync(normalizedRoot);
-      const resolved = realpathSync(absoluteCandidate);
-      const metadata = statSync(resolved);
-      if (metadata.isFile() && metadata.size <= MAX_MEDIA_BYTES && resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
-        return resolved;
-      }
-    } catch {
-      // Try the next configured cache root when a path or cache is unavailable.
-    }
-  }
-
-  return null;
-}
 
 // Self-hash of this script file.  Reported in /health so the Python gateway
 // can detect a running bridge that predates the current bridge.js and
@@ -932,7 +910,7 @@ app.post('/send-media', rateLimitSendMedia, async (req, res) => {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
 
-  const mediaPath = resolveAllowedMediaPath(filePath);
+  const mediaPath = resolveAllowedMediaPath(filePath, BRIDGE_MEDIA_ROOTS, MAX_MEDIA_BYTES);
   if (!mediaPath) {
     return res.status(400).json({ error: 'filePath must be a regular file inside a Hermes media cache' });
   }

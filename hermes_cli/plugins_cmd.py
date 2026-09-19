@@ -652,21 +652,34 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
     """Refuse to ship a tree Hermes cannot read back. A clone can land unreadable (Windows ACL
     inheritance -> WinError 5, a mode-000 file) and discovery would then skip the plugin forever
     (#111804); repair ``u+rX`` where the OS supports it, otherwise fail before anything moves."""
+    root = root.resolve()
     paths = [root]
     for dirpath, dirnames, filenames in os.walk(root):
         paths.extend(Path(dirpath) / name for name in (*dirnames, *filenames))
     for path in paths:
+        # A clone can contain links to arbitrary local paths. Check containment
+        # before probing readability or repairing permissions on their targets.
         try:
-            _probe_readable(path)
+            resolved = path.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise PluginOperationError(
+                f"Installed file {path.relative_to(root)} cannot be resolved; nothing was installed."
+            ) from exc
+        if not resolved.is_relative_to(root):
+            raise PluginOperationError(
+                f"Installed file {path.relative_to(root)} escapes the plugin tree; nothing was installed."
+            )
+        try:
+            _probe_readable(resolved)
             continue
         except OSError:
             if os.name != "nt":  # chmod only toggles the read-only bit on Windows; ACLs need icacls
                 try:
-                    os.chmod(path, os.stat(path).st_mode | (0o500 if path.is_dir() else 0o400))
+                    os.chmod(resolved, os.stat(resolved).st_mode | (0o500 if resolved.is_dir() else 0o400))
                 except OSError:
                     pass
         try:
-            _probe_readable(path)
+            _probe_readable(resolved)
         except OSError as exc:
             fix = (f'icacls "{plugins_dir}" /grant:r "%USERNAME%":(OI)(CI)F /T' if os.name == "nt"
                    else f"chmod -R u+rX {plugins_dir}")

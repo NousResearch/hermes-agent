@@ -356,3 +356,41 @@ class TestCommandWinsOverPlugin:
 
         assert result["success"] is True
         assert result["transcript"] == "FROM_PLUGIN"
+
+
+class TestProviderOverride:
+    def test_override_dispatches_command_before_registered_plugin(self, tmp_path):
+        from copy import deepcopy
+        from agent.transcription_provider import TranscriptionProvider
+        from agent import transcription_registry
+        from tools.transcription_tools import _transcribe_audio_with_provider
+
+        audio = _make_silent_wav(tmp_path / "audio.wav")
+        config = {"provider": "unused-cli", "fallback_providers": ["unused-cli"],
+                  "providers": {"selected-cli": {
+                      "type": "command", "command": _python_emit_command("selected command"),
+                  }}}
+        original = deepcopy(config)
+        calls = []
+
+        class Plugin(TranscriptionProvider):
+            @property
+            def name(self):
+                return "selected-cli"
+
+            def transcribe(self, file_path, **kwargs):
+                calls.append(file_path)
+                return {"success": False, "error": "plugin must not win"}
+
+        transcription_registry._reset_for_tests()
+        try:
+            transcription_registry.register_provider(Plugin())
+            with patch("tools.transcription_tools._load_stt_config", return_value=config):
+                result = _transcribe_audio_with_provider(str(audio), provider="selected-cli")
+        finally:
+            transcription_registry._reset_for_tests()
+        assert result["success"] is True
+        assert result["provider"] == "selected-cli"
+        assert result["transcript"] == "selected command"
+        assert calls == []
+        assert config == original

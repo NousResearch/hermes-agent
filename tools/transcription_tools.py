@@ -33,7 +33,7 @@ from tools.transcription_local import (
     _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
-    _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
+    _has_xai_stt_credentials, _normalize_openai_model, _resolve_openai_audio_client_config, _transcribe_deepinfra,
     _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
 from tools.transcription_command import (
@@ -395,7 +395,8 @@ def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
 
 
 def _transcribe_prepared_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    *, provider: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
     config default; ``source`` is a caller-surface label (``"gateway"``, ``"voice_mode"``) forwarded
     to the ``pre_transcription`` hook only."""
@@ -407,7 +408,7 @@ def _transcribe_prepared_audio(
     stt_config = _load_stt_config()
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
-    provider = _get_provider(stt_config)
+    provider = _get_provider(stt_config) if provider is None else str(provider).strip().lower()
     if not _is_local_stt_provider(provider, stt_config):
         error = _validate_audio_file_size(Path(file_path))
         if error:
@@ -462,10 +463,23 @@ def _dispatch_stt_provider(
     prompt = stt_config.get("prompt")
     prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
     # Fires after provider resolution and BEFORE any backend; ``language`` stays None unless a hook sets it.
+    hook_fields: Dict[str, str] = {}
     model, language, prompt = _apply_pre_transcription_hook(
         file_path=file_path, provider=provider, model=model,
         language=_get_stt_section(stt_config, provider).get("language"), prompt=prompt, source=source,
+        field_overrides=hook_fields,
     )
+    if provider in ("openai", "deepinfra"):
+        model = _builtin_model_name(provider, stt_config, model)
+        if provider == "openai":
+            model = _normalize_openai_model(model)
+        if model == "gpt-transcribe" or provider == "deepinfra":
+            # The SDK client owns the actual endpoint. Defer defaults, validation and truncation
+            # until it exists; None means unset, whereas "" must suppress every prompt fallback.
+            # DeepInfra may also select its final model from the catalog inside its backend.
+            handler = globals()[f"_transcribe_{provider}"]
+            return handler(file_path, model, language=language,
+                           prompt=hook_fields.get("prompt"), stt_config=stt_config)
     prompt = _enforce_prompt_length_limit(prompt, provider)
     if provider in BUILTIN_STT_PROVIDERS:
         # Looked up in this module at call time so tests may patch ``_transcribe_*``.
@@ -512,6 +526,17 @@ def transcribe_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    return _transcribe_audio_with_provider(file_path, model, source)
+
+
+def _transcribe_audio_with_provider(
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    *, provider: Optional[str] = None) -> Dict[str, Any]:
+    """Use native validation/preprocessing with an optional call-local backend.
+
+    An explicit provider selects one backend, retaining its configured credential
+    and endpoint ownership. It never activates configured fallbacks.
+    """
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)
     if blocked:
@@ -526,8 +551,15 @@ def transcribe_audio(
     if prep_error or prepared_path is None:
         return prep_error or _error_result("Audio preprocessing did not produce a file for transcription.")
     try:
-        return (_validate_audio_file(prepared_path, enforce_size_limit=False)
-                or _transcribe_prepared_audio(prepared_path, model, source))
+        error = _validate_audio_file(prepared_path, enforce_size_limit=False)
+        if error:
+            return error
+        if provider is None:
+            return _transcribe_prepared_audio(prepared_path, model, source)
+        try:
+            return _transcribe_prepared_audio(prepared_path, model, source, provider=provider)
+        except Exception as exc:
+            return _error_result(f"Transcription failed: {exc}", provider=provider)
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

@@ -541,6 +541,63 @@ DISCORD_ALLOWED_USERS=...
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 
+### OpenAI transcription prompts and keywords
+
+For the Python STT pipeline, `gpt-transcribe` accepts a contextual prompt and vocabulary keywords:
+
+```yaml
+stt:
+  provider: openai
+  prompt: "General vocabulary for prompt-capable providers."
+  openai:
+    model: gpt-transcribe
+    prompt: "A discussion of Hermes and Nous Research."
+    keywords: ["Hermes", "Nous Research"]
+```
+
+The added `stt.openai.prompt` and `stt.openai.keywords` settings apply only
+when the final model is exactly `gpt-transcribe` and the constructed SDK client's base
+URL is `https://api.openai.com/v1` (optional trailing slash, default or port 443,
+no user information, query, or fragment). Custom and managed compatible endpoints
+retain the generic `stt.prompt` and existing singular-language behavior. These settings
+do not change provider selection, endpoints, or credentials.
+
+A `pre_transcription` hook may change the model before context is chosen. A hook's
+explicit prompt wins; `{"prompt": ""}` clears the prompt and prevents configured
+prompt fallback, even when another hook changes the model. Otherwise the native
+OpenAI prompt takes precedence over the generic prompt. Hooks merge fields in
+registration order, with the last valid string for each field winning.
+
+Hermes checks the effective, untruncated native prompt against its **5000-character
+acceptance ceiling**, then retains the existing **896-character tail cap** (224 times
+4 characters). Only that tail is sent. The ceiling is a Hermes limit, not a claim
+about the provider's numeric maximum or full forwarding of 5000 characters.
+
+Keywords accept a string or a list of strings. CLI JSON-list strings are decoded,
+for example:
+
+```bash
+hermes config set stt.openai.keywords '["Hermes", "Nous Research"]'
+```
+
+A string beginning with `[` after leading whitespace is reserved for JSON-list
+syntax; malformed JSON is rejected. For a literal bracket-prefixed keyword, use
+an explicit list, such as `keywords: ["[Hermes]"]`.
+
+Non-string list members are rejected. Keywords must not contain `<`, `>`, carriage
+returns, or line feeds, including at their edges before whitespace is trimmed.
+Hermes sends `prompt` as the SDK argument and merges `keywords` into a copied
+`extra_body`, preserving unrelated fields.
+
+The existing language-string mapping is preserved: `gpt-transcribe` receives one
+hint in `languages`, with comma strings kept intact; other models retain singular
+`language`. Native language-array support, automatic detection, config roundtrips,
+and multipart coverage are credited separately to itkonen's
+[#103867](https://github.com/NousResearch/hermes-agent/pull/103867).
+
+See OpenAI's [speech-to-text guide](https://developers.openai.com/api/docs/guides/speech-to-text)
+and [transcription create reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+
 ### TTS Provider Comparison
 
 | Provider | Quality | Cost | Latency | Key Required |
@@ -606,3 +663,66 @@ The hallucination filter catches most cases automatically. If you're still getti
 - Use a quieter environment
 - Adjust `silence_threshold` in config (higher = less sensitive)
 - Try a different STT model
+
+
+### Optional Discord transcription modes
+
+`discord.voice_stt.mode` defaults to `configured`, preserving the normal STT
+provider and native agent-turn policy. A fresh voice-channel join can opt into
+`openai_contextual` or `openai_live_high`. Both require `stt.enabled: true`.
+Changing the mode while connected does not replace the latched mode; leave and
+rejoin to apply it.
+
+```yaml
+discord:
+  voice_stt:
+    mode: configured  # configured | openai_contextual | openai_live_high
+```
+
+`openai_contextual` converts completed utterances through the normal validated
+file pipeline and explicitly selects the OpenAI backend with `gpt-transcribe`.
+It retains preprocessing, cleanup, and `pre_transcription` hooks (source:
+`discord`). The existing OpenAI backend still owns credentials and endpoints:
+this selector does not provide independent billing. A stored Nous selection
+still resolves the managed audio route; configured compatible endpoints remain
+configured compatible endpoints. The native GPT context fields described above
+apply only when the final model and actual client endpoint qualify. A failed
+explicit request never activates another configured STT provider.
+
+`openai_live_high` streams explicitly mapped, currently authorized speaker PCM
+to the fixed direct OpenAI WebSocket endpoint. It requires a direct key from
+`stt.openai.api_key`, `VOICE_TOOLS_OPENAI_KEY`, or `OPENAI_API_KEY`, in that
+precedence order. A configured foreign `stt.openai.base_url` is rejected before
+any key is used or an alternative key is considered. It never uses a managed
+fallback or retries through another billing route. This opt-in can incur direct
+OpenAI transcription charges independently of the chat model.
+
+Live mode uses `session.update`, session type `transcription`, 24 kHz mono PCM,
+null turn detection, `gpt-live-transcribe`, and `delay: high`. Context defaults
+come from `stt.openai.prompt`, `keywords`, and `languages`; overrides may be set
+under `discord.voice_stt.openai_live`. Language syntax validation does not prove
+provider support. The [model-specific live guide](https://developers.openai.com/api/docs/guides/realtime-transcription)
+demonstrates this contract, while the SDK's delay comment still names only
+`gpt-realtime-whisper`; the documented example and that SDK comment disagree.
+Availability, entitlement, and audio quality have not been verified with paid calls.
+
+Capture is capped at 60 seconds per utterance, with at most four SSRC buffers,
+five seconds of queued PCM, and four live speaker sessions. Commits require the
+entire captured source to have streamed successfully. Remap, pause, receiver
+replacement, revoked authorization, or disabled STT invalidate pending work.
+Authorization, enablement, source generations, and receiver/controller identity
+are checked for each append and commit, including leave-time flush. An already
+started send cannot be recalled. Disabling STT closes live sessions; rejoin to
+create a new live controller after re-enabling it.
+
+Connection, send, and completion limits are 10, 5, and 20 seconds; sessions roll
+over between turns after 3300 seconds. Live configuration may lower these limits
+but cannot raise them. Early event storage is bounded to 16 item IDs, eight
+events per ID, and 64 completed-item tombstones. Redirects are rejected and the
+transport logger does not propagate handshake or audio/transcript payload logs.
+
+Live mode consumes raw decoded PCM: it does not pass through file preprocessing,
+silence trimming, or `pre_transcription` hooks. Unmapped, incomplete, dropped, or
+failed live turns are discarded without a paid file-transcription fallback.
+`configured` retains native single-member inference when Discord omits SPEAKING;
+the explicit modes require a SPEAKING identity mapping.

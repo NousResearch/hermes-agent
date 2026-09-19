@@ -87,6 +87,8 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+    # Stub host binary discovery; individual codec tests supply their own fake.
+    monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: None)
 
 
 # ============================================================================
@@ -251,6 +253,467 @@ class TestTranscribeGroq:
 # ============================================================================
 # _transcribe_openai — additional tests
 # ============================================================================
+
+@pytest.fixture
+def context_wire(monkeypatch, sample_wav):
+    """Real dispatch/hook merge/request builder; only SDK and discovery boundaries fake."""
+    import copy
+    from tools import transcription_tools as stt
+
+    cfg = {
+        "provider": "openai", "cloud_trim_silence": False, "prompt": "generic",
+        "openai": {"api_key": "offline-key", "model": "gpt-transcribe",
+                   "base_url": "https://api.openai.com/v1", "prompt": "native",
+                   "keywords": ["Hermes"], "language": "de"},
+    }
+    hooks = []
+    client = MagicMock()
+    client.base_url = "https://api.openai.com/v1/"
+    client.audio.transcriptions.create.return_value = types.SimpleNamespace(text="offline transcript")
+    constructor = MagicMock(return_value=client)
+    monkeypatch.setattr("openai.OpenAI", constructor)
+    monkeypatch.setattr(stt, "_HAS_OPENAI", True)
+    monkeypatch.setattr(stt, "_load_stt_config", lambda: cfg)
+    monkeypatch.setattr("tools.tool_backend_helpers.read_selection", lambda *a: cfg["provider"])
+    monkeypatch.setattr(stt, "_resolve_provider_key", lambda *a, **kw: "offline-key")
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: bool(hooks))
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *a, **kw: list(hooks))
+
+    def run(**kwargs):
+        before = copy.deepcopy(cfg)
+        result = stt.transcribe_audio(sample_wav, **kwargs)
+        assert cfg == before
+        return result
+
+    return types.SimpleNamespace(cfg=cfg, hooks=hooks, client=client, constructor=constructor,
+                                 run=run, audio=sample_wav)
+
+
+class TestNativeTranscriptionContext:
+    @pytest.mark.parametrize("base", ["https://api.openai.com/v1", "https://api.openai.com/v1/",
+                                      "https://api.openai.com:443/v1/"])
+    @pytest.mark.parametrize("keywords,expected", [
+        ('["Hermes", "Nous Research"]', ["Hermes", "Nous Research"]),
+        (["[Hermes]", " Nous Research "], ["[Hermes]", "Nous Research"]),
+    ])
+    def test_native_context_reaches_sdk(self, context_wire, base, keywords, expected):
+        wire = context_wire
+        wire.client.base_url = base
+        wire.cfg["openai"]["keywords"] = keywords
+        assert wire.run()["success"]
+        kw = wire.client.audio.transcriptions.create.call_args.kwargs
+        assert kw["prompt"] == "native"
+        assert kw["extra_body"] == {"keywords": expected, "languages": ["de"]}
+        assert "language" not in kw
+        wire.client.close.assert_called_once()
+        assert wire.constructor.call_args.kwargs["api_key"] == "offline-key"
+
+    @pytest.mark.parametrize("start,finish,prompt", [
+        ("whisper-1", "gpt-transcribe", "native"),
+        ("gpt-transcribe", "whisper-1", "generic"),
+        ("gpt-transcribe", "gpt-4o-transcribe", "generic"),
+    ])
+    def test_model_only_hooks_select_final_model_defaults(self, context_wire, start, finish, prompt):
+        wire = context_wire
+        wire.cfg["openai"]["model"] = start
+        wire.hooks.extend([{"language": "fr"}, {"model": finish}])
+        assert wire.run()["success"]
+        kw = wire.client.audio.transcriptions.create.call_args.kwargs
+        assert kw["model"] == finish
+        assert kw["prompt"] == prompt
+        if finish == "gpt-transcribe":
+            assert kw["extra_body"]["languages"] == ["fr"]
+        else:
+            assert kw["language"] == "fr"
+            assert "extra_body" not in kw
+
+    @pytest.mark.parametrize("hooks,expected", [
+        ([{"prompt": ""}, {"model": "gpt-transcribe"}], None),
+        ([{"model": "gpt-transcribe"}, {"prompt": ""}], None),
+        ([{"prompt": "first"}, {"prompt": ""}, {"model": "gpt-transcribe"}], None),
+        ([{"prompt": ""}, {"model": "gpt-transcribe"}, {"prompt": "winner"}], "winner"),
+        ([{"model": "gpt-transcribe"}, {"prompt": "winner"}], "winner"),
+    ])
+    def test_hook_prompt_presence_beats_unused_oversized_config(self, context_wire, hooks, expected):
+        wire = context_wire
+        wire.cfg["openai"].update(model="whisper-1", prompt="x" * 5001)
+        wire.cfg["prompt"] = "y" * 5001
+        wire.hooks.extend(hooks)
+        assert wire.run()["success"]
+        assert wire.client.audio.transcriptions.create.call_args.kwargs.get("prompt") == expected
+
+    @pytest.mark.parametrize("origin", ["hook", "native", "generic"])
+    @pytest.mark.parametrize("length", [5000, 5001])
+    def test_effective_prompt_ceiling_precedes_tail_cap(self, context_wire, origin, length):
+        wire = context_wire
+        prompt = "ä" * (length - 4) + "TAIL"
+        if origin == "hook":
+            wire.hooks.append({"prompt": prompt})
+        elif origin == "native":
+            wire.cfg["openai"]["prompt"] = prompt
+        else:
+            del wire.cfg["openai"]["prompt"]
+            wire.cfg["prompt"] = prompt
+        result = wire.run()
+        if length == 5001:
+            assert not result["success"]
+            assert "5000" in result["error"]
+            wire.client.audio.transcriptions.create.assert_not_called()
+        else:
+            assert result["success"]
+            assert wire.client.audio.transcriptions.create.call_args.kwargs["prompt"] == prompt[-896:]
+        wire.client.close.assert_called_once()
+
+    @pytest.mark.parametrize("field,value", [
+        ("keywords", "\nHermes"), ("keywords", ["Hermes\r"]), ("keywords", "<Hermes>"),
+        ("keywords", '\n["Hermes"]'),
+        ("keywords", '["Hermes\\n"]'), ("keywords", ["ok", 1]), ("keywords", {"key": "value"}),
+        ("keywords", '["ok", null]'), ("keywords", ('Hermes',)),
+        ("keywords", "[Hermes]"), ("keywords", ' ["Hermes"'),
+    ])
+    def test_invalid_context_is_rejected_before_upload(self, context_wire, field, value):
+        wire = context_wire
+        wire.cfg["openai"][field] = value
+        result = wire.run()
+        assert not result["success"]
+        assert field in result["error"]
+        wire.client.audio.transcriptions.create.assert_not_called()
+        wire.client.close.assert_called_once()
+
+    @pytest.mark.parametrize("base", [
+        "http://api.openai.com/v1/", "https://api.openai.com:444/v1/",
+        "https://api.openai.com.evil.test/v1/", "https://api.openai.com./v1/",
+        "https://api.openai.com/v10/", "https://api.openai.com/v1//",
+        "https://api.openai.com/v1/?x=1", "https://api.openai.com/v1/#fragment",
+        "https://api.openai.com/v1/?", "https://api.openai.com/v1/#",
+        "https://api.openai.com/v1/\n",
+        "https://user@api.openai.com/v1/", "https://api.deepinfra.com/v1/openai/",
+        "https://managed.example/v1/", None,
+    ])
+    def test_actual_endpoint_gates_new_fields_only(self, context_wire, base):
+        wire = context_wire
+        wire.client.base_url = base
+        wire.cfg["openai"].update(prompt="x" * 5001, keywords=[1], language="de")
+        wire.cfg["prompt"] = "generic" * 1000
+        assert wire.run()["success"]
+        kw = wire.client.audio.transcriptions.create.call_args.kwargs
+        assert kw["prompt"] == wire.cfg["prompt"][-896:]
+        assert kw["extra_body"] == {"languages": ["de"]}
+        assert "language" not in kw
+        assert wire.constructor.call_args.kwargs["base_url"] == wire.cfg["openai"]["base_url"]
+
+    def test_groq_correction_precedes_context_choice(self, context_wire, monkeypatch):
+        from tools import transcription_cloud
+        wire = context_wire
+        monkeypatch.setattr(transcription_cloud, "DEFAULT_STT_MODEL", "gpt-transcribe")
+        wire.hooks.append({"model": "whisper-large-v3-turbo"})
+        assert wire.run()["success"]
+        kw = wire.client.audio.transcriptions.create.call_args.kwargs
+        assert kw["model"] == "gpt-transcribe"
+        assert kw["prompt"] == "native"
+
+    def test_deepinfra_keeps_generic_context_and_own_credentials(self, context_wire):
+        wire = context_wire
+        wire.cfg.update(provider="deepinfra", deepinfra={"model": "gpt-transcribe", "language": "de"})
+        wire.client.base_url = "https://api.deepinfra.com/v1/openai/"
+        wire.cfg["openai"].update(prompt="x" * 5001, keywords=[1])
+        assert wire.run()["success"]
+        kw = wire.client.audio.transcriptions.create.call_args.kwargs
+        assert kw["prompt"] == "generic"
+        assert kw["extra_body"] == {"languages": ["de"]}
+        assert "deepinfra.com" in wire.constructor.call_args.kwargs["base_url"]
+
+    def test_native_tail_cap_depends_on_endpoint_not_response_label(self, context_wire):
+        from tools.transcription_cloud import _transcribe_openai
+        wire = context_wire
+        prompt = "x" * 4996 + "TAIL"
+        result = _transcribe_openai(wire.audio, "gpt-transcribe", api_key="offline-key",
+                                    provider_label="compatible", prompt=prompt)
+        assert result["success"]
+        assert wire.client.audio.transcriptions.create.call_args.kwargs["prompt"] == prompt[-896:]
+
+    def test_blank_generic_prompt_stays_absent_on_native_endpoint(self, context_wire):
+        wire = context_wire
+        del wire.cfg["openai"]["prompt"]
+        wire.cfg["prompt"] = "   "
+        assert wire.run()["success"]
+        assert "prompt" not in wire.client.audio.transcriptions.create.call_args.kwargs
+
+    def test_extra_body_merge_survives_real_sdk_serialization(self, context_wire, monkeypatch):
+        import copy
+        import httpx
+        import openai
+        from openai._client import OpenAI
+        from tools.transcription_cloud import _transcribe_openai
+        wire = context_wire
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, json={"text": "offline transcript"})
+
+        client = OpenAI(api_key="offline-key", base_url="https://api.openai.com/v1",
+                        http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+        monkeypatch.setattr(openai, "OpenAI", lambda **kw: client)
+        extras = {"trace": "keep", "language": "it", "languages": ["it"]}
+        before = copy.deepcopy(extras)
+        result = _transcribe_openai(wire.audio, "gpt-transcribe", prompt="caller",
+                                    extra_body=extras)
+        assert result["success"]
+        assert extras == before
+        assert client.is_closed()
+        assert len(requests) == 1
+        body = requests[0].content
+        assert b'name="prompt"\r\n\r\ncaller' in body
+        assert b'name="trace"\r\n\r\nkeep' in body
+        assert b'name="keywords[]"\r\n\r\nHermes' in body
+        assert b'name="languages[]"\r\n\r\nde' in body
+        assert b'name="language"' not in body
+
+
+@pytest.fixture
+def sdk_context_wire(monkeypatch, sample_wav):
+    """Public pipeline, real hooks, URL resolution and SDK multipart; offline HTTP only."""
+    import copy
+    from email import policy
+    from email.parser import BytesParser
+    import httpx
+    import openai
+    from hermes_cli import plugins
+    from tools import transcription_tools as stt
+
+    cfg = {
+        "provider": "deepinfra", "cloud_trim_silence": False, "prompt": "generic",
+        "openai": {"api_key": "offline-openai", "model": "gpt-transcribe",
+                   "base_url": "https://api.openai.com/v1", "prompt": "native",
+                   "keywords": ["Hermes"], "language": "de"},
+        "deepinfra": {"model": "gpt-transcribe", "base_url": "https://api.openai.com/v1",
+                     "language": "de"},
+    }
+    requests, clients, hooks, hook_calls, constructors, key_calls = [], [], [], [], [], []
+    manager = plugins.PluginManager()
+    context = plugins.PluginContext(plugins.PluginManifest(name="sdk-context-test"), manager)
+    monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
+    monkeypatch.setattr(stt, "_load_stt_config", lambda: cfg)
+    monkeypatch.setattr("tools.tool_backend_helpers.read_selection", lambda *a: cfg["provider"])
+    monkeypatch.setattr("tools.managed_tool_gateway.resolve_managed_tool_gateway",
+                        lambda *a: types.SimpleNamespace(nous_user_token="offline-nous",
+                                                         gateway_origin="https://api.openai.com"))
+
+    def resolve_key(env_var, provider):
+        key_calls.append((env_var, provider))
+        return "offline-" + provider
+
+    monkeypatch.setattr(stt, "_resolve_provider_key", resolve_key)
+    # External catalog response only: retain the real default-model selection and shim.
+    monkeypatch.setattr("hermes_cli.models._fetch_deepinfra_models_by_tag",
+                        lambda *a, **kw: [{"id": "gpt-transcribe"}])
+
+    def respond(request):
+        requests.append(request)
+        if b'name="response_format"\r\n\r\ntext' in request.content:
+            return httpx.Response(200, text="offline transcript")
+        return httpx.Response(200, json={"text": "offline transcript"})
+
+    real_openai = openai.OpenAI
+
+    def construct(**kwargs):
+        constructors.append(dict(kwargs))
+        client = real_openai(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(openai, "OpenAI", construct)
+
+    def run(**kwargs):
+        before = copy.deepcopy((cfg, hooks))
+        for result in hooks:
+            def callback(result=result, **kw):
+                hook_calls.append(kw)
+                return result
+            context.register_hook("pre_transcription", callback)
+        result = stt.transcribe_audio(sample_wav, source="gateway", **kwargs)
+        assert (cfg, hooks) == before
+        assert clients and all(client.is_closed() for client in clients)
+        for invocation in hook_calls:
+            assert invocation["provider"] == ("openai" if cfg["provider"] == "nous" else cfg["provider"])
+            assert invocation["source"] == "gateway"
+            assert "field_overrides" not in invocation
+        return result
+
+    def fields():
+        assert len(requests) == 1
+        request = requests[0]
+        message = BytesParser(policy=policy.default).parsebytes(
+            b"Content-Type: " + request.headers["content-type"].encode() + b"\r\n\r\n" + request.content)
+        values = {}
+        for part in message.iter_parts():
+            name = part.get_param("name", header="content-disposition")
+            if name != "file":
+                payload = part.get_payload(decode=True)
+                assert isinstance(payload, bytes)
+                values.setdefault(name, []).append(payload.decode("utf-8"))
+        return values
+
+    return types.SimpleNamespace(cfg=cfg, hooks=hooks, requests=requests, constructors=constructors,
+                                 key_calls=key_calls, run=run, fields=fields)
+
+
+class TestCompatibleNativeContextWire:
+    @pytest.mark.parametrize("model", ["gpt-transcribe", "whisper-1"])
+    @pytest.mark.parametrize("language,plural,expected", [
+        ("de", None, ["de"]),
+        ("de,en", None, ["de,en"]),
+        ("  de  ", None, ["de"]),
+        ("   ", None, None),
+        ("de", ["fr"], ["de"]),
+        ("de", [False], ["de"]),
+        ("de", [], ["de"]),
+        ("   ", ["fr"], None),
+        ("english", '[broken', ["english"]),
+    ])
+    def test_legacy_language_mapping_ignores_plural_config(
+        self, sdk_context_wire, monkeypatch, model, language, plural, expected,
+    ):
+        wire = sdk_context_wire
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        wire.cfg["provider"] = "openai"
+        wire.cfg["openai"].update(model=model, language=language)
+        if plural is not None:
+            wire.cfg["openai"]["languages"] = plural
+        assert wire.run()["success"]
+        fields = wire.fields()
+        language_field = "languages[]" if model == "gpt-transcribe" else "language"
+        assert fields.get(language_field) == expected
+        assert ("language" not in fields) if model == "gpt-transcribe" else ("languages[]" not in fields)
+        assert fields.get("keywords[]") == (["Hermes"] if model == "gpt-transcribe" else None)
+
+    @pytest.mark.parametrize("provider", ["openai", "deepinfra"])
+    @pytest.mark.parametrize("base,native", [
+        ("https://api.openai.com/V1", False),
+        ("https://api.openai.com/V1/", False),
+        ("HTTPS://API.OPENAI.COM/v1/", True),
+    ])
+    def test_only_scheme_and_host_are_case_insensitive(self, sdk_context_wire, provider, base, native):
+        wire = sdk_context_wire
+        wire.cfg["provider"] = provider
+        wire.cfg[provider]["base_url"] = base
+        assert wire.run()["success"]
+        fields = wire.fields()
+        path = "/v1/" if native else "/V1/"
+        assert str(wire.requests[0].url) == "https://api.openai.com" + path + "audio/transcriptions"
+        assert fields["prompt"] == ["native" if native else "generic"]
+        assert fields.get("keywords[]") == (["Hermes"] if native else None)
+        assert fields["languages[]"] == ["de"]
+        assert "language" not in fields
+
+    @pytest.mark.parametrize("provider", ["openai", "deepinfra", "nous"])
+    @pytest.mark.parametrize("origin", ["hook", "generic", "native"])
+    @pytest.mark.parametrize("length", [5000, 5001])
+    def test_raw_effective_prompt_is_validated_before_upload(
+        self, sdk_context_wire, provider, origin, length,
+    ):
+        wire = sdk_context_wire
+        wire.cfg["provider"] = provider
+        prompt = "ä" * (length - 4) + "TAIL"
+        if origin == "hook":
+            wire.hooks.append({"prompt": prompt})
+        elif origin == "native":
+            wire.cfg["openai"]["prompt"] = prompt
+        else:
+            del wire.cfg["openai"]["prompt"]
+            wire.cfg["prompt"] = prompt
+        result = wire.run()
+        assert wire.constructors[0]["api_key"] == "offline-" + provider
+        if length == 5001:
+            assert not result["success"]
+            assert "5000" in result["error"]
+            assert wire.requests == []
+        else:
+            assert result["success"]
+            assert wire.fields()["prompt"] == [prompt[-896:]]
+            assert str(wire.requests[0].url) == "https://api.openai.com/v1/audio/transcriptions"
+
+    @pytest.mark.parametrize("provider,model_source", [
+        ("openai", "config"), ("openai", "hook"), ("nous", "config"),
+        ("deepinfra", "config"), ("deepinfra", "hook"), ("deepinfra", "catalog"),
+    ])
+    @pytest.mark.parametrize("clear_first", [True, False])
+    def test_hook_clear_survives_model_resolution(
+        self, sdk_context_wire, provider, model_source, clear_first,
+    ):
+        wire = sdk_context_wire
+        wire.cfg["provider"] = provider
+        section = "openai" if provider == "nous" else provider
+        wire.cfg["prompt"] = "g" * 5001
+        wire.cfg["openai"]["prompt"] = "n" * 5001
+        if model_source == "hook":
+            wire.cfg[section]["model"] = "whisper-1"
+            model_hook = {"model": "gpt-transcribe"}
+        else:
+            model_hook = {"language": "it"}
+        if model_source == "catalog":
+            del wire.cfg[section]["model"]
+        wire.hooks.extend([{"prompt": ""}, model_hook] if clear_first else [model_hook, {"prompt": ""}])
+        result = wire.run()
+        assert result["success"]
+        assert result["provider"] == ("openai" if provider == "nous" else provider)
+        fields = wire.fields()
+        assert fields["model"] == ["gpt-transcribe"]
+        assert "prompt" not in fields
+        assert fields["keywords[]"] == ["Hermes"]
+        assert fields["languages[]"] == (["de"] if model_source == "hook" else ["it"])
+        assert "language" not in fields
+
+    @pytest.mark.parametrize("origin", ["clear", "generic", "hook"])
+    @pytest.mark.parametrize("model", ["gpt-transcribe", "vendor/whisper"])
+    def test_custom_deepinfra_endpoint_retains_legacy_context(
+        self, sdk_context_wire, monkeypatch, origin, model,
+    ):
+        wire = sdk_context_wire
+        wire.cfg["deepinfra"].update(base_url="https://custom.example/v1", model=model)
+        monkeypatch.setenv("DEEPINFRA_BASE_URL", "https://api.openai.com/v1")
+        wire.cfg["openai"].update(prompt="n" * 5001, keywords=[1])
+        prompt = "g" * 4997 + "TAIL"
+        wire.cfg["prompt"] = prompt
+        if origin == "clear":
+            wire.hooks.append({"prompt": ""})
+        elif origin == "hook":
+            prompt = "h" * 4997 + "TAIL"
+            wire.hooks.append({"prompt": prompt})
+        assert wire.run()["success"]
+        fields = wire.fields()
+        assert fields.get("prompt") == (None if origin == "clear" else [prompt[-896:]])
+        assert "keywords[]" not in fields
+        language_field = "languages[]" if model == "gpt-transcribe" else "language"
+        assert fields[language_field] == ["de"]
+        assert ("language" not in fields) if model == "gpt-transcribe" else ("languages[]" not in fields)
+        assert str(wire.requests[0].url) == "https://custom.example/v1/audio/transcriptions"
+        assert wire.constructors[0]["api_key"] == "offline-deepinfra"
+        assert set(wire.key_calls) == {("DEEPINFRA_API_KEY", "deepinfra")}
+
+    @pytest.mark.parametrize("intent", ["clear", "hook", "generic"])
+    def test_deepinfra_env_url_and_catalog_model_preserve_raw_intent(
+        self, sdk_context_wire, monkeypatch, intent,
+    ):
+        wire = sdk_context_wire
+        wire.cfg["deepinfra"].pop("base_url")
+        wire.cfg["deepinfra"].pop("model")
+        monkeypatch.setenv("DEEPINFRA_BASE_URL", "https://api.openai.com/v1")
+        wire.cfg["prompt"] = "g" * 5001
+        wire.cfg["openai"].pop("prompt")
+        if intent != "generic":
+            wire.hooks.append({"prompt": "" if intent == "clear" else "h" * 5001})
+        result = wire.run()
+        if intent == "clear":
+            assert result["success"]
+            assert "prompt" not in wire.fields()
+            assert str(wire.requests[0].url) == "https://api.openai.com/v1/audio/transcriptions"
+        else:
+            assert not result["success"]
+            assert "5000" in result["error"]
+            assert wire.requests == []
+
 
 class TestTranscribeLocalCommand:
     def test_command_provider_uses_sanitized_child_env(self, monkeypatch):
@@ -497,7 +960,11 @@ class TestTranscribeLocalExtended:
             }
         }
 
+        from tools.transcription_local import _load_local_whisper_model
+
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_local_whisper_model", wraps=_load_local_whisper_model) as mock_load, \
+             patch("tools.transcription_local._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
@@ -506,6 +973,7 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
+        mock_load.assert_called_once_with("base", device="cpu", compute_type="float32")
         mock_whisper_cls.assert_called_once_with(
             "base", local_files_only=True, device="cpu", compute_type="float32"
         )
@@ -1352,31 +1820,29 @@ class TestRunCommandSttIdleTimeout:
         from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
-        # The de-flake is budget, not ordering: the first tick was always
-        # printed before the first sleep. What changed is the idle window
-        # (0.1s -> 0.25s, 5x the 50ms tick period) so process spawn latency
-        # under loaded CI or on Windows can no longer eat the whole window
-        # before the first stderr chunk is read, plus a longer heartbeat
-        # sequence whose ~400ms runtime still exceeds the idle window, so a
-        # pass still proves the progress extension.
+        # Emit immediately, then keep the longer heartbeat sequence. Its 4.8s
+        # runtime exceeds the 2s idle window, so a pass proves progress extension.
         script.write_text(
             "\n".join([
                 "import sys, time",
                 "print('tick 0', file=sys.stderr, flush=True)",
                 "for idx in range(1, 9):",
-                "    time.sleep(0.05)",
+                "    time.sleep(0.6)",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
         )
 
+        # Leave room for interpreter startup on a cold or sandboxed host; total runtime
+        # still exceeds the idle window, so stderr must extend the deadline.
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.25,
+            timeout=2.0,
         )
 
         assert result.returncode == 0
+        assert "tick 3" in result.stderr
         assert "tick 8" in result.stderr
         assert "done" in result.stdout
 
@@ -1511,3 +1977,234 @@ class TestExplicitOpenaiSelectionError:
 
         assert result["success"] is False
         assert "No STT provider available" in result["error"]
+
+
+class TestProviderOverride:
+    def test_public_transcribe_audio_signature_does_not_expose_provider_override(self):
+        import inspect
+        from tools.transcription_tools import transcribe_audio
+        from tools.registry import registry
+
+        parameters = inspect.signature(transcribe_audio).parameters
+        assert list(parameters) == ["file_path", "model", "source"]
+        assert parameters["model"].default is None
+        assert parameters["source"].default is None
+        # Transcription is an internal service, not a registered model tool.
+        assert registry.get_entry("transcribe_audio") is None
+        assert registry.get_entry("_transcribe_audio_with_provider") is None
+        with pytest.raises(TypeError, match="provider"):
+            transcribe_audio("unused.wav", **{"provider": "openai"})
+
+    @pytest.mark.parametrize("failure", [False, True])
+    def test_override_is_exact_with_configured_backups(self, sample_wav, failure):
+        from copy import deepcopy
+        from tools.transcription_tools import _transcribe_audio_with_provider
+
+        config = {"provider": "local", "fallback_providers": ["groq", "local"],
+                  "cloud_trim_silence": False, "openai": {"model": "whisper-1", "api_key": "test-key"}}
+        original = deepcopy(config)
+        client = MagicMock()
+        if failure:
+            client.audio.transcriptions.create.side_effect = RuntimeError("selected route failed")
+        else:
+            client.audio.transcriptions.create.return_value = "selected route"
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=client), \
+             patch("tools.transcription_tools._transcribe_groq") as groq, \
+             patch("tools.transcription_tools._transcribe_local") as local, \
+             patch("tools.transcription_tools._get_provider") as configured:
+            result = _transcribe_audio_with_provider(sample_wav, provider="openai")
+        assert result["success"] is not failure
+        client.audio.transcriptions.create.assert_called_once()
+        groq.assert_not_called()
+        local.assert_not_called()
+        configured.assert_not_called()
+        assert config == original
+
+    @pytest.mark.parametrize("stage", ["trim", "dispatch"])
+    @pytest.mark.parametrize("explicit", [True, False])
+    def test_explicit_route_contains_local_errors(self, sample_wav, stage, explicit):
+        from copy import deepcopy
+        from tools import transcription_tools as stt
+
+        config = {"provider": "openai", "fallback_providers": ["groq", "local"],
+                  "cloud_trim_silence": True}
+        original = deepcopy(config)
+        failure = RuntimeError("selected route preparation failed")
+        with patch.object(stt, "_load_stt_config", return_value=config), \
+             patch.object(stt, "_get_provider", return_value="openai") as configured, \
+             patch.object(stt, "_trim_silence_for_cloud_stt", return_value=None,
+                          side_effect=failure if stage == "trim" else None), \
+             patch.object(stt, "_transcribe_openai", side_effect=failure) as selected, \
+             patch.object(stt, "_transcribe_groq") as groq, \
+             patch.object(stt, "_transcribe_local") as local:
+            if explicit:
+                result = stt._transcribe_audio_with_provider(sample_wav, provider="openai")
+                assert result["success"] is False
+                assert result["provider"] == "openai"
+                assert "selected route preparation failed" in result["error"]
+                configured.assert_not_called()
+            else:
+                with pytest.raises(RuntimeError, match="selected route preparation failed"):
+                    stt.transcribe_audio(sample_wav)
+            assert selected.call_count == int(stage == "dispatch")
+            groq.assert_not_called()
+            local.assert_not_called()
+        assert config == original
+
+    def test_override_and_default_calls_remain_isolated_while_interleaved(self, sample_wav):
+        from concurrent.futures import ThreadPoolExecutor
+        from copy import deepcopy
+        from threading import Event
+        from tools import transcription_tools as stt
+
+        config = {"provider": "local", "local": {"model": "small"},
+                  "fallback_providers": ["groq"], "cloud_trim_silence": False,
+                  "openai": {"api_key": "test-key"}}
+        original = deepcopy(config)
+        entered, release = Event(), Event()
+        client = MagicMock()
+
+        def transcribe(**kwargs):
+            entered.set()
+            assert release.wait(5), "override was not released"
+            return "override"
+
+        client.audio.transcriptions.create.side_effect = transcribe
+        with patch.object(stt, "_load_stt_config", return_value=config), \
+             patch("tools.tool_backend_helpers.read_selection", return_value="local"), \
+             patch.object(stt, "_HAS_FASTER_WHISPER", True), \
+             patch.object(stt, "_HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=client), \
+             patch.object(stt, "_transcribe_local", return_value={"success": True, "transcript": "default"}) as local, \
+             ThreadPoolExecutor(max_workers=1) as executor:
+            assert stt.transcribe_audio(sample_wav)["transcript"] == "default"
+            future = executor.submit(stt._transcribe_audio_with_provider, sample_wav, provider="openai")
+            try:
+                assert entered.wait(5), "override never reached the selected API"
+                assert config == original
+                assert stt.transcribe_audio(sample_wav)["transcript"] == "default"
+            finally:
+                release.set()
+            assert future.result(timeout=5)["transcript"] == "override"
+            assert stt.transcribe_audio(sample_wav)["transcript"] == "default"
+        assert local.call_args_list == [call(sample_wav, "small", language=None, prompt=None)] * 3
+        client.audio.transcriptions.create.assert_called_once()
+        assert config == original
+
+    @pytest.mark.parametrize("guard, message", [
+        ("disabled", "STT is disabled"), ("secret", ""),
+        ("missing", "not found"), ("directory", "not a file"),
+        ("symlink", "symbolic link"), ("unsupported", "Unsupported format"),
+        ("oversized", "File too large"), ("silk_oversized", "File too large"),
+    ])
+    def test_override_cannot_bypass_native_guards(
+        self, guard, message, sample_wav, oversized_wav, tmp_path,
+    ):
+        from tools.transcription_tools import _transcribe_audio_with_provider
+        from agent.file_safety import get_read_block_error
+
+        secret = tmp_path / ".env"
+        secret.write_text("synthetic test data")
+        unsupported = tmp_path / "audio.txt"
+        unsupported.write_text("not audio")
+        directory = tmp_path / "directory.wav"
+        directory.mkdir()
+        link = tmp_path / "linked.silk"
+        link.symlink_to(sample_wav)
+        silk = tmp_path / "oversized.silk"
+        with silk.open("wb") as file:
+            file.truncate(Path(oversized_wav).stat().st_size)
+        paths = {"secret": secret, "missing": tmp_path / "absent.wav",
+                 "directory": directory, "symlink": link, "unsupported": unsupported,
+                 "oversized": oversized_wav, "silk_oversized": silk}
+        path = str(paths.get(guard, sample_wav))
+        config = {"provider": "local", "enabled": guard != "disabled",
+                  "fallback_providers": ["groq"]}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._dispatch_stt_provider") as dispatch, \
+             patch("tools.transcription_tools._get_provider") as configured, \
+             patch("tools.transcription_audio._lazy_ensure_quietly") as install:
+            result = _transcribe_audio_with_provider(path, provider="openai")
+        assert result["success"] is False
+        if guard == "secret":
+            assert result["error"] == get_read_block_error(path)
+        else:
+            assert message in result["error"]
+        dispatch.assert_not_called()
+        configured.assert_not_called()
+        install.assert_not_called()
+
+    @pytest.mark.parametrize("prepared_name", ["invalid.txt", ".env"])
+    def test_override_revalidates_prepared_input_and_cleans_it(self, sample_wav, tmp_path, prepared_name):
+        from tools.transcription_tools import _transcribe_audio_with_provider
+
+        work = tmp_path / "prepared"
+        work.mkdir()
+        prepared = work / prepared_name
+        prepared.write_text("synthetic test data")
+        with patch("tools.transcription_tools._prepare_audio_for_transcription",
+                   return_value=(str(prepared), str(work), None)), \
+             patch("tools.transcription_tools._dispatch_stt_provider") as dispatch:
+            result = _transcribe_audio_with_provider(sample_wav, provider="openai")
+        assert result["success"] is False
+        dispatch.assert_not_called()
+        assert not work.exists()
+        assert Path(sample_wav).exists()
+
+    @pytest.mark.parametrize("provider", [None, "openai"])
+    def test_override_composes_with_native_caf_trim_cleanup(
+        self, tmp_path, monkeypatch, provider,
+    ):
+        from copy import deepcopy
+        from tools import transcription_tools as stt
+
+        caf = tmp_path / "voice.caf"
+        caf.write_bytes(b"caff" * 20)
+        config = {"provider": "openai", "fallback_providers": ["local", "local"],
+                  "local": {"model": "small"}, "openai": {"api_key": "test-key"}}
+        original = deepcopy(config)
+        outputs = []
+
+        def run_audio_command(command, **kwargs):
+            if command[0] == "test-ffprobe":
+                duration = "20" if command[-1] == str(caf.with_suffix(".wav")) else "5"
+                return subprocess.CompletedProcess(command, 0, stdout=duration)
+            output = Path(command[-1])
+            output.write_bytes(b"RIFF" * 20)
+            outputs.append(output)
+            return subprocess.CompletedProcess(command, 0, stdout="")
+
+        monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: "test-ffmpeg")
+        monkeypatch.setattr("tools.transcription_audio._find_ffprobe_binary", lambda: "test-ffprobe")
+        monkeypatch.setattr("tools.transcription_audio._run_quiet", run_audio_command)
+        client = MagicMock()
+        client.audio.transcriptions.create.side_effect = RuntimeError("selected route failed")
+        with patch.object(stt, "_load_stt_config", return_value=config), \
+             patch.object(stt, "_HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=client), \
+             patch.object(stt, "_transcribe_local", return_value={"success": True, "transcript": "fallback"}) as local:
+            result = stt._transcribe_audio_with_provider(str(caf), model="whisper-1", source="gateway", provider=provider)
+        assert result["success"] is False
+        assert len(outputs) == 2
+        assert client.audio.transcriptions.create.call_args.kwargs["file"].name == str(outputs[1])
+        assert not outputs[1].parent.exists()
+        assert caf.exists()
+        local.assert_not_called()
+        assert config == original
+
+    def test_native_default_does_not_activate_configured_fallbacks(self, oversized_wav):
+        from tools.transcription_tools import transcribe_audio
+
+        config = {"provider": "local", "fallback_providers": ["openai"]}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.tool_backend_helpers.read_selection", return_value="local"), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._transcribe_local", return_value={"success": False}) as local, \
+             patch("tools.transcription_tools._transcribe_openai") as cloud:
+            result = transcribe_audio(oversized_wav)
+        assert result["success"] is False
+        assert result == {"success": False}
+        local.assert_called_once()
+        cloud.assert_not_called()

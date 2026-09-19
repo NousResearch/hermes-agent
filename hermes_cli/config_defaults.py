@@ -1513,6 +1513,17 @@ DEFAULT_CONFIG = {
         "approval_mentions": False,
         # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
         "voice_channel_inactivity_timeout_seconds": 300,
+        # Optional transcription mode, latched on a fresh voice join.
+        "voice_stt": {
+            "mode": "configured",
+            "openai_live": {
+                "model": "gpt-live-transcribe",
+                "delay": "high",
+                "completion_timeout_seconds": 20.0,
+                "send_timeout_seconds": 5.0,
+                "max_session_seconds": 3300.0,
+            },
+        },
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
         # extends this floor so long TTS isn't cut off.
         "voice_playback_timeout_seconds": 120,

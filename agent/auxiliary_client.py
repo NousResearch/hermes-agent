@@ -40,6 +40,15 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
+from agent.auxiliary_credentials import (
+    creds_have_api_key as _aux_creds_have_api_key,
+    refresh_anthropic_credentials as _refresh_aux_anthropic_credentials,
+    refresh_codex_credentials as _refresh_aux_codex_credentials,
+    refresh_copilot_credentials as _refresh_aux_copilot_credentials,
+    refresh_nous_credentials as _refresh_aux_nous_credentials,
+    refresh_vertex_credentials as _refresh_aux_vertex_credentials,
+    refresh_xai_oauth_credentials as _refresh_aux_xai_oauth_credentials,
+)
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -3669,64 +3678,35 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
 
 
 def _creds_have_api_key(creds: Dict[str, Any]) -> bool:
-    return bool(str(creds.get("api_key", "") or "").strip())
+    return _aux_creds_have_api_key(creds)
 
 
 def _refresh_copilot_credentials() -> bool:
-    from hermes_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
-    raw_token, _source = resolve_copilot_token()
-    if not str(raw_token or "").strip():
-        return False
-    _jwt_cache.pop(_token_fingerprint(raw_token), None)
-    exchange_copilot_token(raw_token)
-    return True
+    return _refresh_aux_copilot_credentials()
 
 
 def _refresh_codex_credentials() -> bool:
-    from hermes_cli.auth import resolve_codex_runtime_credentials
-    return _creds_have_api_key(resolve_codex_runtime_credentials(force_refresh=True))
+    return _refresh_aux_codex_credentials(force_refresh=True)
 
 
 def _refresh_nous_credentials() -> bool:
-    from hermes_cli.auth import resolve_nous_runtime_credentials
-    return _creds_have_api_key(resolve_nous_runtime_credentials(
+    return _refresh_aux_nous_credentials(
         timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15), force_refresh=True
-    ))
+    )
 
 
 def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
-    token = failed_api_key
-    if not token:
-        return False
-    pool = load_pool("anthropic")
-    if pool.entry_id_for_api_key(token):
-        return pool.try_refresh_matching(api_key_hint=token) is not None
-    creds = read_claude_code_credentials()
-    # Never spend an ambient login's refresh rotation for another request's key.
-    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
-        return bool(_refresh_oauth_token(creds))
-    return False
+    return _refresh_aux_anthropic_credentials(failed_api_key=failed_api_key)
 
 
 def _refresh_xai_oauth_credentials() -> bool:
-    """Pool-level refresh first, then the singleton auth-store resolver."""
-    pool = load_pool("xai-oauth")
-    if pool and pool.has_credentials():
-        pool.select()
-        refreshed = pool.try_refresh_current()
-        if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
-            return True
-    from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
-    return _creds_have_api_key(resolve_xai_oauth_runtime_credentials(force_refresh=True))
+    return _refresh_aux_xai_oauth_credentials(force_refresh=True)
 
 
 def _refresh_vertex_credentials() -> bool:
     """Mirrors run_agent's Vertex refresh; the cache key ignores the rotating bearer, so
     without the eviction that follows, a ~1h-expired aux Vertex client 401s forever."""
-    from agent.vertex_adapter import get_vertex_config
-    token, base_url = get_vertex_config()
-    return bool(isinstance(token, str) and token.strip() and isinstance(base_url, str) and base_url.strip())
+    return _refresh_aux_vertex_credentials()
 
 
 # Each refresher returns True when a usable credential exists; the caller then evicts cached clients.

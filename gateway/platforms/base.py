@@ -3,12 +3,10 @@
 import asyncio
 import contextlib
 import inspect
-import ipaddress
 import logging
 import os
 import random
 import re
-import socket as _socket
 import subprocess
 import sys
 import tempfile
@@ -19,8 +17,17 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
-from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
+from gateway.platforms.proxy import (
+    _config_section,
+    detect_macos_system_proxy as _detect_macos_system_proxy,
+    gateway_trust_env,
+    is_host_excluded_by_no_proxy,
+    is_network_accessible,
+    proxy_kwargs_for_aiohttp,
+    proxy_kwargs_for_bot,
+    resolve_proxy_url as _resolve_proxy_url,
+    should_bypass_proxy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -240,139 +247,18 @@ def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
 
 
-def is_network_accessible(host: str) -> bool:
-    """True if *host* would expose the server beyond loopback (incl. IPv4-mapped
-    ::ffff:127.0.0.1); hostnames are resolved and DNS failure fails closed (True)."""
-    with contextlib.suppress(ValueError):  # ValueError: hostname — resolve below
-        addr = ipaddress.ip_address(host)
-        # ::ffff:127.0.0.1 reports is_loopback=False; check the mapped IPv4 explicitly.
-        mapped = getattr(addr, "ipv4_mapped", None)
-        return not (addr.is_loopback or (mapped and mapped.is_loopback))
-    try:
-        resolved = _socket.getaddrinfo(host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM)
-        # Network-accessible if any resolved address is non-loopback.
-        return any(not ipaddress.ip_address(sockaddr[0]).is_loopback for *_, sockaddr in resolved)
-    except (_socket.gaierror, OSError):
-        return True
-
-
-def _detect_macos_system_proxy() -> str | None:
-    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``: ``http://host:port``
-    when an HTTP(S) proxy is enabled, else None (non-macOS or any subprocess error)."""
-    if sys.platform != "darwin":
-        return None
-    try:
-        out = subprocess.check_output(["scutil", "--proxy"], timeout=3, text=True, encoding='utf-8',
-                                      errors='replace', stderr=subprocess.DEVNULL)
-    except Exception:
-        return None
-    props = {
-        key.strip(): val.strip()
-        for key, sep, val in (line.strip().partition(" : ") for line in out.splitlines()) if sep}
-    # Prefer HTTPS, fall back to HTTP
-    for enable_key, host_key, port_key in (
-        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"), ("HTTPEnable", "HTTPProxy", "HTTPPort")):
-        if props.get(enable_key) == "1" and props.get(host_key) and props.get(port_key):
-            return f"http://{props[host_key]}:{props[port_key]}"
-    return None
-
-
-def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
-    """True when NO_PROXY/no_proxy matches at least one target host (exact hosts, domain /
-    wildcard suffixes, IP literals, CIDR ranges, optional host:port entries, ``*``)."""
-    return _should_bypass_proxy(target_hosts)
-
-
 def resolve_proxy_url(
     platform_env_var: str | None = None, *,
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
     configured: str | None = None) -> str | None:
-    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
-    value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
-    case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
-    None when nothing is found or NO_PROXY matches a target.
-
-    *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
-    embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
-    secondary multiplex profile it comes from that profile's own ``.env``, not the shared
-    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold; the YAML
-    value is the same profile's, so a secondary keeps its configured route without any env
-    bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
-    process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
-    from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
-    value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
-    if not value:
-        value = str(configured or "").strip()
-    if not value:
-        if not gateway_trust_env():  # only the explicit per-platform var is honored
-            return None
-        value = first_proxy_env_value()
-    proxy = normalize_proxy_url(value or _detect_macos_system_proxy())
-    return None if proxy and should_bypass_proxy(target_hosts) else proxy
-
-
-def _aiohttp_socks_connector(proxy_url: str):
-    """``aiohttp_socks.ProxyConnector`` for ``proxy_url``, or None when aiohttp_socks is missing
-    (SOCKS logs a warning; HTTP callers fall back to ``proxy=``). ``rdns=True`` forces remote DNS
-    through the proxy — required by Shadowrocket/Clash-style SOCKS and against GFW DNS pollution."""
-    try:
-        from aiohttp_socks import ProxyConnector
-        return ProxyConnector.from_url(proxy_url, rdns=True)
-    except ImportError:
-        if proxy_url.lower().startswith("socks"):
-            logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
-        return None
-
-
-def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
-    """Kwargs for ``commands.Bot()`` / ``discord.Client()``: SOCKS → ``{"connector"}``,
-    HTTP → ``{"proxy": url}``, None → ``{}``."""
-    if not proxy_url:
-        return {}
-    if proxy_url.lower().startswith("socks"):
-        connector = _aiohttp_socks_connector(proxy_url)
-        return {"connector": connector} if connector is not None else {}
-    return {"proxy": proxy_url}
-
-
-def _config_section(name: str) -> dict:
-    """Read-only ``config.yaml`` section ``name``; ``{}`` when unreadable/missing/not a dict."""
-    try:
-        from hermes_cli.config import load_config_readonly as _load_config
-        cfg = _load_config()  # read-only: .get() only, never mutated
-    except Exception:
-        return {}
-    section = cfg.get(name) if isinstance(cfg, dict) else None
-    return section if isinstance(section, dict) else {}
-
-
-def gateway_trust_env() -> bool:
-    """``gateway.trust_env`` from config.yaml (default True): whether gateway
-    ``aiohttp.ClientSession``s honor HTTP(S)_PROXY / NO_PROXY / SSL_CERT_FILE. Set false
-    when the gateway inherits a proxy env it must not use. Fail-open to default."""
-    value = _config_section("gateway").get("trust_env", True)
-    if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "no", "off"}
-    return bool(value) if value is not None else True
-
-
-def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
-    """``(session_kwargs, request_kwargs)`` for a standalone ``aiohttp.ClientSession``. With
-    aiohttp-socks every scheme uses a connector (mautrix-style libs never forward per-request
-    ``proxy=``); without it HTTP falls back to ``({}, {"proxy": url})`` and SOCKS is ignored."""
-    if not proxy_url:
-        return {}, {}
-    connector = _aiohttp_socks_connector(proxy_url)
-    if connector is not None:
-        return {"connector": connector}, {}
-    return ({}, {}) if proxy_url.lower().startswith("socks") else ({}, {"proxy": proxy_url})
-
-
-def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
-    """Return True when ``hostname`` matches a ``NO_PROXY`` entry (``no_proxy_value`` overrides the
-    environment); same matcher as :func:`should_bypass_proxy`."""
-    return _should_bypass_proxy(hostname, no_proxy_value=no_proxy_value)
+    """Proxy URL resolver preserved on the base adapter facade for existing adapters/tests."""
+    return _resolve_proxy_url(
+        platform_env_var,
+        target_hosts=target_hosts,
+        configured=configured,
+        trust_env_fn=gateway_trust_env,
+        system_proxy_fn=_detect_macos_system_proxy,
+    )
 
 
 import dataclasses

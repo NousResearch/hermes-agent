@@ -167,6 +167,10 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         previous_singleton_tokens = (
             state.get("tokens") if isinstance(state.get("tokens"), dict) else None)
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
+        # A successful save supersedes any quarantine marker written by a
+        # terminal refresh failure; without this pop the stale
+        # ``relogin_required`` diagnostic survives re-login indefinitely.
+        state.pop("last_auth_error", None)
         if label and str(label).strip():
             state["label"] = str(label).strip()
         _store_provider_state(auth_store, "openai-codex", state, set_active=True)

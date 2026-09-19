@@ -1208,6 +1208,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     return
                 if not self._apply_entry_to_singleton_state(entry, state):
                     return
+                # Fresh pool tokens are landing on the singleton state: drop
+                # any stale terminal-failure marker so auth.json does not
+                # advertise ``relogin_required`` alongside live tokens.
+                state.pop("last_auth_error", None)
                 _store_provider_state(auth_store, self.provider, state, set_active=False)
                 _save_auth_store(auth_store)
         except Exception as exc:

@@ -128,6 +128,9 @@ def _spotify_token_payload_to_state(
     expires_in = _coerce_ttl_seconds(token_payload.get("expires_in", 0))
     expires_at = datetime.fromtimestamp(now.timestamp() + expires_in, tz=timezone.utc)
     state = dict(previous_state or {})
+    # This builder only runs for successful token payloads: do not carry a
+    # quarantine marker from a previous terminal failure into the new state.
+    state.pop("last_auth_error", None)
     state.update({
         "client_id": client_id, "redirect_uri": redirect_uri,
         "accounts_base_url": accounts_base_url, "api_base_url": api_base_url,

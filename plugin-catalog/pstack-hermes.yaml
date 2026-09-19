@@ -1,0 +1,13 @@
+name: pstack-hermes
+repo: https://github.com/iap/pstack
+sha: 51998e47337c15145296352ba3d1ca4cd23a3ade
+description: The pstack agent method (poteto-mode playbooks, verification and review loops, parallel delegation) packaged for the Hermes portable plugin path. Unofficial port of cursor/plugins pstack (MIT, Lauren Tan).
+maintainer: iap
+tier: community
+category: tools
+docs_url: https://github.com/iap/pstack#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

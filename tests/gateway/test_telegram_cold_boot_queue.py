@@ -5,6 +5,8 @@ Contract: a cold boot drops Telegram's server-side pending updates unless
 preserves them. Conflict recovery is a separate path and is not covered here.
 """
 
+import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -56,3 +58,50 @@ async def test_cold_boot_preserves_queue_when_opted_out():
 
     warm = await _capture_drop_pending(adapter, is_reconnect=True)
     assert warm["drop_pending_updates"] is False
+
+
+async def _capture_webhook_drop_pending(
+    adapter: TelegramAdapter, monkeypatch, *, is_reconnect: bool
+):
+    """Run _start_webhook_mode against a stub updater; return the forwarded flag."""
+    captured = {}
+
+    async def _fake_start_webhook(**kwargs):
+        captured.update(kwargs)
+
+    adapter._app = SimpleNamespace(
+        updater=SimpleNamespace(start_webhook=AsyncMock(side_effect=_fake_start_webhook))
+    )
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.test/telegram")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
+    await adapter._start_webhook_mode(
+        "https://example.test/telegram", is_reconnect=is_reconnect
+    )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_webhook_cold_boot_honors_the_knob_and_logs_the_decision(monkeypatch, caplog):
+    """The webhook start path forwards the same policy as polling, and says which one
+    it applied. The flag is not a no-op there: PTB feeds it to delete_webhook /
+    set_webhook, which drop Telegram's stored updates."""
+    adapter = _make_adapter(extra={"drop_pending_on_cold_boot": False})
+
+    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+        captured = await _capture_webhook_drop_pending(
+            adapter, monkeypatch, is_reconnect=False
+        )
+
+    assert captured["drop_pending_updates"] is False
+    assert any("preserving" in r.getMessage().lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_webhook_reconnect_preserves_queue_regardless_of_the_knob(monkeypatch):
+    """A watcher reconnect keeps #46621's guarantee even when the knob asks cold
+    boots to drop."""
+    adapter = _make_adapter()
+
+    captured = await _capture_webhook_drop_pending(adapter, monkeypatch, is_reconnect=True)
+
+    assert captured["drop_pending_updates"] is False

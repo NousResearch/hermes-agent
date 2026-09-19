@@ -2597,6 +2597,8 @@ class GatewayTurnMixin:
         """Build the shared ``StreamConsumerConfig`` and optional Telegram pause-typing closure.
         For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
         ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
+        from gateway.display_config import resolve_display_setting
+        from gateway.run import _load_gateway_config, _platform_config_key
         from gateway.stream_consumer import StreamConsumerConfig
         _pause_typing_before_finalize = None
         if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
@@ -2621,11 +2623,15 @@ class GatewayTurnMixin:
             float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
             if source.platform == Platform.TELEGRAM else 0.0
         )
+        _progress_max_lines = resolve_display_setting(
+            _load_gateway_config(), _platform_config_key(source.platform), "tool_progress_max_lines", 8,
+        )
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
+            max_tool_progress_lines=_progress_max_lines,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 

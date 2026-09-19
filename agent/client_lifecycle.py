@@ -704,11 +704,16 @@ class ClientLifecycleMixin:
                 base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
         elif self.provider == "custom":
             # Named custom provider: identity in config, credential in key_env; no key_env → nothing to watch.
+            requested = str(getattr(self, "requested_provider", "") or "").strip()
+            # A resolved providers.custom selection carries custom:custom. Bare custom
+            # is only a transport label and cannot authorize adopting that account's key.
+            if not requested or requested.lower() == "custom":
+                return None
             try:
                 from hermes_cli.runtime_provider import _get_named_custom_provider
             except ImportError:
                 return None
-            custom_provider = _get_named_custom_provider(getattr(self, "requested_provider", "") or "")
+            custom_provider = _get_named_custom_provider(requested)
             key_env = str((custom_provider or {}).get("key_env") or "").strip()
             api_key = get_env_prefer_dotenv(key_env).strip() if key_env else ""
             if not custom_provider or not api_key:

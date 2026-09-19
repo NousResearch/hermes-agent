@@ -755,7 +755,7 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["provider"] == "custom"
     assert resolved["base_url"] == "https://cliproxy.example.com/v1"
     assert resolved["api_key"] == "cliproxy-key"
-    assert resolved["requested_provider"] == "custom"
+    assert resolved["requested_provider"] == "custom:custom"
 
 
 def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):

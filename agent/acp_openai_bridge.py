@@ -145,7 +145,7 @@ def extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageT
             call = _parse_tool_call(m.group(group), len(extracted) + 1)
             if call is not None:
                 extracted.append(call)
-            consumed_spans.append((m.start(), m.end()))
+                consumed_spans.append((m.start(), m.end()))  # Unparsable blocks stay visible, never silently dropped.
         if extracted:
             break
     if not consumed_spans:

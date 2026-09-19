@@ -746,6 +746,9 @@ def _snapshot_review_usage(review_agent: Any) -> Dict[str, Any]:
         **{key: getattr(review_agent, key, None) for key in ("model", "provider", "base_url")},
         **{key: int(getattr(review_agent, f"session_{key}", 0) or 0) for key in _USAGE_COUNTERS},
         "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
+        "actual_cost_usd": getattr(review_agent, "session_actual_cost_usd", None),
+        "cost_status": getattr(review_agent, "session_cost_status", None),
+        "cost_source": getattr(review_agent, "session_cost_source", None),
     }
 
 
@@ -760,10 +763,22 @@ def _record_review_usage_to_parent(parent_agent: Any, usage: Dict[str, Any]) -> 
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
+        # Preserve provider-reported (actual) vs estimated split when the fork
+        # carried billing metadata; None keeps stored values via COALESCE.
+        estimated = usage.get("estimated_cost_usd")
+        actual = usage.get("actual_cost_usd")
+        # Fallback for forks that still carry unified session_estimated_cost_usd
+        # but report cost_status=actual (pre-actual accumulator): treat the
+        # single counter as actual to avoid misclassifying real spend.
+        if actual is None and usage.get("cost_status") == "actual" and estimated is not None:
+            actual, estimated = estimated, None
         session_db.record_auxiliary_usage(
             session_id, task="background_review", model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
-            estimated_cost_usd=usage.get("estimated_cost_usd"),
+            estimated_cost_usd=estimated,
+            actual_cost_usd=actual,
+            cost_status=usage.get("cost_status"),
+            cost_source=usage.get("cost_source"),
             api_call_count=counts.pop("api_calls"), **counts,
         )
     except Exception as e:

@@ -140,8 +140,24 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     cost_usd = float(cost_result.amount_usd) if cost_result.amount_usd is not None else None
     if cost_usd is not None:
         agent.session_estimated_cost_usd += cost_usd
-    agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
-    cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    # Sticky cost_status (actual > included > estimated > unknown) once
+    # agent/usage_pricing:sticky_cost_status lands (#67790); fallback keeps
+    # current direct assignment on main without duplicating the helper.
+    try:
+        from agent.usage_pricing import sticky_cost_status  # type: ignore
+
+        agent.session_cost_status = sticky_cost_status(
+            getattr(agent, "session_cost_status", "unknown"), cost_result.status
+        )
+    except Exception:
+        agent.session_cost_status = cost_result.status
+    agent.session_cost_source = cost_result.source
+    cost_fields = {
+        "estimated_cost_usd": cost_usd if cost_result.status != "actual" else None,
+        "actual_cost_usd": cost_usd if cost_result.status == "actual" else None,
+        "cost_status": cost_result.status,
+        "cost_source": cost_result.source,
+    }
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields,

@@ -305,6 +305,42 @@ class TestCodexAppServerAnchor:
 
         assert agent._usage_anchor is prior
 
+    def test_provider_reported_cost_is_queued_as_actual(self, monkeypatch):
+        from agent.codex_runtime import _record_codex_app_server_usage
+
+        class _DB:
+            def __init__(self):
+                self.queued = []
+
+            def queue_token_counts(self, session_id, **kwargs):
+                self.queued.append((session_id, kwargs))
+
+        db = _DB()
+        agent = self._agent()
+        agent.session_id = "codex-cost"
+        agent._session_db = db
+        agent._session_db_created = True
+        agent.session_estimated_cost_usd = 0.0
+        agent.session_cost_status = "unknown"
+        agent.session_cost_source = "none"
+        monkeypatch.setattr(
+            "agent.usage_pricing.estimate_usage_cost",
+            lambda *args, **kwargs: SimpleNamespace(
+                amount_usd=0.06338552,
+                status="actual",
+                source="provider_cost_api",
+            ),
+        )
+
+        _record_codex_app_server_usage(agent, self._turn(self._usage()), messages=[])
+
+        (session_id, kwargs), = db.queued
+        assert session_id == "codex-cost"
+        assert kwargs["actual_cost_usd"] == pytest.approx(0.06338552)
+        assert kwargs["estimated_cost_usd"] is None
+        assert kwargs["cost_status"] == "actual"
+        assert kwargs["cost_source"] == "provider_cost_api"
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

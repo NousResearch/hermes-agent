@@ -308,6 +308,44 @@ class TestCreateThread:
 
 
 # ---------------------------------------------------------------------------
+# Action: send_message
+# ---------------------------------------------------------------------------
+
+class TestSendMessage:
+    @patch("tools.discord_tool._discord_request")
+    def test_send_to_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "900", "channel_id": "11"}
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="hi"))
+        assert result["success"] is True
+        assert result["message_id"] == "900"
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/messages", "test-token",
+            body={"content": "hi"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_send_to_thread_with_reply_anchor(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "901", "channel_id": "800"}
+        result = json.loads(discord_core(
+            action="send_message", channel_id="800", content="in thread", message_id="1001",
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "POST", "/channels/800/messages", "test-token",
+            body={"content": "in thread", "message_reference": {"message_id": "1001"}},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_send_rejects_empty(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(action="send_message", channel_id="11", content="  "))
+        assert result["success"] is False
+        mock_req.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
 

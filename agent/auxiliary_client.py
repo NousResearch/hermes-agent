@@ -534,24 +534,25 @@ _LOCAL_SERVER_ALIASES = {
     "llama.cpp": "custom", "llama-cpp": "custom",
 }
 
-_PROVIDER_ALIASES = {
-    "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-    "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-    "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-    "kimi": "kimi-coding", "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
-    "gmi-cloud": "gmi", "gmicloud": "gmi",
-    "actual-computer": "actual", "actualcomputer": "actual", "aci": "actual",
-    "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-    "claude": "anthropic", "claude-code": "anthropic",
-    "github": "copilot", "github-copilot": "copilot", "github-model": "copilot", "github-models": "copilot",
-    "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-    "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub", "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-    "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
-    **_LOCAL_SERVER_ALIASES,
-}
+_ALIAS_TABLE: Optional[Dict[str, str]] = None
 
+
+def _provider_alias_table() -> Dict[str, str]:
+    """The same alias table the main provider path resolves against (hermes_cli.auth).
+
+    A hand-copied mirror here rots silently every time auth grows a family — the local
+    servers (#106010) and the OpenCode entries were both missed that way. Local-server
+    names stay pinned on top: that set doubles as the guard for the /v1 tail and the
+    no-key-borrow rule in the custom branch below.
+    """
+    global _ALIAS_TABLE
+    if _ALIAS_TABLE is None:
+        merged: Dict[str, str] = dict(_LOCAL_SERVER_ALIASES)
+        with contextlib.suppress(Exception):
+            from hermes_cli.auth import _PROVIDER_ALIASES as _auth_table
+            merged.update(_auth_table)
+        _ALIAS_TABLE = merged
+    return _ALIAS_TABLE
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
@@ -568,7 +569,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not main_prov or main_prov in {"auto", "main"}:
             return "custom"
         normalized = main_prov
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    return _provider_alias_table().get(normalized, normalized)
 
 
 # Sentinel from _fixed_temperature_for_model(): callers strip ``temperature`` entirely.

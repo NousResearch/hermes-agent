@@ -1280,7 +1280,18 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
-    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    # Same contract as the pull path's _resume_windows_gateways_and_merge_outcome: a failed
+    # Windows gateway resume (e.g. the relaunch verification racing a Job-Object kill, #48820)
+    # must demote this run to incomplete, never abort it. A bare call here let the identical
+    # RuntimeError the pull path treats as a warning kill "Already up to date" outright (#115563).
+    resume_outcome = _GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
+        restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+    )
+    _resume_windows_gateways_and_merge_outcome(resume_outcome, _windows_gateway_resume, gateway_mode)
+    if resume_outcome.incomplete:
+        current_checkout_complete = False
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale

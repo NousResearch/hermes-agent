@@ -1120,8 +1120,14 @@ class GatewayInboundMixin:
             "Unrecognized slash command /%s from %s — replying with unknown-command notice",
             command, source.platform.value if source.platform else "?",
         )
+        # Typo of a real command (/resuem, /compac): name the likely target, as the CLI does
+        # (hermes_cli.cli_unknown_command). Pure string matching over the built-in table — no
+        # skill-catalog scan, which is why skills are not fuzzed here.
+        import difflib
+        close = difflib.get_close_matches(command.replace("_", "-"), sorted(GATEWAY_KNOWN_COMMANDS), n=1, cutoff=0.6)
+        hint = f"Did you mean `/{close[0]}`? " if close else ""
         return (
-            f"Unknown command `/{command}`. "
+            f"Unknown command `/{command}`. {hint}"
             f"Type /commands to see what's available, "
             f"or resend without the leading slash to send "
             f"as a regular message."

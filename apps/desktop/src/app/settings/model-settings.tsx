@@ -15,8 +15,7 @@ import {
   getRecommendedDefaultModel,
   saveHermesConfig,
   saveMoaModels,
-  setEnvVar,
-  setModelAssignment
+  setEnvVar
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
@@ -30,7 +29,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
-import { setMainModelAssignment } from '@/store/cron-model-impact'
+import { assignModelWithConfirm, setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
@@ -740,7 +739,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setError('')
 
       try {
-        await setModelAssignment(
+        await assignModelWithConfirm(
           {
             model: mainModel.model,
             provider: mainModel.provider,
@@ -770,7 +769,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setError('')
 
       try {
-        await setModelAssignment(
+        await assignModelWithConfirm(
           {
             model: auxDraft.model,
             provider: auxDraft.provider,
@@ -816,10 +815,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     setError('')
 
     try {
-      await setModelAssignment(
+      // __reset__ ignores model, but a non-empty model still trips the selection guard.
+      await assignModelWithConfirm(
         {
-          model: mainModel.model,
-          provider: mainModel.provider,
+          model: '',
+          provider: '',
           scope: 'auxiliary',
           task: '__reset__'
         },

@@ -437,6 +437,39 @@ def _run_pending_fleet_restart() -> bool:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
 
+    # Ancestor triage, same contract as _drain_or_signal_gateway_for_update: an update running
+    # inside a discovered gateway's own tree (chat `/update`, cron in the gateway cgroup) must
+    # not stop/restart that gateway here — the gateway waits on this very session to drain
+    # while this update waits on the gateway's restart (the #100179 circular wait, which the
+    # triage only guarded on the post-pull restart path). Signal the ancestor to drain and
+    # restart itself once this process exits; keep the pending marker; fail closed so the next
+    # out-of-tree update (or `hermes gateway restart`) finishes the catch-up.
+    try:
+        from hermes_cli.gateway import _is_pid_ancestor_of_current_process, _request_gateway_self_restart
+        ancestor_pid = next(
+            (int(pid) for pid in (pids or []) if _is_pid_ancestor_of_current_process(int(pid))),
+            None,
+        )
+    except Exception as exc:
+        logger.debug("Pending fleet restart: ancestry probe failed: %s", exc)
+        ancestor_pid = None
+        _request_gateway_self_restart = None
+    if ancestor_pid is not None and _request_gateway_self_restart is not None:
+        signalled = False
+        with _best_effort('Pending fleet restart: ancestor self-restart signal failed: %s'):
+            signalled = _request_gateway_self_restart(ancestor_pid)
+        if signalled:
+            print(
+                f"  → Pending fleet restart deferred: this update runs inside gateway PID {ancestor_pid}'s "
+                "process tree — signalled it to drain and restart itself once this update exits."
+            )
+        else:
+            print(
+                f"  ⚠ Pending fleet restart deferred: gateway PID {ancestor_pid} is an ancestor of this "
+                "update and could not be signalled to self-restart."
+            )
+        return False
+
     failed: list = []
     try:
         # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.

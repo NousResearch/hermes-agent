@@ -12,6 +12,7 @@ from typing import Annotated, Literal, Union
 from pydantic import Field
 
 from .base import Params, Payload, Result, WireEnum
+from .common import ApprovalChoice
 from .registry import event, server_request
 
 
@@ -82,13 +83,6 @@ server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,  # 
 
 
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
-
-
-class ApprovalChoice(WireEnum):
-    once = "once"
-    session = "session"
-    always = "always"
-    deny = "deny"
 
 
 class ApprovalRequestParams(ServerRequestParams):

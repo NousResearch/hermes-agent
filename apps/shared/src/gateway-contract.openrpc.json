@@ -12587,6 +12587,16 @@
         ],
         "type": "object"
       },
+      "ApprovalChoice": {
+        "enum": [
+          "once",
+          "session",
+          "always",
+          "deny"
+        ],
+        "title": "ApprovalChoice",
+        "type": "string"
+      },
       "PendingApproval": {
         "additionalProperties": false,
         "description": "One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``\nrenders it (command redacted; ``choices`` precomputed).",
@@ -12694,7 +12704,7 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ApprovalChoice"
                 },
                 "type": "array"
               },
@@ -19224,16 +19234,6 @@
           "per_session_exclusive_submit"
         ],
         "type": "object"
-      },
-      "ApprovalChoice": {
-        "enum": [
-          "once",
-          "session",
-          "always",
-          "deny"
-        ],
-        "title": "ApprovalChoice",
-        "type": "string"
       },
       "GroupsApproveParams": {
         "additionalProperties": false,

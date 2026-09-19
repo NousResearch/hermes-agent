@@ -1,4 +1,3 @@
-import type { ApprovalChoice } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
@@ -358,11 +357,6 @@ interface FreshSessionDraftOptions {
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
-const APPROVAL_CHOICES: readonly ApprovalChoice[] = ['once', 'session', 'always', 'deny']
-
-// `pending_approval` renders choices as plain strings; the response contract wants the closed set.
-const isApprovalChoice = (choice: string): choice is ApprovalChoice => APPROVAL_CHOICES.some(known => known === choice)
-
 /** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
 function livePromptStreamId(
   ...projections: ({ streamId: string } | null)[]
@@ -384,7 +378,7 @@ function restorePendingApproval(response: Pick<SessionResumeResult, 'pending_app
   // clobber it with a copy that can only answer through the RPC fallback.
   void receiveApprovalRequest(null, {
     allowPermanent: pending.allow_permanent !== false,
-    choices: pending.choices?.filter(isApprovalChoice),
+    choices: pending.choices ?? undefined,
     command: pending.command ?? '',
     description: pending.description ?? 'dangerous command',
     requestId: pending.request_id ?? undefined,

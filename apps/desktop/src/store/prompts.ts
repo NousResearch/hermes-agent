@@ -95,11 +95,6 @@ export interface ApprovalRequest extends KeyedPrompt {
 /** The socket the approval RPCs ride when the live server request is gone. */
 export type ApprovalGateway = Pick<HermesGateway, 'request'>
 
-const APPROVAL_CHOICES: readonly ApprovalChoice[] = ['once', 'session', 'always', 'deny']
-
-// `approval.pending` renders choices as plain strings; the response contract wants the closed set.
-const isApprovalChoice = (choice: string): choice is ApprovalChoice => APPROVAL_CHOICES.some(known => known === choice)
-
 export interface SudoRequest extends KeyedPrompt {
   command?: string
   requestId: string
@@ -312,7 +307,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
 
       return receiveApprovalRequest(gateway, {
         allowPermanent: pending.allow_permanent !== false,
-        choices: pending.choices?.filter(isApprovalChoice),
+        choices: pending.choices ?? undefined,
         command: pending.command ?? '',
         description: pending.description ?? 'dangerous command',
         requestId: pending.request_id,

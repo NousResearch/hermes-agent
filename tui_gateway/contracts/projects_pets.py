@@ -9,7 +9,7 @@ The pet wire predates the snake_case rule and travels camelCase (``displayName``
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .base import MethodParams, Params, Result
 from .common import OkResult, StoredSessionRow
@@ -294,6 +294,14 @@ method("projects.tree", params=ProjectsTreeParams, result=ProjectsTreeResult,
 class ProjectsProjectSessionsParams(MethodParams):
     project_id: str
     session_limit: int | None = None
+
+    @field_validator("project_id")
+    @classmethod
+    def _project_id_not_empty(cls, value: str) -> str:
+        # The wire generator cannot render ``minLength``; the boundary guard lives here instead.
+        if not value:
+            raise ValueError("project_id must not be empty")
+        return value
 
 
 class ProjectsProjectSessionsResult(Result):

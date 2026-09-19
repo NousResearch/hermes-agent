@@ -165,6 +165,13 @@ TERMINAL_SUBAGENT_STATUSES = frozenset({
 })
 
 
+class ApprovalChoice(WireEnum):
+    once = "once"
+    session = "session"
+    always = "always"
+    deny = "deny"
+
+
 class PendingApproval(Result):
     """One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``
     renders it (command redacted; ``choices`` precomputed)."""
@@ -177,7 +184,7 @@ class PendingApproval(Result):
     allow_permanent: bool | None = None
     allow_session: bool | None = None
     smart_denied: bool | None = None
-    choices: list[str] | None = None
+    choices: list[ApprovalChoice] | None = None
     tool_name: str | None = None
 
 

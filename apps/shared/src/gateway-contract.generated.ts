@@ -20,6 +20,7 @@ export interface ApprovalPendingParams {
   profile?: string | null
   session_id: string
 }
+export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 /** One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload`` renders it (command redacted; ``choices`` precomputed). */
 export interface PendingApproval {
   request_id: string | null
@@ -30,7 +31,7 @@ export interface PendingApproval {
   allow_permanent: boolean | null
   allow_session: boolean | null
   smart_denied: boolean | null
-  choices: string[] | null
+  choices: ApprovalChoice[] | null
   tool_name: string | null
 }
 export interface ApprovalPendingResult {
@@ -902,7 +903,6 @@ export interface GatewayCapabilitiesParams {
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
 }
-export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 export interface GroupsApproveParams {
   profile?: string | null
   room_id: string

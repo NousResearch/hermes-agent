@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
@@ -146,6 +147,13 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+
+# MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
+# directive forges a second attachment whenever the path is echoed into the tool result
+# (media_tag / file_path fields, error text): the collector scans producer output with a
+# bare MEDIA: matcher and cannot tell a filename from a directive.
+_MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[a-z]:[/\\]|~?/)", re.IGNORECASE)
+
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
 _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
@@ -277,7 +285,16 @@ def _resolve_output_base(
     on protected credential/system locations. Default ``<audio cache>/tts_<timestamp>.<ext>``: the
     command format, ``.ogg`` for native-Opus providers on Opus platforms, else ``.mp3``."""
     if output_path:
-        from tools.path_security import has_traversal_component
+        from tools.path_security import has_traversal_component, has_unsafe_path_chars
+        if has_unsafe_path_chars(output_path):
+            return None, _error_json(
+                "output_path contains control characters or line separators; "
+                "use a plain filesystem path")
+        # Must precede the traversal/protected checks: their error text echoes the path,
+        # and a MEDIA: substring in it would forge a delivery tag downstream.
+        if _MEDIA_DIRECTIVE_RE.search(output_path):
+            return None, _error_json(
+                "output_path must not contain a media directive (MEDIA:<path>)")
         if has_traversal_component(output_path):
             return None, _error_json(
                 f"output_path contains '..' traversal component: {output_path}. "
@@ -303,7 +320,14 @@ def _resolve_output_base(
 
 def _media_tag(paths: List[str], voice_compatible: bool) -> str:
     """``MEDIA:<path>`` lines; the ``[[audio_as_voice]]`` marker asks the platform for a voice bubble."""
-    media_tag = "\n".join(f"MEDIA:{path}" for path in paths)
+    from tools.path_security import has_unsafe_path_chars
+    safe = []
+    for path in paths:
+        if has_unsafe_path_chars(path):
+            logger.warning("TTS: dropping undeliverable media path with control characters: %r", path)
+            continue
+        safe.append(path)
+    media_tag = "\n".join(f"MEDIA:{path}" for path in safe)
     return f"[[audio_as_voice]]\n{media_tag}" if voice_compatible else media_tag
 
 

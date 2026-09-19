@@ -575,6 +575,32 @@ class TestFallbackFastModeRescope:
         assert agent.provider == "xai"
         assert (agent.request_overrides or {}).get("service_tier") == "priority"
 
+    def test_oauth_grok_priority_does_not_leak_onto_older_grok_fallback(self):
+        """grok-4.5 on api.x.ai is first-party but does not bill Priority Processing."""
+        agent = _make_agent(fallback_model={
+            "provider": "xai",
+            "model": "grok-4.5",
+            "base_url": "https://api.x.ai/v1",
+        })
+        agent.model = "grok-4.6"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent.service_tier = "priority"
+        agent.request_overrides = {"service_tier": "priority"}
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.x.ai/v1"), "grok-4.5"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "xai"
+        assert agent.model == "grok-4.5"
+        assert "service_tier" not in (agent.request_overrides or {})
+
 
 # ── MoA preset as a fallback entry (#112525, #112623) ─────────────────────
 

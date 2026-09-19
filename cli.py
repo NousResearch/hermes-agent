@@ -3749,7 +3749,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             pass
 
     def _tui_startup_background_maintenance(self):
-        """Best-effort startup passes: curator skill maintenance, personal + org skill sync."""
+        """Best-effort startup passes: curator skill maintenance, personal + org skill sync.
+
+        Off the main thread: the curator's deterministic pass snapshots and prunes the whole
+        skills tree (a due weekly pass held the prompt for 6 minutes on a large library), and
+        the sync pulls can hit the network. The REPL must never wait on housekeeping."""
+        threading.Thread(target=self._run_startup_maintenance, name="startup-maintenance", daemon=True).start()
+
+    def _run_startup_maintenance(self):
         with suppress(Exception):
             from agent.curator import maybe_run_curator
             maybe_run_curator(

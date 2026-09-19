@@ -34,8 +34,11 @@ DEFAULT_KEEP = 5
 # with the full history (once backups are committed back, each snapshot contains the prior ones: 38MB of skills inflated to 24GB
 # in weeks); .locks holds skill_manage's per-skill lock files — restoring them would swap a lock out from under a waiting
 # writer. The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
-# See #91449.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git"}
+# See #91449. ``.curator_ledger.jsonl`` is the append-only audit log and ``.archive/`` the recoverable store the curator
+# promises never to delete: rolling either back to an older copy LOSES entries/skills, and both grow without bound (a 650MB
+# ledger made every snapshot 820MB — and every archive step gunzips the newest snapshot in full, so a pass that pruned 57
+# skills held the CLI prompt for 6 minutes).
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git", ".archive", ".curator_ledger.jsonl"}
 
 # Snapshot id: UTC ISO with colons replaced by dashes (Windows-safe filename); optional ``-NN`` suffix for same-second snapshots.
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")

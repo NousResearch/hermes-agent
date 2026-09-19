@@ -1153,6 +1153,28 @@ def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "glm-5.3-flash"])
+def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
+    """#100854: an explicit ``--api-key`` must not change which OpenCode endpoint a model
+    reaches. The explicit-credential rung used to derive api_mode from config instead of the
+    model and skipped the /v1 normalization, so ``qwen3.8-flash`` (Anthropic-routed) was sent
+    to ``/zen/go/v1`` over chat_completions and 404'd, while the env-key rung routed it right.
+    Both rungs must agree on (api_mode, base_url) for every model.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "opencode-go", "default": "glm-5.3-flash"})
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    explicit = rp.resolve_runtime_provider(requested="opencode-go", explicit_api_key="test-opencode-go-key", target_model=model)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    env_key = rp.resolve_runtime_provider(requested="opencode-go", target_model=model)
+
+    assert explicit["source"] == "explicit"
+    assert (explicit["api_mode"], explicit["base_url"]) == (env_key["api_mode"], env_key["base_url"])
+    assert explicit["api_mode"] == rp._models.opencode_model_api_mode("opencode-go", model)
+
+
 # ------------------------------------------------------------------
 # fix #2562 — resolve_provider("custom") must not remap to "openrouter"
 # ------------------------------------------------------------------

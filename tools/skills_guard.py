@@ -444,6 +444,34 @@ def _demote_inert_path_reference(pid: str, severity: str, description: str, line
     return severity, description
 
 
+# Markdown lines that present content as documentation rather than commands: bullets,
+# numbered steps, table rows, blockquotes. Inside them a threat token wrapped in an inline
+# code span (`cat .env.example`) is a *quoted example* the doc discusses.
+_DOC_STRUCT_LINE_RE = re.compile(r'^(?:[-*+]\s|\d+[.)]\s+\S|\||>)')
+_INLINE_CODE_SPAN_RE = re.compile(r'`[^`\n]+`')
+
+# Code-pattern families eligible for the documented-example cap, one severity step down
+# (critical -> high, so the verdict stops at reviewable `caution`, never `safe`). Only
+# local-read/staging shapes belong here; anything that exfiltrates to the network,
+# downloads-and-executes, or injects keeps its severity in EVERY shape — a malicious
+# instruction does not become safe because it sits in a list item (#37036, #111334).
+_DOC_EXAMPLE_CAP_PIDS = {"read_secrets_file", "js_read_secrets_file", "tmp_staging"}
+_SEVERITY_STEP_DOWN = {"critical": "high", "high": "medium", "medium": "low"}
+
+
+def _cap_documented_example(pid: str, severity: str, description: str, line: str, match) -> Tuple[str, str]:
+    """``(severity, description)`` for a Markdown finding whose match is a quoted example inside a
+    documentation-structure line. The finding stays visible, one step lower, so an instructional
+    anti-pattern bullet (`cat .env.example` — small config file) yields `caution` (confirm / --force)
+    instead of an un-overridable `dangerous` block."""
+    if (pid not in _DOC_EXAMPLE_CAP_PIDS or severity not in _SEVERITY_STEP_DOWN
+            or not _DOC_STRUCT_LINE_RE.match(line.lstrip())):
+        return severity, description
+    if any(match.start() < s.end() and s.start() < match.end() for s in _INLINE_CODE_SPAN_RE.finditer(line)):
+        return _SEVERITY_STEP_DOWN[severity], f"{description} (documented example; review before install)"
+    return severity, description
+
+
 # Structural limits: file count; total KB (5MB, informational only — large skills don't block); single-file KB.
 MAX_FILE_COUNT, MAX_TOTAL_SIZE_KB, MAX_SINGLE_FILE_KB = 50, 5120, 256
 
@@ -568,10 +596,13 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
-            if i not in docstring_lines and pattern.search(scan_line):
+            if i not in docstring_lines and (m := pattern.search(scan_line)):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
+                if file_path.suffix.lower() == ".md":
+                    line_severity, line_description = _cap_documented_example(
+                        pid, line_severity, line_description, line, m)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
     for i, line in enumerate(lines, start=1):

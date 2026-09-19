@@ -35,6 +35,7 @@ hermes config edit         # Open config.yaml in your editor
 hermes config get KEY      # Print a resolved value
 hermes config set KEY VAL  # Set a specific value
 hermes config unset KEY    # Remove a user-set value
+hermes config diff [KEY]   # Diff your config against the built-in defaults (subtree optional)
 hermes config check        # Check for missing options (after updates)
 hermes config migrate      # Interactively add missing options
 

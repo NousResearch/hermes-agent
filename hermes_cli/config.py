@@ -3912,6 +3912,13 @@ def _cmd_config_unset(args):
     _run_write_command(unset_config_value, key)
 
 
+def _cmd_config_diff(args):
+    from hermes_cli.config_diff import run_config_diff
+    run_config_diff(as_json=bool(getattr(args, "json", False)),
+                   raw=bool(getattr(args, "raw", False)),
+                   key=getattr(args, "key", None))
+
+
 def _tools_suffix(info: Dict[str, Any], fmt: str) -> str:
     tools = info.get("tools", [])
     return fmt.format(", ".join(tools[:2])) if tools else ""
@@ -3999,6 +4006,7 @@ _CONFIG_SUBCOMMANDS = {
     "get": _cmd_config_get,
     "set": _cmd_config_set,
     "unset": _cmd_config_unset,
+    "diff": _cmd_config_diff,
     "path": lambda args: print(get_config_path()),
     "env-path": lambda args: print(get_env_path()),
     "migrate": _cmd_config_migrate,
@@ -4010,6 +4018,7 @@ _CONFIG_USAGE = """Available commands:
   hermes config get <key>          Print a resolved config value
   hermes config set <key> <value>   Set a config value
   hermes config unset <key>        Remove a config value
+  hermes config diff      Show how config.yaml differs from defaults
   hermes config check     Check for missing/outdated config
   hermes config migrate   Update config with new options
   hermes config path      Show config file path

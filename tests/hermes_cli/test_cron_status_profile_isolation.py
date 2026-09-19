@@ -85,22 +85,18 @@ class TestGetServicePidsProfileScope:
     def test_default_scope_filters_current_profile_systemd_unit(self, monkeypatch):
         from hermes_cli import gateway as gateway_mod
 
+        list_unit_patterns = []
+
         def _run_side_effect(args, **kwargs):
-            cmd_str = " ".join(str(a) for a in args)
-            if "list-units" in cmd_str:
-                # systemctl now filters: return only the unit that matches the pattern
-                if "hermes-gateway-jarvis" in cmd_str:
+            if "list-units" in args:
+                pattern = args[args.index("list-units") + 1]
+                list_unit_patterns.append(pattern)
+                if pattern == "hermes-gateway-jarvis.service":
                     stdout = "hermes-gateway-jarvis.service loaded active running\n"
-                elif "hermes-gateway-coder" in cmd_str:
-                    stdout = "hermes-gateway-coder.service loaded active running\n"
-                elif "hermes-gateway*" in cmd_str:
-                    stdout = (
-                        "hermes-gateway-jarvis.service loaded active running\n"
-                        "hermes-gateway-coder.service loaded active running\n"
-                    )
                 else:
                     stdout = ""
                 return MagicMock(returncode=0, stdout=stdout, stderr="")
+            cmd_str = " ".join(str(a) for a in args)
             if "show" in cmd_str and "MainPID" in cmd_str:
                 if "hermes-gateway-jarvis" in cmd_str:
                     return MagicMock(returncode=0, stdout="123\n", stderr="")
@@ -117,13 +113,20 @@ class TestGetServicePidsProfileScope:
             pids = gateway_mod._get_service_pids()
 
         assert pids == {123}, "default scope must filter to current profile's unit"
+        assert list_unit_patterns
+        assert all(pattern == "hermes-gateway-jarvis.service" for pattern in list_unit_patterns)
 
     def test_all_profiles_true_enumerates_fleet(self, monkeypatch):
         from hermes_cli import gateway as gateway_mod
 
+        list_unit_patterns = []
+
         def _run_side_effect(args, **kwargs):
-            cmd_str = " ".join(str(a) for a in (args[:4] if args else []))
-            if "list-units" in cmd_str:
+            if "list-units" in args:
+                pattern = args[args.index("list-units") + 1]
+                list_unit_patterns.append(pattern)
+                if pattern != "hermes-gateway*":
+                    return MagicMock(returncode=0, stdout="", stderr="")
                 return MagicMock(
                     returncode=0,
                     stdout=(
@@ -132,6 +135,7 @@ class TestGetServicePidsProfileScope:
                     ),
                     stderr="",
                 )
+            cmd_str = " ".join(str(a) for a in args)
             if "show" in cmd_str and "MainPID" in cmd_str:
                 if "hermes-gateway.service" in " ".join(args):
                     return MagicMock(returncode=0, stdout="111\n", stderr="")
@@ -148,6 +152,8 @@ class TestGetServicePidsProfileScope:
             pids = gateway_mod._get_service_pids(all_profiles=True)
 
         assert pids == {111, 222}, "all_profiles=True must enumerate the whole fleet"
+        assert list_unit_patterns
+        assert all(pattern == "hermes-gateway*" for pattern in list_unit_patterns)
 
 
 class TestCronStatusMissingHeartbeat:

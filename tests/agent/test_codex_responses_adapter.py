@@ -12,6 +12,7 @@ from agent.codex_responses_adapter import (
     _neutralize_harmony_tokens,
     _preflight_codex_api_kwargs,
     _preflight_codex_input_items,
+    _responses_tools,
 )
 
 
@@ -20,6 +21,28 @@ _HARMONY_SOURCE_SNIPPET = (
     "Need to generate one image according to the description."
     "<|end|><|start|>assistant<|channel|>final<|message|>"
 )
+
+
+def test_responses_tools_preserve_explicit_boolean_strictness():
+    def tool(name, strict_marker=None):
+        fn = {"name": name, "parameters": {"type": "object", "properties": {}}}
+        if strict_marker is not None:
+            fn["strict"] = strict_marker
+        return {"type": "function", "function": fn}
+
+    converted = _responses_tools([
+        tool("default"),
+        tool("strict", True),
+        tool("non_strict", False),
+        tool("invalid", "true"),
+    ])
+
+    assert [(item["name"], item["strict"]) for item in converted] == [
+        ("default", False),
+        ("strict", True),
+        ("non_strict", False),
+        ("invalid", False),
+    ]
 
 
 def test_chat_content_drops_images_from_assistant_role():

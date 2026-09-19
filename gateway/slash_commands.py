@@ -118,9 +118,13 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     return data
 
 
-def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
+async def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
-    setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
+    Preferred: a transient systemd user unit (its own cgroup) when ``systemd-run`` and a user
+    manager are reachable — setsid alone stays in the gateway's cgroup, where a restart (which
+    the update itself triggers) SIGKILLs it mid-build (KillMode=mixed).  setsid (or
+    start_new_session) is the portable fallback (works where ``systemd-run --user`` lacks a
+    D-Bus session); ``--gateway``
     enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
     stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
     this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
@@ -141,11 +145,51 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
         f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
-    # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
-    # calls os.setsid() in the child.
-    setsid_bin = shutil.which("setsid")
-    argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
-    subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    # Preferred: run the updater as a transient systemd user unit so it gets its OWN
+    # cgroup, outside the gateway's. setsid only detaches the session — the process
+    # stays in the gateway's cgroup, and a gateway restart (which `hermes update`
+    # itself triggers, and which external watchers such as code-skew heal may also
+    # issue) then SIGKILLs the updater mid-build (KillMode=mixed), stranding the
+    # update with no exit code. A transient unit survives gateway restarts. Probe
+    # the user manager first; fall back to setsid when systemd-run is missing or no
+    # user manager is reachable (e.g. the gateway runs as a root system service
+    # without a user session — the original reason setsid was chosen).
+    systemd_run = shutil.which("systemd-run")
+    _user_mgr_hint = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    _spawned = False
+    if systemd_run and _user_mgr_hint:
+        _probe_unit = f"hermes-update-probe-{os.getpid()}"
+        try:
+            # Run the probe off the event loop: a hung user
+            # manager must not stall every chat/stream for the
+            # probe timeout while we decide how to spawn the
+            # updater.
+            _probe = await asyncio.to_thread(
+                subprocess.run,
+                [systemd_run, "--user", "--collect",
+                 f"--unit={_probe_unit}", "true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            _probe_ok = _probe.returncode == 0
+        except Exception:
+            _probe_ok = False
+        if _probe_ok:
+            _unit = f"hermes-update-{os.getpid()}-{int(time.time())}"
+            subprocess.Popen(
+                [systemd_run, "--user", "--collect",
+                 f"--unit={_unit}", "bash", "-c", update_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _spawned = True
+    if not _spawned:
+        # setsid creates a new session, fully detached; fallback start_new_session=True
+        # calls os.setsid() in the child.
+        setsid_bin = shutil.which("setsid")
+        argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+        subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def _home_thread_from_source(source) -> Optional[str]:
@@ -1277,7 +1321,7 @@ class GatewaySlashCommandsMixin(
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
         try:
-            _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
+            await _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
         except Exception as e:
             pending_path.unlink(missing_ok=True)
             exit_code_path.unlink(missing_ok=True)

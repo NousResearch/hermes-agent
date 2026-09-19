@@ -501,6 +501,36 @@ def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch)
     assert result.api_key == "sk-test"
 
 
+def test_switch_to_bare_custom_from_another_provider_resolves_the_configured_endpoint(monkeypatch, tmp_path):
+    """#73680: the per-turn config sync adopting ``provider: custom`` from an OpenRouter session
+    must land on the configured custom endpoint, not pair the new model with OpenRouter's URL
+    and key."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: qwen3:8b\n  provider: custom\n  base_url: http://127.0.0.1:11434/v1\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="qwen3:8b",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="sk-openrouter",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.base_url == "http://127.0.0.1:11434/v1"
+    assert result.api_key != "sk-openrouter"
+
+
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True
     assert providers_mod.is_aggregator("custom:litellm") is True

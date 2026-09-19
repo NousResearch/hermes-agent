@@ -7,6 +7,7 @@ exclusively; colons are reserved for OpenRouter variant suffixes (``:free``, ``:
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 import os
 import re
 from dataclasses import dataclass, field
@@ -1378,7 +1379,17 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         except Exception:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
     elif st.target_provider == "custom" and st.current_base_url:
+        # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
+        # ANOTHER provider (the per-turn config sync adopting ``provider: custom``), the configured
+        # custom endpoint wins: keeping the session's URL pairs the new model with the previous
+        # provider's host and key (#73680). No configured endpoint ⇒ keep the current one (an alias
+        # may still supply its own below).
         st.api_key, st.base_url = st.current_api_key, st.current_base_url
+        if st.current_provider != "custom":
+            with suppress(Exception):
+                st.resolve_runtime(requested="custom")
+            if not st.base_url:
+                st.api_key, st.base_url = st.current_api_key, st.current_base_url
         st.api_mode = determine_api_mode(st.target_provider, st.base_url)
     else:
         # A URL-bearing LOCAL direct alias (ollama, vllm — labels that resolve to `custom`)

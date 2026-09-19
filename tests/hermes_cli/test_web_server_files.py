@@ -420,3 +420,44 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+def test_vault_and_browser_profile_dirs_blocked_on_subdir_descent(forced_files_client):
+    """Regression: vault/ (vault.key + vault.json.enc — key and ciphertext
+    side by side, so the whole dir is one credential) and browser-profile/
+    (copied real-profile cookies/logins) must be denied as whole directory
+    trees by the managed-files guard, mirroring agent.file_safety
+    ._READ_DENIED_DIRS exactly like mcp-tokens/ and pairing/ already are.
+    Before this fix, _SENSITIVE_MANAGED_DIR_NAMES omitted both, so the
+    dashboard Files tab could read vault.key + vault.json.enc (full
+    credential decrypt) and the browser-profile cookie jar."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    vault_dir = root / "vault"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    vault_key = vault_dir / "vault.key"
+    vault_key.write_text("VAULT-KEY-SECRET\n")
+    vault_enc = vault_dir / "vault.json.enc"
+    vault_enc.write_text("VAULT-CIPHERTEXT-SECRET\n")
+
+    browser_profile_dir = root / "browser-profile" / "Default"
+    browser_profile_dir.mkdir(parents=True, exist_ok=True)
+    cookies_file = browser_profile_dir / "Cookies"
+    cookies_file.write_text("COOKIE-SECRET\n")
+
+    # Neither credential dir may appear in the root listing.
+    root_names = [e["name"] for e in client.get(
+        "/api/files", params={"path": str(root)}).json()["entries"]]
+    assert "vault" not in root_names
+    assert "browser-profile" not in root_names
+
+    # Read/download/stream of files inside either tree must be denied.
+    for p in (vault_key, vault_enc, cookies_file):
+        assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
+        assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
+        assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, str(p)
+
+    # Listing the credential dir itself yields nothing exploitable.
+    vault_listing = client.get("/api/files", params={"path": str(vault_dir)})
+    assert [e["name"] for e in vault_listing.json()["entries"]] == []
+
+

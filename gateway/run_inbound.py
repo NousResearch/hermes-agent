@@ -879,7 +879,7 @@ class GatewayInboundMixin:
 
         req = event.get_command_args().strip()
         _ack = f"Learning a skill from {'what you described' if req else 'this conversation'}…"
-        return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req))
+        return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req, session_id=getattr(event, "session_id", None) or event.get("session_id")))
 
     async def _hm_cmd_plan(self, event, source, _quick_key):
         from agent.plan_prompt import build_plan_prompt

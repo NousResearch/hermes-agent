@@ -709,10 +709,30 @@ _ACTION_HANDLERS = {
     "remove_file": lambda a: _remove_file(a["name"], a["file_path"])}
 
 
+def _offer_created_skill_blueprint(name: str, *, session_id: str = None, foreground: bool = True, register=None) -> None:
+    """Offer scheduling only after a successful foreground create.
+
+    ``register`` is injectable for tests; the real path uses the existing
+    consent-first blueprint suggestion store. Never schedule directly here.
+    """
+    if not foreground or not name:
+        return
+    try:
+        from tools.blueprints import blueprint_spec_for_installed, register_blueprint_suggestion
+        spec = blueprint_spec_for_installed(name)
+        if spec is not None:
+            (register or register_blueprint_suggestion)(spec)
+    except Exception:
+        logger.debug("Could not offer blueprint suggestion for %s", name, exc_info=True)
+
+
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                     session_id, ledger_before) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry, debounced sync push."""
+    if action == "create":
+        from tools.skill_provenance import is_background_review
+        _offer_created_skill_blueprint(name, session_id=session_id, foreground=not is_background_review())
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)

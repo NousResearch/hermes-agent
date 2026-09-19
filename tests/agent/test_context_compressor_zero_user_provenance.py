@@ -284,6 +284,30 @@ def test_background_process_notifications_do_not_become_compaction_anchors(
     assert compressor._find_last_user_message_idx(messages, head_end=0) == 0
 
 
+def test_steer_row_is_visible_to_auto_focus(compressor):
+    """A /steer row carries full user authority (see TestSteerRowIsHumanInput in
+    tests/run_agent/test_steer.py) but _derive_auto_focus_topic kept its own bare
+    ``msg.get("display_kind")`` skip that 26f4a674e0 never reached, despite that commit's own
+    message listing "auto-focus" among the fixed surfaces. A steer row must show up in the focus
+    hint, and with its unwrapped text — not the raw out-of-band marker boilerplate."""
+    from agent.prompt_builder import steer_user_row
+
+    human = {"role": "user", "content": "Add retries to the uploader."}
+    steer = steer_user_row("Actually, focus on the error handling in the retry loop.")
+    messages = [
+        human,
+        {"role": "assistant", "content": "Working on it.", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "tool_call_id": "1", "content": "some tool result"},
+        steer,
+    ]
+
+    assert compressor._derive_auto_focus_topic(messages) == (
+        "Recent user focus:\n"
+        "- Add retries to the uploader.\n"
+        "- Actually, focus on the error handling in the retry loop."
+    )
+
+
 @pytest.mark.parametrize(
     "content",
     [

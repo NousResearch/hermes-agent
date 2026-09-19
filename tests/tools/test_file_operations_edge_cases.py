@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
 from tools.file_operations_common import ExecuteResult
 from tools.file_operations import ShellFileOperations
-from tools.file_operations_search import _parse_search_context_line
+from tools.file_operations_search import _parse_search_content_line
 
 
 # =========================================================================
@@ -267,7 +267,7 @@ class TestSearchContextParsing:
         with patch.object(ops, "_exec") as mock_exec:
             mock_exec.return_value = MagicMock(
                 exit_code=0,
-                stdout="./first.txt:1:foo\n./second.txt:1:bar\n",
+                stdout="./first.txt\x001:foo\n./second.txt\x001:bar\n",
             )
             result = ops._search_with_grep(
                 "foo|bar",
@@ -285,8 +285,8 @@ class TestSearchContextParsing:
         assert result.total_count == 2
         assert [match.content for match in result.matches] == ["foo", "bar"]
 
-    def test_parse_search_context_line_prefers_rightmost_numeric_separator(self):
-        parsed = _parse_search_context_line("dir/file-12-name.py-8-context here")
+    def test_parse_search_context_line_preserves_numeric_filename(self):
+        parsed = _parse_search_content_line("dir/file-12-name.py\x008-context here", context=1)
 
         assert parsed == ("dir/file-12-name.py", 8, "context here")
 
@@ -299,7 +299,7 @@ class TestSearchContextParsing:
         with patch.object(ops, "_exec") as mock_exec:
             mock_exec.return_value = MagicMock(
                 exit_code=0,
-                stdout="dir/file-12-name.py-8-context here\n",
+                stdout="dir/file-12-name.py\x008-context here\n",
             )
             result = ops._search_with_grep(
                 "needle",

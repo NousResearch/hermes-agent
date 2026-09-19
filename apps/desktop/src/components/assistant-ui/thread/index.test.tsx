@@ -1,5 +1,9 @@
-import { render } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { registry } from '@/contrib'
+import { CHAT_EMPTY_AREA } from '@/lib/chat-empty'
+import { CHAT_WELCOME_AREA } from '@/lib/chat-welcome'
 
 /**
  * Issue #95595 proposed-fix #3: the `messageComponents` map handed to
@@ -15,10 +19,10 @@ import { describe, expect, it, vi } from 'vitest'
 let lastComponents: unknown
 
 vi.mock('@/components/assistant-ui/thread/list', () => ({
-  ThreadMessageList: (props: { components: unknown }) => {
+  ThreadMessageList: (props: { components: unknown; emptyPlaceholder?: React.ReactNode }) => {
     lastComponents = props.components
 
-    return null
+    return <>{props.emptyPlaceholder}</>
   }
 }))
 
@@ -53,6 +57,14 @@ vi.mock('@/i18n', () => ({
 
 import { Thread } from './index'
 
+const disposers: (() => void)[] = []
+
+afterEach(() => {
+  for (const dispose of disposers.splice(0)) {
+    dispose()
+  }
+})
+
 describe('Thread messageComponents identity across session switches', () => {
   it('does not re-mint messageComponents when only the session changes', () => {
     const { rerender } = render(<Thread sessionId="session-a" />)
@@ -78,5 +90,51 @@ describe('Thread messageComponents identity across session switches', () => {
     rerender(<Thread sessionId="session-a" />)
 
     expect(lastComponents).toBe(first)
+  })
+})
+
+describe('Thread empty-state routing', () => {
+  it('replaces the draft Intro with a claimed chat welcome contribution', () => {
+    disposers.push(
+      registry.register({
+        area: CHAT_WELCOME_AREA,
+        data: { render: () => <div data-testid="welcome">draft welcome</div> },
+        id: 'welcome'
+      })
+    )
+
+    const { container } = render(
+      <Thread cwd="/work/research" intro={{ personality: 'default', seed: 1 }} profile="lab" />
+    )
+
+    expect(screen.getByTestId('welcome').textContent).toBe('draft welcome')
+    expect(container.querySelector('[data-slot="aui_intro"]')).toBeNull()
+  })
+
+  it('keeps session-backed empty transcripts on chat.empty', () => {
+    let welcomeCalls = 0
+    disposers.push(
+      registry.register({
+        area: CHAT_WELCOME_AREA,
+        data: {
+          render: () => {
+            welcomeCalls += 1
+
+            return <div>wrong surface</div>
+          }
+        },
+        id: 'welcome'
+      }),
+      registry.register({
+        area: CHAT_EMPTY_AREA,
+        data: { render: () => <div data-testid="session-empty">session empty</div> },
+        id: 'session-empty'
+      })
+    )
+
+    render(<Thread sessionId="session-1" />)
+
+    expect(screen.getByTestId('session-empty').textContent).toBe('session empty')
+    expect(welcomeCalls).toBe(0)
   })
 })

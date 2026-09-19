@@ -1779,6 +1779,12 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** The fresh draft welcome area: replace core's Intro with a profile- and cwd-aware surface. */
+export {
+  CHAT_WELCOME_AREA,
+  type ChatWelcomeContribution,
+  type ChatWelcomeProps
+} from '@/lib/chat-welcome'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface

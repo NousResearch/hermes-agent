@@ -333,7 +333,10 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
         with _profile_scope(profile) as scoped_home:
             img_dir = Path(scoped_home or get_hermes_home()) / "images"
             with _io_errors("Image directory is not writable", "Could not create image directory"):
-                img_dir.mkdir(parents=True, exist_ok=True)
+                # Not a bare mkdir: a delete racing this request's profile-exists check (at
+                # _profile_scope entry) must not resurrect a tombstoned profile directory.
+                from hermes_constants import mkdir_under_hermes_home
+                mkdir_under_hermes_home(img_dir)
 
             stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
             stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"

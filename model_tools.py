@@ -610,7 +610,7 @@ _AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
 # prompts keep working); schemas advertise only new names.
 _LEGACY_TOOL_ALIASES = {
     "todo": "todo_list", "cronjob": "cronjob_manage", "process": "process_manage",
-    "tour": "gui_tour", "tip": "show_tip",
+    "tour": "gui_tour", "tip": "show_tip", "shell": "terminal",
 }
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 

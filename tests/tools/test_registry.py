@@ -164,6 +164,21 @@ class TestUnknownToolDispatch:
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
+    def test_suggests_closest_registered_tool_name(self):
+        """Regression for #111256: an unknown name with no legacy alias but a
+        close registered match (e.g. a typo'd real tool name) should get a
+        corrective suggestion instead of a bare 'Unknown tool' dead end."""
+        reg = ToolRegistry()
+        reg.register(
+            name="terminal",
+            toolset="terminal",
+            schema=_make_schema("terminal"),
+            handler=_dummy_handler,
+        )
+        result = json.loads(reg.dispatch("termina", {}))
+        assert "error" in result
+        assert "terminal" in result["error"]
+
 
 class TestToolErrorBounding:
     def test_short_message_unchanged(self):

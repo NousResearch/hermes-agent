@@ -6,6 +6,7 @@ tools/*.py import it at module level; model_tools.py imports both; run_agent/cli
 model_tools."""
 
 import ast
+import difflib
 import functools
 import importlib
 import json
@@ -877,6 +878,9 @@ class ToolRegistry:
         results normalized, every exception returned as ``{"error": ...}``."""
         entry = self.get_entry(name, scope=scope)
         if not entry:
+            close = difflib.get_close_matches(name, self.get_all_tool_names(), n=1)
+            if close:
+                return tool_error(f"Unknown tool: {name}. Did you mean '{close[0]}'?")
             return tool_error(f"Unknown tool: {name}")
         try:
             if entry.is_async:

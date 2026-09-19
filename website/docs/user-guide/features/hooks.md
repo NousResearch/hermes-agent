@@ -1723,6 +1723,10 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 {"decision": "block", "reason":  "Forbidden: rm -rf"}   // Claude-Code style
 {"action":   "block", "message": "Forbidden: rm -rf"}   // Hermes-canonical
 
+// Require human approval for a pre_tool_call (Hermes shape only; message/rule_key optional).
+// Claude-Code's {"decision": "approve"} is intentionally NOT treated as an escalation and is ignored:
+{"action": "approve", "message": "Deletes files", "rule_key": "terminal:rm"}
+
 // Modify a pre_tool_call — rewrite tool args before dispatch:
 {"action": "modify", "args": {"new_string": "fixed content"}}         // Hermes-canonical
 {"decision": "modify", "tool_input": {"new_string": "fixed content"}} // Claude-Code style

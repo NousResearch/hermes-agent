@@ -1269,3 +1269,89 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Placeholder task ids: the env var name pasted as a task id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", [
+    "HERMES_KANBAN_TASK",
+    "hermes_kanban_task",
+    "  HERMES_KANBAN_TASK  ",
+    "$HERMES_KANBAN_TASK",
+    "${HERMES_KANBAN_TASK}",
+    "HERMES_KANBAN_RUN_ID",
+    "<task_id>",
+    "your-task-id",
+    "task_id",
+    "t_xxxxxxxx",
+])
+def test_placeholder_task_id_spellings_are_detected(value):
+    from tools import kanban_tools as kt
+    assert kt._is_task_id_placeholder(value) is True
+
+
+@pytest.mark.parametrize("value", [
+    None, "", "   ", "t_1a2b3c4d", "t_deadbeef", "worker-test",
+])
+def test_real_task_ids_are_not_placeholders(value):
+    from tools import kanban_tools as kt
+    assert kt._is_task_id_placeholder(value) is False
+
+
+def test_comment_placeholder_resolves_to_own_task(worker_env):
+    """A worker that pasted the env var name comments on its own card instead of
+    getting the board's ``unknown task HERMES_KANBAN_TASK``."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = kt._handle_comment({"task_id": "HERMES_KANBAN_TASK", "body": "hello thread"})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["task_id"] == worker_env
+
+    conn = kbc.connect()
+    try:
+        assert [c.body for c in kb.list_comments(conn, worker_env)] == ["hello thread"]
+    finally:
+        conn.close()
+
+
+def test_comment_placeholder_outside_worker_is_actionable(monkeypatch, tmp_path):
+    """No dispatcher env to fall back on: refuse by name and say what a real id
+    looks like, rather than forwarding the placeholder to the board."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+
+    out = kt._handle_comment({"task_id": "$HERMES_KANBAN_TASK", "body": "hi"})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "env var name" in d["error"]
+    assert "unknown task" not in d["error"]
+
+
+def test_show_placeholder_resolves_to_env_task_id(worker_env):
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_show({"task_id": "HERMES_KANBAN_TASK"}))
+    assert d["task"]["id"] == worker_env
+
+
+def test_complete_placeholder_resolves_to_own_task(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_complete({"task_id": "t_xxxxxxxx", "summary": "done"}))
+    assert d.get("ok") is True, d
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()

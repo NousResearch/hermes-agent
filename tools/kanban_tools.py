@@ -146,10 +146,49 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
+# Tool descriptions name ``HERMES_KANBAN_TASK`` as the source of a worker's own
+# task id, and a model sometimes passes that literal name as ``task_id`` instead
+# of a board id. The board then answers ``unknown task HERMES_KANBAN_TASK``,
+# which reads as a board failure and leaves the caller nothing to correct — so
+# the placeholder spellings are recognised by name and either resolved to the
+# caller's own task or refused with a message that says what a real id looks like.
+_PLACEHOLDER_TASK_IDS = frozenset({
+    "hermes_kanban_task", "hermes_kanban_run_id", "hermes_session_id",
+    "task_id", "taskid", "current_task_id", "your_task_id", "the_task_id",
+    "t_xxx", "t_xxxx", "t_xxxxx", "t_xxxxxx", "t_xxxxxxx", "t_xxxxxxxx",
+})
+
+
+def _is_task_id_placeholder(raw: Any) -> bool:
+    """True for the env-var-name / doc-placeholder spellings of a task id.
+
+    Accepts the shell spellings (``$HERMES_KANBAN_TASK``, ``${HERMES_KANBAN_TASK}``)
+    and the prose placeholders (``<task_id>``, ``your-task-id``, ``t_xxxxxxxx``).
+    """
+    if raw is None:
+        return False
+    text = str(raw).strip().strip("<>").strip()
+    if text.startswith("${") and text.endswith("}"):
+        text = text[2:-1]
+    text = text.lstrip("$").strip().lower().replace("-", "_")
+    return text in _PLACEHOLDER_TASK_IDS
+
+
+def _placeholder_task_id_message(raw: Any) -> str:
+    return (
+        f"task_id {str(raw).strip()!r} is the env var name (or a doc placeholder), not a "
+        "board id. Pass a real id — kanban_list lists them (they look like t_1a2b3c4d); a "
+        "dispatcher-spawned worker's own id lives in $HERMES_KANBAN_TASK and is used "
+        "automatically."
+    )
+
+
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """``task_id`` arg or the dispatcher's env var. A delegate child or an
-    in-process cron job must never inherit the worker's task id implicitly."""
-    if arg:
+    in-process cron job must never inherit the worker's task id implicitly. A
+    placeholder arg counts as "not supplied" so a worker that pasted the env var
+    name still resolves to its own task instead of erroring."""
+    if arg and not _is_task_id_placeholder(arg):
         return arg
     if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
         return None
@@ -157,7 +196,10 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
 
 
 def _require_task_id(args: dict) -> str:
-    tid = _default_task_id(args.get("task_id"))
+    raw = args.get("task_id")
+    tid = _default_task_id(raw)
+    if not tid and _is_task_id_placeholder(raw):
+        raise _Reject(_placeholder_task_id_message(raw))
     _check(tid, "task_id is required (or set HERMES_KANBAN_TASK in the env)")
     return tid
 
@@ -793,6 +835,14 @@ def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
     _reject_delegated_child_mutation("kanban_comment")
     tid = args.get("task_id")
+    if _is_task_id_placeholder(tid):
+        # A worker that copied the env var name out of another tool's description
+        # means its own task; anyone else gets the actionable message instead of
+        # the board's ``unknown task HERMES_KANBAN_TASK``.
+        tid = (os.environ.get("HERMES_KANBAN_TASK")
+               if _is_dispatcher_owned_worker() else None)
+        if not tid:
+            raise _Reject(_placeholder_task_id_message(args.get("task_id")))
     _check(tid, "task_id is required (use the current task id if that's what "
                 "you mean — pulls from env but kept explicit here)")
     body = _redact(_require_text(args, "body"))

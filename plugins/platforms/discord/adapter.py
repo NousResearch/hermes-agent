@@ -5573,9 +5573,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Yes/No prompt for the gateway ``/update`` watcher when ``hermes update --gateway`` needs input."""
         def _build(_channel):
             default_hint = f" (default: {default})" if default else ""
-            embed = discord.Embed(
-                title="☤ Update Needs Your Input", description=f"{prompt}{default_hint}", color=discord.Color.gold(),
-            )
+            # Header-only card (same rule as the exec approval/slash-confirm/clarify prompts):
+            # the prompt lives in content only, so embed-rendering clients don't see it twice
+            # (#114693).
+            embed = discord.Embed(title="☤ Update Needs Your Input", color=discord.Color.gold())
             view = UpdatePromptView(
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,

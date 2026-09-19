@@ -145,7 +145,7 @@ class TestJobObjectMechanismLive:
         # with the flag bundle under test, then exits — mirroring the
         # updater/watcher exiting while its job tears down.
         return (
-            "import subprocess, sys, pathlib\n"
+            "import os, subprocess, sys, pathlib\n"
             "sys.path.insert(0, r'%s')\n"
             "from hermes_cli._subprocess_compat import (\n"
             "    windows_detach_flags, windows_detach_flags_without_breakaway)\n"
@@ -153,8 +153,10 @@ class TestJobObjectMechanismLive:
             "p = subprocess.Popen([sys.executable, '-c', %r],\n"
             "    creationflags=flags, stdin=subprocess.DEVNULL,\n"
             "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-            "pathlib.Path(r'%s').write_text(str(p.pid), encoding='utf-8')\n"
-        ) % (str(_REPO_ROOT), flags_helper, _SLEEPER, pid_file)
+            # Atomic publish: the test polls for this file and int()s it at once.
+            "pathlib.Path(r'%s.tmp').write_text(str(p.pid), encoding='utf-8')\n"
+            "os.replace(r'%s.tmp', r'%s')\n"
+        ) % (str(_REPO_ROOT), flags_helper, _SLEEPER, pid_file, pid_file, pid_file)
 
     def _run_in_job(self, tmp_path: Path, flags_helper: str) -> int:
         pid_file = tmp_path / f"{flags_helper}.pid"

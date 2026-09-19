@@ -130,9 +130,19 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
 def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode from config (None if invalid). Legacy/alias spellings (``openai``,
     ``anthropic``, ``responses``, …) are canonicalized first so old configs keep their transport
-    instead of silently falling through to hostname-based detection."""
+    instead of silently falling through to hostname-based detection. A mode with a registered
+    transport is accepted too, so a provider plugin's own dialect survives this gate."""
     normalized = _config_mod._canonical_api_mode(raw).lower() if isinstance(raw, str) else ""
-    return normalized if normalized in _VALID_API_MODES else None
+    if not normalized:
+        return None
+    if normalized in _VALID_API_MODES:
+        return normalized
+    # A provider plugin's transport is named after its api_mode, so accept a mode
+    # the transport registry knows — read through the registry module's own public
+    # helper, which discovers before answering, rather than importing
+    # ``agent.transports`` here (that re-enters provider discovery mid-startup).
+    from hermes_cli.providers import is_registered_api_mode
+    return normalized if is_registered_api_mode(normalized) else None
 
 
 def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:

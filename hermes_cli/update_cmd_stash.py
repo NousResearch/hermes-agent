@@ -299,13 +299,15 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
 
 def _drop_restored_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> None:
     from hermes_cli.update_cmd import _git_run
+    from hermes_cli._subprocess_compat import noninteractive_git_env
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
         print("⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop.")
         print(_STASH_LEFT_IN_PLACE)
         _print_stash_cleanup_guidance(stash_ref)
         return
-    drop = _git_run(git_cmd, ["stash", "drop", stash_selector], cwd)
+    # noglob env: keep MSYS from stripping the braces off ``stash@{N}`` on Windows (#87542).
+    drop = _git_run(git_cmd, ["stash", "drop", stash_selector], cwd, env=noninteractive_git_env())
     if drop.returncode != 0:
         print("⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry.")
         _print_nonempty(drop.stdout)
@@ -357,6 +359,7 @@ def _discard_stashed_changes(git_cmd: list[str], cwd: Path, stash_ref: str) -> b
     Returns True if dropped, False on git failure (stash left in place).
     """
     from hermes_cli.update_cmd import _git_run
+    from hermes_cli._subprocess_compat import noninteractive_git_env
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
         print(
@@ -365,7 +368,8 @@ def _discard_stashed_changes(git_cmd: list[str], cwd: Path, stash_ref: str) -> b
         )
         _print_stash_cleanup_guidance(stash_ref)
         return False
-    drop = _git_run(git_cmd, ["stash", "drop", stash_selector], cwd)
+    # noglob env: keep MSYS from stripping the braces off ``stash@{N}`` on Windows (#87542).
+    drop = _git_run(git_cmd, ["stash", "drop", stash_selector], cwd, env=noninteractive_git_env())
     if drop.returncode != 0:
         print("⚠ Configured to discard local changes, but Hermes couldn't drop the saved stash entry.")
         _print_first_line(drop.stderr)

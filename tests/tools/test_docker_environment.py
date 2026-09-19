@@ -1440,6 +1440,51 @@ def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
     )
 
 
+def test_reap_orphan_uses_plain_rm_so_running_containers_fail_safe(monkeypatch):
+    """``docker rm -f`` defeats the exited-only filter: a sibling can restart an
+    exited container between the ``docker ps`` snapshot and the rm (the reuse
+    path legitimately ``docker start``s exited containers), and ``FinishedAt``
+    still reports the previous exit. Plain ``docker rm`` lets the daemon refuse
+    removal of a running container atomically; every intended target is
+    already exited, so ``-f`` buys nothing."""
+    old = _now_iso(offset_seconds=900)
+    rm_calls = []
+
+    def _run(cmd, **kwargs):
+        if not isinstance(cmd, list) or len(cmd) < 2:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        sub = cmd[1]
+        if sub == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="cid-a\ncid-b\n", stderr="",
+            )
+        if sub == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+        if sub == "rm":
+            rm_calls.append(list(cmd))
+            if cmd[-1] == "cid-b":
+                # cid-b was restarted by a sibling after the ps snapshot: the
+                # daemon refuses a plain rm on a running container.
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="",
+                    stderr='cannot remove container "cid-b": container is running',
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    assert [c[-1] for c in rm_calls] == ["cid-a", "cid-b"]
+    assert all("-f" not in c for c in rm_calls), (
+        f"reaper must not force-remove containers: {rm_calls}"
+    )
+
+
 def test_container_finished_at_parses_nanosecond_timestamp(monkeypatch):
     """Docker emits FinishedAt with nanosecond precision (RFC3339 with up to
     9 fractional digits), but Python's fromisoformat caps at microseconds.

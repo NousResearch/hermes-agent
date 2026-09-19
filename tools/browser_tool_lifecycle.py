@@ -160,6 +160,11 @@ def _cleanup_inactive_browser_sessions():
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
     for task_id in sessions_to_cleanup:
+        with _session_owner_scope(task_id):
+            if _human_holds_shared_browser(task_id):
+                # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
+                _update_session_activity(task_id)
+                continue
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
@@ -182,6 +187,15 @@ def _cleanup_inactive_browser_sessions():
                 _bt.logger.error("Force-reap of browser session %s failed: %s", task_id, reap_exc)
             finally:
                 _forget_session_tracking(task_id, activity=False)
+
+
+def _human_holds_shared_browser(task_id: str) -> bool:
+    """Lease check for the janitor, under the owner's profile scope (the lease is per profile)."""
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+    if not session_info:
+        return False
+    return _session.human_holds_shared_browser(session_info)
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:

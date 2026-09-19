@@ -269,7 +269,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+        with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "vision"})
@@ -309,7 +309,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+        with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
@@ -358,7 +358,7 @@ class TestCaptureResponse:
 
         fake_backend = self._ax_backend_with(600)
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+        with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
 
         parsed = json.loads(out)
@@ -379,7 +379,7 @@ class TestCaptureResponse:
 
         fake_backend = self._ax_backend_with(5000)
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+        with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use(
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
             )

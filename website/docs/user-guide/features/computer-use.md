@@ -430,10 +430,14 @@ of screenshot context, not ~600K.
     [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)
     has the recipe.
   - **Linux** requires a reachable display server. Headless servers
-    need Xvfb (`Xvfb :99 -screen 0 1920x1080x24`) before
-    `computer_use` can capture or inject events. Pure Wayland sessions
-    need an XWayland bridge for screen capture (cua-driver's Wayland
-    inject path handles input independently).
+    get one from [Bot Screen](./bot-screen.md): a per-profile Xfce
+    desktop over TigerVNC, streamed into Hermes Desktop, where you can
+    take over for logins and 2FA. You start it from the Desktop's
+    Screen pane or `hermes computer-use screen start`; it starts on
+    first use (the first `computer_use` call or headed browser use) only
+    when `bot_desktop.auto_start: true` is set (off by default).
+    Pure Wayland sessions need an XWayland bridge for screen capture
+    (cua-driver's Wayland inject path handles input independently).
 
 For cross-platform GUI automation without the desktop overhead (and
 without TCC / Session 0 / X11 setup), the `browser` toolset uses a

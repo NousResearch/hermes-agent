@@ -19,7 +19,7 @@ import uuid
 from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
@@ -82,6 +82,7 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
+_backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -169,7 +170,9 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
+    from tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
+    _backend_displays[sid] = desktop_identity()
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
@@ -178,7 +181,7 @@ def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[thr
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
-    _backend_permission_modes.pop(sid, None)
+    _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     if sid == "":
         backend = _backend if backend is None else backend
@@ -215,11 +218,45 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                 backend = _new_backend(permission_mode)
                 backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
                 return _install_backend(sid, backend, permission_mode)
-            if _backend_permission_modes.get(sid, "standard") == permission_mode:
+            from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+            if (_backend_permission_modes.get(sid, "standard") == permission_mode
+                    and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
                 return cached
-            # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
+            # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
+            # (or moved) after this backend was cached, replaces only this session's backend.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
+
+@contextlib.contextmanager
+def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
+    """Hold a live backend through dispatch, retrying admission but never an action.
+
+    A display/mode change or release can retire a backend before lock lookup or
+    while a caller waits. Revalidate AFTER acquiring its profile-scoped call
+    lock; teardown needs that same lock. Never wait under the global cache lock.
+    """
+    from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+
+    sid = _scoped_sid(session_id)
+    while True:
+        backend = _get_backend(session_id=session_id)
+        with _backend_lock:
+            if _backends.get(sid) is not backend:
+                continue
+            call_lock = _backend_call_locks[sid]
+        with call_lock:
+            with _backend_lock:
+                if (_backends.get(sid) is not backend
+                        or _backend_call_locks.get(sid) is not call_lock):
+                    continue
+                # A queued call can outlive a display/config change even when
+                # no other caller has replaced the cached backend yet.
+                if (_backend_permission_modes.get(sid) != _cua_permission_mode(str(session_id or ""))
+                        or backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+                    continue
+            yield backend
+            return
+
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
@@ -251,7 +288,7 @@ def _shutdown_backend_atexit() -> None:
         if _backend is not None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -293,6 +330,16 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     if not action:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
+    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
+    def _refused(e: Exception) -> str:
+        return json.dumps({"ok": False, "action": action, "code": "human_has_control", "error": str(e)})
+    try:
+        admitted = _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as e:
+        return _refused(e)
+    _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
     if (err := _reject_unsafe(action, args)) is not None:
         return err
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
@@ -300,17 +347,39 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     for scope in scopes:
         if (err := _request_approval(scope, args)) is not None:
             return err
+    # Acquire separately so startup errors retain the install hint; the stack
+    # releases the admitted call lock on every dispatch return or exception.
+    call = contextlib.ExitStack()
     try:
-        backend = _get_backend(session_id=session_id)
+        backend = call.enter_context(_backend_for_call(session_id))
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})
     try:
-        with _backend_lock:
-            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
-        with call_lock:
-            return _dispatch(backend, action, args, session_id=session_id or None)
+        with call:
+            # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
+            # seconds, and a human may have taken over meanwhile. A result produced after such a flip is
+            # discarded too — it may picture what they typed.
+            try:
+                _bd_lease.assert_agent_may_act()
+            except _bd_lease.HumanHasControl as e:
+                return _refused(e)
+
+            def _fence() -> None:
+                # Any lease transition since admission voids the frame — including a full take-over /
+                # hand-back cycle that already finished: it still belongs to the human's turn. Capture
+                # paths call this BEFORE the frame is persisted, spilled or sent to auxiliary vision.
+                if _bd_lease.get().epoch != admitted.epoch:
+                    raise _bd_lease.HumanHasControl(
+                        "A human took over this desktop while the action ran; its result was discarded. "
+                        "Tell the user what you need and re-capture once they hand back.")
+            _fence()  # input actions never receive fence=; refuse before the device op starts
+            result = _dispatch(backend, action, args, fence=_fence, session_id=session_id or None)
+            _fence()
+            return result
+    except _bd_lease.HumanHasControl as e:
+        return _refused(e)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -372,13 +441,13 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
-def _do_capture(backend, action, args, session_id=None, **_):
+def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
-    return _capture_response(backend.capture(mode=mode, app=args.get("app"),
-                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
-                             session_id=session_id)
+    cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+    fence()
+    return _capture_response(cap, session_id=session_id)
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -428,7 +497,11 @@ _ACTION_SUGGESTIONS = {
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
 }
 
-def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], session_id: Optional[str] = None) -> Any:
+def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], fence: Callable[[], None] = lambda: None,
+              session_id: Optional[str] = None) -> Any:
+    """``fence`` raises when the screen lease moved since admission; capture paths call it as soon as the
+    frame is in hand, before anything derived from it leaves the process (including the screenshot dedup
+    cache keyed by ``session_id``)."""
     spec = _ACTIONS.get(action)
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
@@ -442,10 +515,11 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], se
             "— input actions always hit the sticky target from the last capture/focus_app. "
             f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
-    # handlers forward their kwargs to the backend verbatim, so the dedup session key rides only on read handlers.
-    res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
-                       bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
-    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")),
+    # handlers forward their kwargs to the backend verbatim, so the lease fence and the dedup session key ride
+    # only on read handlers (delivery kwargs would leak into backend input calls, and vice versa).
+    res = spec.handler(backend, action, args, **(dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
+                                                 if spec.input else dict(fence=fence, session_id=session_id)))
+    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")), fence,
                                                                          session_id=session_id)
 
 # ── Response shaping ────────────────────────────────────────────────────────
@@ -638,7 +712,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     return _text_capture_payload(v, "\n".join(lines), extra)
 
 def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
-                          session_id: Optional[str] = None) -> Any:
+                          fence: Callable[[], None] = lambda: None, session_id: Optional[str] = None) -> Any:
     # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
     if not do_capture or not res.ok:
         return _text_response(res)
@@ -651,6 +725,7 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
+    fence()  # a frame taken after a takeover never reaches the dedup cache nor the model
     resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.

@@ -4360,6 +4360,7 @@ export const en: Translations = {
     sudoTitle: 'Administrator password',
     sudoDesc: 'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
     sudoCommandUnavailable: 'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
+    sudoInstallDesc: 'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

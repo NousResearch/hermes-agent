@@ -174,6 +174,12 @@ def build_computer_use_parser(subparsers) -> None:
         "grant", help="Request the grants (opens the dialog attributed to CuaDriver)")
     _perms_actions = {"grant": _cu_perms_grant, "status": _cu_perms_status}
 
+    from hermes_cli.subcommands.computer_use_screen import build_screen_parser
+    build_screen_parser(computer_use_sub, add_json_flag)
+
+    def _cu_screen(args):
+        return args.screen_func(args)
+
     def _cu_permissions(args):
         handler = _perms_actions.get(getattr(args, "computer_use_perms_action", None))
         if handler is not None:
@@ -181,7 +187,7 @@ def build_computer_use_parser(subparsers) -> None:
         computer_use_perms.print_help()
 
     _actions = {"install": _cu_install, "status": _cu_status, "doctor": _cu_doctor,
-                "permissions": _cu_permissions}
+                "permissions": _cu_permissions, "screen": _cu_screen}
 
     def cmd_computer_use(args):
         handler = _actions.get(getattr(args, "computer_use_action", None))

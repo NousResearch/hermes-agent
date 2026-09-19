@@ -43,7 +43,10 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
   const idOf = (value: T): string | undefined => (value as { requestId?: string }).requestId
 
   return {
-    $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null),
+    // An app-level prompt (sessionId null: the Bot Screen install card) is not about any chat, so it is
+    // shown in whichever chat is active rather than only while the chat that happened to be open at
+    // request time stays open.
+    $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? all[keyFor(null)] ?? null),
     $all,
     reset: () => $all.set({}),
     set: request => $all.set({ ...$all.get(), [keyFor(request.sessionId)]: request }),
@@ -105,6 +108,10 @@ interface PendingApprovalPayload {
 export interface SudoRequest extends KeyedPrompt {
   command?: string
   requestId: string
+  /** Description override so the card can say WHAT the password is for (the Bot Screen install).
+   *  The reply travels as a JSON-RPC response on the socket the request arrived on, so a password
+   *  typed for host A can never reach host B without any origin bookkeeping here. */
+  description?: string
 }
 
 export interface SecretRequest extends KeyedPrompt {
@@ -367,8 +374,10 @@ export const sessionApprovalRequests = (sessionId: string | null) =>
   computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+/** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
+ *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
-  computed(sudo.$all, all => all[keyFor(sessionId)] ?? null)
+  computed(sudo.$all, all => all[keyFor(sessionId)] ?? (sessionId ? all[keyFor(null)] ?? null : null))
 export const sessionSecretRequest = (sessionId: string | null) =>
   computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
 

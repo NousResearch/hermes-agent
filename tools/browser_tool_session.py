@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
@@ -31,12 +31,15 @@ _CHROMIUM_MISSING_DOCKER_HINT = ("Chromium browser is missing. You're running in
 _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROMIUM_INSTALL}"
 
 
-def _needs_chromium_sandbox_bypass() -> bool:
-    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return True
-    if _install._running_in_docker():
-        return True
+# THE Chromium startup flags for a host where its sandbox cannot work; agent-browser gets them through
+# AGENT_BROWSER_ARGS and the Bot Desktop dock's Browser icon (same binary, same profile) through
+# ``tools.bot_desktop.browser.dock_argv`` — one list, or the human's click dies while the agent's works.
+CHROMIUM_SANDBOX_BYPASS_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
+
+
+def apparmor_restricts_unprivileged_userns() -> bool:
+    """Ubuntu 23.10+ default: unprivileged user namespaces are denied, so a Chromium whose
+    ``chrome_sandbox`` helper is not setuid (Playwright's bundle) dies with 'No usable sandbox'."""
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
             return f.read().strip() == "1"
@@ -44,12 +47,21 @@ def _needs_chromium_sandbox_bypass() -> bool:
         return False
 
 
+def _needs_chromium_sandbox_bypass() -> bool:
+    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    if _install._running_in_docker():
+        return True
+    return apparmor_restricts_unprivileged_userns()
+
+
 def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
     """Add required Chromium sandbox flags without overriding user settings."""
     if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
             and _needs_chromium_sandbox_bypass()):
         _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
-        browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
+        browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
@@ -158,8 +170,42 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
-        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_daemon_idle_timeout_seconds() * 1000)
     return env
+
+
+_SHARED_HEADED_DAEMON_IDLE_SECONDS = 24 * 3600
+
+
+def _daemon_idle_timeout_seconds() -> int:
+    """The daemon's self-termination idle timer. The bot's headed Chromium on the Bot Desktop screen is
+    shared with a human who may take the lease to log in: the agent is idle by definition then, so the
+    daemon's own timer must not decide (it cannot see the lease); the lease-aware Python janitor owns that
+    browser's lifetime, and a crashed hermes leaves it to the orphan reaper (#110064)."""
+    if _cloud._is_headed_mode():
+        from tools.bot_desktop.runtime import published_env
+        if published_env().get("DISPLAY"):
+            return _SHARED_HEADED_DAEMON_IDLE_SECONDS
+    return _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT
+
+
+def human_holds_shared_browser(session_info: Dict[str, Any]) -> bool:
+    """True while a human holds the Bot Desktop lease over the browser ``session_info`` shares with them.
+    The janitor treats that as activity: reaping the browser mid-login is the human's session dying under
+    them, not an idle agent's cleanup (#110064)."""
+    if not _shares_bot_desktop_browser(session_info):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
+
+
+def _ensure_screen_for_headed_chromium() -> None:
+    """Tool-call boundary for ``bot_desktop.auto_start`` (mirrors computer_use dispatch): a headed Chromium is
+    about to be spawned for a real browser action, so a fresh headless profile gets its screen first. Headless
+    browsing, Lightpanda and the env-only callers of ``_build_browser_env`` never bring one up."""
+    if _cloud._is_headed_mode():
+        from tools.bot_desktop.runtime import ensure_started_for_tool
+        ensure_started_for_tool()
 
 
 def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str,
@@ -553,6 +599,8 @@ def _spawn_and_collect(
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
     _bt.logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                  command, task_id, task_socket_dir, len(task_socket_dir))
+    if engine != "lightpanda":
+        _ensure_screen_for_headed_chromium()  # first command forks the daemon; a headed window needs the screen up
     browser_env = _agent_browser_command_env(task_socket_dir)
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
@@ -615,6 +663,56 @@ def _run_browser_command(
     except Exception as e:
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    return run_fenced(session_info, lambda: _run_browser_command_unfenced(
+        task_id, command, args, timeout, _engine_override, browser_cmd, session_info))
+
+
+def run_fenced(session_info: Dict[str, Any], fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    """Run ``fn`` under the Bot Desktop lease fence when ``session_info`` is the bot's LOCAL browser.
+
+    That browser lives on the Bot Desktop screen, in the same profile a human who took over is typing
+    into. While the human holds the lease every action AND read against it is refused (the page may show
+    their credential); the fence brackets the whole run so a takeover mid-command also voids the result.
+    Cloud / user-supplied CDP sessions are a different browser and run unfenced. This is THE fence: every
+    path that reaches the page (agent-browser subprocess, CDP supervisor fast path) goes through here.
+    """
+    if not _shares_bot_desktop_browser(session_info):
+        return fn()
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        admitted = _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as e:
+        return {"success": False, "error": str(e), "code": "human_has_control"}
+    result = fn()
+    if _bd_lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control",
+                "error": "A human took over the bot's screen while this browser command ran; its result was "
+                         "discarded. Tell the user what you need; retry once they hand back."}
+    return result
+
+
+def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
+    """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
+    attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
+    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
+    A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
+    if not (session_info.get("features") or {}).get("local"):
+        return False
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+
+
+def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
+    """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
+    if not _shares_bot_desktop_browser(session_info):
+        return None
+    from tools.bot_desktop import browser as _bd_browser
+    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
+                                                 exclude_session=session_info["session_name"])
+
+
+def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,
+                                  _engine_override: Optional[str], browser_cmd, session_info: Dict[str, Any]) -> Dict[str, Any]:
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
@@ -628,6 +726,12 @@ def _run_browser_command(
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
         backend_args = ["--session", session_info["session_name"]]
+        if (bd_port := _bot_desktop_attach_port(session_info)) is not None:
+            # A Chromium already runs on the Bot Desktop's shared profile (the human clicked the dock's
+            # Browser first): a launch would be forwarded into it by Chromium's singleton and die without
+            # a DevTools endpoint, so the session's daemon attaches to the port it advertises instead.
+            # Same daemon (keyed by --session) either way, so snapshot refs stay valid across commands.
+            backend_args += ["--cdp", str(bd_port)]
         if _cloud._is_headed_mode():
             backend_args.append("--headed")
         if engine != "auto" and not _bt._is_camofox_mode():

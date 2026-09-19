@@ -7,6 +7,12 @@ const nextSessionTileForWorkspace = vi.fn<() => null | string>(() => null)
 const closeSessionTile = vi.fn()
 const requestFreshSession = vi.fn()
 
+const closeActiveTerminal = vi.fn()
+
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({
+  closeActiveTerminal: () => closeActiveTerminal()
+}))
+
 vi.mock('@/components/pane-shell/tree/store', () => ({
   closeFocusedSessionTab: () => closeFocusedSessionTab(),
   closeFocusedToolTab: () => closeFocusedToolTab()
@@ -134,6 +140,20 @@ describe('closeWorkspaceTab', () => {
 
     expect(closeActiveTab(vi.fn())).toBe(true)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('a focused remote bot screen swallows ⌘W: no terminal tab, no session tab closes', async () => {
+    loadedMainOnly()
+    const combo = await import('@/lib/keybinds/combo')
+    const spy = vi.spyOn(combo, 'isFocusWithin').mockImplementation(selector => selector === '[data-remote-screen]' || selector === '[data-terminal]')
+
+    try {
+      expect(closeActiveTab(vi.fn())).toBe(true)
+      expect(closeActiveTerminal).not.toHaveBeenCalled()
+      expect(requestFreshSession).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('a focused tool panel (terminal / logs) claims ⌘W before main empties', () => {

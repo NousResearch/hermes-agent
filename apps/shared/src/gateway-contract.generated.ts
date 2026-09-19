@@ -940,6 +940,106 @@ export interface VerificationEvidenceRow {
   output_summary?: string | null
   [key: string]: unknown
 }
+/** ``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for. */
+export interface DisplayStatus {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  browser?: string | null
+  blocker?: string | null
+  memory_available_mb?: number | null
+  memory_limit_mb?: number | null
+  lease: DisplayLease
+  profile_key: string
+}
+/** ``tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a capability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself. */
+export interface DisplayLease {
+  holder: LeaseHolder
+  viewer_id?: null
+  viewer_hash?: string | null
+  since: number
+  epoch: number
+  reason?: string
+}
+export type LeaseHolder = 'agent' | 'human'
+/** ``data_url`` is null while the screen is stopped or while a human holds the lease (``suppressed``): the frame may show what they are typing. */
+export interface DisplayThumbnailResult {
+  data_url?: string | null
+  suppressed?: string | null
+}
+export interface DisplayStopParams {
+  profile?: string | null
+  force?: boolean | null
+}
+export interface DisplayStopResult {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  browser?: string | null
+  blocker?: string | null
+  memory_available_mb?: number | null
+  memory_limit_mb?: number | null
+  lease: DisplayLease
+  profile_key: string
+  stopped: boolean
+}
+export interface DisplayObserveParams {
+  profile?: string | null
+  viewer_id?: string | null
+}
+export interface DisplayObserveResult {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  browser?: string | null
+  blocker?: string | null
+  memory_available_mb?: number | null
+  memory_limit_mb?: number | null
+  lease: DisplayLease
+  profile_key: string
+  ticket: string
+  path: string
+  viewer_id: string
+}
+export interface DisplayInstallResult {
+  started: boolean
+  command?: string | null
+  profile_key: string
+}
+export interface DisplayLeaseAcquireParams {
+  profile?: string | null
+  viewer_id: string
+  reason?: string | null
+}
+export interface DisplayLeaseResult {
+  lease: DisplayLease
+}
+export interface DisplayLeaseReleaseParams {
+  profile?: string | null
+  viewer_id?: string | null
+  force?: boolean | null
+}
 export interface GroupsCapabilitiesParams {
   profile?: string | null
 }
@@ -3809,6 +3909,10 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+export interface DisplayInstallSudoParams {
+  session_id: string
+  profile_key: string
+}
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
   op_id: string
@@ -3825,6 +3929,42 @@ export interface ConnectionUpdatePayload {
 }
 /** ``tools/connectors/contract.py::Actor``. */
 export type ConnectionActor = 'user' | 'renderer_flow' | 'backend_watcher' | 'clock'
+export interface RequestCancelPayload {
+  id: string
+  method: string
+  reason: string
+}
+export interface DisplayStatusPayload {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  browser?: string | null
+  blocker?: string | null
+  memory_available_mb?: number | null
+  memory_limit_mb?: number | null
+  lease: DisplayLease
+  profile_key: string
+}
+export interface DisplayLeasePayload {
+  profile_key: string
+  lease: DisplayLease
+}
+export interface DisplayInstallLogPayload {
+  profile_key: string
+  line: string
+}
+export interface DisplayInstallDonePayload {
+  profile_key: string
+  code: number
+  status: DisplayStatus
+}
 /** ``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame. */
 export interface GatewayReadyPayload {
   skin: SkinPayload
@@ -4181,11 +4321,6 @@ export interface PetHatchProgressPayload {
 }
 /** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
-export interface RequestCancelPayload {
-  id: string
-  method: string
-  reason: string
-}
 
 // ── Client→server methods ──
 export interface RpcMethods {
@@ -4265,6 +4400,22 @@ export interface RpcMethods {
   'delegation.status': { params: ProfileParams; result: DelegationStatusResult }
   /** Upload a force-redacted debug bundle to Nous-internal diagnostics storage. */
   'diagnostics.share_nous': { params: DiagnosticsShareNousParams; result: DiagnosticsShareNousResult }
+  /** Run the distro package install on the gateway host; progress streams as display.install.log/.done. */
+  'display.install': { params: ProfileParams; result: DisplayInstallResult }
+  /** Take over: the human named by a viewer id this connection minted controls the screen. */
+  'display.lease.acquire': { params: DisplayLeaseAcquireParams; result: DisplayLeaseResult }
+  /** Hand back. Without a viewer id the release is refused while a human holds unless force. */
+  'display.lease.release': { params: DisplayLeaseReleaseParams; result: DisplayLeaseResult }
+  /** Mint a single-use ticket for /api/display/ws and the server-minted viewer id for this connection. */
+  'display.observe': { params: DisplayObserveParams; result: DisplayObserveResult }
+  /** Start this profile's Xvnc + Xfce (idempotent); blocks until the display is published. */
+  'display.start': { params: ProfileParams; result: DisplayStatus }
+  /** Runtime + lease snapshot for this profile's screen. */
+  'display.status': { params: ProfileParams; result: DisplayStatus }
+  /** Stop the screen. Refused (5300, code viewer_mismatch) while a human holds unless force. */
+  'display.stop': { params: DisplayStopParams; result: DisplayStopResult }
+  /** One JPEG grab of the bot's screen; read-only, never changes the lease. */
+  'display.thumbnail': { params: ProfileParams; result: DisplayThumbnailResult }
   /** Stage a non-image file into the session workspace and hand back its @file: ref. */
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
   /** Mark the one-time availability notice as shown on the free-tier identity. */
@@ -4666,6 +4817,14 @@ export const RPC_METHODS = [
   'delegation.pause',
   'delegation.status',
   'diagnostics.share_nous',
+  'display.install',
+  'display.lease.acquire',
+  'display.lease.release',
+  'display.observe',
+  'display.start',
+  'display.status',
+  'display.stop',
+  'display.thumbnail',
   'file.attach',
   'free_tier.ack_notice',
   'free_tier.provision',
@@ -4854,6 +5013,8 @@ export interface ServerRequestMap {
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user one question or a batch. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
+  /** Masked sudo password for the Bot Screen package install; app-level (empty session). */
+  'display.install.sudo': { params: DisplayInstallSudoParams; result: ValueResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
@@ -4879,6 +5040,7 @@ export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
+  'display.install.sudo',
   'preview.act',
   'preview.read',
   'secret',
@@ -4915,6 +5077,14 @@ export interface BackendGatewayEventMap {
   'connection.update': ConnectionUpdatePayload
   /** cron/jobs.json moved; refetch the cron list. */
   'cron.changed': ChangeSignalPayload
+  /** The install ended (0 ok, -1 cancelled, -2 no sudo: the command to run by hand was streamed). */
+  'display.install.done': DisplayInstallDonePayload
+  /** One line of package-manager output. */
+  'display.install.log': DisplayInstallLogPayload
+  /** The takeover lease changed hands; every client repaints. */
+  'display.lease': DisplayLeasePayload
+  /** This profile's screen started or stopped (also for transitions made outside hermes serve). */
+  'display.status': DisplayStatusPayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
   error: ErrorPayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
@@ -5045,6 +5215,10 @@ export const GATEWAY_EVENT_TYPES = [
   'connection.request',
   'connection.update',
   'cron.changed',
+  'display.install.done',
+  'display.install.log',
+  'display.lease',
+  'display.status',
   'error',
   'gateway.ready',
   'layout.apply',

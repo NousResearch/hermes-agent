@@ -9,6 +9,7 @@ import json
 import io
 import os
 import shutil
+import socket
 import sys
 import tarfile
 import types
@@ -314,6 +315,54 @@ class TestCreateProfile:
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+
+    def test_clone_all_does_not_inherit_the_source_screen_or_browser_process_artifacts(self, profile_env):
+        """A clone keeps browser data, never the source's screen or Chromium runtime files."""
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        bd = default_home / "bot-desktop"
+        browser_profile = bd / "browser-profile"
+        (browser_profile / "Default").mkdir(parents=True)
+        (browser_profile / "Default" / "Cookies").write_text("jar")
+        (bd / "launcher.pid").write_text("4242 1.5")
+        (bd / "env").write_text("DISPLAY=:21\nXAUTHORITY=/x\n")
+        (bd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 3}))
+        process_markers = ("DevToolsActivePort", "SingletonLock", "SingletonCookie", "SingletonSocket")
+        for process_marker in process_markers:
+            (browser_profile / process_marker).write_text("source-process")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
+
+        for runtime_file in ("launcher.pid", "env", "lease.json"):
+            assert not (profile_dir / "bot-desktop" / runtime_file).exists(), runtime_file
+        for process_marker in process_markers:
+            assert not (cloned_browser / process_marker).exists(), process_marker
+        assert (cloned_browser / "Default" / "Cookies").read_text() == "jar"
+
+    @pytest.mark.linux_only
+    def test_clone_all_does_not_attach_to_the_source_profiles_live_browser(self, profile_env):
+        """Copied Chromium markers must not route the clone through the source profile's CDP port."""
+        from tools.bot_desktop.browser import running_instance_cdp_port
+
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        browser_profile = default_home / "bot-desktop" / "browser-profile"
+        browser_profile.mkdir(parents=True)
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n")
+            (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
+            assert running_instance_cdp_port(str(browser_profile)) == port
+
+            profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+            cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
+
+            assert running_instance_cdp_port(str(cloned_browser)) is None
+            assert running_instance_cdp_port(str(browser_profile)) == port
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
@@ -1652,6 +1701,74 @@ class TestResolveProfileEnvSpelling:
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
 
+
+
+
+def _live_bot_desktop_launcher(profile_dir: Path):
+    """A synthetic Bot Desktop launcher for ``profile_dir``: its own session (like launcher.sh) with the
+    identity file + env runtime.status() reads, so the profile op sees a running screen."""
+    import subprocess
+    from tools.bot_desktop import runtime
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    sd = profile_dir / "bot-desktop"
+    sd.mkdir()
+    (sd / "launcher.pid").write_text(f"{proc.pid} {runtime._create_time(proc.pid)}", encoding="utf-8")
+    (sd / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+    return proc
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("op", ["delete", "rename"])
+def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op):
+    """Deleting or renaming a profile stops its gateway, and must stop its Bot Desktop launcher too: the
+    Xvnc/Xfce session otherwise keeps running against a directory that no longer exists (or now belongs to
+    another name), holding its display number and an rfb.sock nobody can reach through status()."""
+    import time
+    from tools.bot_desktop import runtime
+
+    profile_dir = create_profile("coder", no_alias=True)
+    proc = _live_bot_desktop_launcher(profile_dir)
+    # A human held the screen when the op ran. lease.json moves with a rename; left human-held it would
+    # fence the agent out of the renamed profile's next screen for a viewer that no longer exists.
+    (profile_dir / "bot-desktop" / "lease.json").write_text(
+        json.dumps({"holder": "human", "viewer_id": "gone", "since": 1.0, "epoch": 3, "reason": ""}), encoding="utf-8")
+    try:
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            if op == "delete":
+                delete_profile("coder", yes=True)
+            else:
+                rename_profile("coder", "hacker")
+        # The runtime reaps what it kills (a later gateway holds no Popen for the launcher), so our own
+        # Popen may see the status already collected; liveness, not the exit code, is the contract.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and runtime._pid_alive(proc.pid):
+            time.sleep(0.05)
+        assert not runtime._pid_alive(proc.pid), "the launcher was not stopped by the profile op"
+        if op == "rename":
+            moved = json.loads((profile_dir.parent / "hacker" / "bot-desktop" / "lease.json").read_text(encoding="utf-8"))
+            assert moved["holder"] == "agent", "stale human lease survived the teardown"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.parametrize("name", ["coder", "default"])
+def test_export_leaves_the_bot_desktop_browser_profile_out(profile_env, tmp_path, name):
+    """bot-desktop/ holds the screen's persistent Chromium profile (Cookies, Login Data: the bot's live web
+    sessions) plus sockets and X state. None of it belongs in an export archive meant to move a persona."""
+    profile_dir = create_profile(name, no_alias=True) if name != "default" else get_profile_dir("default")
+    (profile_dir / "config.yaml").write_text("model: test")
+    cookies = profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"SQLite format 3\x00")
+    output = tmp_path / "export" / f"{name}.tar.gz"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    export_profile(name, str(output))
+    with tarfile.open(str(output), "r:gz") as tf:
+        names = tf.getnames()
+    assert f"{name}/config.yaml" in names
+    assert not [n for n in names if "bot-desktop" in n], names
 
 # ===================================================================
 # TestCloneAllExcludesRuntimeTrees

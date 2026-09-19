@@ -3681,6 +3681,7 @@ export const zh = defineLocale({
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
+      useProfileDefault: '使用配置默认',
       fast: '快速'
     },
     modelOptions: {

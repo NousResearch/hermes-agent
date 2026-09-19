@@ -518,6 +518,19 @@ def _rt_safe_scalar(value: Any) -> Any:
     return value
 
 
+def _same_yaml_value(left: Any, right: Any) -> bool:
+    """Compare parsed values without equating bools, ints and floats."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_yaml_value(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_yaml_value(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
     """Apply only changed paths to a round-trip document.
 
@@ -531,7 +544,7 @@ def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
         if key not in after and key in doc:
             del doc[key]
     for key, new_value in after.items():
-        if key in before and before[key] == new_value:
+        if key in before and _same_yaml_value(before[key], new_value):
             continue
         old_value = before.get(key)
         existing = doc[key] if key in doc else None
@@ -544,7 +557,7 @@ def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
             and len(existing) == len(old_value) == len(new_value)
         ):
             for index, (old_item, new_item) in enumerate(zip(old_value, new_value)):
-                if old_item == new_item:
+                if _same_yaml_value(old_item, new_item):
                     continue
                 if (
                     isinstance(existing[index], dict)

@@ -1184,6 +1184,29 @@ class TestCommentPreservation:
     def _seed(self, home):
         (home / "config.yaml").write_text(self.CONFIG)
 
+    @pytest.mark.parametrize("key, initial, requested, expected", [
+        ("compression.threshold", "compression:\n  threshold: 1\n", "1.0", 1.0),
+        ("compression.threshold_tokens", "compression:\n  threshold_tokens: false\n", "0", 0),
+        ("compression.enabled", "compression:\n  enabled: 0\n", "false", False),
+        ("custom_providers.0.context_length",
+         "custom_providers:\n  - name: local\n    context_length: false\n", "0", 0),
+    ])
+    def test_equal_scalar_values_still_write_requested_type(
+            self, _isolated_hermes_home, key, initial, requested, expected):
+        from hermes_cli.config import _get_nested
+
+        path = _isolated_hermes_home / "config.yaml"
+        path.write_text(
+            "# hand maintained\n" + initial + "model:\n  default: m  # keep this comment\n",
+            encoding="utf-8",
+        )
+        set_config_value(key, requested)
+        text = path.read_text(encoding="utf-8")
+        actual = _get_nested(yaml.safe_load(text), key)
+        assert type(actual) is type(expected)
+        assert actual == expected
+        assert "# hand maintained" in text and "# keep this comment" in text
+
     def test_header_comment_survives_unrelated_set(self, _isolated_hermes_home):
         self._seed(_isolated_hermes_home)
         set_config_value("tts.provider", "elevenlabs")

@@ -2127,6 +2127,7 @@ def _snapshot_primary_runtime(agent):
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(_cc, "api_key", ""),
         "compressor_provider": getattr(_cc, "provider", agent.provider),
+        "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode),
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }

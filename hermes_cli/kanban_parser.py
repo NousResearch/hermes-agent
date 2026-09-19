@@ -225,7 +225,7 @@ _SPECS = [
         _arg("--archived", action="store_true", help="Include archived tasks"),
         _json_flag(),
         _arg("--sort", choices=sorted(kb.VALID_SORT_ORDERS.keys()),
-             help="Sort order for listed tasks (default: priority)"),
+             help="Sort order for listed tasks (default: priority; 'completed-desc' when --status done and no --sort given)"),
         _arg("--workflow-template-id", metavar="ID", help="Restrict to tasks with this workflow_template_id"),
         _arg("--step-key", dest="current_step_key", metavar="KEY",
              help="Restrict to tasks with this current_step_key"),

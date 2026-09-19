@@ -32,6 +32,7 @@ from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
+from trajectory_compressor_tokens import count_conversation_tokens, load_trajectory_tokenizer
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
 load_hermes_dotenv(hermes_home=get_hermes_home(), project_env=Path(__file__).parent / ".env")
@@ -92,7 +93,7 @@ def _write_jsonl(path: Path, entries) -> None:
 
 # YAML section -> keys; "yaml_key:attr" when the config attribute name differs.
 _YAML_SECTIONS: Dict[str, Tuple[str, ...]] = {
-    "tokenizer": ("name:tokenizer_name", "trust_remote_code"),
+    "tokenizer": ("name:tokenizer_name", "revision:tokenizer_revision", "trust_remote_code"),
     "compression": ("target_max_tokens", "summary_target_tokens"),
     "protected_turns": ("first_system:protect_first_system", "first_human:protect_first_human",
                         "first_gpt:protect_first_gpt", "first_tool:protect_first_tool", "last_n_turns:protect_last_n_turns"),
@@ -107,6 +108,7 @@ _YAML_SECTIONS: Dict[str, Tuple[str, ...]] = {
 class CompressionConfig:
     """Configuration for trajectory compression (tokenizer / targets / protected turns / summarizer / output / processing / metrics)."""
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking"
+    tokenizer_revision: Optional[str] = None
     trust_remote_code: bool = True
     target_max_tokens: int = 15250
     summary_target_tokens: int = 750
@@ -296,9 +298,10 @@ class TrajectoryCompressor:
     def _init_tokenizer(self):
         """Initialize HuggingFace tokenizer for token counting."""
         try:
-            from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer_name, trust_remote_code=self.config.trust_remote_code)
-            print(f"✅ Loaded tokenizer: {self.config.tokenizer_name}")
+            self.tokenizer, self.tokenizer_metadata = load_trajectory_tokenizer(
+                self.config.tokenizer_name, self.config.tokenizer_revision, self.config.trust_remote_code,
+            )
+            self.config.tokenizer_revision = self.tokenizer_metadata["revision"]
         except Exception as e:
             raise RuntimeError(f"Failed to load tokenizer '{self.config.tokenizer_name}': {e}")
 
@@ -353,10 +356,11 @@ class TrajectoryCompressor:
             return len(text) // 4
 
     def count_trajectory_tokens(self, trajectory: List[Dict[str, str]]) -> int:
-        return sum(self.count_turn_tokens(trajectory))
+        return count_conversation_tokens(self.tokenizer, trajectory)
 
     def count_turn_tokens(self, trajectory: List[Dict[str, str]]) -> List[int]:
-        return [self.count_tokens(turn.get("value", "")) for turn in trajectory]
+        """Content-only estimates for choosing a summary region, never for budget decisions."""
+        return [self.count_tokens(turn.get("value", turn.get("content", ""))) for turn in trajectory]
 
     def _find_protected_indices(self, trajectory: List[Dict[str, str]]) -> Tuple[set, int, int]:
         """Return ``(protected_set, compressible_start, compressible_end)``."""
@@ -499,8 +503,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         the summary itself, then snaps both boundaries off ``tool`` turns.
         """
         cfg = self.config
-        turn_tokens = self.count_turn_tokens(trajectory)
-        total_tokens = sum(turn_tokens)
+        total_tokens = self.count_trajectory_tokens(trajectory)
         metrics.original_turns = metrics.compressed_turns = len(trajectory)
         metrics.original_tokens = metrics.compressed_tokens = total_tokens
         if total_tokens <= cfg.target_max_tokens:
@@ -512,6 +515,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         start = self._snap_boundary(trajectory, start, start, end)
         if start >= end:
             return None
+        turn_tokens = self.count_turn_tokens(trajectory)
         # Replacing N turns with one summary saves sum(N) - summary_target_tokens.
         target_tokens_to_compress = total_tokens - cfg.target_max_tokens + cfg.summary_target_tokens
         accumulated = 0
@@ -669,7 +673,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
             with open(metrics_path, 'w', encoding="utf-8") as f:
-                json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
+                report = self.aggregate_metrics.to_dict()
+                report["tokenizer"] = self.tokenizer_metadata
+                json.dump(report, f, indent=2)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
 
     def _print_summary(self):

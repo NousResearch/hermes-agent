@@ -259,6 +259,7 @@ from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    fence_state_after,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -2936,6 +2937,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
+    @staticmethod
+    def _balance_stream_preview(text: str) -> str:
+        """Close an orphaned ``` fence left open by a mid-stream preview.
+
+        A streaming edit shows a *prefix* of the reply, so a fence the model has opened
+        but not yet closed arrives unterminated and Discord renders the whole tail as
+        plain text — the ASCII table the user is watching collapses mid-draw and only
+        snaps back on the final edit. ``truncate_message`` balances fences *between*
+        chunks, but the streaming path takes ``[0]`` of a single-chunk split, so nothing
+        ever closes the trailing fence. Appending the closer costs 4 chars and is
+        discarded on the next edit.
+        """
+        if not text:
+            return text
+        in_code, _lang = fence_state_after(text)
+        return f"{text}\n```" if in_code else text
+
     def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
         """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
         notice so a degenerate turn can't flood the channel (full text stays in session history).
@@ -3166,7 +3184,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
                     return await self._edit_overflow_split(channel, msg, message_id, content)
-                formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
+                formatted = self._balance_stream_preview(
+                    self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0])
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
                 # Re-sending it is a visual no-op that still counts against Discord's edit rate limit — skip
@@ -3177,7 +3196,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                 self._last_overflow_preview.pop(_preview_key, None)
             try:
-                await msg.edit(content=formatted)
+                # Mid-stream previews show a prefix of the reply: close any fence the model
+                # has opened but not yet closed, else the tail renders as plain text until
+                # the final edit. Final (finalize=True) content is already balanced.
+                await msg.edit(
+                    content=formatted if finalize
+                    else self._balance_stream_preview(formatted))
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
@@ -3185,7 +3209,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
                         return await self._edit_overflow_split(channel, msg, message_id, content)
-                    truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
+                    truncated = self._balance_stream_preview(
+                        self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0])
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
                         return SendResult(success=True, message_id=message_id)

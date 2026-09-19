@@ -1670,6 +1670,12 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
+/** Appearance settings' plugin seam: register a render contribution at
+ *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
+ *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
+ *  look) — use it for colour picking instead of driving app widgets through
+ *  React internals; pair it with `host.sessions.setColor` for session colours. */
+export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
 
 /** THE settings rows: `ListRow` is label + description with the control beside
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
@@ -1717,7 +1723,7 @@ export { Codicon } from '@/components/ui/codicon'
  *  deterministic color". Feed it `PROFILE_SWATCHES` so a hand-picked color
  *  shares the generated palette's saturation and lightness; a bespoke grid of
  *  literal hex drifts off-theme the moment the palette moves. */
-export { ColorSwatches } from '@/components/ui/color-swatches'
+export { ColorSwatches, type ColorSwatchesProps } from '@/components/ui/color-swatches'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,

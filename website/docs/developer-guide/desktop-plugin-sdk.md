@@ -223,6 +223,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 
 ### Panes
 
@@ -635,6 +636,15 @@ register(ctx) {
 
 The reasoning-pill visibility CSS the plugin also injected has no hook; it is
 only needed if the app ever hides that label at narrow widths.
+
+### Appearance settings
+
+`APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
+Appearance**. For colour picking, use the app's own swatch grid —
+`ColorSwatches` renders exactly what the profile rail and project dialog render,
+with your own `onChange`; pair it with `host.sessions.setColor(id, color)` for
+session colours — instead of injecting nodes into the page or driving app
+widgets through React internals.
 
 ### Transcript directives — inline components the model addresses
 

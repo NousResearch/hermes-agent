@@ -140,6 +140,32 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
+def _close_open_structures(raw: str) -> str:
+    """Append the closers a truncated JSON prefix still needs, INNERMOST FIRST; brackets
+    inside string literals are ignored. Appending every ``}`` before every ``]`` (what this
+    pass did before) mis-closes any tail left inside an array or inside an object nested in
+    one — ``{"a": [1, 2`` became ``{"a": [1, 2}]`` — so the common truncated-tool-payload
+    shapes were declared unrepairable and their arguments replaced with ``{}``."""
+    closers = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    in_string = escaped = False
+    for ch in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in closers:
+            stack.append(ch)
+        elif ch in "}]" and stack and closers[stack[-1]] == ch:
+            stack.pop()
+    return raw + "".join(closers[ch] for ch in reversed(stack))
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
     control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
@@ -163,10 +189,9 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Passes 1-3: strip trailing commas, close unclosed structures, trim excess closers (bounded).
-    fixed = re.sub(r',\s*([}\]])', r'\1', raw_stripped)
-    fixed += '}' * max(0, fixed.count('{') - fixed.count('}'))
-    fixed += ']' * max(0, fixed.count('[') - fixed.count(']'))
+    # Passes 1-3: strip trailing commas (including one the truncation left at the very end),
+    # close unclosed structures (innermost first), trim excess closers (bounded).
+    fixed = _close_open_structures(re.sub(r',\s*([}\]])|,\s*$', r'\1', raw_stripped))
     for _ in range(50):
         if _loads_ok(fixed) or not (
             (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))

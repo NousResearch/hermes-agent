@@ -1355,6 +1355,105 @@ class TestOrphanPruneRequiresObservableDeletion:
         assert after["workdir_parent_ino"] == before["workdir_parent_ino"]
 
 
+class TestAmbiguousOrphanReporting:
+    """#109787: an entry prune will not delete must not be *presented* as a deletable orphan.
+
+    Repro shape: the workdir is under a parent that survives as an empty, non-mount
+    directory — exactly what a detached volume / unmounted share looks like. The entry
+    is unreachable, but ``_workdir_is_observably_gone()`` cannot prove the deletion, so
+    ``prune_checkpoints`` keeps it. ``store_status()`` must classify it ``ambiguous``
+    (not ``orphan``) and prune must report the deliberate retention instead of a bare
+    ``Deleted orphan: 0``.
+    """
+
+    def _deleted_workdir(self, tmp_path, checkpoint_base, monkeypatch, *, witness: bool):
+        """Register a project, then delete its workdir; ``witness`` keeps a sibling entry
+        in the parent, which is the positive proof that the project — and only it — is gone."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        parent = tmp_path / "workspaces"
+        work_dir = parent / "checkpoint-mount-lab"
+        work_dir.mkdir(parents=True)
+        (work_dir / "main.py").write_text("print('x')\n")
+        if witness:
+            (parent / "sibling-project").mkdir()
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+        shutil.rmtree(work_dir)
+        assert not work_dir.exists()
+        return work_dir
+
+    def _meta(self, checkpoint_base, work_dir):
+        return _project_meta_path(_store_path(checkpoint_base), _project_hash(str(work_dir)))
+
+    def test_unprovable_orphan_is_ambiguous_in_status_and_reported_by_prune(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        work_dir = self._deleted_workdir(tmp_path, checkpoint_base, monkeypatch, witness=False)
+        assert not any((tmp_path / "workspaces").iterdir()), "repro needs an empty parent"
+
+        info = store_status()
+        project = next(p for p in info["projects"] if p["workdir"] == str(work_dir.resolve()))
+        assert project["exists"] is False
+        assert project["state"] == "ambiguous", (
+            "status labeled an entry `orphan`, but prune cannot delete it without proof"
+        )
+
+        result = prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert result["deleted_orphan"] == 0
+        assert result["retained_ambiguous"] == 1, (
+            "prune silently kept an unreachable project without reporting why"
+        )
+        assert self._meta(checkpoint_base, work_dir).exists()
+
+    def test_provable_orphan_is_still_deleted_and_not_reported_as_retained(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Contrast: a sibling entry in the parent proves the deletion — the entry is a
+        plain ``orphan`` and prune deletes it (the safety gate itself is unchanged)."""
+        work_dir = self._deleted_workdir(tmp_path, checkpoint_base, monkeypatch, witness=True)
+
+        info = store_status()
+        project = next(p for p in info["projects"] if p["workdir"] == str(work_dir.resolve()))
+        assert project["state"] == "orphan"
+
+        result = prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert result["deleted_orphan"] == 1
+        assert result["retained_ambiguous"] == 0
+        assert not self._meta(checkpoint_base, work_dir).exists()
+
+    def test_pre_v2_blank_marker_is_ambiguous_in_status_and_retained_by_prune(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Pre-v2 shadow repo with a present-but-blank ``HERMES_WORKDIR`` marker: the
+        target is unknown, so it is never deletable — status has to say so too, or
+        `prune`'s preview promises a deletion that cannot happen (same #109787 shape,
+        pre-v2 layout)."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        shadow = _seed_legacy_repo(checkpoint_base, "abcdef1234567890", tmp_path / "gone")
+        (shadow / "HERMES_WORKDIR").write_text("")
+
+        info = store_status()
+        pre = next(p for p in info["pre_v2_projects"] if p["path"] == str(shadow))
+        assert pre["exists"] is False
+        assert pre["state"] == "ambiguous", (
+            "status labeled a blank-marker shadow repo `orphan`, but prune will not delete it"
+        )
+
+        result = prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert result["deleted_orphan"] == 0
+        assert result["retained_ambiguous"] == 1
+        assert shadow.exists(), "a shadow repo with an unreadable target must survive"
+
+
 # =========================================================================
 # session_diff — cumulative "what changed" view that powers /diff session
 # =========================================================================

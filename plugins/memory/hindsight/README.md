@@ -61,6 +61,7 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `bank_id` | `hermes` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
+| `recall_bank_allowlist` | — | Optional comma-separated list of alternate banks that `hindsight_recall` and `hindsight_reflect` may target with their per-call `bank` argument. Empty permits only the configured bank; disallowed targets return a visible error. |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
 
@@ -137,8 +138,8 @@ Available in `hybrid` and `tools` memory modes:
 | Tool | Description |
 |------|-------------|
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
-| `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+| `hindsight_recall` | Multi-strategy search (semantic + entity graph); accepts an optional `bank` and returns bank/document/source provenance per hit, plus `path` when a document sync recorded one and, for observations, `sources` (the distinct documents behind their supporting facts, up to 3) |
+| `hindsight_reflect` | Cross-memory synthesis (LLM-powered); accepts an optional `bank` |
 
 ## Environment Variables
 

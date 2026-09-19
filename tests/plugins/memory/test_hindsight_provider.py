@@ -535,6 +535,111 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    def test_recall_and_reflect_support_allowlisted_per_call_bank(self, provider_with_config):
+        provider = provider_with_config(recall_bank_allowlist="audit-bank, other-bank")
+
+        recall_props = RECALL_SCHEMA["parameters"]["properties"]
+        reflect_props = REFLECT_SCHEMA["parameters"]["properties"]
+        assert "bank" in recall_props
+        assert "bank" in reflect_props
+        assert "bank" not in RECALL_SCHEMA["parameters"]["required"]
+        assert "bank" not in REFLECT_SCHEMA["parameters"]["required"]
+
+        default_recall = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "default"}
+        ))
+        assert "bank=test-bank" in default_recall["result"]
+        assert provider._client.arecall.call_args.kwargs["bank_id"] == "test-bank"
+
+        recall = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit", "bank": "audit-bank"}
+        ))
+        reflect = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "audit", "bank": "other-bank"}
+        ))
+
+        assert "error" not in recall
+        assert "error" not in reflect
+        assert provider._client.arecall.call_args.kwargs["bank_id"] == "audit-bank"
+        assert provider._client.areflect.call_args.kwargs["bank_id"] == "other-bank"
+
+        blocked = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit", "bank": "private-bank"}
+        ))
+        assert "not allowed" in blocked["error"]
+        assert provider._client.arecall.await_count == 2
+
+    def test_per_call_bank_defaults_to_configured_bank_only(self, provider):
+        explicit_default = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "default", "bank": "test-bank"}
+        ))
+        blocked = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit", "bank": "other-bank"}
+        ))
+
+        assert "error" not in explicit_default
+        assert provider._client.arecall.call_args.kwargs["bank_id"] == "test-bank"
+        assert "not allowed" in blocked["error"]
+        assert "test-bank" in blocked["error"]
+        provider._client.arecall.assert_awaited_once()
+
+    def test_recall_result_preserves_per_hit_provenance(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(
+                text="Auditable memory",
+                document_id="doc-17",
+                metadata={"source": "session-import"},
+            ),
+            SimpleNamespace(text="Legacy memory", document_id=None, metadata=None),
+        ])
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit"}
+        ))["result"]
+
+        assert "Auditable memory [bank=test-bank; document_id=doc-17; source=session-import]" in result
+        assert "Legacy memory [bank=test-bank; document_id=unknown; source=unknown]" in result
+
+        prefetch_result, count = provider._do_recall("audit")
+        assert count == 2
+        assert "Auditable memory [bank=test-bank; document_id=doc-17; source=session-import]" in prefetch_result
+
+    def test_recall_provenance_cites_synced_path_and_observation_sources(self, provider):
+        paths = [f"notes/{name}.md" for name in "abcde"]
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(text="Alpha launches in March", document_id="notes/alpha.md",
+                                metadata={"path": "notes/alpha.md", "vault": "Notes"}),
+                SimpleNamespace(text="The user leads Alpha", document_id=None, metadata=None,
+                                source_fact_ids=["f1", "f2", "f3", "gone"]),
+                SimpleNamespace(text="Broad summary", document_id=None, metadata=None, source_fact_ids=paths),
+            ],
+            source_facts={
+                "f1": SimpleNamespace(document_id="notes/team.md", metadata={"path": "notes/team.md"}),
+                "f2": SimpleNamespace(document_id="notes/team.md", metadata={"path": "notes/team.md"}),
+                "f3": SimpleNamespace(document_id="session-42", metadata={"source": "hermes"}),
+                **{path: SimpleNamespace(document_id=path, metadata={"path": path}) for path in paths},
+            },
+        )
+
+        result = json.loads(provider.handle_tool_call("hindsight_recall", {"query": "alpha"}))["result"]
+
+        assert provider._client.arecall.call_args.kwargs["include_source_facts"] is True
+        assert result.splitlines() == [
+            "1. Alpha launches in March [bank=test-bank; document_id=notes/alpha.md; source=unknown; path=notes/alpha.md]",
+            "2. The user leads Alpha [bank=test-bank; document_id=unknown; source=unknown; sources=notes/team.md, session-42]",
+            "3. Broad summary [bank=test-bank; document_id=unknown; source=unknown; "
+            "sources=notes/a.md, notes/b.md, notes/c.md (+2 more)]",
+        ]
+        prefetch_result, _ = provider._do_recall("alpha")
+        assert "- The user leads Alpha [bank=test-bank; document_id=unknown; source=unknown; " \
+               "sources=notes/team.md, session-42]" in prefetch_result
+
+    def test_source_facts_not_requested_when_observations_are_excluded(self, provider_with_config):
+        provider = provider_with_config(recall_types="world,experience")
+        provider.handle_tool_call("hindsight_recall", {"query": "q"})
+        assert "include_source_facts" not in provider._client.arecall.call_args.kwargs
+
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -567,7 +672,10 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
 
-        assert result["result"] == "1. Recovered memory"
+        assert result["result"] == (
+            "1. Recovered memory "
+            "[bank=test-bank; document_id=unknown; source=unknown]"
+        )
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()

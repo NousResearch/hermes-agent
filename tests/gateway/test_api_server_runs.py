@@ -372,6 +372,133 @@ class TestStartRun:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_conversation_history: typed input items
+# ---------------------------------------------------------------------------
+
+
+class TestRunsConversationHistoryParsing:
+    @staticmethod
+    async def _run_and_wait(cli, mock_create, json_body):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_create.return_value = mock_agent
+
+        resp = await cli.post("/v1/runs", json=json_body)
+        assert resp.status == 202
+        run_id = (await resp.json())["run_id"]
+        for _ in range(40):
+            status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            if status["status"] == "completed":
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError(f"run {run_id} did not complete")
+        return mock_agent
+
+    @pytest.mark.asyncio
+    async def test_round_trips_output_items_back_into_input(self, adapter):
+        input_items = [
+            {"type": "function_call", "call_id": "call_1", "name": "search", "arguments": '{"q": "a"}'},
+            {"type": "function_call_output", "call_id": "call_1",
+             "output": [{"type": "input_text", "text": "result a"}]},
+            {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": "All done."}]},
+            {"role": "user", "content": "one more question"},
+        ]
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = await self._run_and_wait(cli, mock_create, {"input": input_items})
+
+        history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+        assert mock_agent.run_conversation.call_args.kwargs["user_message"] == "one more question"
+        assert not any(m.get("role") == "user" and not m.get("content") for m in history)
+
+        tool_call_msgs = [m for m in history if m.get("role") == "assistant" and m.get("tool_calls")]
+        assert len(tool_call_msgs) == 1
+        assert tool_call_msgs[0]["tool_calls"] == [
+            {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": '{"q": "a"}'}}]
+
+        tool_msgs = [m for m in history if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "call_1"
+        assert tool_msgs[0]["content"] == "result a"
+
+    @pytest.mark.asyncio
+    async def test_bare_trailing_string_is_the_user_message(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = await self._run_and_wait(
+                    cli, mock_create, {"input": [{"role": "user", "content": "earlier"}, "follow-up"]})
+        assert mock_agent.run_conversation.call_args.kwargs["user_message"] == "follow-up"
+
+    @pytest.mark.asyncio
+    async def test_typed_last_item_400s(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json={"input": [
+                {"role": "user", "content": "earlier"},
+                {"type": "function_call_output", "call_id": "c1", "output": "42"}]})
+            assert resp.status == 400
+            assert "must end with a user message" in (await resp.json())["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_conversation_history_accepts_function_call_items(self, adapter):
+        raw_history = [
+            {"type": "function_call", "call_id": "call_5", "name": "get_weather",
+             "arguments": '{"city": "NYC"}'},
+            {"type": "function_call_output", "call_id": "call_5", "output": "Sunny"},
+        ]
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = await self._run_and_wait(
+                    cli, mock_create, {"input": "thanks", "conversation_history": raw_history})
+
+        history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+        assert mock_agent.run_conversation.call_args.kwargs["user_message"] == "thanks"
+        assert history[0]["role"] == "assistant"
+        assert history[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert history[1] == {"role": "tool", "tool_call_id": "call_5", "content": "Sunny"}
+
+    @pytest.mark.asyncio
+    async def test_reasoning_item_in_conversation_history_does_not_400(self, adapter):
+        raw_history = [
+            {"type": "reasoning", "summary": [],
+             "content": [{"type": "reasoning_text", "text": "thinking about it"}]},
+            {"type": "function_call", "call_id": "call_9", "name": "search", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_9", "output": "ok"},
+        ]
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = await self._run_and_wait(
+                    cli, mock_create, {"input": "final question", "conversation_history": raw_history})
+
+        history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+        assistant_msg = next(m for m in history if m.get("role") == "assistant")
+        assert assistant_msg["reasoning_content"] == "thinking about it"
+
+    @pytest.mark.asyncio
+    async def test_invalid_multimodal_content_in_conversation_history_400s(self, adapter):
+        raw_history = [{"role": "user", "content": [{"type": "input_file", "file_id": "f1"}]}]
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs", json={"input": "hi", "conversation_history": raw_history})
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["error"]["param"] == "conversation_history[0].content"
+                mock_create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
 # ---------------------------------------------------------------------------
 

@@ -701,6 +701,7 @@ const sidebars: SidebarsConfig = {
           label: 'Other',
           items: [
             'user-guide/messaging/a2a',
+            'user-guide/messaging/mcp-http',
             'user-guide/messaging/homeassistant',
             'user-guide/messaging/mattermost',
             'user-guide/messaging/matrix',

@@ -1,6 +1,6 @@
 name: rss-reader
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 81200a798f5f8c62af73202ac0df133e9a66a99e
+sha: 7e39b1159a377d473bb47af1be8a3a1d42f307f5
 subdir: plugins/rss-reader
 description: "Desktop RSS reader with reader-mode capture, drag-reorder subscriptions, mute rules, saved searches, AI summaries, keyboard shortcuts, and an optional headline ticker."
 maintainer: apoapostolov

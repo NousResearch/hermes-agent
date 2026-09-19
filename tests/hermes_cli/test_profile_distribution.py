@@ -502,6 +502,26 @@ class TestUpdate:
         with pytest.raises(DistributionError, match="not a distribution"):
             update_distribution("plain")
 
+    def test_update_without_a_source_prints_a_usable_reinstall_command(self, profile_env):
+        """The remediation line is meant to be copy-pasted, so it must name the profile.
+
+        A manifest can legitimately carry no ``source:`` — one shipped in a repo, or written
+        by hand — and then ``hermes profile update`` can only tell the user to re-install.
+        """
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="sourceless")
+        on_disk = read_manifest(plan.target_dir)
+        on_disk.source = ""
+        write_manifest(plan.target_dir, on_disk)
+
+        with pytest.raises(DistributionError) as excinfo:
+            update_distribution("sourceless")
+
+        message = str(excinfo.value)
+        assert "has no recorded source" in message
+        assert "--name sourceless" in message, message
+        assert "{canon}" not in message, "the suggested command must not contain a placeholder"
+
 
 # ===========================================================================
 # describe_distribution — info subcommand

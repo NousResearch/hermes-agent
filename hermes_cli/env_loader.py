@@ -52,6 +52,31 @@ _DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
 _DOTENV_PASSES = itertools.count()
 _DOTENV_LOCK = threading.RLock()
 
+# Only this setting needs startup provenance: approval.py freezes its value and source together.
+_YOLO_MODE_SOURCE: tuple[str | None, str] | None = None
+
+
+def _record_yolo_mode_source(source: str) -> None:
+    global _YOLO_MODE_SOURCE
+    _YOLO_MODE_SOURCE = (os.environ.get("HERMES_YOLO_MODE"), source)
+
+
+def enable_yolo_mode(source: str) -> None:
+    """Bridge an explicit CLI choice to the existing env flag, retaining its origin."""
+    with _DOTENV_LOCK:
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        _record_yolo_mode_source(source)
+
+
+def get_yolo_mode_source() -> str:
+    """Describe the actual writer; never infer a file from a matching on-disk value."""
+    with _DOTENV_LOCK:
+        if _YOLO_MODE_SOURCE is not None:
+            value, source = _YOLO_MODE_SOURCE
+            if value == os.environ.get("HERMES_YOLO_MODE"):
+                return source
+    return "HERMES_YOLO_MODE in process environment"
+
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
 # profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
@@ -299,6 +324,8 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | N
             baseline = record[0] if record is not None and current == record[1] else current
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
+            if name == "HERMES_YOLO_MODE":
+                _record_yolo_mode_source(f"HERMES_YOLO_MODE in {path.absolute()}")
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
@@ -543,6 +570,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+            if name == "HERMES_YOLO_MODE":
+                _record_yolo_mode_source(f"HERMES_YOLO_MODE from {applied.source}")
 
     # Snapshot EVERY name a source supplied, not just the newly applied ones. A name the source supplied
     # but the pre-existing process value won (``skipped_existing``) is still this home's effective value

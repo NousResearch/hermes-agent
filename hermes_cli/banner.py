@@ -882,8 +882,14 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
     else:
         model_short = model.split("/")[-1].removesuffix(".gguf")
         lines.append(f"[{accent}]{_short_label(model_short)}[/]{ctx_str}{nous_str}")
-    if os.getenv("HERMES_YOLO_MODE"):
-        lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
+    from hermes_cli.approval_mode import approval_bypass_sources
+    from rich.markup import escape
+    from rich.text import Text
+
+    if bypass_sources := approval_bypass_sources():
+        sources = escape("; ".join(bypass_sources))
+        lines.append(Text.from_markup(
+            f"[bold red]⚠ approval bypass active[/] [dim {dim}]via {sources}[/]", overflow="fold"))
     lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
         lines.append(f"[dim {_skin_color('session_border', '#8B8682')}]Session: {session_id}[/]")
@@ -946,8 +952,10 @@ def build_welcome_banner(
     Passing a precomputed ``availability`` together with ``get_toolset_for_tool`` avoids any
     ``model_tools`` import (banner snapshot replay).
     """
+    from rich.console import Group
     from rich.panel import Panel
     from rich.table import Table
+    from rich.text import Text
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
     tools = tools or []
@@ -1012,7 +1020,9 @@ def build_welcome_banner(
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("left", justify="left")
     layout_table.add_column("right", justify="left")
-    layout_table.add_row("\n".join(left_lines), "\n".join(right_lines))
+    # Preserve the notice's fold policy: the grid's default ellipsis can hide the source filename.
+    left_content = Group(*left_lines) if any(isinstance(line, Text) for line in left_lines) else "\n".join(left_lines)
+    layout_table.add_row(left_content, "\n".join(right_lines))
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:

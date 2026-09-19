@@ -651,7 +651,7 @@ if sys.platform == "win32":
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import enable_yolo_mode, load_hermes_dotenv
 
 # ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
 # helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
@@ -1778,7 +1778,7 @@ def cmd_chat(args):
     # before tool imports freeze _YOLO_MODE_FROZEN. This is a safety net for
     # callers that invoke cmd_chat directly (e.g. subcommand dispatch).
     if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
+        enable_yolo_mode("--yolo")
     # --ignore-rules: skip AGENTS.md/SOUL.md/.cursorrules injection, memory
     # entries and preloaded skills (AIAgent(skip_context_files, skip_memory)).
     if getattr(args, "ignore_rules", False):
@@ -2852,7 +2852,7 @@ def _prepare_agent_startup(args) -> None:
     # here directly, so the guarantee lives where the import is triggered.
     # See #7994.
     if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
+        enable_yolo_mode("--yolo")
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
@@ -3116,7 +3116,7 @@ def _try_fast_chat_launch() -> bool:
         return False
 
     if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
+        enable_yolo_mode("--yolo")
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
@@ -3514,7 +3514,7 @@ def main():
     # --yolo must be set *before* plugin discovery: tools.approval freezes
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
     if getattr(args, "yolo", False):
-        os.environ["HERMES_YOLO_MODE"] = "1"
+        enable_yolo_mode("--yolo")
 
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and

@@ -443,8 +443,14 @@ class CompressionCommitFence:
         self._deadline = time.monotonic() + seconds
 
     def touch_progress(self) -> None:
-        """Record forward progress (a streamed token); a bare float store is atomic, so no lock."""
+        """Record progress and hand the hard bound to the active provider stream.
+
+        The host ceiling bounds pre-stream work. Once substantive output arrives,
+        the provider's inactivity and hard-ceiling guards are authoritative; the
+        earlier host deadline must not abort a healthy slow stream (#113646).
+        """
         self._last_progress = time.monotonic()
+        self._deadline = None
         self._progress_observed = True
 
     @property
@@ -997,23 +1003,28 @@ def _run_pinned_compression_retry(
 def _await_worker_within_budget(
     future: Any, fence: CompressionCommitFence, *, idle: float, ceiling: float, wait_started: float
 ) -> Tuple[bool, Any]:
-    """Poll ``future`` under the idle budget + ceiling; ``(True, result)`` when it settled."""
+    """Poll under the inactivity budget and pre-stream ceiling."""
     while True:
         waited = time.monotonic() - wait_started
+        progress_observed = fence.progress_observed
         remaining_ceiling = ceiling - waited
-        if remaining_ceiling <= 0:
+        if not progress_observed and remaining_ceiling <= 0:
             return False, None
         # Charge idle budget from LAST PROGRESS, not slice start, or silence could approach 2x the budget.
         since_progress = fence.seconds_since_progress()
-        wait_slice = min(max(idle - since_progress, 0.005), remaining_ceiling)
+        wait_slice = max(idle - since_progress, 0.005)
+        if not progress_observed:
+            wait_slice = min(wait_slice, remaining_ceiling)
         try:
             return True, future.result(timeout=wait_slice)
         except concurrent.futures.TimeoutError:
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()
-            if not fence.deadline_exceeded and since_progress < idle and waited < ceiling:
+            progress_observed = fence.progress_observed
+            if since_progress < idle and (progress_observed or (not fence.deadline_exceeded and waited < ceiling)):
                 logger.info(
-                    "Context compression still streaming after %.0fs (last progress %.1fs ago) — extending wait (ceiling %.0fs)",
+                    "Context compression still streaming after %.0fs (last progress %.1fs ago) — extending wait "
+                    "(pre-stream ceiling %.0fs)",
                     waited, since_progress, ceiling,
                 )
                 continue
@@ -1188,7 +1199,11 @@ def run_compress_context_with_progress_timeout(
         # F6: a not-yet-started future must not linger as a stale queued job.
         # cancel() is a no-op for a running worker (fence handles that path).
         future.cancel()
-        total_exhausted = time.monotonic() - wait_started >= ceiling or fence.deadline_exceeded
+        # The host ceiling is retired after substantive stream output. A later
+        # inactivity timeout remains a stall, even when wall time is > ceiling.
+        total_exhausted = not fence.progress_observed and (
+            time.monotonic() - wait_started >= ceiling or fence.deadline_exceeded
+        )
         # #97488 teardown (total-ceiling path only): give the cancelled worker a bounded grace to actually
         # exit before this host moves on. The worker checks the poison fence between provider phases, so a
         # cooperative worker exits quickly; an uninterruptible provider call is orphaned behind the fence
@@ -2913,9 +2928,12 @@ def _run_summary_dispatch(
     # inactivity-based and a byte-trickling provider hits the stream total ceiling.
     from agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook, aux_stream_deadline
     _progress_hook = commit_fence.touch_progress if commit_fence is not None else (lambda: None)
-    # Return leg: cancel frees the owner but the provider daemon streams on to its
-    # own larger ceiling; share the host deadline so orphan streams stop with it.
-    _host_stream_deadline = commit_fence.deadline_monotonic if commit_fence is not None else None
+    # Return leg: share the pre-stream host deadline so a cancelled request cannot
+    # become an orphan. The dynamic source retires after semantic progress, when
+    # the provider's own inactivity + hard ceiling take ownership.
+    # Resolve lazily in the stream consumer: first semantic progress clears the
+    # host's pre-stream deadline. Sampling the float here would keep it armed.
+    _host_stream_deadline = (lambda: commit_fence.deadline_monotonic) if commit_fence is not None else None
     # A LATE successful summary must not undo the host's timeout cooldown: the
     # compressor checks cancellation before clearing; removed in finally (no leak).
     if commit_fence is not None:

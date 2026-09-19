@@ -145,9 +145,7 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        # 1 dispatch tick (preserved for the watchdog's historical liveness
-        # signal — see _create_with_progress) + 1 per substantive chunk.
-        assert ticks == [1, 1, 1, 1]
+        assert ticks == [1, 1, 1]
 
     def test_completed_response_ticks_only_terminal_signals(self):
         calls = []
@@ -166,11 +164,8 @@ class TestCreateWithProgress:
 
         assert calls[0]["stream"] is True
         assert result is _COMPLETE
-        # A completed response object carries the full summary payload, and
-        # the dispatch tick is the watchdog's historical liveness signal:
-        # both are one-shot terminal ticks, not per-frame keepalives, so
-        # neither can defeat an inactivity timeout.
-        assert ticks == [1, 1]
+        # A completed response object carries the full summary payload.
+        assert ticks == [1]
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
         client = _FakeClient(
@@ -473,6 +468,7 @@ class TestContentBearingProgress:
         through _ChatStreamAccumulator ticked the fence, so a stalled
         summary stream never hit the inactivity timeout."""
         fence = CompressionCommitFence()
+        initial_progress = fence._last_progress
         accumulator = _ChatStreamAccumulator()
         keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
         empty_role_chunk = _chunk(content="", reasoning="")
@@ -482,7 +478,7 @@ class TestContentBearingProgress:
                 accumulator.feed(keepalive)
                 accumulator.feed(empty_role_chunk)
         # No substantive payload arrived: the fence must have stayed stale.
-        assert fence.seconds_since_progress() > 0.0
+        assert fence._last_progress == initial_progress
 
         with aux_progress_hook(fence.touch_progress):
             accumulator.feed(_chunk(content="token"))

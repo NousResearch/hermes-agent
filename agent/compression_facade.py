@@ -74,10 +74,11 @@ def _report_compression_timeout(
             "dropped — continuing without compression. Run /compress to retry or /new for a clean session."
         )
     else:
+        progress = "without new summary output" if progress_observed else "with no output from the summary model"
         emit(
-            f"⚠ Context compression timed out after {idle:.1f}s with no output from the summary "
-            "model. No messages were dropped — continuing without compression. Run /compress to retry, /new "
-            "for a clean session, or check auxiliary.compression."
+            f"⚠ Context compression timed out after {idle:.1f}s {progress}. No messages were dropped — "
+            "continuing without compression. Run /compress to retry, /new for a clean session, or check "
+            "auxiliary.compression."
         )
 
 

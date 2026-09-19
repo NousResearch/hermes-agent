@@ -79,14 +79,14 @@ class TestWorkerTeardownOnCeiling:
         worker_done = threading.Event()
 
         def cooperative_worker(fence: CompressionCommitFence):
-            # Continuous progress (the #97488 'last progress 0.0s ago'
-            # shape) so only the TOTAL ceiling expires; poll the poison
-            # fence like the production worker does between provider phases.
+            # Pre-stream work polls the poison fence like the production worker
+            # does between provider phases. Active streams now transfer ceiling
+            # ownership to the provider (#113646), so this teardown contract is
+            # intentionally pinned before any semantic progress.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if fence.is_cancelled:
                     break
-                fence.touch_progress()
                 time.sleep(0.01)
             # Cooperative-but-not-instant exit: the unwind after seeing the
             # poison takes real time (rollback, telemetry). Long enough that
@@ -101,9 +101,8 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            # Keep idle expiry out of this total-ceiling test under runner load.
             idle_timeout_seconds=2.0,
-            total_ceiling_seconds=0.2,
+            total_ceiling_seconds=2.0,
             fence=fence,
             stall_fallback=False,
         )
@@ -132,10 +131,10 @@ class TestWorkerTeardownOnCeiling:
         lock_released: list[float] = []
 
         def stuck_worker(fence: CompressionCommitFence):
-            # Continuous progress so only the TOTAL ceiling can expire
-            # (the #97488 'last progress 0.0s ago' shape).
+            # An uninterruptible pre-stream provider call cannot report semantic
+            # progress and ignores the poison fence until the call returns.
             while not release.wait(timeout=0.02):
-                fence.touch_progress()
+                pass
             worker_finished.set()
             if not fence.begin_commit():
                 return (original, "")
@@ -152,8 +151,8 @@ class TestWorkerTeardownOnCeiling:
             worker=stuck_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=0.3,
+            idle_timeout_seconds=2.0,
+            total_ceiling_seconds=2.0,
             fence=fence,
             stall_fallback=False,
         )

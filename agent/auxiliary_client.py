@@ -365,20 +365,20 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
     """Per-event callback for the Anthropic aux wire: progress only for substantive payloads
     (keepalives must not keep a stalled summary alive), stop at the host deadline or explicit
     cancel. The ``TimeoutError`` text must say "timed out" so ``_is_timeout_error`` classifies it."""
-    host_deadline = _current_aux_stream_deadline()
     started = time.monotonic()
 
     def _on_event(event: Any) -> None:
-        if _anthropic_event_has_content(event):
-            _notify_aux_provider_response()
-        else:
-            _notify_aux_timing_response()
+        has_content = _anthropic_event_has_content(event)
+        _notify_aux_timing_response()
         if _aux_interrupt_cancel_requested():
             raise AuxiliaryExplicitCancellation()
+        host_deadline = _current_aux_stream_deadline()
         if host_deadline is not None and time.monotonic() >= host_deadline:
             raise TimeoutError(
                 "Anthropic auxiliary stream timed out at the host compression "
                 f"deadline after {time.monotonic() - started:.0f}s (the caller already stopped waiting)")
+        if has_content:
+            _notify_aux_progress()
 
     return _on_event
 
@@ -406,13 +406,20 @@ def aux_progress_hook(hook):
         yield
 
 
+def _resolve_aux_stream_deadline(source: Any) -> Optional[float]:
+    """Resolve a captured numeric or dynamic host-deadline source."""
+    if callable(source):
+        source = source()
+    return float(source) if isinstance(source, (int, float)) else None
+
+
 def _current_aux_stream_deadline() -> Optional[float]:
     """The waiting host's absolute monotonic deadline, if one is installed."""
-    return getattr(_aux_stream_deadline, "value", None)
+    return _resolve_aux_stream_deadline(getattr(_aux_stream_deadline, "value", None))
 
 
 @contextlib.contextmanager
-def aux_stream_deadline(deadline: Optional[float]):
+def aux_stream_deadline(deadline: Any):
     """Publish the host's absolute ``time.monotonic()`` deadline to the stream consumer.
 
     ``None`` is a passthrough; re-entrant-safe. Host->worker return leg of the progress hook:
@@ -426,7 +433,7 @@ def aux_stream_deadline(deadline: Optional[float]):
     session that compression never managed to shrink. See #99692.
     """
     previous = getattr(_aux_stream_deadline, "value", None)
-    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) else previous
+    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) or callable(deadline) else previous
     try:
         yield
     finally:
@@ -454,7 +461,9 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
     progress_hook = getattr(_aux_progress, "hook", None)
     dispatch_hook = getattr(_aux_dispatch, "hook", None)
     provider_response_hook = getattr(_aux_provider_response, "hook", None)
-    host_deadline = _current_aux_stream_deadline()
+    # Preserve the dynamic source so a compression fence can retire its
+    # pre-stream deadline after first semantic output (#113646).
+    host_deadline = getattr(_aux_stream_deadline, "value", None)
     # #99692: the stream is consumed on the daemon below, and thread-locals do not cross that boundary — an
     # owner-thread-only deadline would leave the fix inert on exactly the path large-session compression
     # takes (protected call + hard-cancel source installed).
@@ -1149,6 +1158,10 @@ class _CodexStreamGuard:
     def __init__(self, client: Any, total_timeout: Optional[float]):
         self._client = client
         self.total_timeout = total_timeout
+        # Timer callbacks run on fresh threads and cannot read the provider
+        # thread's local. Preserve the source (not its current value) so a
+        # compression fence can still retire the deadline after first output.
+        self._host_deadline_source = getattr(_aux_stream_deadline, "value", None)
         self._start = time.monotonic()
         self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
         # Progress-aware stream deadlines (supersedes the old single absolute kill at ``total_timeout``).
@@ -1166,12 +1179,6 @@ class _CodexStreamGuard:
         if total_timeout is not None:
             self.no_progress_timeout = min(self.no_progress_timeout, float(total_timeout))
         self.hard_deadline = self._start + _aux_stream_total_ceiling(total_timeout)
-        # The waiting host's absolute deadline clamps the ceiling so the watchdog Timer severs
-        # the socket the instant the host stops waiting — a stream blocked between events
-        # can't be stopped by a per-event check.
-        host_deadline = _current_aux_stream_deadline()
-        if isinstance(host_deadline, (int, float)) and host_deadline < self.hard_deadline:
-            self.hard_deadline = float(host_deadline)
         self._deadline_lock = threading.Lock()
         self._progress_deadline = self._start + self.no_progress_timeout
         self.saw_content = threading.Event()
@@ -1180,6 +1187,7 @@ class _CodexStreamGuard:
         # owner's ``finally`` the shared client's FDs still need a real close.
         self.timeout_release_pending = threading.Event()
         self.stream_finished = threading.Event()
+        self._timeout_cause: Optional[str] = None
         self._timer = None
         # The owner may return on hard cancel while this attempt is still blocked in the SDK
         # stream. Timer threads don't inherit the worker's thread-local protection state, so
@@ -1190,9 +1198,19 @@ class _CodexStreamGuard:
         # The request-driving thread owns the transport FDs — see _close_client_on_timeout.
         self._owner_tid = threading.get_ident()
 
-    def effective_deadline(self) -> float:
+    def _effective_deadline_state(self) -> Tuple[float, str]:
         with self._deadline_lock:
-            return min(self.hard_deadline, self._progress_deadline)
+            if self.hard_deadline <= self._progress_deadline:
+                deadline, cause = self.hard_deadline, "hard"
+            else:
+                deadline, cause = self._progress_deadline, "progress"
+            host_deadline = _resolve_aux_stream_deadline(self._host_deadline_source)
+            if host_deadline is not None and host_deadline <= deadline:
+                return host_deadline, "host"
+            return deadline, cause
+
+    def effective_deadline(self) -> float:
+        return self._effective_deadline_state()[0]
 
     def cancel_requested(self) -> bool:
         """True when the frozen hard-cancel source says the owner already cancelled."""
@@ -1220,9 +1238,15 @@ class _CodexStreamGuard:
         with self._deadline_lock:
             self._progress_deadline = time.monotonic() + self.no_progress_timeout
 
-    def timeout_message(self) -> str:
-        elapsed = time.monotonic() - self._start
-        if time.monotonic() >= self.hard_deadline:
+    def timeout_message(self, now: Optional[float] = None, cause: Optional[str] = None) -> str:
+        now = time.monotonic() if now is None else now
+        elapsed = now - self._start
+        cause = cause or self._timeout_cause
+        if cause == "host":
+            return (
+                "Codex auxiliary Responses stream timed out at the host compression "
+                f"deadline after {elapsed:.1f}s (the caller already stopped waiting)")
+        if cause == "hard" or (cause is None and now >= self.hard_deadline):
             return f"Codex auxiliary Responses stream exceeded {self.hard_deadline - self._start:.1f}s hard ceiling"
         if not self.saw_content.is_set():
             return (
@@ -1282,10 +1306,13 @@ class _CodexStreamGuard:
             logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
     def check_cancelled(self) -> None:
-        if self.total_timeout is not None and time.monotonic() >= self.effective_deadline():
+        now = time.monotonic()
+        deadline, cause = self._effective_deadline_state()
+        if self.total_timeout is not None and now >= deadline:
+            self._timeout_cause = cause
             if not self.timed_out.is_set():
                 self._close_client_on_timeout()
-            raise TimeoutError(self.timeout_message())
+            raise TimeoutError(self.timeout_message(now, cause))
         try:
             from tools.interrupt import is_interrupted
             # Protected atomic aux tasks (compression) must not abort on a mid-flight gateway
@@ -1305,11 +1332,13 @@ class _CodexStreamGuard:
     def _watchdog_fire(self) -> None:
         # Re-armable: if progress moved the deadline forward, reschedule instead of killing a
         # live stream.
-        remaining = self.effective_deadline() - time.monotonic()
+        deadline, cause = self._effective_deadline_state()
+        remaining = deadline - time.monotonic()
         if remaining > 0:
             if not (self.timed_out.is_set() or self.stream_finished.is_set()):
                 self._arm_timer(remaining)
             return
+        self._timeout_cause = cause
         self._close_client_on_timeout()
 
     def _arm_timer(self, delay: float) -> None:
@@ -1329,12 +1358,13 @@ class _CodexStreamGuard:
         # so a zombie stream dies at the same window as a dead connection.
         # #93650: keep bulk wire-format payload out of the SDK's GIL-holding request transform on auxiliary
         # calls too.
-        if _codex_event_has_content(_event):
+        has_content = _codex_event_has_content(_event)
+        _notify_aux_timing_response()
+        self.check_cancelled()
+        if has_content:
             self.record_progress()
             self.saw_content.set()
-            _notify_aux_provider_response()
-        else:
-            _notify_aux_timing_response()
+            _notify_aux_progress()
         self.check_cancelled()
 
     def finish(self) -> None:
@@ -6752,7 +6782,6 @@ def _create_with_progress_once(
     error is surfaced to the normal recovery chains instead.
     """
     _notify_aux_dispatch()
-    _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
@@ -6802,7 +6831,10 @@ def _aggregate_chat_stream(
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
     ``_is_timeout_error`` matches) when *total_ceiling* elapses."""
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+        model=model,
+        total_ceiling=total_ceiling,
+        host_deadline_source=getattr(_aux_stream_deadline, "value", None),
+    )
     try:
         for chunk in chunks:
             acc.feed(chunk)
@@ -6819,7 +6851,7 @@ class _ChatStreamAccumulator:
     """Shared per-chunk accumulation so sync and async aggregation cannot drift."""
 
     def __init__(self, model: str = "", total_ceiling: Optional[float] = None,
-                 host_deadline: Optional[float] = None):
+                 host_deadline_source: Any = None):
         self._started = time.monotonic()
         self._total_ceiling = total_ceiling
         # Absolute instant the waiting host gives up; checked alongside (not instead of) the
@@ -6827,7 +6859,7 @@ class _ChatStreamAccumulator:
         # Checked as well as (not instead of) the ceiling above: the ceiling still bounds callers with no
         # host deadline, and the host deadline is absolute, so it is unaffected by however long dispatch and
         # TTFT took before this accumulator was constructed. See #99692.
-        self._host_deadline = host_deadline
+        self._host_deadline_source = host_deadline_source
         self.content_parts: List[str] = []
         self.reasoning_parts: List[str] = []
         self.reasoning_details: List[Any] = []
@@ -6842,7 +6874,8 @@ class _ChatStreamAccumulator:
         if self._total_ceiling is not None and (now - self._started) >= self._total_ceiling:
             raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
                                "total ceiling (stream still open but over budget)")
-        if self._host_deadline is not None and now >= self._host_deadline:
+        host_deadline = _resolve_aux_stream_deadline(self._host_deadline_source)
+        if host_deadline is not None and now >= host_deadline:
             raise TimeoutError("Auxiliary streamed call timed out at the host compression "
                                f"deadline after {time.monotonic() - self._started:.0f}s "
                                "(the caller already stopped waiting; streaming on would only "
@@ -6943,7 +6976,10 @@ async def _aggregate_chat_stream_async(
 ) -> Any:
     """Async mirror of :func:`_aggregate_chat_stream` (AsyncOpenAI streams need ``async for``)."""
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+        model=model,
+        total_ceiling=total_ceiling,
+        host_deadline_source=getattr(_aux_stream_deadline, "value", None),
+    )
     try:
         async for chunk in chunks:
             acc.feed(chunk)
@@ -6975,7 +7011,6 @@ async def _acreate_with_progress(
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
     _notify_aux_dispatch()
-    _notify_aux_progress()
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
         response = await client.chat.completions.create(**kwargs)
         if not _async_client_streams_internally(client):

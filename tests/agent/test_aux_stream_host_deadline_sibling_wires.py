@@ -25,6 +25,7 @@ import pytest
 
 from agent import auxiliary_client as aux
 from agent.anthropic_adapter import create_anthropic_message
+from agent.conversation_compression import CompressionCommitFence
 
 
 # ── Codex Responses wire ─────────────────────────────────────────────────
@@ -73,13 +74,14 @@ def test_codex_stream_stops_at_the_host_deadline_not_its_own_ceiling():
     with (
         patch("agent.codex_runtime._consume_codex_event_stream", _consume_codex),
         aux.aux_stream_deadline(time.monotonic() + 0.4),
-        pytest.raises(TimeoutError, match="hard ceiling"),
+        pytest.raises(TimeoutError, match="host compression deadline") as excinfo,
     ):
         adapter.create(
             messages=[{"role": "user", "content": "summarize"}],
             timeout=300,
         )
     elapsed = time.monotonic() - start
+    assert "60.0s" not in str(excinfo.value)
     assert elapsed < 5.0, f"stream outlived the host deadline by {elapsed:.1f}s"
     assert yielded[0] < 100
 
@@ -95,6 +97,28 @@ def test_codex_stream_without_host_deadline_keeps_its_ceiling():
             messages=[{"role": "user", "content": "summarize"}], timeout=300,
         )
     assert response.choices[0].message.content == "summary"
+
+
+def test_codex_late_first_event_does_not_retire_host_deadline(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(aux.time, "monotonic", lambda: clock[0])
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+    deadline = fence.deadline_monotonic
+
+    with (
+        aux.aux_progress_hook(fence.touch_progress),
+        aux.aux_stream_deadline(lambda: fence.deadline_monotonic),
+    ):
+        guard = aux._CodexStreamGuard(
+            SimpleNamespace(close=lambda: None), total_timeout=300.0
+        )
+        clock[0] = 102.0
+        with pytest.raises(TimeoutError):
+            guard.on_event(_codex_content_event())
+
+    assert fence.progress_observed is False
+    assert fence.deadline_monotonic == deadline
+    assert guard.saw_content.is_set() is False
 
 
 # ── Anthropic Messages wire ──────────────────────────────────────────────
@@ -153,6 +177,27 @@ def test_anthropic_stream_stops_at_the_host_deadline():
     assert stream.exited, "stream context must be closed on the deadline"
     assert ticks, "substantive deltas must still tick the progress hook"
     assert stream.yielded < 1000
+
+
+def test_anthropic_late_first_event_does_not_retire_host_deadline(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(aux.time, "monotonic", lambda: clock[0])
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+    deadline = fence.deadline_monotonic
+
+    with (
+        aux.aux_progress_hook(fence.touch_progress),
+        aux.aux_stream_deadline(lambda: fence.deadline_monotonic),
+    ):
+        hook = aux._anthropic_aux_stream_event_hook()
+        clock[0] = 102.0
+        with pytest.raises(TimeoutError, match="host compression deadline"):
+            hook(SimpleNamespace(
+                type="content_block_delta", delta=SimpleNamespace(text="late"),
+            ))
+
+    assert fence.progress_observed is False
+    assert fence.deadline_monotonic == deadline
 
 
 def test_anthropic_stream_honours_an_explicit_hard_cancel():

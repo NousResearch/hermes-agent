@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   $composerSuggestionsBySession,
+  clearDraftSuggestions,
   type ComposerSuggestion,
   markSuggestionInvoked,
   offerSuggestions,
+  registerDraftProvider,
+  sampleComposerDraft,
   suggestionKey
 } from './composer-suggestions'
 
@@ -122,5 +125,31 @@ describe('composer suggestion bus', () => {
     expect($composerSuggestionsBySession.get().s9).toBe(first)
 
     offerSuggestions('s9', 'test', [])
+  })
+
+  it('does not restore draft suggestions after their composer is cleared', async () => {
+    vi.useFakeTimers()
+
+    let resolveProvider!: (suggestions: ComposerSuggestion[]) => void
+
+    const unregister = registerDraftProvider(
+      'late-provider',
+      () => new Promise(resolve => void (resolveProvider = resolve))
+    )
+
+    try {
+      sampleComposerDraft('closed-session', 'install linear')
+      await vi.advanceTimersByTimeAsync(600)
+      clearDraftSuggestions('closed-session')
+
+      resolveProvider([suggestion('late', 'late-provider')])
+      await vi.runAllTimersAsync()
+
+      expect(pillsFor('closed-session')).toEqual([])
+    } finally {
+      unregister()
+      clearDraftSuggestions('closed-session')
+      vi.useRealTimers()
+    }
   })
 })

@@ -1,0 +1,90 @@
+{
+  "skill": "threads-post",
+  "version": "1.0.0",
+  "description": "Writes a Threads-native conversation post (text <=500 + optional media) built to earn replies, plus the WoopSocial Threads publish facts. Threads is conversation-first: replies outweigh likes, engagement velocity (first 30-90 min) drives distribution, the For You feed surfaces new accounts, one niche topic tag feeds topic-neighbourhoods, and links are now rewarded inline. Uses the REPLY framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes ONE Threads post (no native multi-post chain, no polls/voice/GIF, no reply surface); the replying that drives reach is a human/community-management job; no update endpoint (edit = delete+recreate); metrics never fabricated; no engagement bait. Distinct from thread-writer (a user saying 'write a thread' wants that multi-post X chain, not this), x-growth (sibling text platform, different culture) and caption-writer (text only).",
+  "evals": [
+    {
+      "name": "conversation_starter_not_broadcast",
+      "input": "Write me a Threads post.",
+      "context": "brand-profile and goals-and-kpis exist.",
+      "expect": [
+        "Writes a conversation starter (question / hot take / opinion) that gives people a reason to reply, not a broadcast or promo",
+        "Introduces the REPLY framework and reads brand-profile + goals-and-kpis first",
+        "Keeps it within Threads' 500-character limit and in an authentic, human voice (not a press release)",
+        "Adds a single niche topic tag (not a pile of hashtags)"
+      ]
+    },
+    {
+      "name": "reads_brand_goals_first",
+      "input": "Plan some Threads content for us.",
+      "context": "brand-profile, goals-and-kpis exist.",
+      "expect": [
+        "Pulls brand-profile (niche/voice) + goals-and-kpis before drafting",
+        "Keeps a consistent niche so the topic-neighbourhood algorithm can categorize the account",
+        "Ties posts to the goal (replies / profile visits / follower growth) rather than vanity likes",
+        "Plans a consistent cadence (around one post a day) plus reply time"
+      ]
+    },
+    {
+      "name": "velocity_and_reply_rule",
+      "input": "How do I actually get reach on Threads?",
+      "expect": [
+        "Leads with the Mosseri rule: reply much more than you post — replies, not posts, are where reach is won",
+        "Explains replies outweigh likes and conversation depth/velocity (first 30-90 minutes) drive distribution",
+        "Notes the For You feed surfaces new/smaller accounts, so it's an open window (tightening as ads roll out)",
+        "Stresses niche consistency (topic-neighbourhoods) and posting at a peak window, ready to reply fast"
+      ]
+    },
+    {
+      "name": "format_and_publish_correct",
+      "input": "Set it up to post to Threads via WoopSocial.",
+      "expect": [
+        "States WoopSocial publishes a Threads text post (<=500 chars) plus optional media (raw-bytes upload)",
+        "Notes photos tend to out-engage text-only, and links can go inline now (the old link penalty was reversed) with no first-comment tax like X/LinkedIn",
+        "Notes it's a SINGLE post (the API content array is one item — no native multi-post chain) and that polls/voice notes/GIFs are native-app only",
+        "Recommends SCHEDULE_FOR_LATER to a velocity window, one topic tag, and validating before publish"
+      ]
+    },
+    {
+      "name": "pushback_on_engagement_bait_and_promised_virality",
+      "input": "Fill it with 'comment YES if you agree' bait, cross-post our press release, and tell me it'll 3x our reach.",
+      "expect": [
+        "Refuses engagement bait — Threads' algorithm actively penalizes it (Mosseri crackdown) and it's dishonest",
+        "Warns that promotional / press-release tone is suppressed on Threads and reads as broadcast, not conversation",
+        "Refuses to promise a reach multiple (reach varies; organic is tightening as ads roll out) and won't fabricate metrics",
+        "Redirects to a genuine conversation starter in the brand's voice"
+      ]
+    },
+    {
+      "name": "edge_case_thread_chain_or_native_only",
+      "input": "Schedule a 5-post thread with a poll in it.",
+      "expect": [
+        "Explains WoopSocial publishes ONE post per create — the API content array is a single item, so there's no native multi-post chain",
+        "Notes polls (and voice notes/GIFs) aren't exposed via the API — they're native-app only",
+        "Offers honest options: schedule the lead post via WoopSocial and add the chain/poll natively, or publish separate single posts",
+        "Doesn't pretend the format is supported when it isn't"
+      ]
+    },
+    {
+      "name": "honest_scope_publishes_post_not_replies",
+      "input": "Run my Threads engagement and reply to everyone for me.",
+      "expect": [
+        "States WoopSocial has no comment/DM/reply surface — it publishes and schedules the POST only",
+        "Clarifies the replying that actually drives Threads reach is a human job (-> community-management), which the agent can draft reply angles for but a person sends",
+        "Notes there's no update endpoint, so an edit means delete + recreate (only while delivery hasn't started)",
+        "Notes performance comes from native Threads analytics and is never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just x-growth or caption-writer?",
+      "expect": [
+        "Distinguishes threads-post (the Threads-native conversation post + the WoopSocial Threads publish facts) from x-growth (the sibling text platform with a different culture — X real-time/credit-metered/links-in-reply vs Threads conversation/reply-driven/links-inline)",
+        "Distinguishes it from caption-writer (the text only) and community-management (the replies that drive reach)",
+        "Distinguishes it from thread-writer — 'write a thread' means the multi-post chain, which this skill (and WoopSocial's single content item) doesn't produce",
+        "Notes hook-writer/caption-writer can supply the post line it builds on",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

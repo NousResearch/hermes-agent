@@ -88,6 +88,7 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # is distinguishable from "not yet computed". Reset by assigning ``None`` (tests, ``hermes skills``).
 _available_skills_cache: Optional[tuple] = None
 _git_banner_state_cache: Optional[tuple] = None
+_git_base_rev_cache: Optional[tuple] = None
 _latest_release_cache: Optional[tuple] = None
 
 _UNCACHED = object()  # compute() result that must not be memoized
@@ -456,6 +457,29 @@ def _baked_banner_state() -> Optional[dict]:
     return {"upstream": baked, "local": baked, "ahead": 0} if baked else None
 
 
+def _compute_git_base_rev(repo_dir: Optional[Path] = None) -> Optional[str]:
+    """Short SHA of the upstream commit this checkout is actually BUILT ON, or None.
+
+    The banner's ``upstream`` field is the short SHA of
+    ``origin/main`` -- the newest upstream tip this machine has FETCHED, which any background
+    sync moves without touching a single installed file. A checkout whose carried work sits on
+    a weeks-old base therefore advertises a same-day upstream SHA and reads as "fully current".
+    The merge-base is the honest number: the upstream commit the local work is rebased onto.
+    """
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+    merge_base = _git_stdout(["merge-base", "HEAD", "origin/main"], cwd=repo_dir)
+    return merge_base[:8] if merge_base else None
+
+
+def get_git_base_rev(repo_dir: Optional[Path] = None) -> Optional[str]:
+    """Cached ``_compute_git_base_rev`` (default ``repo_dir`` only), like ``get_git_banner_state``."""
+    if repo_dir is not None:
+        return _compute_git_base_rev(repo_dir)
+    return _memo("_git_base_rev_cache", _compute_git_base_rev)
+
+
 def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
@@ -493,7 +517,13 @@ def format_banner_version_label() -> str:
     ahead = int(state.get("ahead") or 0)
     if ahead <= 0 or upstream == local:
         return f"{base} · upstream {upstream}"
-    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {_plural(ahead, 'commit')})"
+    carried = f"local {local} (+{ahead} carried {_plural(ahead, 'commit')})"
+    # When the carried work sits on an OLDER upstream commit than
+    # the fetched tip, name both -- the base is what is installed, the tip is only what was fetched.
+    base_rev = _quiet(get_git_base_rev)
+    if base_rev and base_rev != upstream:
+        return f"{base} · base {base_rev} · {carried} · upstream tip {upstream}"
+    return f"{base} · upstream {upstream} · {carried}"
 
 
 # === Non-blocking update check ===

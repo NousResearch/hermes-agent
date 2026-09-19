@@ -433,6 +433,8 @@ DEFAULT_CONFIG = {
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
         "camofox": {
+            # Netscape-format cookie files available to browser_import_cookies.
+            "cookies_dir": "~/.camofox/cookies",
             # true = send a stable profile-scoped userId so Camofox maps it to a persistent Firefox
             # profile; false = random ephemeral userId per session.
             "managed_persistence": False,
@@ -2734,8 +2736,8 @@ OPTIONAL_ENV_VARS = {
         tools=["browser_navigate", "browser_click"], password=False),
     "CAMOFOX_API_KEY": _tool(
         "Optional bearer token sent as Authorization header to a remote/authenticated Camofox "
-        "server", "Camofox API key", "https://github.com/jo-inc/camofox-browser",
-        tools=["browser_navigate", "browser_click"], advanced=True),
+        "server; required for cookie import", "Camofox API key", "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click", "browser_import_cookies"], advanced=True),
     "FAL_KEY": _tool("FAL API key for image and video generation", "FAL API key", "https://fal.ai/",
         tools=["image_generate", "video_generate"]),
     "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",

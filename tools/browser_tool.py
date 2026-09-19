@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
+from agent.secret_scope import get_secret
 from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
@@ -593,6 +594,24 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": []
+        }
+    },
+    {
+        "name": "browser_import_cookies",
+        "description": "Import cookies from a Netscape-format cookies.txt file into the current browser session. Use to authenticate to sites without interactive login. Only available when Camofox is the selected browser backend. Files must live under browser.camofox.cookies_dir (default ~/.camofox/cookies/). Requires CAMOFOX_API_KEY for bearer-token authentication.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cookies_path": {
+                    "type": "string",
+                    "description": "Path to the Netscape cookies.txt file, relative to browser.camofox.cookies_dir (e.g., 'linkedin.txt')"
+                },
+                "domain_suffix": {
+                    "type": "string",
+                    "description": "Optional. Only import cookies whose domain ends with this suffix (e.g., '.linkedin.com')"
+                }
+            },
+            "required": ["cookies_path"]
         }
     },
 ]
@@ -1183,6 +1202,21 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return _json_with_fallback({"success": True, "images": [], "count": 0, "warning": "Could not parse image data"}, result)
 
 
+def browser_import_cookies(
+    cookies_path: str,
+    domain_suffix: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Import Netscape-format cookies into the active Camofox session."""
+    if not _is_camofox_mode():
+        return _dumps(_err(
+            "browser_import_cookies requires the Camofox backend "
+            "(select Camofox in `hermes tools`)."
+        ))
+    from tools.browser_camofox import camofox_import_cookies
+    return camofox_import_cookies(cookies_path, domain_suffix, task_id)
+
+
 _LP_VISION_FALLBACK_REASON = "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture."
 
 
@@ -1310,6 +1344,11 @@ _BROWSER_TOOL_TABLE = (
 )
 
 
+def _check_import_cookies_requirements() -> bool:
+    """Cookie import requires the selected Camofox backend and its bearer token."""
+    return _is_camofox_mode() and bool((get_secret("CAMOFOX_API_KEY", "") or "").strip())
+
+
 def _routed_check_fn(name: str):
     """Per-action availability gate (a named function, as the registry expects)."""
     def check() -> bool:
@@ -1331,6 +1370,20 @@ for _name, _emoji, _check_fn, _defaults, *_extra in _BROWSER_TOOL_TABLE:
     registry.register(name=_name, toolset="browser", schema=_BROWSER_SCHEMA_MAP[_name],
                       handler=_routed_handler(_name, _fallback_call(_name, _defaults, *_extra)),
                       check_fn=_check_fn, emoji=_emoji)
+
+
+registry.register(
+    name="browser_import_cookies",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_import_cookies"],
+    handler=lambda args, **kw: browser_import_cookies(
+        cookies_path=args.get("cookies_path", ""),
+        domain_suffix=args.get("domain_suffix"),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=_check_import_cookies_requirements,
+    emoji="🍪",
+)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

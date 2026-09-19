@@ -19692,6 +19692,49 @@ def test_reap_idle_sessions_calls_periodic_trim(monkeypatch):
         server._sessions.clear()
 
 
+def _periodic_trim_calls(monkeypatch):
+    """Stub the reaper's side effects and capture trim_memory calls (delayed import → patch the module attr)."""
+    import hermes_cli.mem_trim as mem_trim
+
+    calls = []
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_close_session_by_id", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
+    monkeypatch.setattr(mem_trim, "trim_memory", lambda **kw: calls.append(kw.get("reason", "")) or True)
+    return calls
+
+
+def test_periodic_trim_deferred_while_a_session_is_busy_or_attached(monkeypatch):
+    """The gen-2 collect + malloc_trim stalls the loop for its whole duration (#58576): it must not run
+    while any session is mid-turn or still holds a live client, whatever the other sessions look like."""
+    calls = _periodic_trim_calls(monkeypatch)
+    now = time.time()
+    live = types.SimpleNamespace(_closed=False)
+    for busy in ({"running": True}, {"transport": live}):
+        server._sessions.clear()
+        server._sessions["idle"] = _idle_evictable_session(now)
+        server._sessions["busy"] = _idle_evictable_session(now) | {"last_active": now, "created_at": now} | busy
+        try:
+            server._reap_idle_sessions()
+            assert calls == [], busy
+        finally:
+            server._sessions.clear()
+
+
+def test_periodic_trim_runs_once_every_session_is_quiescent(monkeypatch):
+    calls = _periodic_trim_calls(monkeypatch)
+    now = time.time()
+    server._sessions.clear()
+    # Recent (not TTL-evictable) but detached and idle: still quiescent, so the trim proceeds.
+    server._sessions["parked"] = _idle_evictable_session(now) | {"last_active": now, "created_at": now}
+    try:
+        server._reap_idle_sessions()
+        assert calls == ["idle reaper periodic trim"]
+    finally:
+        server._sessions.clear()
+
+
 def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
     monkeypatch.setattr(server, "_close_session_by_id", lambda *a, **k: None)

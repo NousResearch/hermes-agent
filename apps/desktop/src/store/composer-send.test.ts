@@ -1,9 +1,9 @@
 import {
-  COMPOSER_SEND_DEFAULT_MODE,
   DOUBLE_ENTER_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
   HOLD_DEFAULT_MS,
+  IDLE_SEND_DEFAULT_MS,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_REASONS,
   TYPING_IDLE_DEFAULT_MS
@@ -15,13 +15,18 @@ const CONFIG_PATH = '/tmp/userData/composer-send.json'
 /** Every field the prefs carry, so a new one can't be added without the tests
  *  noticing it changed shape. */
 const DEFAULTS = {
-  mode: COMPOSER_SEND_DEFAULT_MODE,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
+  enterNewline: true,
+  enterSends: true,
   holdMs: HOLD_DEFAULT_MS,
-  typingIdleMs: TYPING_IDLE_DEFAULT_MS,
+  idleSendMs: IDLE_SEND_DEFAULT_MS,
+  sendOnDoubleTap: false,
   sendOnHold: false,
+  sendOnIdle: false,
+  sendOnPause: false,
   sendGraceFor: SEND_GRACE_DEFAULT_REASONS,
-  sendGraceMs: SEND_GRACE_DEFAULT_MS
+  sendGraceMs: SEND_GRACE_DEFAULT_MS,
+  typingIdleMs: TYPING_IDLE_DEFAULT_MS
 }
 
 type DesktopWindow = { hermesDesktop?: unknown }
@@ -42,32 +47,50 @@ describe('composer send preference', () => {
     setBridge(undefined)
   })
 
-  it('defaults to Enter sends with the shipped double-tap window', async () => {
+  it('defaults to Enter sending, with every gesture off', async () => {
     const store = await loadStore()
 
+    // The historical binding: an upgrade must not change what Enter does.
     expect(store.$composerSendPrefs.get()).toEqual(DEFAULTS)
-    expect(store.enterBreaksLine(COMPOSER_SEND_DEFAULT_MODE)).toBe(false)
-    expect(store.enterBreaksLine('pause')).toBe(true)
+    expect(store.activeSendGestures(DEFAULTS)).toEqual([])
+  })
+
+  it('arms only the gestures that were switched on, once Enter stops sending', async () => {
+    const store = await loadStore()
+    const both = { ...DEFAULTS, enterSends: false, sendOnHold: true, sendOnPause: true }
+
+    expect(store.activeSendGestures(both)).toEqual(['pause', 'hold'])
+
+    // Sending on the press leaves no room for a gesture, whatever the flags say.
+    expect(store.activeSendGestures({ ...both, enterSends: true })).toEqual([])
   })
 
   it('mirrors what main has persisted, clamped', async () => {
-    const get = vi.fn(async () => ({ doubleEnterMs: 99_999, mode: 'double-enter', path: CONFIG_PATH }))
+    const get = vi.fn(async () => ({ doubleEnterMs: 99_999, enterSends: false, sendOnDoubleTap: true, path: CONFIG_PATH }))
     setBridge({ composerSend: { get, set: vi.fn() } })
 
     const store = await loadStore()
     const prefs = await store.refreshComposerSendPrefs()
 
-    expect(prefs).toEqual({ ...DEFAULTS, mode: 'double-enter', doubleEnterMs: DOUBLE_ENTER_MAX_MS })
-    expect(store.$composerSendMode.get()).toBe('double-enter')
+    expect(prefs).toEqual({ ...DEFAULTS, doubleEnterMs: DOUBLE_ENTER_MAX_MS, enterSends: false, sendOnDoubleTap: true })
     expect(store.$composerSendConfigPath.get()).toBe(CONFIG_PATH)
-    expect(store.enterBreaksLine('double-enter')).toBe(true)
+  })
+
+  it('keeps the line break switched off, which is a state of its own', async () => {
+    const get = vi.fn(async () => ({ enterNewline: false, enterSends: false, path: CONFIG_PATH }))
+    setBridge({ composerSend: { get, set: vi.fn() } })
+
+    const store = await loadStore()
+    const prefs = await store.refreshComposerSendPrefs()
+
+    // Not coerced back on: a press that does nothing at all is the point of it.
+    expect(prefs).toEqual({ ...DEFAULTS, enterNewline: false, enterSends: false })
   })
 
   it('writes through to main and keeps what main actually applied', async () => {
     const set = vi.fn(async (prefs: unknown) => ({
       ...DEFAULTS,
       doubleEnterMs: DOUBLE_ENTER_MIN_MS,
-      mode: 'mod-enter',
       path: CONFIG_PATH,
       requested: prefs
     }))
@@ -75,12 +98,12 @@ describe('composer send preference', () => {
     setBridge({ composerSend: { get: vi.fn(), set } })
 
     const store = await loadStore()
-    const applied = await store.setComposerSendPrefs({ mode: 'mod-enter', doubleEnterMs: 5 })
+    const applied = await store.setComposerSendPrefs({ doubleEnterMs: 5 })
 
     // Main clamps; the atom must follow main's answer, not the request.
-    expect(set).toHaveBeenCalledWith({ ...DEFAULTS, mode: 'mod-enter', doubleEnterMs: DOUBLE_ENTER_MIN_MS })
-    expect(applied).toEqual({ ...DEFAULTS, mode: 'mod-enter', doubleEnterMs: DOUBLE_ENTER_MIN_MS })
-    expect(store.$composerSendPrefs.get()).toEqual({ ...DEFAULTS, mode: 'mod-enter', doubleEnterMs: DOUBLE_ENTER_MIN_MS })
+    expect(set).toHaveBeenCalledWith({ ...DEFAULTS, doubleEnterMs: DOUBLE_ENTER_MIN_MS })
+    expect(applied).toEqual({ ...DEFAULTS, doubleEnterMs: DOUBLE_ENTER_MIN_MS })
+    expect(store.$composerSendPrefs.get()).toEqual({ ...DEFAULTS, doubleEnterMs: DOUBLE_ENTER_MIN_MS })
   })
 
   it('keeps the last known-good value when the write fails', async () => {
@@ -95,7 +118,7 @@ describe('composer send preference', () => {
       }
     })
 
-    const applied = await store.setComposerSendPrefs({ mode: 'double-enter' })
+    const applied = await store.setComposerSendPrefs({ enterSends: false })
 
     expect(applied).toEqual(DEFAULTS)
     expect(store.$composerSendPrefs.get()).toEqual(DEFAULTS)
@@ -103,9 +126,10 @@ describe('composer send preference', () => {
 
   it('stays usable on a surface with no desktop bridge (plain browser)', async () => {
     const store = await loadStore()
-    const applied = await store.setComposerSendPrefs({ mode: 'mod-enter' })
+    const applied = await store.setComposerSendPrefs({ enterSends: false, sendOnIdle: true })
 
-    expect(applied.mode).toBe('mod-enter')
-    expect(store.$composerSendMode.get()).toBe('mod-enter')
+    expect(applied.enterSends).toBe(false)
+    expect(applied.sendOnIdle).toBe(true)
+    expect(store.$composerSendPrefs.get().sendOnIdle).toBe(true)
   })
 })

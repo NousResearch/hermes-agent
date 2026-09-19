@@ -20,7 +20,7 @@ import {
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
-import { $composerSendMode } from '@/store/composer-send'
+import { $composerSendPrefs } from '@/store/composer-send'
 import {
   $bindings,
   $capture,
@@ -79,8 +79,8 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   const [query, setQuery] = useState('')
   // The composer rows print different keys per send mode, so the map has to
   // follow Settings → Keyboards → Send with.
-  const sendMode = useStore($composerSendMode)
-  const readonlyRows = useMemo(() => readonlyShortcuts(sendMode), [sendMode])
+  const sendPrefs = useStore($composerSendPrefs)
+  const readonlyRows = useMemo(() => readonlyShortcuts(sendPrefs), [sendPrefs])
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]
 

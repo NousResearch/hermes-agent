@@ -11,16 +11,19 @@ afterEach(cleanup)
 
 // Faithful mirror of index.tsx's Enter wiring (handleEditorKeyDown's Enter
 // branches + submitDraft), driven through REAL DOM keydown events on a
-// contentEditable, across all three send modes.
+// contentEditable.
 //
-// Contract under test (Settings → Keyboards → Send with):
-//   · `enter` (default) — Enter commits the draft; Shift+Enter breaks the line;
-//   · `double-enter` — Enter breaks the line, a second Enter inside the window
-//     commits (and the trailing break the first press added is stripped);
-//   · `mod-enter` — a bare Enter only breaks the line; ⌘/Ctrl+Enter commits;
-//   · every mode — empty Enter keeps its single-press queue gestures (drain
-//     when idle, promote the queue head while busy), and Shift+Enter never
-//     sends.
+// Contract under test (Settings → Keyboards → Enter and sending):
+//   · the gate — `enterSends: true` (the default) commits the draft on a bare
+//     Enter; false means a lone press never sends, whatever else is armed;
+//   · `enterNewline` — what that press does instead: break the line (the
+//     default), or nothing at all;
+//   · the gestures — double tap, the pause rule and the hold, each independent
+//     and each with its own window. The double-tap strips the break the first
+//     press inserted, and has nothing to strip when the break is off;
+//   · every configuration — empty Enter keeps its single-press queue gestures
+//     (drain when idle, promote the queue head while busy), and Shift+Enter
+//     never sends.
 //
 // The stale-composer-state race from #39630 is covered here too: pressing Enter
 // right after typing (fast typing / IME) must not read empty React state and
@@ -30,40 +33,57 @@ afterEach(cleanup)
 const DOUBLE_ENTER_MS = 400
 const HOLD_MS = 350
 
-type SendMode = 'double-enter' | 'enter' | 'hold' | 'mod-enter' | 'pause'
-
-function Harness({
-  busy = false,
-  compositionEndedMsAgo,
-  disabled = false,
-  doubleEnterMs = DOUBLE_ENTER_MS,
-  holdMs = HOLD_MS,
-  mode = 'enter',
-  sendOnHold = false,
-  queued = [],
-  onSubmit,
-  onQueue,
-  onCancel,
-  onDrain,
-  onSendNow
-}: {
+/** Every prop the harness takes. The send settings arrive as a CONFIGURATION
+ *  rather than a mode, because the gestures are independent: a test can arm one,
+ *  or all of them, which is the point of the model. */
+interface HarnessProps {
   busy?: boolean
   /** Mirrors the composer's `compositionEndedAtRef`: an IME composition ended
    *  this many ms ago (undefined = never). */
   compositionEndedMsAgo?: number
   disabled?: boolean
   doubleEnterMs?: number
+  /** Mirrors `enterNewline`: what the press does when it is not sending. */
+  enterNewline?: boolean
+  enterSends?: boolean
   holdMs?: number
-  mode?: SendMode
-  /** The `sendOnHold` flag: a long press sends, ALONGSIDE the mode's own way. */
-  sendOnHold?: boolean
   queued?: readonly string[]
+  sendOnDoubleTap?: boolean
+  sendOnHold?: boolean
+  sendOnIdle?: boolean
+  sendOnPause?: boolean
+  /** Mirrors the composer's typing-recency: ms since the last keystroke. */
+  typedIdleMsAgo?: number
+  typingIdleMs?: number
   onSubmit: (text: string) => void
   onQueue: (text: string) => void
   onCancel: () => void
   onDrain: () => void
   onSendNow?: (id: string) => void
-}) {
+}
+
+const DEFAULT_TYPING_IDLE_MS = 1000
+
+function Harness({
+  busy = false,
+  compositionEndedMsAgo,
+  disabled = false,
+  doubleEnterMs = DOUBLE_ENTER_MS,
+  enterNewline = true,
+  enterSends = true,
+  holdMs = HOLD_MS,
+  queued = [],
+  sendOnDoubleTap = false,
+  sendOnHold = false,
+  sendOnPause = false,
+  typedIdleMsAgo = 0,
+  typingIdleMs = DEFAULT_TYPING_IDLE_MS,
+  onSubmit,
+  onQueue,
+  onCancel,
+  onDrain,
+  onSendNow
+}: HarnessProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
   // Mirrors `useAuiState(s => s.composer.text)` — updated only via setText, so
@@ -71,6 +91,7 @@ function Harness({
   const [draft, setDraft] = useState('')
   const lastEnterAtRef = useRef(0)
   const enterHoldTimerRef = useRef<number | undefined>(undefined)
+  const typedAtRef = useRef(Date.now() - typedIdleMsAgo)
   const compositionEndedAtRef = useRef(compositionEndedMsAgo === undefined ? 0 : Date.now() - compositionEndedMsAgo)
   const attachments: unknown[] = []
 
@@ -113,6 +134,23 @@ function Harness({
     }
   }
 
+  const cancelHold = () => {
+    window.clearTimeout(enterHoldTimerRef.current)
+    enterHoldTimerRef.current = undefined
+  }
+
+  /** Mirrors `commitHeldEnter`: drop the break the press inserted, then send. */
+  const commitHeld = () => {
+    const editor = editorRef.current
+    const live = editor ? composerPlainText(editor) : ''
+
+    if (editor && live.endsWith('\n')) {
+      editor.textContent = live.replace(/\n+$/, '')
+    }
+
+    submitDraft()
+  }
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // PageUp/PageDown: no text-editing purpose in the single-line editor —
     // swallow the default so the browser cannot scroll the nearest ancestor
@@ -136,17 +174,17 @@ function Harness({
       return
     }
 
-    // A held key repeats, and a repeat is not a press — except in `hold`, where
-    // the repeat IS the gesture (index.tsx reads the mode once at press time).
+    // A held key repeats, and a repeat is never a press: it must not complete a
+    // double tap, drain a queue, or start a hold.
     if (event.key === 'Enter' && event.repeat) {
-      if (mode === 'enter' || sendOnHold) {
+      if (enterSends || sendOnDoubleTap || sendOnHold || sendOnPause) {
         event.preventDefault()
       }
 
       return
     }
 
-    // ⌘/Ctrl+Enter commits in every mode (queues while busy).
+    // ⌘/Ctrl+Enter commits in every configuration (queues while busy).
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
       lastEnterAtRef.current = 0
@@ -202,30 +240,39 @@ function Harness({
         return
       }
 
-      if (mode === 'enter') {
+      if (enterSends) {
         event.preventDefault()
         submitDraft()
 
         return
       }
 
-      if (sendOnHold) {
-        window.clearTimeout(enterHoldTimerRef.current)
+      const pausedEnough = sendOnPause && Date.now() - typedAtRef.current > typingIdleMs
+
+      cancelHold()
+
+      if (sendOnHold && !pausedEnough) {
         enterHoldTimerRef.current = window.setTimeout(() => {
           enterHoldTimerRef.current = undefined
-
-          const held = editorRef.current
-          const live = held ? composerPlainText(held) : ''
-
-          if (held && live.endsWith('\n')) {
-            held.textContent = live.replace(/\n+$/, '')
-          }
-
-          submitDraft()
+          commitHeld()
         }, holdMs)
       }
 
-      if (mode === 'mod-enter') {
+      if (pausedEnough) {
+        event.preventDefault()
+        submitDraft()
+
+        return
+      }
+
+      if (!sendOnDoubleTap) {
+        // Falls through UNPREVENTED when the press may break the line: the
+        // editor inserts the break, which jsdom does not do, so the tests append
+        // it themselves.
+        if (!enterNewline) {
+          event.preventDefault()
+        }
+
         return
       }
 
@@ -235,8 +282,10 @@ function Harness({
       lastEnterAtRef.current = now
 
       if (!doubleTap) {
-        // Production falls through UNPREVENTED here so the editor inserts the
-        // break; jsdom does not, so the tests append it themselves.
+        if (!enterNewline) {
+          event.preventDefault()
+        }
+
         return
       }
 
@@ -245,14 +294,11 @@ function Harness({
       const editor = editorRef.current
       const live = editor ? composerPlainText(editor) : ''
 
-      if (editor && live.endsWith('\n')) {
+      if (enterNewline && editor && live.endsWith('\n')) {
         editor.textContent = live.replace(/\n+$/, '')
       }
 
-      // The send has happened; a pending hold must not fire on the empty box.
-      window.clearTimeout(enterHoldTimerRef.current)
-      enterHoldTimerRef.current = undefined
-
+      cancelHold()
       submitDraft()
     }
   }
@@ -269,8 +315,7 @@ function Harness({
       onKeyDown={handleKeyDown}
       onKeyUp={event => {
         if (event.key === 'Enter') {
-          window.clearTimeout(enterHoldTimerRef.current)
-          enterHoldTimerRef.current = undefined
+          cancelHold()
         }
       }}
       ref={editorRef}
@@ -354,7 +399,7 @@ describe('composer Enter — send modes', () => {
       const onSubmit = vi.fn()
 
       const { getByTestId } = render(
-        <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
       )
 
       const editor = getByTestId('editor')
@@ -379,7 +424,7 @@ describe('composer Enter — send modes', () => {
       const onSubmit = vi.fn()
 
       const { getByTestId } = render(
-        <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
       )
 
       const editor = getByTestId('editor')
@@ -398,7 +443,7 @@ describe('composer Enter — send modes', () => {
       const onSubmit = vi.fn()
 
       const { getByTestId } = render(
-        <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
       )
 
       const editor = getByTestId('editor')
@@ -417,11 +462,12 @@ describe('composer Enter — send modes', () => {
       const { getByTestId } = render(
         <Harness
           doubleEnterMs={800}
-          mode="double-enter"
+          enterSends={false}
           onCancel={vi.fn()}
           onDrain={vi.fn()}
           onQueue={vi.fn()}
           onSubmit={onSubmit}
+          sendOnDoubleTap
         />
       )
 
@@ -440,7 +486,7 @@ describe('composer Enter — send modes', () => {
       const onSubmit = vi.fn()
 
       const { getByTestId } = render(
-        <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
       )
 
       const editor = getByTestId('editor')
@@ -466,12 +512,13 @@ describe('composer Enter — send modes', () => {
       const { getByTestId } = render(
         <Harness
           busy
-          mode="double-enter"
+          enterSends={false}
           onCancel={onCancel}
           onDrain={onDrain}
           onQueue={onQueue}
           onSubmit={vi.fn()}
           queued={['queued-1']}
+          sendOnDoubleTap
         />
       )
 
@@ -492,7 +539,7 @@ describe('composer Enter — send modes', () => {
       const onSubmit = vi.fn()
 
       const { getByTestId } = render(
-        <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
       )
 
       const editor = getByTestId('editor')
@@ -516,7 +563,7 @@ describe('composer Enter — send modes', () => {
       const onQueue = vi.fn()
 
       const { getByTestId } = render(
-        <Harness busy mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={onQueue} onSubmit={vi.fn()} />
+        <Harness busy enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={onQueue} onSubmit={vi.fn()} />
       )
 
       const editor = getByTestId('editor')
@@ -530,8 +577,12 @@ describe('composer Enter — send modes', () => {
     })
   })
 
-  describe('every mode', () => {
-    const modes: SendMode[] = ['enter', 'double-enter', 'mod-enter']
+  describe('every non-sending configuration', () => {
+    const configurations: Partial<HarnessProps>[] = [
+      { enterSends: false },
+      { enterSends: false, sendOnDoubleTap: true },
+      { enterSends: false, sendOnHold: true, sendOnPause: true }
+    ]
 
     it('swallows the IME commit Enter that follows compositionend (#49422)', async () => {
       const onSubmit = vi.fn()
@@ -615,7 +666,7 @@ describe('composer Enter — send modes', () => {
       const onSubmit = vi.fn()
 
       const { getByTestId } = render(
-        <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
       )
 
       const editor = getByTestId('editor')
@@ -630,7 +681,7 @@ describe('composer Enter — send modes', () => {
     })
 
     it('treats an empty Enter while busy with nothing queued as a no-op (never an accidental Stop)', async () => {
-      for (const mode of modes) {
+      for (const configuration of configurations) {
         cleanup()
 
         const onCancel = vi.fn()
@@ -641,7 +692,7 @@ describe('composer Enter — send modes', () => {
         const { getByTestId } = render(
           <Harness
             busy
-            mode={mode}
+            {...configuration}
             onCancel={onCancel}
             onDrain={vi.fn()}
             onQueue={onQueue}
@@ -671,13 +722,14 @@ describe('composer Enter — send modes', () => {
       const { getByTestId } = render(
         <Harness
           busy
-          mode="double-enter"
+          enterSends={false}
           onCancel={onCancel}
           onDrain={vi.fn()}
           onQueue={vi.fn()}
           onSendNow={onSendNow}
           onSubmit={vi.fn()}
           queued={['queued-1', 'queued-2']}
+          sendOnDoubleTap
         />
       )
 
@@ -699,12 +751,13 @@ describe('composer Enter — send modes', () => {
 
       const { getByTestId } = render(
         <Harness
-          mode="double-enter"
+          enterSends={false}
           onCancel={vi.fn()}
           onDrain={onDrain}
           onQueue={vi.fn()}
           onSubmit={onSubmit}
           queued={['queued-1']}
+          sendOnDoubleTap
         />
       )
 
@@ -726,12 +779,13 @@ describe('composer Enter — send modes', () => {
       const { getByTestId } = render(
         <Harness
           disabled
-          mode="double-enter"
+          enterSends={false}
           onCancel={vi.fn()}
           onDrain={onDrain}
           onQueue={vi.fn()}
           onSubmit={onSubmit}
           queued={['queued-1']}
+          sendOnDoubleTap
         />
       )
 
@@ -809,7 +863,7 @@ describe('composer Enter — key repeat is not a press', () => {
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
-      <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
     )
 
     const editor = getByTestId('editor')
@@ -825,7 +879,7 @@ describe('composer Enter — key repeat is not a press', () => {
   it('swallows the repeat in `enter` mode instead of leaving a stray break', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(<Harness  onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
 
     const editor = getByTestId('editor')
 
@@ -843,7 +897,7 @@ describe('composer Enter — key repeat is not a press', () => {
   it('re-sends nothing on repeated ⌘Enter', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(<Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
 
     const editor = getByTestId('editor')
 
@@ -872,7 +926,7 @@ describe('composer Enter — the press-and-hold flag', () => {
 
     const { getByTestId } = render(
       <Harness
-        mode="mod-enter"
+        enterSends={false}
         onCancel={vi.fn()}
         onDrain={vi.fn()}
         onQueue={vi.fn()}
@@ -901,7 +955,7 @@ describe('composer Enter — the press-and-hold flag', () => {
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
-      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
     )
 
     const editor = getByTestId('editor')
@@ -923,7 +977,7 @@ describe('composer Enter — the press-and-hold flag', () => {
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
-      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
     )
 
     const editor = getByTestId('editor')
@@ -943,7 +997,7 @@ describe('composer Enter — the press-and-hold flag', () => {
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
-      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
     )
 
     const editor = getByTestId('editor')
@@ -969,7 +1023,7 @@ describe('composer Enter — the press-and-hold flag', () => {
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
-      <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap sendOnHold />
     )
 
     const editor = getByTestId('editor')
@@ -999,7 +1053,7 @@ describe('composer Enter — the press-and-hold flag', () => {
     const onSubmit = vi.fn()
 
     const { getByTestId } = render(
-      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
     )
 
     const editor = getByTestId('editor')
@@ -1010,5 +1064,190 @@ describe('composer Enter — the press-and-hold flag', () => {
     })
 
     expect(onSubmit).toHaveBeenCalledWith('chord send')
+  })
+})
+
+describe('composer Enter — gestures composing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-14T12:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('sends on a press once typing has stopped, and not before', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendOnPause
+        typedIdleMsAgo={50}
+        typingIdleMs={1000}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    // Mid-flow: a press only breaks the line.
+    await act(async () => {
+      editor.textContent = 'still typing'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('lets the pause gesture send the press it was waiting for', () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendOnPause
+        typedIdleMsAgo={5000}
+        typingIdleMs={1000}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'thought about it'
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledWith('thought about it')
+  })
+
+  it('carries two gestures at once, which is the whole point of the model', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendOnDoubleTap
+        sendOnHold
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    // The double tap.
+    act(() => {
+      editor.textContent = 'by double tap'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyUp(editor, { key: 'Enter' })
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('by double tap')
+
+    // And the long press, from the same composer, without a settings change.
+    act(() => {
+      editor.textContent = 'by holding'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).toHaveBeenLastCalledWith('by holding')
+  })
+
+  it('never sends on a stray tap, which is why the settings exist', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendOnHold
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    // Someone reaching for the apostrophe: a tap, released immediately.
+    await act(async () => {
+      editor.textContent = "don't"
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyUp(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS * 4)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  describe('a bare Enter that does nothing at all', () => {
+    it('swallows the press when the line break is switched off', async () => {
+      const onSubmit = vi.fn()
+
+      const { getByTestId } = render(
+        <Harness enterNewline={false} enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+      )
+
+      const editor = getByTestId('editor')
+
+      let reachedTheEditor = true
+
+      await act(async () => {
+        editor.textContent = 'stays put'
+        // Cancelled means the editor never sees it: no break, no send.
+        reachedTheEditor = fireEvent.keyDown(editor, { key: 'Enter' }) !== false
+      })
+
+      expect(reachedTheEditor).toBe(false)
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(editor.textContent).toBe('stays put')
+    })
+
+    it('breaks the line instead when the break is switched on, which is the default', async () => {
+      const { getByTestId } = render(
+        <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={vi.fn()} />
+      )
+
+      const editor = getByTestId('editor')
+
+      let reachedTheEditor = false
+
+      await act(async () => {
+        editor.textContent = 'breaks instead'
+        reachedTheEditor = fireEvent.keyDown(editor, { key: 'Enter' }) !== false
+      })
+
+      expect(reachedTheEditor).toBe(true)
+    })
+
+    it('still sends on a double tap, with no trailing break to strip', async () => {
+      const onSubmit = vi.fn()
+
+      const { getByTestId } = render(
+        <Harness enterNewline={false} enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnDoubleTap />
+      )
+
+      const editor = getByTestId('editor')
+
+      await act(async () => {
+        editor.textContent = 'no break to strip'
+        fireEvent.keyDown(editor, { key: 'Enter' })
+        fireEvent.keyDown(editor, { key: 'Enter' })
+      })
+
+      expect(onSubmit).toHaveBeenCalledWith('no break to strip')
+    })
   })
 })

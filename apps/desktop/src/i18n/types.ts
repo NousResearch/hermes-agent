@@ -406,6 +406,7 @@ export interface Translations {
 
   backworkspace: {
     label: string
+    mentionSelf: string
     unsupported: string
     loadFailed: string
     saveFailed: string

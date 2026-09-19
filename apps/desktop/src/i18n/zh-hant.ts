@@ -287,6 +287,7 @@ export const zhHant = defineLocale({
   },
 
   backworkspace: {
+    mentionSelf: '代理 · 目前設定檔',
     label: '背面工作區',
     unsupported: '此 Hermes 後端尚無法儲存背面工作區。請更新 Hermes。',
     loadFailed: '無法開啟背面工作區。請翻回正面後再試一次。',

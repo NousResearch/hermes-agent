@@ -296,6 +296,7 @@ export const ja = defineLocale({
   },
 
   backworkspace: {
+    mentionSelf: 'エージェント · このプロファイル',
     label: '裏面ワークスペース',
     unsupported: 'この Hermes バックエンドはまだ裏面ワークスペースを保存できません。Hermes を更新してください。',
     loadFailed: '裏面ワークスペースを開けませんでした。表に戻ってもう一度お試しください。',

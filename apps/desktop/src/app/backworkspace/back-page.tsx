@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { $activeConnectionId } from '@/store/connections'
 import { $activeGatewayProfile } from '@/store/profile'
 
+import { BackworkspaceEditor } from './editor'
 import {
   $backworkspacePage,
   type BackworkspacePageState,
@@ -15,9 +16,9 @@ import {
   loadBackworkspacePage
 } from './page'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
+import { useMentionPopup } from './use-mention-popup'
 
-// The text column is centered by padding, not by a narrower box, so the page
-// scrolls from its right edge and a click anywhere across it lands in the text.
+// The notice sits under the same centered column the editor paints (see editor.tsx).
 const TEXT_COLUMN_CLASS = 'w-full px-[max(2rem,calc((100%_-_48rem)/2))]'
 
 function noticeFor(page: BackworkspacePageState | null, copy: Translations['backworkspace']): null | string {
@@ -45,8 +46,8 @@ function BackworkspaceSheet() {
   const profile = useStore($activeGatewayProfile)
   const page = useStore($backworkspacePage)
   const sheetRef = useRef<HTMLElement>(null)
-  const editorRef = useRef<HTMLTextAreaElement>(null)
   const ready = page?.status === 'ready'
+  const mention = useMentionPopup()
   const notice = noticeFor(page, t.backworkspace)
 
   // While this is mounted styles.css hides the shell. Tying the attribute to
@@ -65,12 +66,6 @@ function BackworkspaceSheet() {
   useEffect(() => {
     void loadBackworkspacePage({ connectionId, profile })
   }, [connectionId, profile])
-
-  useEffect(() => {
-    if (ready) {
-      editorRef.current?.focus({ preventScroll: true })
-    }
-  }, [ready])
 
   // Closing the window inside the save debounce still sends the last keystrokes.
   useEffect(() => {
@@ -92,7 +87,9 @@ function BackworkspaceSheet() {
       data-glass-opaque=""
       data-overlay-surface=""
       onKeyDown={event => {
-        if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+        // A surface inside the page may own the key first — the mention list
+        // closes on Escape and marks it handled, and the window stays put.
+        if (event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
           event.preventDefault()
           void toggleBackworkspace()
         }
@@ -102,17 +99,19 @@ function BackworkspaceSheet() {
     >
       {/* No titlebar on this side: the band only keeps the window draggable. */}
       <div aria-hidden className="shrink-0 [-webkit-app-region:drag]" style={{ height: TITLEBAR_HEIGHT }} />
-      <textarea
-        aria-label={t.backworkspace.label}
-        className={cn(
-          TEXT_COLUMN_CLASS,
-          'min-h-0 flex-1 resize-none bg-transparent pb-8 text-[0.9375rem] leading-relaxed outline-none'
-        )}
-        disabled={!ready}
-        onChange={event => editBackworkspacePage(event.target.value)}
-        ref={editorRef}
-        value={page?.content ?? ''}
-      />
+      {ready ? (
+        <BackworkspaceEditor
+          ariaLabel={t.backworkspace.label}
+          autoFocus
+          extensions={mention.extension}
+          initialValue={page.content}
+          key={page.key}
+          onChange={editBackworkspacePage}
+        />
+      ) : (
+        <div className="min-h-0 flex-1" />
+      )}
+      {mention.popover}
       {notice && (
         <p className={cn(TEXT_COLUMN_CLASS, 'pb-4 text-xs text-(--ui-text-tertiary)')} role="status">
           {notice}

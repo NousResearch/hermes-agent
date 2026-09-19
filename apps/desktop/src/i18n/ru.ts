@@ -286,6 +286,7 @@ export const ru = defineLocale({
   },
 
   backworkspace: {
+    mentionSelf: 'Агент · этот профиль',
     label: 'Обратная сторона',
     unsupported: 'Этот бэкенд Hermes пока не умеет сохранять обратную сторону. Обновите Hermes.',
     loadFailed: 'Не удалось открыть обратную сторону. Переверните окно обратно и попробуйте снова.',

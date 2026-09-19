@@ -265,6 +265,7 @@ export const ar = defineLocale({
   },
 
   backworkspace: {
+    mentionSelf: 'وكيل · هذا الملف',
     label: 'مساحة العمل الخلفية',
     unsupported: 'لا تستطيع واجهة Hermes الخلفية هذه حفظ مساحة العمل الخلفية بعد. حدّث Hermes لاستخدامها.',
     loadFailed: 'تعذّر فتح مساحة العمل الخلفية. اقلب النافذة إلى الأمام وحاول مرة أخرى.',

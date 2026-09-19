@@ -325,6 +325,7 @@ export const zh = defineLocale({
   },
 
   backworkspace: {
+    mentionSelf: '智能体 · 当前配置文件',
     label: '背面工作区',
     unsupported: '此 Hermes 后端还不能保存背面工作区。请更新 Hermes。',
     loadFailed: '无法打开背面工作区。请翻回正面后重试。',

@@ -363,6 +363,7 @@ export const en: Translations = {
   },
 
   backworkspace: {
+    mentionSelf: 'Agent · this profile',
     label: 'Back workspace',
     unsupported: "This Hermes backend can't store the back workspace yet. Update Hermes to use it.",
     loadFailed: "Couldn't open the back workspace. Turn back and try again.",

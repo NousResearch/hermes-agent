@@ -164,6 +164,41 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
     assert not any(t["id"] == task["id"] for t in columns["todo"])
 
 
+def test_done_column_uses_completion_order_without_reordering_queue_columns(client):
+    done_titles = ["finished first", "finished second", "finished third", "missing timestamp"]
+    done_tasks = [
+        client.post("/api/plugins/kanban/tasks", json={"title": title}).json()["task"]
+        for title in done_titles
+    ]
+    ready_tasks = [
+        client.post("/api/plugins/kanban/tasks", json={"title": title}).json()["task"]
+        for title in ("ready first", "ready second")
+    ]
+
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.executemany(
+                "UPDATE tasks SET status = ?, created_at = ?, completed_at = ? WHERE id = ?",
+                [
+                    ("done", 10, 30, done_tasks[0]["id"]),
+                    ("done", 20, 10, done_tasks[1]["id"]),
+                    ("done", 30, 20, done_tasks[2]["id"]),
+                    ("done", 5, None, done_tasks[3]["id"]),
+                    ("ready", 40, None, ready_tasks[0]["id"]),
+                    ("ready", 50, None, ready_tasks[1]["id"]),
+                ],
+            )
+    finally:
+        conn.close()
+
+    columns = {column["name"]: column["tasks"] for column in client.get("/api/plugins/kanban/board").json()["columns"]}
+    assert [task["title"] for task in columns["done"]] == [
+        "finished first", "finished third", "finished second", "missing timestamp"
+    ]
+    assert [task["title"] for task in columns["ready"]] == ["ready first", "ready second"]
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
@@ -1276,5 +1311,3 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
-

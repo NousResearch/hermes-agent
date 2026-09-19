@@ -255,6 +255,13 @@ def _attach_diagnostics(task_d: dict, diags: Optional[list[dict]]) -> None:
         task_d["warnings"] = _warnings_summary_from_diagnostics(diags)
 
 
+def _sort_done_tasks(tasks: list[dict[str, Any]]) -> None:
+    """sort done cards by completion time and keep missing timestamps last."""
+    # sort the tie-breaker first so the stable timestamp sort preserves id DESC.
+    tasks.sort(key=lambda task: task["id"], reverse=True)
+    tasks.sort(key=lambda task: (task["completed_at"] is None, -(task["completed_at"] or 0)))
+
+
 def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     """Return {'parents': [...], 'children': [...]} for a task."""
     def _ids(col: str, other: str) -> list[str]:
@@ -305,8 +312,9 @@ def get_board(
             d["progress"] = progress.get(t.id)  # None when the task has no children
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
+        _sort_done_tasks(columns["done"])
 
-        # Per-column ordering (priority DESC, created_at ASC) comes from list_tasks.
+        # queue columns keep the dispatch order, while done follows completion time.
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         assignees = [r["assignee"] for r in conn.execute(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]

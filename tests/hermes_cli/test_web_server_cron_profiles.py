@@ -1211,3 +1211,76 @@ def test_list_cron_jobs_carries_each_profiles_ticker_heartbeat_age(isolated_prof
 
     assert ages["default"] is None  # no heartbeat file: cannot date the last tick
     assert 25 * 3600 <= ages["worker_alpha"] < 25 * 3600 + 60
+
+
+@pytest.mark.asyncio
+async def test_cron_run_history_resolves_the_jobs_owner_profile(isolated_profiles, monkeypatch):
+    """#115345 — the Desktop lists jobs cross-profile (``?profile=all``) while its
+    per-item calls carry the ambient active profile. The run lookup treated that
+    hint as the owning profile, opened the wrong profile's state.db and answered
+    ``200 {"runs": []}``, so every job owned by another profile rendered
+    "No runs yet" for history that existed."""
+    from hermes_cli import web_server
+
+    worker_job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="owned by worker",
+        schedule="every 1h",
+        name="cross-profile-runs",
+    )
+    default_job = _web_server_cron._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="owned by default",
+        schedule="every 1h",
+        name="default-owned-runs",
+    )
+
+    # Run sessions live in the state.db of the profile that owns the job, keyed
+    # by the canonical id in the session id (cron_{job_id}_{timestamp}).
+    runs_by_profile = {
+        ("worker_alpha", worker_job["id"]): [
+            {"id": f"cron_{worker_job['id']}_1", "started_at": 1.0}
+        ],
+        ("default", default_job["id"]): [
+            {"id": f"cron_{default_job['id']}_1", "started_at": 2.0}
+        ],
+    }
+    opened = []
+
+    class _FakeRunsDB:
+        def __init__(self, profile):
+            self.profile = profile
+
+        def list_cron_job_runs(self, job_id, limit=20, offset=0):
+            opened.append(self.profile)
+            return [dict(row) for row in runs_by_profile.get((self.profile, job_id), ())]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        _rt_cron,
+        "_open_session_db_for_profile",
+        lambda profile, *, read_only: _FakeRunsDB(profile),
+    )
+
+    # Active profile is `default`; the listed job belongs to worker_alpha.
+    ambient = await _rt_cron.list_cron_job_runs(worker_job["id"], profile="default")
+    assert [run["id"] for run in ambient["runs"]] == [f"cron_{worker_job['id']}_1"]
+    assert ambient["runs"][0]["profile"] == "worker_alpha"
+    assert opened == ["worker_alpha"]
+
+    # Scope is resolved, not widened: the owning-profile hint and the omitted
+    # legacy lookup still read the owner's store, and profile="default" still
+    # reads default's own job (and only that job) out of default's state.db.
+    opened.clear()
+    owner = await _rt_cron.list_cron_job_runs(worker_job["id"], profile="worker_alpha")
+    omitted = await _rt_cron.list_cron_job_runs(worker_job["id"])
+    own = await _rt_cron.list_cron_job_runs(default_job["id"], profile="default")
+
+    assert [run["id"] for run in owner["runs"]] == [f"cron_{worker_job['id']}_1"]
+    assert [run["id"] for run in omitted["runs"]] == [f"cron_{worker_job['id']}_1"]
+    assert [run["id"] for run in own["runs"]] == [f"cron_{default_job['id']}_1"]
+    assert opened == ["worker_alpha", "worker_alpha", "default"]

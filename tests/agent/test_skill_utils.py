@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.skill_utils import (
+    extract_skill_activation,
     extract_skill_config_vars,
     extract_skill_conditions,
     get_disabled_skill_names,
@@ -29,6 +30,13 @@ from agent.skill_utils import (
 
 
 
+
+
+def test_extract_skill_activation_defaults_to_auto_and_accepts_explicit():
+    assert extract_skill_activation({}) == "auto"
+    assert extract_skill_activation({"metadata": "bad"}) == "auto"
+    assert extract_skill_activation({"metadata": {"hermes": {"activation": "unknown"}}}) == "auto"
+    assert extract_skill_activation({"metadata": {"hermes": {"activation": " Explicit "}}}) == "explicit"
 
 
 def test_skill_config_helpers_share_raw_config_parse_cache(tmp_path, monkeypatch):

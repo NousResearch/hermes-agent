@@ -902,12 +902,13 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--live]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--live` | Opt-in, makes real network calls: one bounded, read-only probe per configured tool backend (Firecrawl, FAL, browser, MCP, TTS/STT), and a `/v1/models` read for the primary model and every `fallback_providers` entry, using the credential the runtime would send. A model the provider provably does not serve fails; an endpoint that cannot be read warns. |
 
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 

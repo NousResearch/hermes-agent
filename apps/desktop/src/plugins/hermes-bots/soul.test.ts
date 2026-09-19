@@ -100,7 +100,6 @@ describe('composeSoul', () => {
 
     const withProtocol = composeSoul({
       customSoul: '',
-      description: 'literature review',
       name: 'researcher',
       roster,
       title: 'Researcher'
@@ -185,8 +184,62 @@ describe('the bot_mode_protocol backend capability suppresses every SOUL write',
 
     const { composeSoul } = await loadSoul()
 
-    expect(composeSoul({ customSoul: '', description: 'D', name: 'newbot', roster: [], title: 'T' })).not.toMatch(
+    expect(composeSoul({ customSoul: '', name: 'newbot', roster: [], title: 'T' })).not.toMatch(
       /## Messaging other agents/
     )
+  })
+})
+
+describe("single-source soul: SOUL.md owns the words, profile.yaml only displays them", () => {
+  it("never bakes a Mission line from a legacy description", async () => {
+    const { composeSoul } = await loadSoul()
+
+    // The second source of truth is gone: a stale `description` must not
+    // resurface inside the SOUL. Cast keeps the legacy shape callable after
+    // the option is removed.
+    const soul = (
+      composeSoul as unknown as (options: Record<string, unknown>) => string
+    )({
+      customSoul: "",
+      description: "literature review",
+      name: "researcher",
+      roster,
+      title: "Researcher",
+    })
+
+    expect(soul).not.toMatch(/\*\*Mission:\*\*/)
+    expect(soul).not.toMatch(/literature review/)
+  })
+
+  it("a generated identity round-trips through deriveSoulDescription", async () => {
+    const { composeSoul, deriveSoulDescription } = await loadSoul()
+
+    const soul = composeSoul({ customSoul: "", name: "researcher", roster, title: "Researcher" })
+    const description = deriveSoulDescription(soul)
+
+    expect(description).toBe("Researcher")
+  })
+
+  it("derives the first display-worthy line of a custom SOUL", async () => {
+    const { deriveSoulDescription } = await loadSoul()
+
+    expect(deriveSoulDescription("# Title\n\nTracks the inbox across sessions.\n\n## Messaging other agents")).toBe(
+      "Tracks the inbox across sessions."
+    )
+    expect(deriveSoulDescription("**Role:** Inbox Triage\n\nSecond line")).toBe("Inbox Triage")
+    expect(deriveSoulDescription("")).toBe("")
+    expect(deriveSoulDescription(null)).toBe("")
+  })
+
+  it("flattens markdown and truncates to a display length", async () => {
+    const { deriveSoulDescription } = await loadSoul()
+
+    expect(deriveSoulDescription("You are **Hermes**, a `persistent` agent.")).toBe(
+      "You are Hermes, a persistent agent."
+    )
+    const long = deriveSoulDescription('word '.repeat(40) + 'end')
+
+    expect(long.length).toBeLessThanOrEqual(141)
+    expect(long).toMatch(/…$/)
   })
 })

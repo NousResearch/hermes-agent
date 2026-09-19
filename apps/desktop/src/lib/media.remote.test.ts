@@ -11,7 +11,8 @@ import {
   mediaExternalUrl,
   mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
-  resolveMediaPlaybackSrc
+  resolveMediaPlaybackSrc,
+  sessionDownloadOrigin
 } from './media'
 
 describe('isRemoteGateway', () => {
@@ -266,5 +267,61 @@ describe('downloadGatewayMediaFile', () => {
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
     )
+  })
+
+  // Regression: a chat message (or an Artifacts-page row) can belong to a
+  // session pinned to a DIFFERENT connection than whichever one this window
+  // currently shows. `origin.connectionId` must win over the ambient
+  // `$connection` — mirroring how `origin.profile` already does — instead of
+  // every download riding whatever the foreground tab happens to be.
+  it('routes the download to the origin connection, not the ambient one', async () => {
+    await downloadGatewayMediaFile('/Users/me/project/report.md', {
+      connectionId: 'homelab-ssh',
+      profile: 'writer-profile',
+      sessionId: 'session-42'
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith({
+      connectionId: 'homelab-ssh',
+      path: '/Users/me/project/report.md',
+      profile: 'writer-profile',
+      sessionId: 'session-42',
+      suggestedName: 'report.md'
+    })
+  })
+
+  it('falls back to the ambient connection when origin carries no connectionId', async () => {
+    await downloadGatewayMediaFile('/Users/me/project/report.md', { sessionId: 'session-42' })
+
+    expect(saveGatewayFile).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
+      path: '/Users/me/project/report.md',
+      profile: 'docker-gw',
+      sessionId: 'session-42',
+      suggestedName: 'report.md'
+    })
+  })
+})
+
+describe('sessionDownloadOrigin', () => {
+  it('returns undefined with no session id', () => {
+    expect(sessionDownloadOrigin(null, { connectionId: 'homelab-ssh', profile: 'writer' })).toBeUndefined()
+    expect(sessionDownloadOrigin(undefined, undefined)).toBeUndefined()
+  })
+
+  it('carries the owner route connectionId/profile alongside the session id', () => {
+    expect(sessionDownloadOrigin('session-42', { connectionId: 'homelab-ssh', profile: 'writer' })).toEqual({
+      connectionId: 'homelab-ssh',
+      profile: 'writer',
+      sessionId: 'session-42'
+    })
+  })
+
+  it('passes only the session id through for a bare-profile (non-route) owner', () => {
+    expect(sessionDownloadOrigin('session-42', 'writer')).toEqual({ sessionId: 'session-42' })
+  })
+
+  it('passes only the session id through for an unresolved owner', () => {
+    expect(sessionDownloadOrigin('session-42', undefined)).toEqual({ sessionId: 'session-42' })
   })
 })

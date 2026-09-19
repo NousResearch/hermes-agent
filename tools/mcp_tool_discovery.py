@@ -417,27 +417,44 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
             _set_interrupt(True)
 
 
-def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> Tuple[int, int, int]:
-    """(tool count, connected count, failed count) for candidate names, plus lazy servers."""
+def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> Tuple[int, int, List[str]]:
+    """(tool count, connected count, failing names) for candidate names, plus lazy servers."""
     with _core._lock:
         keys = {n: _server_key(n) for n in names}
-        connected = [n for n in names
-                     if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors]
+        connected, failing = [], []
+        for n in names:
+            if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors:
+                connected.append(n)
+            else:
+                failing.append(n)
         tool_count = sum(len(getattr(_core._servers[keys[n]], "_registered_tool_names", [])) for n in connected)
-    failed = len(names) - len(connected)
-    return tool_count + lazy_tools, len(connected) + lazy_servers, failed
+    return tool_count + lazy_tools, len(connected) + lazy_servers, failing
 
 
 def _log_summary(prefix: str, names, **lazy) -> None:
     """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened."""
-    new_tool_count, connected_count, failed = _connected_summary(names, **lazy)
-    if new_tool_count or failed or lazy.get("lazy_servers"):
+    new_tool_count, connected_count, failing = _connected_summary(names, **lazy)
+    if new_tool_count or failing or lazy.get("lazy_servers"):
         summary = f"{prefix} {new_tool_count} tool(s) from {connected_count} server(s)"
-        if failed:
-            summary += f" ({failed} failed)"
+        if failing:
+            summary += f" ({len(failing)} failed)"
         if lazy.get("lazy_servers"):
             summary += f" ({lazy['lazy_servers']} lazy, not spawned yet)"
         logger.info(summary)
+    if failing:
+        _log_failing_servers(failing)
+
+
+def _log_failing_servers(names) -> None:
+    """One WARNING per failing server with its name and reason (#114746): the aggregate count
+    alone leaves the identity diagnosable only by elimination from the registered lines."""
+    with _core._lock:
+        for name in names:
+            reason = _core._server_connect_errors.get(_server_key(name))
+            if reason:
+                logger.warning("MCP server '%s' failed to register: %s", name, reason)
+            else:
+                logger.warning("MCP server '%s' failed to register: no connection error recorded", name)
 
 
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:

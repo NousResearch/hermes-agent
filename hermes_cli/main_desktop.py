@@ -1419,8 +1419,62 @@ def _remove_half_installed_get_windows(project_root: Path) -> list[Path]:
     return removed
 
 
+def _get_windows_install_failure(result: subprocess.CompletedProcess) -> bool:
+    """Return whether macOS hit get-windows' optional node-pre-gyp install failure.
+
+    ``get-windows`` ships the macOS helper used by Desktop, but its install
+    lifecycle still invokes node-pre-gyp for a Windows-only binding. On macOS
+    that request can return 404 and npm omits the optional package. Keep this
+    recovery narrow: unrelated npm failures must retain their existing fatal
+    or Electron-dist recovery paths.
+    """
+    if sys.platform != "darwin":
+        return False
+    output = "\n".join(
+        value.decode("utf-8", errors="replace") if isinstance(value, bytes) else (value or "")
+        for value in (result.stdout, result.stderr)
+    ).lower()
+    return "get-windows" in output and "node-pre-gyp" in output
+
+
+def _get_windows_is_installed(project_root: Path) -> bool:
+    """Check the workspace/root locations Node can resolve from Desktop."""
+    return any(
+        (project_root / relative / "package.json").is_file()
+        for relative in (
+            Path("apps/desktop/node_modules/get-windows"),
+            Path("node_modules/get-windows"),
+        )
+    )
+
+
+def _repair_get_windows_install(npm: str, project_root: Path, env: dict) -> bool:
+    """Materialize get-windows without rerunning its broken native lifecycle."""
+    from hermes_constants import with_hermes_node_path
+
+    print("  ⚠ get-windows was omitted by npm; reinstalling its package without lifecycle scripts...")
+    result = subprocess.run(
+        [
+            npm,
+            "install",
+            "--workspace",
+            "apps/desktop",
+            "--ignore-scripts",
+            "--include=optional",
+            "--no-save",
+            "get-windows@9.3.0",
+        ],
+        cwd=project_root,
+        env=_npm_lifecycle_env(with_hermes_node_path(env)),
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return _get_windows_is_installed(project_root)
+
+
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
-    """npm-install the desktop workspace; exits on a failure that isn't a repairable missing Electron dist."""
+    """npm-install the desktop workspace, with a narrow macOS get-windows recovery."""
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _run_npm_install_deterministic
     from hermes_constants import with_hermes_node_path
@@ -1434,6 +1488,12 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
     if install_result.returncode == 0:
         return
+    if _get_windows_install_failure(install_result):
+        if _repair_get_windows_install(npm, PROJECT_ROOT, nixos_env):
+            print("  ✓ Repaired get-windows; continuing to the Desktop build.")
+            return
+        print("✗ Could not repair the omitted get-windows optional dependency.")
+        sys.exit(install_result.returncode or 1)
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
         print(f"✗ Desktop dependency install failed\n  Run manually:  cd {PROJECT_ROOT} && npm ci")
         sys.exit(install_result.returncode or 1)

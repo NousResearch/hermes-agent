@@ -1952,6 +1952,10 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
+            # Names of deferrable (MCP / non-core plugin) tools to replace with the tool_search
+            # bridge. None = curated default set; an explicit list replaces it wholesale
+            # ([] = defer no core tools). Read by tools/tool_search.py ToolSearchConfig.from_raw.
+            "defer": None,
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

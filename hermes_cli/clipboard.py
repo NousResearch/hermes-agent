@@ -17,7 +17,13 @@ from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace')
+# stdin=DEVNULL: the TUI gateway keeps its RPC stdin close-on-exec (ec1f26f476), so child
+# processes here start with fd 0 closed.  wl-clipboard >=2.2.0 treats that as a launcher bug
+# and aborts ("launched with a closed standard file descriptor"), which made every Wayland
+# clipboard-image probe fail silently.  All **_TEXT call sites are read-only probes — none
+# passes input=, so pinning stdin to DEVNULL is safe for all of them.
+_TEXT: dict = dict(capture_output=True, text=True, encoding='utf-8', errors='replace',
+                   stdin=subprocess.DEVNULL)
 _PS_FLAGS = ("-NoProfile", "-NonInteractive")
 _FILE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
@@ -42,7 +48,8 @@ def _probe(argv: list, timeout: int, ok, *, missing: str | None = None) -> bool:
 def _pipe_to_file(argv: list, dest: Path) -> bool:
     """Run *argv* with stdout redirected into *dest*; True when a non-empty file resulted."""
     with open(dest, "wb") as f:
-        subprocess.run(argv, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=f,
+                       stderr=subprocess.DEVNULL, timeout=5, check=True)
     return _nonempty(dest)
 
 

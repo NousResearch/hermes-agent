@@ -20,6 +20,8 @@ import pytest
 from hermes_cli.clipboard import (
     save_clipboard_image,
     has_clipboard_image,
+    _pipe_to_file,
+    _probe,
     _is_wsl,
     _linux_save,
     _macos_pngpaste,
@@ -237,6 +239,38 @@ class TestWaylandHasImage:
         with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout=types, returncode=0)
             assert _wayland_has_image() is expected
+
+
+class TestClosedStdinGuard:
+    """Clipboard probes must never inherit fd 0. The TUI gateway keeps its RPC
+    stdin close-on-exec (ec1f26f476), so children start with fd 0 closed — and
+    wl-clipboard >=2.2.0 aborts on that ('launched with a closed standard file
+    descriptor'), which made Wayland clipboard-image detection fail silently."""
+
+    def test_probe_runs_with_stdin_devnull(self):
+        with patch("hermes_cli.clipboard.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)) as mock_run:
+            _probe(["true"], 1, lambda r: True)
+        assert mock_run.call_args[1]["stdin"] is subprocess.DEVNULL
+
+    def test_pipe_to_file_runs_with_stdin_devnull(self, tmp_path):
+        dest = tmp_path / "out.bin"
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            _pipe_to_file(["true"], dest)
+        assert mock_run.call_args[1]["stdin"] is subprocess.DEVNULL
+
+    def test_wayland_probe_and_extract_run_with_stdin_devnull(self, tmp_path):
+        dest = tmp_path / "out.png"
+        def fake_run(cmd, **kw):
+            assert kw.get("stdin") is subprocess.DEVNULL, f"{cmd} inherits stdin"
+            if "--list-types" in cmd:
+                return MagicMock(stdout="image/png\n", returncode=0)
+            if hasattr(kw.get("stdout"), "write"):
+                kw["stdout"].write(FAKE_PNG)
+            return MagicMock(returncode=0)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _wayland_has_image() is True
+            assert _wayland_save(dest) is True
 
 
 class TestWaylandSave:

@@ -37,6 +37,63 @@ def _fake_spawn(*args, **kwargs):
 
 
 
+@pytest.mark.parametrize("default_assignee", [None, "", "   "])
+def test_unassigned_ready_skip_is_durable(isolated_kanban_home, default_assignee):
+    """Regression for #100956: unattended ready skips survive reconnection."""
+    kb, _home = isolated_kanban_home
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(conn, title="needs routing", assignee=None)
+        result = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn, default_assignee=default_assignee,
+        )
+    with kbc.connect_closing() as conn:
+        events = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'skipped_unassigned'",
+            (task_id,),
+        ).fetchall()
+        row = conn.execute("SELECT status, assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+
+    assert result.skipped_unassigned == [task_id]
+    assert result.spawned == []
+    assert tuple(row) == ("ready", None)
+    assert [json.loads(event["payload"]) for event in events] == [{"reason": "no_assignee"}]
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "default_assignee"),
+    [(True, None), (True, ""), (True, "   "), (True, "default"),
+     (True, "missing-profile"), (False, "missing-profile")],
+)
+def test_unassigned_skip_boundaries_do_not_write(
+    isolated_kanban_home, dry_run, default_assignee,
+):
+    """Dry runs and invalid defaults must not write misleading skip events."""
+    kb, _home = isolated_kanban_home
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(conn, title="needs routing", assignee=None)
+        before = list(conn.iterdump())
+        result = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=dry_run,
+            default_assignee=default_assignee,
+        )
+    with kbc.connect_closing() as conn:
+        assert list(conn.iterdump()) == before
+    if default_assignee == "default":
+        assert result.auto_assigned_default == [task_id]
+    else:
+        assert result.skipped_unassigned == [task_id]
+        assert result.spawned == []
+
+
 def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_home):
     """Core #27145 contract: with default_assignee set, an unassigned ready
     task gets the assignment applied and dispatched on the same tick. The

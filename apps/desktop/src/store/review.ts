@@ -104,6 +104,7 @@ const repoCwd = reviewRepoCwd
 type ReviewBridge = NonNullable<NonNullable<NonNullable<Window['hermesDesktop']>['git']>['review']>
 let reviewRefreshSeq = 0
 let reviewRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let reviewSelectionSeq = 0
 let shipInfoSeq = 0
 let shipInfoLastCheckedAt = 0
 
@@ -118,22 +119,33 @@ function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
-export async function refreshReview(): Promise<void> {
+export async function refreshReview(): Promise<boolean> {
+  // A direct refresh supersedes an already-queued debounce for the same live
+  // context. Without this, openReviewForPath() can start a list request only
+  // for the timer to overtake it before the requested file is selected.
+  if (reviewRefreshTimer) {
+    clearTimeout(reviewRefreshTimer)
+    reviewRefreshTimer = null
+  }
+
+  const intentCwd = repoCwd()
   const ctx = reviewCtx()
   const seq = (reviewRefreshSeq += 1)
+  const selectionSeq = reviewSelectionSeq
+  const ownsList = () => seq === reviewRefreshSeq && repoCwd() === intentCwd
 
   if (!$reviewOpen.get() || !ctx) {
-    $reviewFiles.set([])
-    $reviewIsRepo.set(Boolean(ctx))
+    if (ownsList()) {
+      $reviewFiles.set([])
+      $reviewIsRepo.set(Boolean(ctx))
 
-    // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
-    // true (optimistically) before a refresh is scheduled, so skipping it here
-    // strands the pane on a forever-skeleton for a fresh, detached chat.
-    if (seq === reviewRefreshSeq) {
+      // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
+      // true (optimistically) before a refresh is scheduled, so skipping it here
+      // strands the pane on a forever-skeleton for a fresh, detached chat.
       $reviewLoading.set(false)
     }
 
-    return
+    return ownsList()
   }
 
   const { cwd, review } = ctx
@@ -145,8 +157,8 @@ export async function refreshReview(): Promise<void> {
     const result = await review.list(cwd, 'uncommitted', null)
 
     // Ignore a result that resolved after the cwd moved on.
-    if (seq !== reviewRefreshSeq || repoCwd() !== cwd) {
-      return
+    if (!ownsList()) {
+      return false
     }
 
     // Hide dep/build/cache dirs and OS noise even when the repo tracks them —
@@ -158,20 +170,26 @@ export async function refreshReview(): Promise<void> {
     // Drop the selection if the file is gone (staged away, reverted) so the diff
     // pane doesn't strand on a ghost; otherwise lazily fetch its diff so a
     // restored (persisted) selection re-renders on boot.
-    const selected = $reviewSelectedPath.get()
-    const selectedFile = selected ? files.find(file => file.path === selected) : null
+    if (selectionSeq === reviewSelectionSeq) {
+      const selected = $reviewSelectedPath.get()
+      const selectedFile = selected ? files.find(file => file.path === selected) : null
 
-    if (selected && !selectedFile) {
-      clearReviewSelection()
-    } else if (selectedFile && $reviewDiff.get() === null) {
-      void selectReviewFile(selectedFile)
+      if (selected && !selectedFile) {
+        clearReviewSelection()
+      } else if (selectedFile && $reviewDiff.get() === null) {
+        void selectReviewFile(selectedFile)
+      }
     }
+
+    return true
   } catch {
-    if (seq === reviewRefreshSeq) {
+    if (ownsList()) {
       $reviewFiles.set([])
     }
+
+    return ownsList()
   } finally {
-    if (seq === reviewRefreshSeq) {
+    if (ownsList()) {
       $reviewLoading.set(false)
     }
   }
@@ -186,6 +204,11 @@ function scheduleReviewRefresh(): void {
     clearTimeout(reviewRefreshTimer)
   }
 
+  // Scheduling is itself a newer list intent. Invalidate in-flight work now,
+  // not when the debounce fires, so an older catch/finally cannot mutate the
+  // repository that is waiting for the timer.
+  reviewRefreshSeq += 1
+
   reviewRefreshTimer = setTimeout(() => {
     reviewRefreshTimer = null
     void refreshReview()
@@ -193,12 +216,19 @@ function scheduleReviewRefresh(): void {
 }
 
 export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
+  const seq = (reviewSelectionSeq += 1)
   $reviewSelectedPath.set(file.path)
 
+  const intentCwd = repoCwd()
   const ctx = reviewCtx()
 
+  const ownsSelection = () =>
+    seq === reviewSelectionSeq && $reviewSelectedPath.get() === file.path && repoCwd() === intentCwd
+
   if (!ctx) {
-    $reviewDiff.set(null)
+    if (ownsSelection()) {
+      $reviewDiff.set(null)
+    }
 
     return
   }
@@ -208,21 +238,22 @@ export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
   try {
     const diff = await ctx.review.diff(ctx.cwd, file.path, 'uncommitted', null, file.staged)
 
-    if ($reviewSelectedPath.get() === file.path) {
+    if (ownsSelection()) {
       $reviewDiff.set(diff || '')
     }
   } catch {
-    if ($reviewSelectedPath.get() === file.path) {
+    if (ownsSelection()) {
       $reviewDiff.set('')
     }
   } finally {
-    if ($reviewSelectedPath.get() === file.path) {
+    if (ownsSelection()) {
       $reviewDiffLoading.set(false)
     }
   }
 }
 
 export function clearReviewSelection(): void {
+  reviewSelectionSeq += 1
   $reviewSelectedPath.set(null)
   $reviewDiff.set(null)
   $reviewDiffLoading.set(false)
@@ -367,7 +398,12 @@ export async function openReviewForPath(
   scopeTarget = 'main'
 ): Promise<void> {
   revealReview(scopeCwd, scopeTarget)
-  await refreshReview()
+  const cwd = repoCwd()
+  const refreshed = await refreshReview()
+
+  if (!refreshed || repoCwd() !== cwd) {
+    return
+  }
 
   const file = matchReviewFile($reviewFiles.get(), path)
 

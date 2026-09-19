@@ -15,6 +15,8 @@
 // after a short trailing delay (so tail flushes land at full cadence) Chromium's
 // default throttling returns and hidden windows go quiet.
 //
+// Fullscreen can be mis-throttled as occluded on Wayland idle — keep any fullscreened window unthrottled until it leaves fullscreen (#94865).
+//
 // Pure and Electron-free (timers + the WebContents surface are injected) so it
 // can be unit-tested, mirroring session-windows.ts.
 
@@ -25,6 +27,9 @@ const RETHROTTLE_DELAY_MS = 5_000
 
 export interface ThrottleWindowLike {
   isDestroyed(): boolean
+  /** Optional so pure fakes can omit Electron-only geometry methods; real
+   * BrowserWindows always have them. */
+  isFullScreen?: () => boolean
   webContents?: {
     isDestroyed(): boolean
     setBackgroundThrottling(allowed: boolean): void
@@ -39,8 +44,8 @@ interface TimersLike {
 export interface StreamThrottle {
   /** True while windows are currently unthrottled (streaming or trailing). */
   isUnthrottled(): boolean
-  /** Track a chat window; applies the current state immediately and stops
-   * tracking on close. */
+  /** Track a chat window; applies the current state immediately, follows the
+   * window through fullscreen transitions, and stops tracking on close. */
   register(win: ThrottleWindowLike & { on?: (event: string, fn: () => void) => void }): void
   /** Report whether any turn is in flight across all renderers. */
   update(busy: boolean): void
@@ -53,6 +58,21 @@ export function createStreamThrottle(
   const windows = new Set<ThrottleWindowLike>()
   let unthrottled = false
   let trailing: unknown = null
+  let lastBusy = false
+
+  function anyFullscreen(): boolean {
+    for (const win of windows) {
+      try {
+        if (!win.isDestroyed() && win.isFullScreen?.()) {
+          return true
+        }
+      } catch {
+        // A window mid-teardown can throw from geometry queries; skip it.
+      }
+    }
+
+    return false
+  }
 
   function apply(win: ThrottleWindowLike) {
     if (win.isDestroyed()) {
@@ -67,8 +87,17 @@ export function createStreamThrottle(
       return
     }
 
+    let allowed = !unthrottled
+
+    if (!allowed && win.isFullScreen?.()) {
+      // Streaming settled, but this window is fullscreen: keep painting.
+      // Occlusion-driven white-screen (#94865) beats idle CPU savings for
+      // the one surface the user pinned to their whole screen.
+      allowed = false
+    }
+
     try {
-      contents.setBackgroundThrottling(!unthrottled)
+      contents.setBackgroundThrottling(allowed)
     } catch {
       // A window mid-teardown can throw; it's about to leave the set anyway.
     }
@@ -80,16 +109,48 @@ export function createStreamThrottle(
     }
   }
 
+  function armRethrottleIfIdle() {
+    if (lastBusy || anyFullscreen() || !unthrottled || trailing !== null) {
+      return
+    }
+
+    trailing = timers.setTimeout(() => {
+      trailing = null
+      unthrottled = false
+      applyAll()
+    }, delayMs)
+  }
+
   return {
     isUnthrottled: () => unthrottled,
 
     register(win) {
       windows.add(win)
-      win.on?.('closed', () => windows.delete(win))
+      win.on?.('closed', () => {
+        windows.delete(win)
+        armRethrottleIfIdle()
+      })
+      // Re-evaluate every window on fullscreen enter/leave — the "any fullscreen" predicate spans the whole set.
+      win.on?.('enter-full-screen', () => {
+        if (trailing !== null) {
+          timers.clearTimeout(trailing)
+          trailing = null
+        }
+        unthrottled = true
+        applyAll()
+      })
+      win.on?.('leave-full-screen', () => {
+        // Idle exit: nothing needs full cadence anymore. If a settle report
+        // already passed through while fullscreen held the lift, arm the
+        // trailing re-throttle now (same delay as a stream tail).
+        armRethrottleIfIdle()
+      })
       apply(win)
     },
 
     update(busy) {
+      lastBusy = busy
+
       if (busy) {
         if (trailing !== null) {
           timers.clearTimeout(trailing)
@@ -104,16 +165,15 @@ export function createStreamThrottle(
         return
       }
 
-      if (!unthrottled || trailing !== null) {
+      // Settling during fullscreen: stay unthrottled — the fullscreen window
+      // still needs frames — and skip arming the trailing re-throttle until
+      // no window is fullscreen anymore.
+      if (anyFullscreen()) {
         return
       }
 
       // Trailing edge: keep full cadence briefly so the final flush paints.
-      trailing = timers.setTimeout(() => {
-        trailing = null
-        unthrottled = false
-        applyAll()
-      }, delayMs)
+      armRethrottleIfIdle()
     }
   }
 }

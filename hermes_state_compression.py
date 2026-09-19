@@ -520,6 +520,44 @@ class SessionCompressionMixin:
         with self._read_ctx() as conn:
             return self._session_turn_lease_key_on_conn(conn, session_id)
 
+    def try_acquire_session_turn_lease_with_epoch(
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+        expected_conversation_epoch: Optional[int] = None,
+    ) -> Optional[int]:
+        """Atomically claim a turn lease and capture its conversation epoch.
+
+        A clear must not fit between lease admission and epoch capture: that would let a
+        pre-clear worker present the new epoch later. ``None`` means lease unavailable;
+        zero is the valid initial epoch.
+        """
+        from hermes_state import _compression_lock_holder_process_is_dead
+        if not session_id or not holder:
+            return None
+        now = time.time()
+        expires_at = now + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            claimed = _claim_lease_row(
+                conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
+                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
+            )[0]
+            if not claimed:
+                return None
+            row = conn.execute(
+                "SELECT conversation_epoch FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            epoch = int(row["conversation_epoch"] or 0) if row is not None else None
+            if expected_conversation_epoch is not None and epoch != expected_conversation_epoch:
+                conn.execute(
+                    "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                    (conversation_id, holder),
+                )
+                return -1  # stale expected epoch: terminal, do not wait for a new conversation
+            return epoch
+
+        return self._execute_write(_do, patience_s=patience_s)
+
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
     ) -> bool:
@@ -538,6 +576,52 @@ class SessionCompressionMixin:
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
             )[0]
         return bool(self._execute_write(_do, patience_s=patience_s))
+
+    def acquire_session_turn_lease_with_epoch(
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
+        wait_seconds: float = 1800.0, poll_interval_seconds: float = 1.0, on_wait=None,
+        wait_notice_interval_seconds: float = 15.0, should_abort=None, acquire_patience_s: float = 0.5,
+        expected_conversation_epoch: Optional[int] = None,
+    ) -> Optional[int]:
+        """Wait for a turn lease and return the epoch captured in the winning write transaction."""
+        from hermes_state import classify_persistence_error
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        wait_started = last_notice_at = None
+        notice_every = max(0.0, float(wait_notice_interval_seconds))
+        while True:
+            if should_abort is not None:
+                try:
+                    if should_abort():
+                        return None
+                except Exception:
+                    logger.debug("session turn lease should_abort callback failed", exc_info=True)
+            try:
+                epoch = self.try_acquire_session_turn_lease_with_epoch(
+                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s,
+                    expected_conversation_epoch=expected_conversation_epoch,
+                )
+                if epoch == -1:
+                    return None
+                if epoch is not None:
+                    return epoch
+            except sqlite3.Error as exc:
+                if classify_persistence_error(exc) != "locked":
+                    raise
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                return None
+            if wait_started is None:
+                wait_started = now
+            if on_wait is not None and (
+                last_notice_at is None or notice_every == 0.0 or (now - last_notice_at) >= notice_every
+            ):
+                try:
+                    on_wait(max(0.0, now - wait_started))
+                except Exception:
+                    logger.debug("session turn lease on_wait callback failed", exc_info=True)
+                last_notice_at = now
+            time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 
     def acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,

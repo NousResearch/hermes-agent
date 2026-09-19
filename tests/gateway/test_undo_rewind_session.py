@@ -35,6 +35,42 @@ def _seed(store, sid, source="telegram", turns=3):
     return sid
 
 
+def test_clear_conversation_reuses_gateway_session_id(store):
+    sid = _seed(store, "gw-clear", turns=2)
+
+    epoch = store.clear_conversation(sid)
+
+    assert epoch == 1
+    assert store.load_transcript(sid) == []
+    store._db.append_message(sid, "user", "after clear")
+    assert [message["content"] for message in store.load_transcript(sid)] == ["after clear"]
+
+
+def test_clear_conversation_discards_unflushed_pre_clear_transcript(store):
+    sid = _seed(store, "gw-clear-pending", turns=1)
+    store._dirty_transcripts[sid] = [{"role": "assistant", "content": "pre-clear queued write"}]
+
+    store.clear_conversation(sid)
+    store.append_to_transcript(sid, {"role": "user", "content": "post-clear write"})
+
+    assert [message["content"] for message in store.load_transcript(sid)] == ["post-clear write"]
+
+
+def test_clear_discards_durable_pre_clear_transcript_spool(store, tmp_path, monkeypatch):
+    from gateway.shutdown_flush import spool_dropped_transcript_message
+
+    sid = _seed(store, "gw-clear-spool", turns=1)
+    flush_dir = tmp_path / "pending_messages"
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    spool_dropped_transcript_message(sid, {"role": "assistant", "content": "pre-clear spool"})
+
+    store.clear_conversation(sid)
+    store.append_to_transcript(sid, {"role": "user", "content": "post-clear write"})
+
+    assert [message["content"] for message in store.load_transcript(sid)] == ["post-clear write"]
+    assert list(flush_dir.glob("pending-*.json")) == []
+
+
 def test_rewind_default_one_turn(store):
     sid = _seed(store, "gw-1")
     res = store.rewind_session(sid)

@@ -176,6 +176,7 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
             logger.debug("delegation delivery continuation resolve failed for %s", session_id, exc_info=True)
     await asyncio.to_thread(
         db.append_delegation_delivery, session_id, text, _delegation_display_metadata(evt or {}),
+        expected_conversation_epoch=(evt or {}).get("_expected_conversation_epoch"),
     )
     logger.info(
         "async delegation completion persisted as delivery row for api_server session %s (no wake turn)", session_id

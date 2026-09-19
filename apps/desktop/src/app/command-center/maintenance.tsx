@@ -30,6 +30,17 @@ import type { ActionStatusResponse } from '@/types/hermes'
 const ACTION_POLL_MS = 1200
 const ACTION_POLL_LIMIT = 240 // ~5 minutes of polling before giving up.
 
+/** Lifecycle of the inline log tail, tracked separately from the action's own
+ *  `running` flag. The backend is the only authority on whether the process is
+ *  alive (`/api/actions/{name}/status` polls the tracked `Popen`), so giving up
+ *  on the tail must never be recorded as the action having finished.
+ *
+ *  - `idle`      — nothing to follow, or the backend reported the action done.
+ *  - `tailing`   — actively polling.
+ *  - `exhausted` — hit ACTION_POLL_LIMIT while the action was still running.
+ *  - `degraded`  — the status endpoint stopped answering. */
+type TailState = 'degraded' | 'exhausted' | 'idle' | 'tailing'
+
 function formatBytes(size: number): string {
   if (size <= 0) {
     return ''
@@ -62,6 +73,8 @@ export function MaintenancePanel() {
   const [memoryBusy, setMemoryBusy] = useState(false)
   const [share, setShare] = useState<DebugShareResponse | null>(null)
   const [sharing, setSharing] = useState(false)
+  const [tailState, setTailState] = useState<TailState>('idle')
+  const [rechecking, setRechecking] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -87,6 +100,8 @@ export function MaintenancePanel() {
     let polls = 0
     let timer: null | number = null
 
+    setTailState('tailing')
+
     const poll = async () => {
       try {
         const status = await getActionStatus(actionName, 200)
@@ -95,15 +110,35 @@ export function MaintenancePanel() {
           return
         }
 
-        setActionStatus(status)
-        upsertDesktopActionTask(status)
         polls += 1
 
-        if (status.running && polls < ACTION_POLL_LIMIT) {
-          timer = window.setTimeout(() => void poll(), ACTION_POLL_MS)
+        // The stored status stays exactly as the backend reported it — `running`
+        // is never synthesized here. Whether we are still *following* the action
+        // is a property of this panel, not of the process, so it is tracked in
+        // `tailState` instead.
+        setActionStatus(status)
+        upsertDesktopActionTask(status)
+
+        if (!status.running) {
+          setTailState('idle')
+
+          return
         }
+
+        if (polls >= ACTION_POLL_LIMIT) {
+          setTailState('exhausted')
+
+          return
+        }
+
+        timer = window.setTimeout(() => void poll(), ACTION_POLL_MS)
       } catch {
-        // Status endpoint hiccup — stop tailing; the activity rail still has the task.
+        // Status endpoint hiccup — stop tailing; the activity rail still has the
+        // task. The last observation stays untouched: it is stale, not falsified,
+        // and the notice below tells the user we stopped following.
+        if (!cancelled) {
+          setTailState('degraded')
+        }
       }
     }
 
@@ -125,6 +160,7 @@ export function MaintenancePanel() {
       try {
         const started = await start()
         setActionStatus(null)
+        setTailState('idle')
         setActionName(started.name)
         notify({ kind: 'success', title: mm.actionStarted(label), message: '' })
       } catch (err) {
@@ -134,6 +170,29 @@ export function MaintenancePanel() {
     },
     [mm]
   )
+
+  /** Explicit re-verify for a tail we gave up on. Asks the backend once — the
+   *  op buttons release only if it now reports the action finished. */
+  const recheckAction = useCallback(async () => {
+    if (!actionName) {
+      return
+    }
+
+    setRechecking(true)
+    setError('')
+
+    try {
+      const status = await getActionStatus(actionName, 200)
+      setActionStatus(status)
+      upsertDesktopActionTask(status)
+      setTailState(status.running ? 'exhausted' : 'idle')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setTailState('degraded')
+    } finally {
+      setRechecking(false)
+    }
+  }, [actionName])
 
   const shareDebug = useCallback(async () => {
     setSharing(true)
@@ -247,6 +306,22 @@ export function MaintenancePanel() {
                 </Button>
               </div>
             ))}
+          </div>
+        )}
+
+        {actionName !== null && (tailState === 'exhausted' || tailState === 'degraded') && (
+          <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2">
+            <span className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {tailState === 'degraded' ? mm.tailDegraded : mm.tailExhausted}
+            </span>
+            <Button
+              disabled={rechecking}
+              onClick={() => void recheckAction()}
+              size="xs"
+              variant="textStrong"
+            >
+              {rechecking ? mm.recheckStatusBusy : mm.recheckStatus}
+            </Button>
           </div>
         )}
 

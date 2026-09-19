@@ -449,12 +449,14 @@ def test_streamable_http_translates_to_native_remote_config(tmp_path: Path) -> N
     deploy = package.mcp_servers["deploy"]
     assert deploy == {
         "url": "https://deploy.example.test/mcp",
+        "auth": "oauth",
         "headers": {"X-Tenant": "public-tenant"},
         "strict_redirect_headers": True,
     }
     assert "command" not in deploy
     assert package.mcp_servers["bare"] == {
         "url": "https://bare.example.test/mcp",
+        "auth": "oauth",
         "strict_redirect_headers": True,
     }
 

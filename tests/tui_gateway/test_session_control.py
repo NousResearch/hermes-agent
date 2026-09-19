@@ -308,6 +308,10 @@ class TestStoredSessionMutations:
         assert heartbeat["result"]["control"]["heartbeat"]["status"] == "paused"
         assert heartbeat["result"]["dispatch"]["output"] == "⏸ Heartbeat paused: Check the deployment"
 
+        beat_resumed = _call(server, "session.control", session_key=key, action="heartbeat.resume")
+        assert beat_resumed["result"]["control"]["heartbeat"]["status"] == "active"
+        assert beat_resumed["result"]["dispatch"]["output"] == "▶ Heartbeat resumed (every 10m): Check the deployment"
+
     def test_stored_path_refuses_status_mismatches_with_a_clear_message(self, server):
         key = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}")
         _save_goal(key, status="done")
@@ -316,12 +320,42 @@ class TestStoredSessionMutations:
         assert refused["code"] == 4004
         assert "done" in refused["message"]
 
+        _save_goal(key, status="active")
+        refused = _error(_call(server, "session.control", session_key=key, action="goal.resume"))
+        assert refused["code"] == 4004
+        assert "not paused" in refused["message"]
+
+        _save_loop(key, status="stopped")
+        refused = _error(_call(server, "session.control", session_key=key, action="loop.pause"))
+        assert refused["code"] == 4004
+        assert "stopped" in refused["message"]
+
+        _save_loop(key, status="active")
+        refused = _error(_call(server, "session.control", session_key=key, action="loop.resume"))
+        assert refused["code"] == 4004
+
     def test_actions_outside_pause_resume_still_require_a_live_session(self, server):
         key = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}")
         _save_goal(key)
+        _save_loop(key)
+        _save_heartbeat(key)
 
-        refused = _error(_call(server, "session.control", session_key=key, action="goal.clear"))
-        assert refused["code"] == 4001
+        for blocked in ("goal.clear", "loop.stop", "heartbeat.clear"):
+            refused = _error(_call(server, "session.control", session_key=key, action=blocked))
+            assert refused["code"] == 4001, blocked
+
+    def test_stale_runtime_id_refreshes_an_existing_live_runtime(self, server, session, monkeypatch):
+        sid, key, _ = session
+        _create_row(server, key)
+        _save_goal(key, status="active")
+        _forbid_dispatch(server, monkeypatch)
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda event, s, payload=None: (emitted.append((event, s, payload)), True)[1])
+
+        response = _call(server, "session.control", session_id="stale-runtime-id", session_key=key, action="goal.pause")
+        assert response["result"]["control"]["goal"]["status"] == "paused"
+        assert [(event, s) for event, s, _ in emitted] == [("session.control.update", sid)]
+        assert emitted[0][2]["control"]["goal"]["status"] == "paused"
 
     def test_stored_path_matches_the_inbox_deny_list_and_unknown_keys(self, server):
         hidden = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}", source="kanban")

@@ -476,9 +476,9 @@ def _direct_state_control(rid, params: dict, session_key: str, action: str) -> d
 
     # A runtime for this key may exist after all (the client's session_id was stale): refresh it
     # so any open chat surface follows the change the same way the live path keeps it in sync.
+    # Call the registered helper by name: a module-level import would bind the unrebound copy,
+    # whose ``_inbox_home_key`` chain has no ``_hermes_home`` outside the server namespace.
     try:
-        from .methods_inbox_requests import _inbox_live_session_for_key
-
         live_sid = _inbox_live_session_for_key(_profile_home(params.get("profile")), session_key)
         if live_sid:
             event_control = {key: value for key, value in control.items() if key != "loop_min_interval_seconds"}

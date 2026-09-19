@@ -61,6 +61,16 @@ class TestPasswordHashing:
         # Distinct random salts → distinct encoded hashes.
         assert basic.hash_password("pw") != basic.hash_password("pw")
 
+    def test_is_well_formed_scrypt_hash(self, basic):
+        assert basic._is_well_formed_scrypt_hash(basic.hash_password("pw"))
+        # Mangled forms: '$' segments stripped by a double-quoted shell argument,
+        # wrong scheme, missing fields, and empty salt/dk after expansion.
+        assert not basic._is_well_formed_scrypt_hash("scrypt6384mangled")
+        assert not basic._is_well_formed_scrypt_hash("bcrypt$16384$8$1$c2FsdA==$ZGt=")
+        assert not basic._is_well_formed_scrypt_hash("scrypt$16384$8$1")  # missing salt+dk
+        assert not basic._is_well_formed_scrypt_hash("scrypt$16384$8$1$$")  # empty salt+dk
+        assert not basic._is_well_formed_scrypt_hash("not-a-hash")
+
 
 # ---------------------------------------------------------------------------
 # Provider behaviour
@@ -153,6 +163,14 @@ class TestProvider:
                 username="admin", password_hash=good_hash, secret=b"short"
             )
 
+    def test_construction_rejects_malformed_hash(self, basic):
+        # A shell-mangled hash is non-empty-but-invalid and must be rejected at
+        # construction, not silently stored and then fail every login (#110069).
+        with pytest.raises(ValueError):
+            basic.BasicAuthProvider(
+                username="admin", password_hash="scrypt6384mangled", secret=b"x" * 32
+            )
+
 
 # ---------------------------------------------------------------------------
 # register() entry point — config/env resolution + skip reasons
@@ -166,6 +184,19 @@ class TestRegister:
         basic.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "username" in basic.LAST_SKIP_REASON
+
+    def test_malformed_password_hash_fails_loudly(self, basic, monkeypatch):
+        # A config password_hash that was mangled by shell '$' expansion must not
+        # silently register a provider that can authenticate nobody (#110069).
+        monkeypatch.setattr(
+            basic,
+            "_load_config_basic_auth_section",
+            lambda: {"username": "admin", "password_hash": "scrypt6384mangled"},
+        )
+        ctx = MagicMock()
+        basic.register(ctx)
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        assert "well-formed scrypt hash" in basic.LAST_SKIP_REASON
 
 
     def test_registers_with_env_plaintext_password(self, basic, monkeypatch):

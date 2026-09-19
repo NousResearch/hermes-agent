@@ -501,6 +501,47 @@ def _probe_single_server(
     return tools_found
 
 
+def _is_bare_command(command: str) -> bool:
+    """True when *command* is a bare name the spawn must find on ``PATH`` rather than a path it
+    execs directly. A superset of the shape test ``_resolve_stdio_command`` applies before its
+    lookup, which only looks for ``os.sep``; a Windows ``bin/server`` is a path, not a bare name."""
+    return os.sep not in command and not (os.altsep and os.altsep in command)
+
+
+def _describe_stdio_spawn(config: dict) -> Tuple[str, Optional[str], Optional[str], str]:
+    """Resolve a stdio server's command exactly as the gateway spawn does.
+
+    Returns ``(raw_command, resolved_binary, spawn_target, effective_path)``:
+
+    - *resolved_binary* — the ABSOLUTE path the spawn will exec, or ``None``. Only an absolute
+      result resolves to the same binary whatever the spawn's environment is.
+    - *spawn_target* — the path the spawn will actually exec, or ``None`` when a bare name got no
+      ``PATH`` hit (the spawn then fails with ``exec: <cmd>: not found``). A relative *spawn_target*
+      — an explicit relative path, or a hit inside a relative ``PATH`` entry — depends on the
+      spawn's cwd, so it is not a resolved binary.
+    - *effective_path* — the ``PATH`` the child process is spawned with.
+
+    Mirrors ``EnabledMCPServer._run_stdio``: build the same filtered environment via
+    ``_build_safe_env`` and resolve the command via ``_resolve_stdio_command``, so ``hermes mcp
+    test`` can surface the binary and the ``PATH`` that spawn would use. Both call sites share
+    this resolution code, but each inherits its own process ``PATH`` — a server can test healthy
+    here yet fail to ``exec`` under the gateway's path (#50395).
+    """
+    from tools.mcp_tool_config import _build_safe_env, _resolve_stdio_command
+
+    raw = str(config.get("command") or "")
+    resolved, resolved_env = _resolve_stdio_command(raw, _build_safe_env(config.get("env")))
+    # ``_resolve_stdio_command`` leaves an explicit path as written and only looks a bare name up on
+    # PATH, so a bare name that came back as the resolver's own normalisation was never found.
+    unresolved = bool(raw) and resolved == os.path.expanduser(raw.strip()) and _is_bare_command(raw)
+    return (
+        raw,
+        resolved if raw and os.path.isabs(resolved) else None,
+        None if not raw or unresolved else resolved,
+        resolved_env.get("PATH", "") or "",
+    )
+
+
 def _oauth_tokens_present(name: str) -> bool:
     """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth)."""
     try:
@@ -782,6 +823,26 @@ def cmd_mcp_test(args):
         _info(f"Transport: HTTP → {cfg['url']}")
     else:
         _info(f"Transport: stdio → {cfg.get('command', '?')}")
+        # The probe and the gateway resolve the command with the same code but each inherits its
+        # own process PATH, so a green test can hide a gateway-only "exec: <cmd>: not found".
+        # Surface the resolution instead (#50395).
+        raw_cmd, resolved_cmd, spawn_cmd, spawn_path = _describe_stdio_spawn(_resolve_mcp_server_config(cfg))
+        if resolved_cmd:
+            _info(f"Resolved binary: {resolved_cmd}")
+        elif spawn_cmd is None and raw_cmd:
+            # The spawn uses the resolver's stripped command, so quote what it will actually try.
+            tried = raw_cmd.strip()
+            _warning(
+                f"'{tried}' is not on this process's PATH — the spawn cannot execute it "
+                f"(the gateway reports \"exec: {tried}: not found\"); use an absolute command "
+                f"or add its directory to the server's env PATH"
+            )
+        elif spawn_cmd:
+            _info(f"Spawn command: {spawn_cmd} (relative to the spawn's cwd)")
+        if spawn_path:
+            _info(f"Effective child PATH: {spawn_path}")
+            _info("Note: the gateway resolves the same command against its own PATH (systemd/"
+                  "launchd units and container entrypoints often pass a smaller one)")
 
     headers = cfg.get("headers", {})
     if cfg.get("auth", "") == "oauth":

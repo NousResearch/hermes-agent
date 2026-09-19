@@ -512,6 +512,22 @@ Check:
 - HTTP endpoint is reachable
 - auth env or headers are correct
 
+### "`hermes mcp test` says ✓ connected, but the gateway fails with `exec: <cmd>: not found`"
+
+Both surfaces resolve a stdio `command` with the same code, but each against its own `$PATH`.
+`hermes mcp test` prints the resolved binary and the PATH it used precisely for this reason, so a
+bare command resolving in your shell says nothing about the gateway: systemd/launchd units and
+container entrypoints often pass a much smaller PATH. Fix it by using an absolute `command`, or by
+adding the directory to the server's own `env.PATH`:
+
+```yaml
+mcp_servers:
+  perseus:
+    command: "perseus"
+    env:
+      PATH: "/usr/local/bin:/usr/bin:/bin"   # the PATH the gateway spawns this server with
+```
+
 ### "Why do I see fewer tools than the MCP server advertises?"
 
 Because Hermes now respects your per-server policy and capability-aware registration. That is expected, and usually desirable.

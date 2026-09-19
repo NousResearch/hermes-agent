@@ -7,6 +7,7 @@ any actual MCP servers or API keys.
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -372,6 +373,67 @@ class TestMcpTest:
         assert captured["inner_timeout"] == 300.0
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
+
+    @pytest.mark.parametrize(
+        "case", ["bare-absolute-path-entry", "bare-relative-path-entry", "explicit-relative-path"]
+    )
+    def test_stdio_test_reports_the_command_the_spawn_will_exec(self, tmp_path, capsys, monkeypatch, case):
+        """A stdio probe must state the command the spawn will exec and the PATH it gets (#50395):
+        the same command resolves in this shell and fails under the gateway's smaller PATH. Only an
+        absolute result is a *resolved binary*; a cwd-relative target — an explicit relative path,
+        or a bare name found inside a relative PATH entry — is reported as what the spawn execs."""
+        # The interpreter is the one executable certain to exist on every platform, so the bare-name
+        # cases stay portable (a fixture script would need PATHEXT handling on Windows).
+        interp_name = Path(sys.executable).name
+        interp_dir = str(Path(sys.executable).parent)
+        if case == "bare-absolute-path-entry":
+            command, path_entry, expected_line, expected_child_path = (
+                interp_name, interp_dir, f"Resolved binary: {sys.executable}", interp_dir)
+        elif case == "explicit-relative-path":
+            command, path_entry, expected_line, expected_child_path = (
+                "./demo-mcp", interp_dir,
+                "Spawn command: ./demo-mcp (relative to the spawn's cwd)", f".{os.pathsep}{interp_dir}")
+        else:  # a relative PATH entry: the hit is cwd-relative by construction
+            try:
+                relative_dir = os.path.relpath(interp_dir, tmp_path)
+            except ValueError:  # pragma: no cover — different drives cannot be expressed relatively
+                pytest.skip("interpreter and tmp_path are on different drives")
+            command, path_entry, expected_line, expected_child_path = (
+                interp_name,
+                relative_dir,
+                f"Spawn command: {os.path.join(relative_dir, interp_name)} (relative to the spawn's cwd)",
+                relative_dir)
+        monkeypatch.chdir(tmp_path)  # a relative PATH entry must mean the same to test and spawn
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("ping", "Return pong.")],
+        )
+        _seed_config(tmp_path, {"demo": {"command": command, "env": {"PATH": path_entry}}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="demo"))
+        out = capsys.readouterr().out
+        assert expected_line in out
+        assert f"Effective child PATH: {expected_child_path}" in out
+        assert "Connected" in out
+
+    def test_stdio_test_warns_when_command_is_not_on_spawn_path(self, tmp_path, capsys, monkeypatch):
+        """The gateway-only failure mode must be named, not left implicit in a failed probe (#50395)."""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        _seed_config(tmp_path, {"ghost": {"command": "no-such-mcp-binary-xyz", "env": {"PATH": str(empty)}}})
+
+        def failing_probe(name, config, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "no-such-mcp-binary-xyz")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ghost"))
+        out = capsys.readouterr().out
+        assert "is not on this process's PATH" in out
+        assert 'exec: no-such-mcp-binary-xyz: not found' in out
+        assert f"Effective child PATH: {empty}" in out
 
 
 # ---------------------------------------------------------------------------

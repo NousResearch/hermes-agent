@@ -1,6 +1,7 @@
 """Tests for Discord free-response defaults and mention gating."""
 
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -447,6 +448,40 @@ async def test_discord_voice_linked_channel_ignores_free_response_auto_thread(ad
 
     adapter._auto_create_thread.assert_not_awaited()
     assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_respects_global_disable(adapter, monkeypatch):
+    """``auto_thread: false`` still disables threading everywhere, opt-in or not."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._auto_create_thread = AsyncMock()
+
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=789), content="no threads anywhere"),
+    )
+
+    adapter._auto_create_thread.assert_not_awaited()
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
+
+
+def test_discord_free_response_auto_thread_yaml_bridge(adapter, monkeypatch):
+    """``config.yaml`` ``discord.free_response_auto_thread`` reaches ``extra`` and the env bridge."""
+    # Absent from config.yaml: nothing seeded and the adapter stays on the inline default.
+    assert not (discord_platform._apply_yaml_config({}, {}) or {}).get("free_response_auto_thread")
+    adapter.config.extra.pop("free_response_auto_thread", None)
+    assert adapter._discord_free_response_auto_thread() is False
+
+    # Present: seeded into `extra` and bridged to the env var the adapter reads.
+    seeded = discord_platform._apply_yaml_config({}, {"free_response_auto_thread": True})
+
+    assert seeded is not None and seeded["free_response_auto_thread"] is True
+    assert os.environ["DISCORD_FREE_RESPONSE_AUTO_THREAD"] == "true"
+    adapter.config.extra["free_response_auto_thread"] = True
+    assert adapter._discord_free_response_auto_thread() is True
 
 
 @pytest.mark.asyncio

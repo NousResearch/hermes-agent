@@ -25,6 +25,7 @@ from gateway.config import (
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +265,38 @@ class TestCrossPlatformDelivery:
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
 
+    @pytest.mark.asyncio
+    async def test_explicit_delivery_context_reaches_only_matching_dm_once(self):
+        """Regression for #112274: a delivered webhook event can seed its configured DM only."""
+        adapter = _make_adapter({
+            "mail": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Incoming mail: {message}",
+                "deliver": "telegram",
+                "deliver_extra": {"chat_id": "42"},
+            }
+        })
+        adapter.handle_message = AsyncMock()
+        target = AsyncMock()
+        target.send = AsyncMock(return_value=SendResult(success=True))
+        runner = MagicMock()
+        runner.adapters = {Platform.TELEGRAM: target}
+        runner._authorization_adapter = lambda platform, profile=None: runner.adapters.get(platform)
+        runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")})
+        adapter.gateway_runner = runner
+
+        adapter._spawn_agent_run(
+            {"message": "Please forward the invoice."}, "Incoming mail: Please forward the invoice.",
+            "delivery-1", 1.0, route_config=adapter._routes["mail"], route_name="mail",
+            profile=None, event_type="mail",
+        )
+        await adapter.send("webhook:mail:delivery-1", "I summarized the invoice.")
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+        context = runner._webhook_delivery_context_bridge.consume(source)
+        assert "Please forward the invoice." in context
+        assert "I summarized the invoice." in context
+        assert runner._webhook_delivery_context_bridge.consume(source) is None
 
 # ===================================================================
 # Test 4: GitHub comment delivery via gh CLI

@@ -1980,6 +1980,12 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+    "bots": {  # Bot Mode: the agent-to-agent teammate mesh.
+        # Install-wide mesh kill switch: every agent leaves the teammate roster at once, whatever
+        # its own `ui_meta.hermes-bots.private` says. Read from the shared root config only, since
+        # a per-profile copy cannot outrank its own profile. Agents keep running for the human.
+        "force_private": False,
+    },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.

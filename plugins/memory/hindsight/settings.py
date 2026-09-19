@@ -28,6 +28,16 @@ _HINDSIGHT_GLYPH = "👁️"
 # (vectorize-io/hindsight#932).
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_LIVE_TIME_TERMS = ("right now", "currently", "at the moment", "live now",
+                    "gerade", "jetzt", "momentan", "derzeit", "aktuell live")
+_LIVE_STATE_TERMS = ("active", "available", "connected", "healthy", "online", "reachable",
+                     "running", "status", "aktiv", "erreichbar", "fehler", "gesund",
+                     "läuft", "laufend", "verbunden", "verfügbar")
+_COMPLEX_QUERY_TERMS = ("analyse", "analyze", "compare", "evaluate", "explain why", "investigate",
+                        "relationship", "synthesize", "what do you know", "what have we",
+                        "vergleiche", "bewerte", "erkläre warum", "erinnerst du dich",
+                        "recherchiere", "untersuche", "was weißt du", "wie hängt",
+                        "zusammenhang", "zusammenfassen", "über meine", "über unser")
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -57,6 +67,20 @@ def _parse_int_setting(value: Any, default: int) -> int:
 
 def _daemon_llm_provider(provider: str) -> str:
     return "openai" if provider in _OPENAI_WIRE_PROVIDERS else provider
+
+
+def _contains_term(text: str, terms: list[str] | tuple[str, ...]) -> bool:
+    """Case-insensitive phrase matching, not a semantic intent classifier."""
+    folded = text.casefold()
+    return any(term.casefold() in folded for term in terms if term)
+
+
+def _is_live_status_query(query: str) -> bool:
+    return _contains_term(query, _LIVE_TIME_TERMS) and _contains_term(query, _LIVE_STATE_TERMS)
+
+
+def _is_simple_recall_query(query: str, max_words: int) -> bool:
+    return 0 < len(query.split()) <= max_words and not _contains_term(query, _COMPLEX_QUERY_TERMS)
 
 
 def _normalize_retain_tags(value: Any) -> List[str]:

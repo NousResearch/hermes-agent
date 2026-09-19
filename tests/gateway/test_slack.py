@@ -6097,6 +6097,9 @@ class TestAgentSessionsApiRouting:
 
     @pytest.mark.asyncio
     async def test_typing_uses_agent_sessions_when_supported(self):
+        """agents.sessions.setStatus takes a lifecycle enum, not free text: Slack
+        rejects any other value with invalid_arguments, so a working turn maps
+        to "processing" regardless of the display string (#111820)."""
         _slack_mod._AGENT_SESSIONS_SUPPORTED = True
         a = self._adapter()
         a._app.client.agents_sessions_setStatus = AsyncMock()
@@ -6105,9 +6108,29 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_typing_custom_status_text_still_maps_to_processing_enum(self):
+        """A configured typing_status_text has no enum equivalent on the new API —
+        it still must not be sent as free text (#111820)."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        config = PlatformConfig(
+            enabled=True, token="«redacted:xox…»",
+            typing_status_text="is pouncing… 🐾",
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="processing",
+        )
 
     @pytest.mark.asyncio
     async def test_typing_falls_back_to_legacy_without_sdk_support(self):
@@ -6122,7 +6145,33 @@ class TestAgentSessionsApiRouting:
         )
 
     @pytest.mark.asyncio
+    async def test_typing_uses_legacy_format_when_instance_lacks_agent_sessions_method(self):
+        """The SDK class can support Agent Sessions while a specific bound client instance
+        does not (older cached client, a test double) — _session_status_method_with_kind
+        must fall back per-instance, and the enum rewrite must follow that same fallback
+        instead of trusting the class-level probe alone (#111820 review finding)."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        del a._app.client.agents_sessions_setStatus
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+        a._app.client.assistant_threads_setStatus.reset_mock()
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+
+    @pytest.mark.asyncio
     async def test_stop_typing_clears_via_agent_sessions(self):
+        """Clearing on the new API maps to the "active" enum (ready-for-next-prompt),
+        not an empty string — Slack rejects "" the same as any other free text (#111820)."""
         _slack_mod._AGENT_SESSIONS_SUPPORTED = True
         a = self._adapter()
         a._app.client.agents_sessions_setStatus = AsyncMock()
@@ -6133,7 +6182,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 

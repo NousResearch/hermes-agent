@@ -143,6 +143,28 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
 
 
+def test_verified_codex_astra_receipt_survives_an_omitted_catalog(monkeypatch, tmp_path):
+    """A completed Codex request is account-scoped proof when its catalog lags."""
+    from hermes_cli import codex_models, models
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "entitled-account")
+    monkeypatch.setattr(models, "provider_model_ids", lambda *_args, **_kwargs: ["gpt-5.6-sol"])
+
+    codex_models.record_verified_codex_model("openai-codex", "gpt-6-astra")
+
+    listed = models.cached_provider_model_ids("openai-codex", force_refresh=True)
+    assert "gpt-6-astra" in listed
+    assert listed[listed.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
+
+    monkeypatch.setattr(models, "provider_model_ids", lambda *_args, **_kwargs: [])
+    stale = models.cached_provider_model_ids("openai-codex", force_refresh=True)
+    assert {"gpt-6-astra", "gpt-6-astra-900k"}.issubset(stale)
+
+    monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "different-account")
+    assert "gpt-6-astra" not in models.cached_provider_model_ids("openai-codex", force_refresh=True)
+
+
 
 
 

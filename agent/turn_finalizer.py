@@ -443,6 +443,21 @@ def _apply_output_hooks(
     return final_response, transformed, pre_transform
 
 
+def _record_verified_codex_astra_turn(agent, *, completed: bool) -> None:
+    """A completed Codex Astra turn is stronger evidence than a lagging catalog response."""
+    if not completed or getattr(agent, "provider", None) != "openai-codex":
+        return
+    try:
+        from agent.reasoning_effort import is_astra_model
+        from hermes_cli.codex_models import record_verified_codex_model
+
+        model = str(getattr(agent, "model", "") or "")
+        if is_astra_model(model):
+            record_verified_codex_model("openai-codex", model)
+    except Exception:
+        pass
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -611,6 +626,7 @@ def finalize_turn(
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
+    _record_verified_codex_astra_turn(agent, completed=completed and not failed and not interrupted)
     # A /steer landing after the final assistant turn has no tool batch to drain into;
     # hand it back so it becomes the next user turn instead of being lost.
     _leftover_steer = agent._drain_pending_steer()

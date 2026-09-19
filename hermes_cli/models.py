@@ -1527,9 +1527,59 @@ _swr_refresh_inflight: set = set()
 _swr_refresh_lock = threading.Lock()
 
 
-def _cache_entry(fp: str, models: list[str], at: Optional[float] = None) -> dict:
+def _cache_entry(
+    fp: str, models: list[str], at: Optional[float] = None, *, verified_models: Optional[list[str]] = None,
+) -> dict:
     """One provider row of the disk cache: credential fingerprint, write time, model ids."""
-    return {"fp": fp, "at": time.time() if at is None else at, "models": list(models)}
+    entry = {"fp": fp, "at": time.time() if at is None else at, "models": list(models)}
+    if verified_models:
+        entry["verified_models"] = list(dict.fromkeys(verified_models))
+    return entry
+
+
+def _verified_codex_models(entry: Any, fp: str, provider: str) -> list[str]:
+    """Return same-credential Astra receipts, never a configured or stale catalog hint."""
+    if provider != "openai-codex" or not isinstance(entry, dict) or entry.get("fp") != fp:
+        return []
+    receipts = entry.get("verified_models")
+    if not isinstance(receipts, list):
+        return []
+    return [model for model in receipts if isinstance(model, str) and is_astra_model(model)]
+
+
+def _merge_verified_codex_models(models: list[str], receipts: list[str]) -> list[str]:
+    """Keep a completed same-account Codex Astra request visible when discovery lags."""
+    if not receipts:
+        return list(models)
+    from hermes_cli.codex_models import _finalize_codex_models
+
+    return _finalize_codex_models(list(dict.fromkeys([*models, *receipts])))
+
+
+def record_verified_codex_model(model: str) -> None:
+    """Persist a completed ``openai-codex`` Astra request as account-scoped picker evidence."""
+    bare = str(model or "").strip().lower().removeprefix("openai/")
+    if bare != "gpt-6-astra":
+        return
+    try:
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            fp = _credential_fingerprint("openai-codex")
+            current = cache.get("openai-codex")
+            receipts = _verified_codex_models(current, fp, "openai-codex")
+            # ``-900k`` is a Hermes-side alias that resolves to this same wire slug; preserve it
+            # with the receipt so a transient catalog failure cannot drop the already-authorized
+            # picker variant.
+            receipts = _merge_verified_codex_models(receipts, [bare])
+            cached = current.get("models", []) if isinstance(current, dict) and current.get("fp") == fp else []
+            combined = _merge_verified_codex_models(
+                [item for item in cached if isinstance(item, str)], receipts,
+            )
+            _store_cache_entry(
+                "openai-codex", _cache_entry(fp, combined, verified_models=receipts), cache,
+            )
+    except Exception:
+        pass
 
 
 def _ollama_native_probe_reachable() -> bool:
@@ -1693,7 +1743,12 @@ def update_provider_cache_entry(provider: str, models: list[str]) -> None:
             return
         fp = _credential_fingerprint(normalized)
         with _cache_write_lock:
-            _store_cache_entry(normalized, _cache_entry(fp, models))
+            cache = _load_provider_models_cache()
+            receipts = _verified_codex_models(cache.get(normalized), fp, normalized)
+            merged = _merge_verified_codex_models(models, receipts)
+            _store_cache_entry(
+                normalized, _cache_entry(fp, merged, verified_models=receipts), cache,
+            )
     except Exception:
         pass
 
@@ -1754,8 +1809,12 @@ def cached_provider_model_ids(
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
-        return list(live)
+        receipts = _verified_codex_models(entry, fp, normalized)
+        merged = _merge_verified_codex_models(live, receipts)
+        _store_cache_entry(
+            normalized, _cache_entry(fp, merged, now, verified_models=receipts), cache,
+        )
+        return list(merged)
 
     if is_ollama:
         if _ollama_native_probe_reachable():
@@ -1772,7 +1831,11 @@ def cached_provider_model_ids(
     # models, which only a successful discovery may advertise (the entry itself is untouched, so the
     # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
-        return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
+        receipts = set(_verified_codex_models(entry, fp, normalized))
+        return [
+            model for model in entry["models"]
+            if not _model_requires_account_discovery(normalized, model) or model in receipts
+        ]
     return []
 
 

@@ -113,3 +113,19 @@ def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(mon
 
     live[:] = ["gpt-5.6-sol", model]
     assert model in models.cached_provider_model_ids(provider)
+
+
+def test_completed_codex_astra_turn_records_picker_receipt(monkeypatch):
+    from agent.turn_finalizer import _record_verified_codex_astra_turn
+
+    recorded = []
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.record_verified_codex_model",
+        lambda provider, model: recorded.append((provider, model)),
+    )
+
+    agent = SimpleNamespace(provider="openai-codex", model="gpt-6-astra")
+    _record_verified_codex_astra_turn(agent, completed=True)
+    _record_verified_codex_astra_turn(agent, completed=False)
+
+    assert recorded == [("openai-codex", "gpt-6-astra")]

@@ -101,6 +101,15 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     return [model for model in model_ids if not is_astra_model(model)]
 
 
+def record_verified_codex_model(provider: str, model: str) -> None:
+    """Record a completed Astra request only for the account's Codex OAuth route."""
+    if (provider or "").strip().lower() != "openai-codex":
+        return
+    from hermes_cli.models import record_verified_codex_model as _record
+
+    _record(model)
+
+
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
     """Best-effort ``chatgpt_account_id`` from the OAuth JWT; None on any parse error.
 

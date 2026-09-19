@@ -92,6 +92,40 @@ def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
     assert ("platforms.changed", {}) in events
 
 
+def test_served_profile_cron_jobs_move_broadcasts_cron_changed(watcher_home, monkeypatch):
+    """A served sibling profile's own cron/jobs.json (``profiles/<name>/cron/jobs.json``)
+    must move the signature too — otherwise a routed profile's cron edits never refresh."""
+    home, events = watcher_home
+    bot_home = home / "profiles" / "bot"
+    (bot_home / "cron").mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
+    assert server._profile_home("bot") == bot_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (bot_home / "cron" / "jobs.json").write_text("[]")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("cron.changed", {}) in events
+
+
+def test_served_profile_gateway_state_move_broadcasts_platforms_changed(watcher_home, monkeypatch):
+    """A served sibling profile's own gateway_state.json must move the signature too —
+    otherwise the Messaging page never learns about a routed profile's platform status."""
+    home, events = watcher_home
+    bot_home = home / "profiles" / "bot"
+    bot_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
+    assert server._profile_home("bot") == bot_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (bot_home / "gateway_state.json").write_text('{"platforms": {}}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("platforms.changed", {}) in events
+
+
 def test_pending_pairing_request_broadcasts_pairing_changed(watcher_home):
     """A new pending request must reach the Messaging page on its own signal.
 

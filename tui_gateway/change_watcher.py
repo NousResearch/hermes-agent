@@ -48,6 +48,14 @@ def _home_mtime_ns(*parts: str):
     return _watcher_mtime_ns(_watcher_home().joinpath(*parts))
 
 
+def _home_and_siblings_mtime_ns(*parts: str):
+    """Like :func:`_home_mtime_ns` but also probes every served sibling profile home: a backend
+    hosting several profiles owns one such file per profile (mirrors :func:`_sessions_sig`), so a
+    change on any served profile — not just the launch one — must move the watched signature too."""
+    return _newest_mtime_ns(
+        home.joinpath(*parts) for home in (_watcher_home(), *_served_profile_homes))
+
+
 def _newest_mtime_ns(paths) -> int | None:
     """Max ``st_mtime_ns`` across ``paths`` (unstat-able ignored); None when none stat'ed."""
     return max((m for m in map(_watcher_mtime_ns, paths) if m is not None), default=None)
@@ -196,9 +204,9 @@ def _bot_relay_outbox_sig():
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
+    "cron.changed": (1.0, lambda: _home_and_siblings_mtime_ns("cron", "jobs.json"), lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
+    "platforms.changed": (2.0, lambda: _home_and_siblings_mtime_ns("gateway_state.json"), lambda: {}),
     "pairing.changed": (2.0, _pairing_sig, lambda: {}),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
     "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}

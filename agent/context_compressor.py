@@ -337,12 +337,63 @@ def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
             msg[_DB_PERSISTED_MARKER] = True
 
 
+def _is_checkpoint_item(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("type") == "compaction"
+
+
+def _newest_checkpoint_carrier(messages: List[Dict[str, Any]], key: str) -> int:
+    """Index of the last assistant message carrying a ``type: "compaction"`` item under *key*, or -1.
+    Transcript-side mirror of ``native_compaction.prune_pre_checkpoint_items``' newest-run-wins rule:
+    the wire builder drops every checkpoint before the last one, so this is the only carrier whose
+    checkpoint can still reach a request."""
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if isinstance(items, list) and any(_is_checkpoint_item(item) for item in items):
+            return i
+    return -1
+
+
+def _set_sidecar(msg: Dict[str, Any], key: str, kept: List[Any]) -> None:
+    """Filter items, never leave an empty sidecar behind."""
+    if kept:
+        msg[key] = kept
+    else:
+        msg.pop(key, None)
+
+
+def drop_shadowed_checkpoints(
+    messages: List[Dict[str, Any]], key: str = "codex_reasoning_items", *, before: Optional[int] = None,
+) -> List[int]:
+    """Drop ``type: "compaction"`` items from every assistant row older than the newest carrier (rows at
+    index >= *before* are left alone). A checkpoint a newer carrier shadows has no reader on any wire:
+    ``prune_pre_checkpoint_items`` rebuilds each request around the newest checkpoint run and the replay
+    gate drops checkpoints wholesale once native compaction is ineligible. Non-checkpoint items stay.
+    In place; returns the indices rewritten."""
+    newest = _newest_checkpoint_carrier(messages, key)
+    stop = newest if before is None else min(newest, before)
+    rewritten: List[int] = []
+    for i in range(max(stop, 0)):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if not isinstance(items, list) or not any(_is_checkpoint_item(item) for item in items):
+            continue
+        _set_sidecar(msg, key, [item for item in items if not _is_checkpoint_item(item)])
+        rewritten.append(i)
+    return rewritten
+
+
 def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
     Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
     turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
-    ``type: "compaction"`` items are cumulative context carriers that must survive on every retained
-    message — filter items, never pop the key. In place; returns pruned message count."""
+    Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
+    one was still copied into the compacted transcript and every child session built from it (#102374).
+    Filter items, never pop the key on the carrier. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
     last_user_idx = _last_index_with_role(messages, "user")
@@ -350,24 +401,22 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
         # No user boundary: prune nothing (fail open toward correctness).
         return 0
 
-    pruned = 0
-    for i in range(last_user_idx):
-        msg = messages[i]
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        for key in _STALE_REPLAY_PRUNE_KEYS:
+    pruned = set()
+    for key in _STALE_REPLAY_PRUNE_KEYS:
+        pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
+        for i in range(last_user_idx):
+            msg = messages[i]
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
             items = msg.get(key)
             if not isinstance(items, list) or not items:
                 continue
-            kept = [item for item in items if isinstance(item, dict) and item.get("type") == "compaction"]
+            kept = [item for item in items if _is_checkpoint_item(item)]
             if len(kept) == len(items):
                 continue  # nothing stale in this sidecar
-            if kept:
-                msg[key] = kept
-            else:
-                msg.pop(key, None)
-            pruned += 1
-    return pruned
+            _set_sidecar(msg, key, kept)
+            pruned.add(i)
+    return len(pruned)
 
 
 # Explicit end boundary: weak models otherwise read quoted headers as fresh

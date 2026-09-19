@@ -360,6 +360,49 @@ class TestRealProfileCdpLaunch:
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
 
+    @pytest.mark.parametrize("daemon_alive", [True, False])
+    def test_closes_daemon_orphaned_by_dead_chrome(self, tmp_path, daemon_alive):
+        """#101029: once its Chrome dies, the daemon reports no cdp-url but still owns the session
+        name and ignores the next ``--cdp`` attach. It must be closed before relaunching; with no
+        daemon running there is nothing to close."""
+        import tools.browser_tool as bt
+        self._reset()
+        socket_dir = tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}"
+        socket_dir.mkdir()
+        if daemon_alive:
+            (socket_dir / f"{bt._REAL_PROFILE_SESSION}.pid").write_text(str(os.getpid()), encoding="utf-8")
+        copy_dir = tmp_path / "copy"
+        copy_dir.mkdir()
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        closed = []
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (copy_dir / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding="utf-8")
+            return FakeChrome()
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(copy_dir), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt_real_profile, "_agent_browser_close_session", side_effect=closed.append), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            cdp, err = bt_real_profile._real_profile_cdp()
+        assert err is None
+        assert cdp == "http://127.0.0.1:41000"
+        assert closed == ([bt._REAL_PROFILE_SESSION] if daemon_alive else [])
+        self._reset()
+
     @pytest.mark.parametrize("live_browser_id", ["/devtools/browser/x", "/devtools/browser/other"])
     def test_reattaches_to_surviving_chrome_instead_of_overlaying_its_profile(self, tmp_path, live_browser_id):
         """The attach daemon of a crashed owner gets reaped, but its Chrome (Hermes-launched,

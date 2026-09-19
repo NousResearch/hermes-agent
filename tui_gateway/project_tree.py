@@ -242,13 +242,39 @@ def _repo_node(root: str, label: str) -> dict:
     return {"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}
 
 
+def _trunk_fallback_by_repo(sessions: list[dict], resolve: Optional[Resolve]) -> dict[str, str]:
+    """Recorded main-checkout branch per repo, so empty git_branch does not invent ``main``."""
+    votes: dict[str, dict[str, int]] = {}
+    for session in sessions:
+        branch = _field(session, "git_branch")
+        if not branch:
+            continue
+        placement = _place_session(session, resolve)
+        if not placement or not placement["is_main"]:
+            continue
+        repo = _path_key(placement["repo_key"])
+        by_branch = votes.setdefault(repo, {})
+        by_branch[branch] = by_branch.get(branch, 0) + 1
+    fallback: dict[str, str] = {}
+    for repo, by_branch in votes.items():
+        trunks = {name: count for name, count in by_branch.items() if name.lower() in _TRUNK_BRANCHES}
+        pool = trunks or by_branch
+        fallback[repo] = max(pool, key=lambda name: (pool[name], name.lower() in _TRUNK_BRANCHES, name))
+    return fallback
+
+
 def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
     """Build the ``repo -> lane -> sessions`` subtree for a set of sessions."""
     lanes: dict[str, tuple[dict, dict]] = {}  # lane identity -> (group, placement)
+    trunk_fallback = _trunk_fallback_by_repo(sessions, resolve)
     for session in sessions:
         placement = _place_session(session, resolve)
         if not placement:
             continue
+        if placement["is_main"] and not _field(session, "git_branch"):
+            recorded = trunk_fallback.get(_path_key(placement["repo_key"]))
+            if recorded:
+                placement = _trunk_placement(placement["repo_key"], recorded)
         lane_identity = _lane_key(placement["lane_key"])
         if lane_identity not in lanes:
             group = dict(zip(_LANE_FIELDS, (placement[k] for k in _PLACEMENT_LANE_KEYS)))

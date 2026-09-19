@@ -1,0 +1,7 @@
+name: typesafe-jev-skill-routing
+version: 1.0.0
+description: "TypeSafe Jev names at most one installed skill before the chat model runs (cookbook call 1). Injects <skill_relevance> via pre_llm_call; fail-open. Not a chat model — use /jev, never /model jev."
+author: NousResearch
+hooks:
+  - pre_llm_call
+requires_plugins: []

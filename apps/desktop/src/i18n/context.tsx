@@ -1,7 +1,9 @@
 import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
+import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -87,6 +89,7 @@ export interface I18nProviderProps {
 }
 
 export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
+  const activeProfile = useStore($activeGatewayProfile)
   const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
@@ -181,7 +184,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
         clearTimeout(retryTimer)
       }
     }
-  }, [configClient, initialLocale])
+  }, [activeProfile, configClient, initialLocale])
 
   const setLocale = useCallback(
     async (next: Locale) => {

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
 import type { Locale } from './types'
@@ -28,6 +29,8 @@ describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    $activeGatewayProfile.set('default')
+    Reflect.deleteProperty(window, 'hermesDesktop')
   })
 
   it('defaults to English without a config client', () => {
@@ -74,6 +77,39 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('zh')
     expect(screen.getByTestId('label').textContent).toBe('语言')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('reloads the persisted locale after boot adopts a non-default window profile', async () => {
+    const api = vi.fn(async ({ method, profile }: { method?: string; profile?: string }) => {
+      if (method === 'PUT') {
+        return { ok: true }
+      }
+
+      return profile === 'writer' ? { display: { language: 'ja' } } : { display: { language: 'en' } }
+    })
+
+    window.hermesDesktop = { api } as never
+    $activeGatewayProfile.set('default')
+
+    render(
+      <I18nProvider>
+        <LanguageProbe target="zh" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+
+    // The boot sequence adopts the window's saved profile after the provider
+    // has mounted. Its locale must be read from that profile, not remain on
+    // the default profile's config.
+    $activeGatewayProfile.set('writer')
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ja'))
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/config?include_defaults=false', profile: 'writer' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(api).toHaveBeenCalledWith(expect.objectContaining({ method: 'PUT', profile: 'writer' })))
   })
 
   it('keeps English usable when config loading fails', async () => {

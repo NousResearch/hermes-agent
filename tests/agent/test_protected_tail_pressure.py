@@ -19,7 +19,7 @@ import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
-    _MAX_TAIL_MESSAGE_FLOOR,
+    _DEFAULT_MAX_TAIL_MESSAGE_FLOOR,
     _PRESSURE_KEEP_RECENT_MESSAGES,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
@@ -152,7 +152,7 @@ class TestProtectedTailPressure61932:
         """Exact #61932 dead-end: the protected tail ALONE holds everything.
 
         Head (3 messages) + an 8-message tail of exclusively oversized tool
-        pairs.  The tail token budget + the ``_MAX_TAIL_MESSAGE_FLOOR`` (8)
+        pairs.  The tail token budget + the ``_DEFAULT_MAX_TAIL_MESSAGE_FLOOR`` (8)
         floor protect every non-head message, so ``compress_start >=
         compress_end`` — pre-fix ``compress()`` returned the transcript
         UNCHANGED, incremented ``_ineffective_compression_count``, and the

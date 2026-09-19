@@ -429,6 +429,13 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
+        actual_branch = _git_current_branch(target)
+        if actual_branch != branch_name:
+            raise RuntimeError(
+                f"Worktree {target} is on branch {actual_branch or '(detached HEAD)'!r}, "
+                f"not requested branch {branch_name!r}. Resolve the mismatch manually "
+                "before retrying; the checkout was not changed."
+            )
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -504,9 +511,12 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             if fallback.resolve(strict=False) != requested_resolved:
                 _ensure_git_worktree(fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name
-        # No repo to anchor a fallback on (or the occupied path IS this task's
-        # own canonical worktree): keep the legacy reuse rather than fail dispatch.
-        return requested_resolved, actual_branch or branch_name
+        # An occupied canonical target must never silently change task identity.
+        raise RuntimeError(
+            f"Worktree {requested_resolved} is on branch {actual_branch or '(detached HEAD)'!r}, "
+            f"not requested branch {branch_name!r}. Resolve the mismatch manually "
+            "before retrying; the checkout was not changed."
+        )
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:

@@ -150,6 +150,11 @@ MISSING_SENTINEL = "__hermes_missing__"
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
 
+# read_file_raw cats the whole file into memory (no paging). Cap it so a huge
+# target - reached via the write path's per-path lock, among others - can't
+# exhaust memory; callers that need a slice should use the paginated read.
+_RAW_READ_MAX_BYTES = 50 * 1024 * 1024
+
 
 def _new_sentinel(prefix: str) -> str:
     """Per-call separator line for a compound shell probe. 128 random bits make a
@@ -1015,9 +1020,17 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         is_binary, sample_bytes = self._detect_binary(path)
         if is_binary:
             return ReadResult(is_binary=True, file_size=file_size, error=describe_binary_file(sample_bytes, file_size))
-        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
+        if file_size > _RAW_READ_MAX_BYTES:
+            return ReadResult(
+                file_size=file_size,
+                error=(f"File is too large ({file_size:,} bytes, limit is "
+                       f"{_RAW_READ_MAX_BYTES:,}). Read a range with offset/limit instead."))
+        # The file may grow after the size probe. Bound the read itself too.
+        cat_result = self._head(path, _RAW_READ_MAX_BYTES + 1)
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        if len(cat_result.stdout.encode("utf-8")) > _RAW_READ_MAX_BYTES:
+            return ReadResult(file_size=file_size, error="File grew too large during read. Read a range with offset/limit instead.")
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
         raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))

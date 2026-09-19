@@ -90,6 +90,31 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+@pytest.mark.parametrize("endpoint", ["/api/files/upload", "/api/fs/write-text"])
+def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatch, endpoint):
+    import utils
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    previous = target.read_bytes()
+    original_replace = utils.os.replace
+
+    def fail_target_replace(source, destination):
+        if str(destination) == str(target):
+            assert target.read_bytes() == previous
+            raise OSError("simulated write failure")
+        return original_replace(source, destination)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(utils.os, "replace", fail_target_replace)
+        payload = ({"path": str(target), "data_url": "data:text/plain;base64,bmV3"}
+                   if endpoint.endswith("upload") else {"path": str(target), "content": "new"})
+        response = client.post(endpoint, json=payload)
+    assert response.status_code == 500
+    assert target.read_bytes() == previous
+    assert set(target.parent.iterdir()) == {target}
+
+
 
 
 def test_download_authenticates_via_query_token(forced_files_client):
@@ -418,5 +443,3 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     # is filtered because the parent component is a credential dir.
     mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
-
-

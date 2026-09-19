@@ -16,6 +16,7 @@ from tools.file_operations import (
     PatchResult,
     SearchResult,
     ShellFileOperations,
+    _RAW_READ_MAX_BYTES,
     normalize_read_pagination,
     normalize_search_pagination,
 )
@@ -405,10 +406,10 @@ class TestShellFileOpsHelpers:
         def side_effect(command, **kwargs):
             if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return {"output": "6\n", "returncode": 0}
+            if command.startswith(f"head -c {_RAW_READ_MAX_BYTES + 1} "):
+                return {"output": leaked, "returncode": 0}
             if command.startswith("head -c"):
                 return {"output": "alpha\n", "returncode": 0}
-            if command.startswith("cat "):
-                return {"output": leaked, "returncode": 0}
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -445,6 +446,42 @@ class TestShellFileOpsHelpers:
         result = file_ops._add_line_numbers("def f():\n    return 1\n", start_line=10)
         assert result == "10|def f():\n11|    return 1"
         assert "12|" not in result
+
+    def test_read_file_raw_rejects_oversized_file(self, mock_env):
+        """read_file_raw must not cat a file above _RAW_READ_MAX_BYTES into memory."""
+        big = _RAW_READ_MAX_BYTES + 1
+
+        def side_effect(command, **kwargs):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
+                return {"output": f"{big}\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "text\n", "returncode": 0}
+            if command.startswith("cat "):
+                raise AssertionError("cat must not run for an oversized file")
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file_raw("/tmp/test/big.log")
+
+        assert result.error is not None
+        assert "too large" in result.error
+        assert result.file_size == big
+
+
+@pytest.mark.parametrize("stale_size", [False, True])
+def test_raw_read_cap_with_real_file(tmp_path, monkeypatch, stale_size):
+    import tools.file_operations as operations
+
+    monkeypatch.setattr(operations, "_RAW_READ_MAX_BYTES", 64)
+    target = tmp_path / "large.log"
+    target.write_text("a" * 1024, encoding="utf-8")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    if stale_size:
+        monkeypatch.setattr(ops, "_probe_regular_file", lambda path: (1, "ok"))
+    result = ops.read_file_raw(str(target))
+    assert result.error and "too large" in result.error
+    assert not result.content
 
 
 class TestSearchPathValidation:

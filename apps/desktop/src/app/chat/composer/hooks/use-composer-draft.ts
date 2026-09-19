@@ -37,6 +37,7 @@ import {
   type ComposerInsertMode,
   focusComposerInput,
   getActiveComposer,
+  isClarifyInput,
   markActiveComposer,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
@@ -168,7 +169,14 @@ export function useComposerDraft({
         // here steals the selection from the visible composer without changing
         // document.activeElement. The foreground then still looks focused while
         // printable keydowns produce no input.
-        if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)) {
+        // Detached portal editors may paint before their host is attached; they
+        // must not clear the user's document selection to install a detached range.
+        if (
+          editor.isConnected &&
+          visibleRef.current &&
+          getActiveComposer() === target &&
+          !isElementInHiddenPane(editor)
+        ) {
           placeCaretEnd(editor)
         }
       }
@@ -211,7 +219,7 @@ export function useComposerDraft({
   // effect and steal the caret. usePaneVisible defaults true outside a tab
   // stack, so tiles, pop-outs, and secondary windows still auto-focus.
   useEffect(() => {
-    if (!inputDisabled && paneVisible && !floating) {
+    if (!inputDisabled && paneVisible && !floating && !isClarifyInput(document.activeElement)) {
       focusInput()
     }
   }, [floating, focusInput, focusKey, inputDisabled, paneVisible])

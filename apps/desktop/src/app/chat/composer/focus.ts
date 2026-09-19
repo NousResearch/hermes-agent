@@ -55,6 +55,16 @@ const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 /** Inline edit composer root — mounted only while a user bubble is being edited. */
 export const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
 
+/** An enabled answer field in a live clarify form owns its focus. Settled
+ * cards have no form/textarea; hidden keep-alive panes cannot claim it. */
+export const isClarifyInput = (el: Element | null): boolean =>
+  el instanceof HTMLTextAreaElement &&
+  !el.disabled &&
+  el.isConnected &&
+  !isElementInHiddenPane(el) &&
+  !el.closest('[hidden], [inert]') &&
+  Boolean(el.closest('[data-slot="clarify-inline"]')?.closest('form'))
+
 /** Attribute-safe selector fragment. jsdom (vitest) does not ship `CSS.escape`. */
 const cssEscape = (value: string): string => {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
@@ -426,7 +436,7 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   const owner = $floatingComposerOwner.get()
   const surfaceId = el.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
 
-  const focus = () => {
+  const focus = (retry = false) => {
     if (owner && (owner !== $floatingComposerOwner.get() || (surfaceId && surfaceId !== owner.id))) {
       return
     }
@@ -436,6 +446,12 @@ export const focusComposerInput = (el: HTMLElement | null) => {
     }
 
     const active = document.activeElement
+
+    // A delayed retry is no longer the original explicit focus gesture. The
+    // user may have chosen an answer field since the synchronous attempt.
+    if (retry && isClarifyInput(active)) {
+      return
+    }
 
     if (
       active instanceof HTMLElement &&
@@ -450,8 +466,8 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   }
 
   focus()
-  window.requestAnimationFrame(focus)
-  window.setTimeout(focus, 0)
+  window.requestAnimationFrame(() => focus(true))
+  window.setTimeout(() => focus(true), 0)
 }
 
 /** Drop focus from the main composer input (status-stack chrome, sidebar, etc.).

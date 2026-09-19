@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
@@ -6,6 +6,7 @@ import {
   blurComposerInput,
   focusComposerInput,
   getActiveComposer,
+  isClarifyInput,
   markActiveComposer,
   onComposerFocusRequest,
   onComposerModelMenuRequest,
@@ -54,6 +55,68 @@ afterEach(() => {
 })
 
 describe('focusComposerInput', () => {
+  it.each(['raf', 'timeout'] as const)('respects newly chosen clarify focus on the %s retry, but allows explicit focus', retry => {
+    vi.useFakeTimers()
+    let frame!: FrameRequestCallback
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frame = callback
+
+      return 1
+    })
+
+    try {
+      const input = mountInput()
+      const form = document.createElement('form')
+      form.innerHTML = '<div data-slot="clarify-inline"><textarea>中文选区</textarea></div>'
+      document.body.append(form)
+      const field = form.querySelector('textarea')!
+      focusComposerInput(input)
+      field.focus()
+      field.setSelectionRange(1, 3)
+
+      if (retry === 'raf') {
+        frame(0)
+      } else {
+        vi.advanceTimersByTime(0)
+      }
+
+      expect(document.activeElement).toBe(field)
+      expect([field.selectionStart, field.selectionEnd]).toEqual([1, 3])
+      focusComposerInput(input)
+      expect(document.activeElement).toBe(input)
+    } finally {
+      raf.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('only protects the active enabled answer field, never a hidden or settled card', () => {
+    const input = mountInput()
+    const form = document.createElement('form')
+    form.innerHTML = '<div data-slot="clarify-inline"><textarea></textarea></div>'
+    document.body.append(form)
+    const field = form.querySelector('textarea')!
+    expect(isClarifyInput(field)).toBe(true)
+
+    for (const attribute of ['data-pane-hidden', 'hidden', 'inert']) {
+      form.setAttribute(attribute, '')
+      expect(isClarifyInput(field)).toBe(false)
+      form.removeAttribute(attribute)
+    }
+
+    field.disabled = true
+    expect(isClarifyInput(field)).toBe(false)
+    field.disabled = false
+    input.focus()
+    expect(isClarifyInput(document.activeElement)).toBe(false)
+    document.body.append(field)
+    expect(isClarifyInput(field)).toBe(false)
+    form.querySelector('[data-slot="clarify-inline"]')!.append(field)
+    form.remove()
+    expect(isClarifyInput(field)).toBe(false)
+  })
+
   it('does not steal the caret from another live composer', () => {
     const foreground = mountInput()
     const background = mountInput()

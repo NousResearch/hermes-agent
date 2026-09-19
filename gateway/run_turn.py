@@ -2888,8 +2888,11 @@ class GatewayTurnMixin:
         progress_mode, _tool_progress_explicit = resolve_tool_progress(
             user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
         )
-        # "accumulate" (edit one bubble) or "separate" (one msg per tool)
+        # "accumulate" (edit one bubble) or "separate" (one msg per tool).
+        # Matrix always accumulates — same as interim commentary, no extra grouping key.
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        if source.platform == Platform.MATRIX:
+            progress_grouping = "accumulate"
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 

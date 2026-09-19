@@ -149,6 +149,9 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        # Matrix: sticky pane by default; streaming still follows top-level config.
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "all"
+        assert resolve_display_setting({}, "matrix", "streaming") is None
 
 
     def test_low_tier_platforms(self):

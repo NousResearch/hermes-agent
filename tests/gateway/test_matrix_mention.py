@@ -109,6 +109,26 @@ class TestIsBotMentioned:
             mention_user_ids=["@hermes:example.org"],
         )
 
+    def test_m_mentions_block_present_makes_bare_localpart_prose(self):
+        """A present block is the whole truth: a bare localpart in prose is a name, not a mention."""
+        assert not self.adapter._is_bot_mentioned("hermes can you help?", mention_user_ids=[])
+
+    def test_m_mentions_block_naming_another_user_only(self):
+        """Pill for a sibling bot + this bot's name in prose must not wake this bot."""
+        assert not self.adapter._is_bot_mentioned(
+            "@other ask hermes for the digest", mention_user_ids=["@other:example.org"])
+
+    def test_no_block_keeps_legacy_localpart_heuristic(self):
+        """Clients that send no m.mentions block keep the bare-localpart behaviour."""
+        assert self.adapter._is_bot_mentioned("hermes can you help?", mention_user_ids=None)
+
+    def test_outbound_text_always_carries_mentions_block(self):
+        """Outbound prose always writes m.mentions so sibling bots read it as intentional."""
+        content = self.adapter._build_text_message_content("nahash is idle today")
+        assert content["m.mentions"] == {"user_ids": []}
+        content = self.adapter._build_text_message_content("ping @nahash:example.org")
+        assert content["m.mentions"] == {"user_ids": ["@nahash:example.org"]}
+
 
 class TestStripMention:
     def setup_method(self):

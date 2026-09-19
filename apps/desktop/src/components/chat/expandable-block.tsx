@@ -1,10 +1,12 @@
 'use client'
 
+import { useStore } from '@nanostores/react'
 import { type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { ChevronDown } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $codeBlockCollapse, CODE_BLOCK_COLLAPSE_LIMITS } from '@/store/code-block-collapse'
 
 interface ExpandableBlockProps {
   children: ReactNode
@@ -15,17 +17,23 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
   const innerRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [overflowing, setOverflowing] = useState(false)
+  const collapse = useStore($codeBlockCollapse)
+  // 'off' never folds: no cap, no fade, no toggle (#54712). The other modes
+  // differ only in where the fold kicks in and how tall the expanded view is.
+  const limits = collapse === 'off' ? null : CODE_BLOCK_COLLAPSE_LIMITS[collapse]
 
   // Measure inside ResizeObserver timing only (layout is clean there). A
   // synchronous mount-time scrollHeight read forces a reflow per instance,
   // and a tool-heavy transcript mounts dozens of these on a session switch.
+  // `limits` is a dependency so a preference change re-registers the observer
+  // and gets a fresh delivery under the new threshold.
   const measure = useCallback(() => {
     const el = innerRef.current
 
     if (el) {
-      setOverflowing(el.scrollHeight > 121)
+      setOverflowing(limits !== null && el.scrollHeight > limits.thresholdPx)
     }
-  }, [])
+  }, [limits])
 
   useResizeObserver(measure, innerRef)
 
@@ -36,7 +44,7 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
           // `scrollbar-overlay` opts out of the app-wide classic thin gutters so
           // this scroller keeps platform overlay bars (no always-on track).
           'scrollbar-overlay overflow-y-auto overflow-x-auto',
-          expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]',
+          limits && (expanded ? limits.expandedClass : limits.foldedClass),
           className
         )}
         ref={innerRef}

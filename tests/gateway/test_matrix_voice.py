@@ -264,3 +264,48 @@ class TestMatrixSendVoiceMSC3245:
             if os.path.exists(converted_path):
                 os.unlink(converted_path)
 
+    @pytest.mark.asyncio
+    async def test_send_voice_accepts_is_voice_kwarg_from_dispatcher(self):
+        """Regression test: the shared media dispatcher (base.py) calls
+        ``send_voice(..., is_voice=is_voice)``. Every other platform adapter
+        accepts that kwarg (``**kwargs``); the Matrix override did not, so the
+        dispatcher raised ``TypeError: send_voice() got an unexpected keyword
+        argument 'is_voice'`` and every Matrix voice message was dropped.
+
+        This mirrors the dispatcher call exactly — it must not raise."""
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(b"fake ogg opus data")
+            temp_path = f.name
+
+        sent_content = None
+
+        async def mock_send_message_event(room_id, event_type, content):
+            nonlocal sent_content
+            sent_content = content
+            return "$sent_event"
+
+        self.adapter._client.send_message_event = mock_send_message_event
+
+        with patch(
+            "plugins.platforms.matrix.adapter._matrix_transcode_voice_to_ogg",
+            return_value=None,
+        ), patch(
+            "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
+            return_value={"duration": 1000, "waveform": [0, 512, 1024]},
+        ):
+            # is_voice=... is what the dispatcher passes.
+            result = await self.adapter.send_voice(
+                chat_id="!room:example.org",
+                audio_path=temp_path,
+                caption="Voice from TTS",
+                is_voice=True,
+            )
+
+        try:
+            assert result.success, "send_voice should report success"
+            assert sent_content is not None, "A voice message should have been sent"
+            assert "org.matrix.msc3245.voice" in sent_content
+        finally:
+            os.unlink(temp_path)
+
+

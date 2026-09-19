@@ -1506,6 +1506,33 @@ def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
     return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
 
 
+_DEEPSEEK_V4_ALIAS_SLUGS = frozenset({"deepseek-chat", "deepseek-reasoner"})
+
+
+def _deepseek_v4_alias_context_length(model: str) -> Optional[int]:
+    """Catalog window for the V4 alias slugs (``deepseek-chat`` / ``deepseek-reasoner``), else None.
+
+    The DeepSeek API serves both aliases from V4 Flash (1M), but third-party catalogues still carry
+    their pre-V4 windows — OpenRouter reports 163,840 for ``deepseek-chat`` (live-checked) and the
+    models.dev entry is 128K. Only the alias *identity* identifies these as stale: the number alone
+    cannot, because 128K is also the legitimate window of the shorter ``deepseek`` catch-all family.
+    Routing variants (``:nitro``, ``:batch``) and vendor prefixes resolve to the same alias.
+    """
+    base = (openrouter_variant_base(model) or model).lower()
+    slug = base.rsplit("/", 1)[-1]
+    return DEFAULT_CONTEXT_LENGTHS.get(slug) if slug in _DEEPSEEK_V4_ALIAS_SLUGS else None
+
+
+def _stale_alias_underreport(model: str, ctx: int) -> Optional[int]:
+    """Hardcoded catalog window when the provider value underreports an alias, else None.
+
+    Sibling of the MiniMax-M3 models.dev guard: the provider catalog lags a server-side alias
+    move, so the hardcoded catalog wins. Versioned ids are self-describing and never match.
+    """
+    catalog = _deepseek_v4_alias_context_length(model)
+    return catalog if catalog and ctx < catalog else None
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Local-server context probe, short-TTL cached (see _LOCAL_CTX_PROBE_CACHE)."""
     return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key))
@@ -2044,8 +2071,14 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     # and the family catch-all (a brand-new slug would otherwise fall to the generic "claude": 200K).
     if effective_provider == "openrouter":
         or_ctx = (fetch_model_metadata().get(model) or {}).get("context_length")
-        # Guard against the known OpenRouter Kimi-family 32k underreport.
-        if isinstance(or_ctx, int) and or_ctx > 0 and not (or_ctx == 32768 and _model_name_suggests_kimi(model)):
+        # Guard against the known OpenRouter Kimi-family 32k underreport, and against alias
+        # slugs whose catalog entry has not caught up with the model they now map to.
+        if (
+            isinstance(or_ctx, int)
+            and or_ctx > 0
+            and not (or_ctx == 32768 and _model_name_suggests_kimi(model))
+            and not _stale_alias_underreport(model, or_ctx)
+        ):
             return or_ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
@@ -2146,8 +2179,11 @@ def get_model_context_length(
         metadata = fetch_model_metadata()
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
+            stale_alias = _stale_alias_underreport(model, or_ctx)
             if or_ctx == 32768 and _model_name_suggests_stale_32k_underreport(model):
                 logger.info("Rejecting OpenRouter metadata context=%s for %r (known 32K underreport); falling through to hardcoded defaults", or_ctx, model)
+            elif stale_alias:
+                logger.info("Rejecting OpenRouter metadata context=%s for %r (stale alias entry); using hardcoded default %s", or_ctx, model, f"{stale_alias:,}")
             else:
                 return or_ctx
     # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``

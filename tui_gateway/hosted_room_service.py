@@ -172,6 +172,11 @@ class HostedRoomService:
                 "This Group Chat is managed by another gateway.")
         return room
 
+    def _owned_viewer_room(self, room_id: str) -> dict[str, Any]:
+        from gateway.hosted_room_viewer_state import owned_viewer_room
+
+        return owned_viewer_room(self.db_path, room_id=room_id)
+
     def read_attachment(
         self,
         *,
@@ -184,7 +189,7 @@ class HostedRoomService:
         """Return verified bytes only when send-time recipient ownership permits it."""
 
         if viewer:
-            room = self._owned_room(room_id)
+            room = self._owned_viewer_room(room_id)
             return self.attachments.read_viewer(
                 room_id=room["room_id"],
                 attachment_id=attachment_id,

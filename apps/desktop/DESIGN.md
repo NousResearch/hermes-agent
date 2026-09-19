@@ -275,8 +275,9 @@ The tab reads its surface token directly so glass tint is painted only once.
 
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
-Clipping follows the pinned prompt and its live height without changing layout,
-so glass and message-bubble transparency do not reveal scrolling text.
+Do not mark the row `data-glass-opaque`; the user bubble's Glass surface remains
+translucent. Clipping follows the pinned prompt and its live height without
+changing layout, so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Feedback & empty/error/loading states
 

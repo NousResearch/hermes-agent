@@ -5,7 +5,7 @@ import hashlib
 
 import logging
 import re
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -64,6 +64,50 @@ def _safe_session_filename_component(session_id: str) -> str:
     return f"{sanitized}_{hashlib.sha256(raw.encode('utf-8', errors='surrogatepass')).hexdigest()[:12]}"
 
 
+class FilesUserTranscript(str):
+    """Trusted current Files turn only; never a wire field or a session setting.
+
+    The gateway creates this after verified preparation. Binding the exact newly
+    staged user dict (not an index or instance flag) also covers a close-thread
+    flush. The original model content remains live until the request finishes;
+    only the safe transcript may enter SQLite or subsequent replay.
+    """
+
+    def __new__(cls, text):
+        from agent.message_sanitization import _sanitize_surrogates
+        if not isinstance(text, str):
+            raise TypeError("Files transcript must be text")
+        value = super().__new__(cls, _sanitize_surrogates(text))
+        value.message = None
+        return value
+
+    def bind(self, message):
+        if self.message is not None:
+            raise RuntimeError("Files transcript already bound to a turn")
+        self.message = message
+
+    def finish(self):
+        if self.message is not None:
+            self.message["content"] = str(self)
+            self.message.pop("api_content", None)
+
+
+@contextmanager
+def files_user_message_persistence(agent, transcript):
+    """Bounded gateway-to-agent handoff; reset on success and BaseException.
+
+    Safe saved replay deliberately cannot reproduce the private Files bytes of
+    the original request. Never rewrite earlier history to hide that boundary.
+    """
+    projection = FilesUserTranscript(transcript)
+    try:
+        yield projection
+    finally:
+        projection.finish()
+        if getattr(agent, "_persist_user_message_override", None) is projection:
+            agent._persist_user_message_override = None
+
+
 def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     """May the persist override replace ``content``? A plain-text override must not replace native image/audio
     blocks (a list override is the clean multimodal payload and does), nor a message MERGED with a compaction
@@ -81,6 +125,8 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     injected, the live bytes ARE the sidecar. Shared by the flush and the turn-start stamp so the stamp
     matches the row the flush wrote."""
     override = getattr(agent, "_persist_user_message_override", None)
+    if isinstance(override, FilesUserTranscript):
+        return (str(override), None) if override.message is msg else (content, api_content)
     if _override_replaces_content(msg, content, override):
         if api_content is None and isinstance(content, str) and content != override:
             api_content = content
@@ -288,7 +334,10 @@ class SessionPersistenceMixin:
         msg = messages[idx] if 0 <= idx < len(messages) else None
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
-        if _override_replaces_content(msg, msg.get("content"), override):
+        if isinstance(override, FilesUserTranscript):
+            if override.message is msg:
+                override.finish()
+        elif _override_replaces_content(msg, msg.get("content"), override):
             msg["content"] = override
         if timestamp is not None:
             msg["timestamp"] = timestamp
@@ -392,6 +441,14 @@ class SessionPersistenceMixin:
         """Save conversation trajectory to JSONL file."""
         if not self.save_trajectories:
             return
+        override = getattr(self, "_persist_user_message_override", None)
+        if isinstance(override, FilesUserTranscript):
+            # Trajectories are serialized before finalization cleans the live row.
+            messages = [
+                {**{k: v for k, v in m.items() if k != "api_content"}, "content": str(override)}
+                if m is override.message else m for m in messages
+            ]
+            user_query = str(override)
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
 

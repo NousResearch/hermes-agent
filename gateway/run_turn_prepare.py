@@ -563,6 +563,12 @@ class GatewayTurnPrepareMixin:
                     message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
+        # This is automatic caption/timestamp preparation, not an intentional
+        # transcript override. Verified Files owns its accepted prompt + labels.
+        from gateway.session_api_turn import api_execution
+        api = api_execution.get()
+        if api is not None and "files_persist_user_message" in api:
+            persist_user_message = api["files_persist_user_message"]
         return message_text, persist_user_message, persist_user_timestamp
 
     @dataclasses.dataclass

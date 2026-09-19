@@ -582,6 +582,9 @@ def _stage_turn_user_message(
     # recovery dedups via ``has_platform_message_id`` against this row.
     if persist_user_platform_id is not None:
         user_msg["platform_message_id"] = persist_user_platform_id
+    from agent.session_persistence import FilesUserTranscript
+    if isinstance(persist_user_message, FilesUserTranscript):
+        persist_user_message.bind(user_msg)
     return user_msg, pending_cli_message
 
 
@@ -905,7 +908,8 @@ def build_turn_context(
 
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)
-    if isinstance(persist_user_message, str):
+    from agent.session_persistence import FilesUserTranscript
+    if isinstance(persist_user_message, str) and not isinstance(persist_user_message, FilesUserTranscript):
         persist_user_message = sanitize_surrogates(persist_user_message)
 
     effective_task_id, turn_id = _bind_turn_identity(

@@ -98,6 +98,12 @@ _BROWSERS = (
          "/opt/brave.com/brave-origin-nightly/brave-origin"),
         "BraveSoftware/Brave-Origin", linux_exec=("brave-origin",)),
     _Browser(
+        "helium", "", (), (), (),
+        (),
+        ("helium",),
+        ("/usr/bin/helium", "/opt/helium/helium"),
+        "net.imput.helium"),
+    _Browser(
         "edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         ("Microsoft Edge",), ("msedge.exe", "msedge"),
         (("Microsoft", "Edge", "Application", "msedge.exe"),),
@@ -124,6 +130,9 @@ _WINDOWS_PROGID_MAP = (
     ("chromehtml", "chrome"), ("msedgehtm", "edge"),
     ("braveohtml", "brave-origin"),  # Brave Origin stable (brave-core install_static)
     ("bravehtml", "brave"), ("chromiumhtm", "chromium"))
+# Helium (imputnet/helium) is a Linux-only entry in _BROWSERS: its profile layout is
+# verified on Linux; Windows/macOS install locations are unverified and deliberately
+# absent so detection there fails closed rather than guesses a wrong path.
 
 # ``ChromeBHTML`` = Beta, ``ChromeDHTML`` = Dev, ``ChromeSSHTML`` = Canary (SxS);
 # ``MSEdge[BDC]HTML`` = Edge channels; Brave Origin Beta=BraveOBHTML, Dev=BraveODHTML,
@@ -141,8 +150,8 @@ _LINUX_DESKTOP_MAP = (
     # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave`` fragment,
     # so the substring scan must hit the Origin entry first (#95549).
     ("brave-origin", "brave-origin"), ("brave", "brave"),
-    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"))
-
+    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"),
+    ("net.imput.helium", "helium"), ("helium", "helium"))
 _LINUX_CHANNEL_FRAGMENTS = (
     "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
@@ -539,7 +548,8 @@ def _processes_holding_profile(src: str):
     norm = os.path.normcase(os.path.normpath(src))
     browser_bins = (
         "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
-        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
+        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome",
+        "helium", "helium.exe", "helium_crashpad")
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()

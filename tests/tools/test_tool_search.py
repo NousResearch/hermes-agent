@@ -52,6 +52,13 @@ class TestConfigParsing:
         assert cfg.enabled == "auto"
 
 
+    def test_eager_list_parsed(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"eager": ["mcp_notes_fetch", " ", "mcp_docs_read "]})
+        assert cfg.eager_tools == frozenset({"mcp_notes_fetch", "mcp_docs_read"})
+        assert ToolSearchConfig.from_raw({}).eager_tools == frozenset()
+        assert ToolSearchConfig.from_raw({"eager": "mcp_notes_fetch"}).eager_tools == frozenset()
+
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw({
@@ -79,6 +86,15 @@ class TestClassification:
             assert not is_deferrable_tool_name(core_name), (
                 f"Core tool '{core_name}' must NEVER be deferrable"
             )
+
+    def test_eager_tools_never_defer(self, monkeypatch):
+        """A tool named in tools.tool_search.eager stays loaded; other MCP tools still defer."""
+        import tools.tool_search as tool_search
+        monkeypatch.setattr(tool_search, "_eager_tool_names", lambda: frozenset({"mcp_notes_fetch"}))
+        monkeypatch.setattr(tool_search, "_registry_toolset", lambda name: "mcp-notes")
+        assert not tool_search.is_deferrable_tool_name("mcp_notes_fetch")
+        assert not tool_search.is_deferrable_tool_name("mcp_notes_fetch", defer_tools=frozenset({"mcp_notes_fetch"}))
+        assert tool_search.is_deferrable_tool_name("mcp_notes_query_data_sources")
 
     def test_bridge_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES

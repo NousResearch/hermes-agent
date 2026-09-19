@@ -1,9 +1,11 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { setSessionListDensity } from '@/store/session-list-density'
 
+import type { SidebarSessionGroup } from './projects'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
@@ -27,6 +29,7 @@ vi.mock('@/i18n', () => ({
 }))
 
 const mockVirtualListPropsHistory: VirtualSessionListProps[] = []
+const mockSessionRowRenderCount = { value: 0 }
 
 vi.mock('./virtual-session-list', () => ({
   VirtualSessionList: (props: VirtualSessionListProps) => {
@@ -36,10 +39,22 @@ vi.mock('./virtual-session-list', () => ({
   }
 }))
 
+vi.mock('./gateway-groups', () => ({
+  GatewayProfileGroups: ({
+    groups,
+    renderRows
+  }: {
+    groups: SidebarSessionGroup[]
+    renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  }) => <>{groups.map(group => renderRows(group.sessions))}</>
+}))
+
 vi.mock('./session-row', () => ({
-  SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
-    <div data-testid={`session-row-${session.id}`}>{session.id}</div>
-  )
+  SidebarSessionRow: ({ session }: { session: SessionInfo }) => {
+    mockSessionRowRenderCount.value += 1
+
+    return <div data-testid={`session-row-${session.id}`}>{session.id}</div>
+  }
 }))
 
 function makeSession(id: string, startedAt = 1000): SessionInfo {
@@ -60,6 +75,46 @@ function generateSessions(count: number): SessionInfo[] {
 const noop = () => {}
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
+  it('refreshes mounted profile session rows when density changes', () => {
+    mockSessionRowRenderCount.value = 0
+    setSessionListDensity('compact')
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        groups={[
+          {
+            id: 'profile-group',
+            label: 'Fable',
+            mode: 'profile',
+            path: null,
+            profile: 'fable',
+            sessions: [makeSession('profile-session')]
+          } satisfies SidebarSessionGroup
+        ]}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open={true}
+        pinned={false}
+        sessions={[]}
+      />
+    )
+
+    expect(mockSessionRowRenderCount.value).toBe(1)
+
+    act(() => {
+      setSessionListDensity('comfortable')
+    })
+
+    expect(mockSessionRowRenderCount.value).toBe(2)
+  })
+
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {
     mockVirtualListPropsHistory.length = 0
 

@@ -8,8 +8,43 @@ import { registry } from './registry'
 vi.mock('./runtime-loader', () => ({ watchRuntimePlugins: vi.fn() }))
 
 interface RadioPlayer {
-  play: () => Promise<void>
+  play: (station?: unknown) => Promise<void>
+  stop: () => void
+  toggle: () => void
   status: { get: () => string }
+}
+
+// jsdom has no decoder and no Web Audio, so the transport is exercised through
+// the real element, its real events, and a stand-in audio graph that stays
+// "running" (the metered path is the one with an analyser to keep alive).
+class FakeAudioContext {
+  state = 'running'
+  sampleRate = 48000
+  destination = {}
+
+  createAnalyser() {
+    return { fftSize: 0, connect() {}, disconnect() {}, getFloatTimeDomainData() {} }
+  }
+
+  createMediaElementSource() {
+    return { connect() {}, disconnect() {} }
+  }
+
+  createGain() {
+    return { gain: { value: 1 }, connect() {}, disconnect() {} }
+  }
+
+  resume() {
+    return Promise.resolve()
+  }
+
+  suspend() {
+    return Promise.resolve()
+  }
+
+  close() {
+    return Promise.resolve()
+  }
 }
 
 function player(): RadioPlayer {
@@ -24,6 +59,7 @@ function player(): RadioPlayer {
 }
 
 afterEach(async () => {
+  vi.useRealTimers()
   await setPluginEnabled('radio', false)
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -80,6 +116,98 @@ describe('bundled Radio plugin', () => {
     await setPluginEnabled('radio', true)
     expect(player()).not.toBe(first)
     expect(player().status.get()).toBe('paused')
+    expect(document.querySelector('audio')).toBeNull()
+  })
+})
+
+async function playStation() {
+  $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+  vi.stubGlobal('AudioContext', FakeAudioContext)
+  vi.useFakeTimers()
+  discoverBundledPlugins()
+  await setPluginEnabled('radio', true)
+  const radio = player()
+  await radio.play()
+  const media = document.querySelector('audio')!
+
+  return { radio, media, play, url: media.src }
+}
+
+describe('bundled Radio plugin uninterrupted playback', () => {
+  it('resumes a stream paused outside the player, and keeps a pause the player itself made', async () => {
+    const { radio, media, play } = await playStation()
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+
+    // Media keys, an audio-device change and the OS all pause the element from
+    // outside the widget. That must not read as the user pausing.
+    const before = play.mock.calls.length
+    media.dispatchEvent(new Event('pause'))
+    expect(play.mock.calls.length).toBe(before + 1)
+    expect(radio.status.get()).toBe('live')
+
+    radio.toggle()
+    expect(radio.status.get()).toBe('paused')
+    const paused = play.mock.calls.length
+    media.dispatchEvent(new Event('pause'))
+    expect(play.mock.calls.length).toBe(paused)
+    expect(radio.status.get()).toBe('paused')
+  })
+
+  it('reconnects a stream that stopped while playing instead of reporting a pause', async () => {
+    const { radio, media, url } = await playStation()
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+
+    // A live stream the broadcaster closes mid-playback: reconnect the same
+    // station rather than parking a silent widget in a paused/error state.
+    media.dispatchEvent(new Event('ended'))
+    expect(radio.status.get()).toBe('connecting')
+    expect(document.querySelector('audio')).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(1000)
+    const reconnected = document.querySelector('audio')!
+    expect(reconnected).not.toBe(media)
+    expect(reconnected.src).toBe(url)
+    reconnected.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+  })
+
+  it('heals a stall while live in seconds, not after a long freeze', async () => {
+    const { radio, media, url } = await playStation()
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+
+    // Nothing else is fed to the element: jsdom reports no progress, which is
+    // what a starved live stream looks like. The player must reconnect quickly —
+    // a live stream rejoins at the live edge, so the listener hears a fraction
+    // of a second instead of the whole stall.
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(radio.status.get()).toBe('live')
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(radio.status.get()).toBe('connecting')
+    expect(document.querySelector('audio')).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(1000)
+    const rejoined = document.querySelector('audio')!
+    expect(rejoined.src).toBe(url)
+    rejoined.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+  })
+
+  it('still reports a station that never produced audio as unavailable', async () => {
+    const { radio } = await playStation()
+
+    // One metered attempt, one plain fallback, then the station is called
+    // unavailable — recovery is for streams that were playing, not for
+    // stations that never play at all.
+    document.querySelector('audio')!.dispatchEvent(new Event('error'))
+    document.querySelector('audio')!.dispatchEvent(new Event('error'))
+    expect(radio.status.get()).toBe('error')
     expect(document.querySelector('audio')).toBeNull()
   })
 })

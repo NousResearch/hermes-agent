@@ -532,8 +532,21 @@ function decodeModifier(modifier: number): {
  *
  * Numpad codepoints are from Unicode Private Use Area, defined at:
  * https://sw.kovidgoyal.net/kitty/keyboard-protocol/#functional-key-definitions
+ *
+ * ``shift`` uppercases printable ASCII letters because these branches
+ * RECONSTRUCT typed text from the returned name (input-event.ts builds
+ * ``input`` from ``name``, not from the raw bytes). Terminals disagree on
+ * which codepoint they report — kitty-style CSI-u sends the base key
+ * (Shift+A ⇒ ESC[97;2u), xterm modifyOtherKeys usually the shifted result
+ * (ESC[27;2;65~) but not everywhere — so the shift modifier is the only
+ * reliable case signal. Dropping it here silently disables capitalization
+ * whenever a terminal re-encodes Shift+letter (Ghostty/WezTerm/tmux/VS Code
+ * under modifyOtherKeys level 2; mirrors #87390 on the classic CLI).
+ * Control chords keep the lowercase name: callers match readline/Ctrl
+ * chords against ``ch.toLowerCase()``, and input-event.ts only rebuilds
+ * printable text from ``name`` when ctrl is clear.
  */
-function keycodeToName(keycode: number): string | undefined {
+function keycodeToName(keycode: number, shift = false): string | undefined {
   switch (keycode) {
     case 9:
       return 'tab'
@@ -605,7 +618,19 @@ function keycodeToName(keycode: number): string | undefined {
     default:
       // Printable ASCII characters
       if (keycode >= 32 && keycode <= 126) {
-        return String.fromCharCode(keycode).toLowerCase()
+        const ch = String.fromCharCode(keycode)
+
+        // Terminals disagree on WHICH codepoint Shift+letter reports:
+        // kitty-style CSI-u sends the base key (Shift+A ⇒ 97) while xterm
+        // modifyOtherKeys sends the shifted result (⇒ 65). With the shift
+        // bit set, capitalize a lowercase report and preserve an already-
+        // uppercase one; without it, keep the historical lowercase name.
+        // Non-letters pass through unchanged in both branches.
+        if (shift) {
+          return ch >= 'a' && ch <= 'z' ? ch.toUpperCase() : ch
+        }
+
+        return ch.toLowerCase()
       }
 
       return undefined
@@ -716,7 +741,11 @@ function parseKeypress(s: string = ''): ParsedKey {
     // Modifier defaults to 1 (no modifiers) when not present
     const modifier = match[2] ? parseInt(match[2], 10) : 1
     const mods = decodeModifier(modifier)
-    const name = keycodeToName(codepoint)
+    // Pass the shift bit so Shift+letter reconstructs as the capital —
+    // see keycodeToName for why the name carries the case. Control
+    // chords (ctrl+shift+<key>) keep the lowercase name because
+    // input-event.ts takes `input = name` verbatim when ctrl is set.
+    const name = keycodeToName(codepoint, mods.shift && !mods.ctrl)
 
     return {
       kind: 'key',
@@ -738,7 +767,8 @@ function parseKeypress(s: string = ''): ParsedKey {
   // would leave the tail as garbage if it partially matched.
   if ((match = MODIFY_OTHER_KEYS_RE.exec(s))) {
     const mods = decodeModifier(parseInt(match[1]!, 10))
-    const name = keycodeToName(parseInt(match[2]!, 10))
+    // Same shift-without-ctrl gating as the CSI-u branch above.
+    const name = keycodeToName(parseInt(match[2]!, 10), mods.shift && !mods.ctrl)
 
     return {
       kind: 'key',

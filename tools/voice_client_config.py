@@ -184,6 +184,13 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
                        str(el.get("base_url") or "https://api.elevenlabs.io/v1").rstrip("/"),
                        api_key, el.get("model_id") or tts_tool_providers.DEFAULT_ELEVENLABS_MODEL_ID,
                        voice=el.get("voice_id") or tts_tool_providers.DEFAULT_ELEVENLABS_VOICE_ID, speed=None)
+    if provider == "openrouter":
+        try:
+            resolved = tts_tool_openai.resolve_openrouter_tts_config(tts_config)
+        except ValueError:
+            return _relay("no credentials")
+        return _direct(TTS_WIRE_OPENAI, "openrouter", resolved["base_url"], resolved["api_key"],
+                       resolved["model"], voice=resolved["voice"], speed=resolved["speed"])
     if provider == "deepinfra":
         api_key = tts._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:

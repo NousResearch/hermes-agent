@@ -9,6 +9,7 @@ through :func:`_origin` at call time.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
@@ -29,6 +30,16 @@ DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
+# OpenRouter implements the OpenAI speech wire but uses vendor-prefixed model slugs and
+# model-specific voices. The default pair is verified for complete multi-sentence synthesis;
+# compatibility caveats and live-catalog discovery belong in the user docs.
+DEFAULT_OPENROUTER_TTS_MODEL = os.getenv("TTS_OPENROUTER_MODEL", "deepgram/aura-2")
+DEFAULT_OPENROUTER_TTS_VOICE = os.getenv("TTS_OPENROUTER_VOICE", "aura-2-thalia-en")
+OPENROUTER_TTS_BASE_URL = os.getenv("TTS_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Model/voice SUGGESTIONS deliberately live only in the consumers that render them
+# (apps/desktop/src/app/settings/constants.ts ENUM_OPTIONS + the docs): nothing in the runtime
+# reads a fixed list, and a copy here would just drift. Live catalog:
+#   curl "https://openrouter.ai/api/v1/models?output_modalities=speech"
 
 
 def _managed_openai_audio_route() -> Optional[tuple]:
@@ -92,9 +103,12 @@ def _generate_openai_tts(
     fallback_base: Optional[str] = None
     is_managed = False
     explicit_base_url = base_url is not None
-    if api_key is None:
+    # Explicit credentials mean an OpenAI-COMPATIBLE caller already resolved its own provider
+    # config. Do not let tts.openai.* leak into OpenRouter/DeepInfra requests.
+    native_openai = api_key is None
+    if native_openai:
         api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
-    oai_config = _section(tts_config, "openai")
+    oai_config = _section(tts_config, "openai") if native_openai else {}
     if model is None:
         model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     if voice is None:
@@ -132,6 +146,56 @@ def _generate_openai_tts(
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+def openrouter_tts_base_url(section: Any = None) -> str:
+    """``tts.openrouter.base_url`` when set, else the env-resolved ``OPENROUTER_TTS_BASE_URL``.
+
+    Shared by the synthesis handler and the desktop's client-direct resolver so a configured
+    endpoint never applies to only one of the two paths.
+    """
+    configured = ""
+    if isinstance(section, dict):
+        configured = str(section.get("base_url") or "").strip()
+    return configured.rstrip("/") or OPENROUTER_TTS_BASE_URL
+
+
+def resolve_openrouter_tts_config(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve OpenRouter TTS credentials and normalized request settings once.
+
+    This side-effect-free descriptor is shared by relay synthesis and desktop client-direct voice,
+    preventing defaults/base URL/speed semantics from drifting between the two paths.
+    """
+    api_key = _origin()._resolve_provider_key("OPENROUTER_API_KEY", "openrouter")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY not set")
+    section = _section(tts_config, "openrouter")
+    speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
+    try:
+        speed = float(section.get("speed", speed_default))
+    except (TypeError, ValueError):
+        speed = 1.0
+    return {
+        "api_key": api_key,
+        "base_url": openrouter_tts_base_url(section),
+        "model": section.get("model") or DEFAULT_OPENROUTER_TTS_MODEL,
+        "voice": section.get("voice") or DEFAULT_OPENROUTER_TTS_VOICE,
+        "speed": speed,
+    }
+
+
+def _generate_openrouter_tts(
+    text: str, output_path: str, tts_config: Dict[str, Any], *, instructions: Optional[str] = None
+) -> str:
+    """Synthesize via OpenRouter's ``/audio/speech``; reads ``OPENROUTER_API_KEY`` (the same key the
+    chat provider uses). Thin credential/model swap over :func:`_generate_openai_tts`, which already
+    speaks the OpenAI ``audio.speech.create`` shape OpenRouter implements.
+
+    ``tts.openrouter.model``/``voice`` are per-provider; ``speed`` falls back to ``tts.speed``.
+    """
+    resolved = resolve_openrouter_tts_config(tts_config)
+    return _origin()._generate_openai_tts(
+        text, output_path, tts_config, **resolved, instructions=instructions)
 
 
 def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:

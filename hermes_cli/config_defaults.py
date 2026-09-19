@@ -1080,6 +1080,19 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
+        "openrouter": {
+            # Reads OPENROUTER_API_KEY (the same key your chat provider uses) and posts to
+            # https://openrouter.ai/api/v1/audio/speech. Models are vendor-prefixed catalog slugs;
+            # list them with
+            #   curl "https://openrouter.ai/api/v1/models?output_modalities=speech"
+            # Verified to speak multi-sentence input in full. (hexgrad/kokoro-82m emits only the
+            # first sentence; google/gemini-3.1-flash-tts-preview rejects the mp3 response format.)
+            "model": "deepgram/aura-2",
+            # Voices are MODEL-SPECIFIC: this is an Aura-2 voice. Kokoro wants af_heart/af_bella,
+            # Flux wants flux-alexis-en, and so on.
+            "voice": "aura-2-thalia-en",
+            # optional "base_url" key overrides TTS_OPENROUTER_BASE_URL for TTS only
+        },
     },
 
     "stt": {

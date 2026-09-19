@@ -240,6 +240,9 @@ TOOL_CATEGORIES = {
                  post_setup="piper"),
             _row("DeepInfra TTS", "paid", "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com", [_DEEPINFRA_KEY],
                  tts_provider="deepinfra"),
+            _row("OpenRouter TTS", "paid", "Kokoro, Deepgram Aura-2, MiniMax speech, Voxtral — via your OpenRouter key",
+                 [_key("OPENROUTER_API_KEY", "OpenRouter API key", "https://openrouter.ai/keys")],
+                 tts_provider="openrouter"),
         ],
     },
     "stt": {

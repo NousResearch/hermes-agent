@@ -46,7 +46,8 @@ from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generat
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
-from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from tools.tts_tool_openai import (
+    _generate_deepinfra_tts, _generate_openai_tts, _generate_openrouter_tts, _has_openai_audio_backend)
 
 
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
@@ -148,7 +149,7 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper", "openrouter"})
 
 
 # --- Built-in provider dispatch ---
@@ -161,6 +162,8 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
                "OpenAI provider selected but 'openai' package not installed."),
     "deepinfra": (lambda: _importable(_import_openai_client), "DeepInfra TTS", "_generate_deepinfra_tts",
                   "DeepInfra TTS uses the 'openai' SDK but it isn't installed."),
+    "openrouter": (lambda: _importable(_import_openai_client), "OpenRouter TTS", "_generate_openrouter_tts",
+                   "OpenRouter TTS uses the 'openai' SDK but it isn't installed."),
     "minimax": (None, "MiniMax TTS", "_generate_minimax_tts", None),
     "xai": (None, "xAI TTS", "_generate_xai_tts", None),
     "mistral": (lambda: _importable(_import_mistral_client), "Mistral Voxtral TTS", "_generate_mistral_tts",
@@ -220,6 +223,8 @@ def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[
         _run_edge_tts(text, file_str, tts_config)
     elif engine == "openai":
         _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
+    elif engine == "openrouter":
+        _generate_openrouter_tts(text, file_str, tts_config, instructions=instructions)
     else:
         globals()[entry[2]](text, file_str, tts_config)
 
@@ -492,6 +497,7 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "elevenlabs": lambda: _importable(_import_elevenlabs) and bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")),
     "openai": lambda: _package_installed("openai") and _has_openai_audio_backend(),
     "deepinfra": lambda: _package_installed("openai") and bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")),
+    "openrouter": lambda: _package_installed("openai") and bool(_resolve_provider_key("OPENROUTER_API_KEY", "openrouter")),
     "minimax": _minimax_requirements,
     "xai": _xai_requirements,
     "gemini": lambda: bool(_resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")),
@@ -558,7 +564,7 @@ TTS_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Optional TTS provider override. Accepts built-in names "
-                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
+                    "(edge, openai, openrouter, elevenlabs, minimax, xai, mistral, gemini, "
                     "neutts, kittentts, piper), user-declared command provider "
                     "names from tts.providers.<name>, or plugin-registered names. "
                     "When omitted, the configured tts.provider from config.yaml is used."

@@ -111,8 +111,20 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "tts.provider": _select(
         "Text-to-speech provider",
-        "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
+        "edge", "elevenlabs", "openai", "openrouter", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
     ),
+    # OpenRouter multiplexes every vendor, so its speech models are vendor-prefixed catalog slugs
+    # (`hexgrad/kokoro-82m`). Kept free-form on purpose — the live catalog
+    # (GET https://openrouter.ai/api/v1/models?output_modalities=speech) moves faster than any list
+    # shipped here. Desktop suggestions live in apps/desktop/src/app/settings/constants.ts.
+    "tts.openrouter.model": {
+        "type": "string",
+        "description": "OpenRouter speech model (vendor-prefixed slug, e.g. deepgram/aura-2)",
+    },
+    "tts.openrouter.voice": {
+        "type": "string",
+        "description": "Voice for the chosen model — e.g. aura-2-thalia-en (Aura-2), af_heart (Kokoro), flux-alexis-en (Flux)",
+    },
     # "mistral" temporarily removed — mistralai PyPI package quarantined
     # (malicious 2.4.6 release on 2026-05-12). Restore once available.
     "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),

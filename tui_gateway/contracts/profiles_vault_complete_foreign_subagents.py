@@ -266,6 +266,7 @@ class ProfilesConfigureParams(ProfileParams):
     ui_meta_expected_revisions: dict[str, int] | None = None
     soul: str | None = None
     description: str | None = None
+    display_name: str | None = None
     model: str | None = None
     provider: str | None = None
     confirm_expensive_model: bool | str | None = None
@@ -287,6 +288,7 @@ class ProfilesConfigureApplied(Result):
     ui_meta_conflicts: dict[str, UiMetaConflict] | None = None
     soul: bool | None = None
     description: bool | None = None
+    display_name: bool | None = None
     model: bool | None = None
     skills: bool | None = None
     toolsets: bool | None = None

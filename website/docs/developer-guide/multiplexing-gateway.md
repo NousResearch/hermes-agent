@@ -227,7 +227,7 @@ it. `tests/gateway/test_multiplex_transport_matrix.py` asserts every row.
 The routing entry persists `transport_profile` next to the key (and the
 `sessions.transport_profile` column in `state.db`), so after a restart a
 revived lane still knows which bot received it: `_restored_source(entry)`
-re-pins a `RoutingIdentity` with no live adapter and `_adapter_for_source`
+re-pins a `RoutingIdentity` with no live adapter and `_delivery_adapter_for`
 delivers through that bot's adapter or fails closed — a satellite routed
 through the default bot keeps answering from the default bot, a lane owned by
 a secondary never falls back to the default bot's credential. Entries written

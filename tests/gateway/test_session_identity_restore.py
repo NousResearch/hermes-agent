@@ -108,12 +108,12 @@ def test_restored_lane_delivers_through_the_bot_that_received_it_never_the_defau
     assert (restored_identity.transport_profile, restored_identity.runtime_profile) == ("team_b", "ops")
     assert restored_identity.authorization_home == mux.home / "profiles" / "team_b"
     assert restored_identity.runtime_home == mux.home / "profiles" / "ops"
-    assert fresh.runner._adapter_for_source(source) is fresh.team_b
+    assert fresh.runner._delivery_adapter_for(source) is fresh.team_b
     assert fresh.runner._adapter_profile_for_source(source) == "team_b"
     assert fresh.runner._authorization_home_for_source(source) == mux.home / "profiles" / "team_b"
     # Fail closed: team_b's bot did not reconnect → nothing delivers; the default bot never does.
     fresh.runner._profile_adapters["team_b"] = {}
-    assert fresh.runner._adapter_for_source(source) is None
+    assert fresh.runner._delivery_adapter_for(source) is None
 
     # The satellite lane (shared default bot, runtime ops) keeps its default-bot egress.
     shared = mux.primary.build_source(chat_id="72719239", chat_type="dm", user_id="72719239")
@@ -122,7 +122,7 @@ def test_restored_lane_delivers_through_the_bot_that_received_it_never_the_defau
     assert shared_entry.transport_profile == "default"
     fresh2, shared_source, _ = _restart(mux, shared_entry)
     assert identity_of(shared_source).transport_profile == "default"
-    assert fresh2.runner._adapter_for_source(shared_source) is fresh2.primary
+    assert fresh2.runner._delivery_adapter_for(shared_source) is fresh2.primary
 
     # A routing entry written before the column existed: nothing is pinned, old chain unchanged.
     legacy = entry.to_dict()
@@ -130,7 +130,7 @@ def test_restored_lane_delivers_through_the_bot_that_received_it_never_the_defau
     fresh3 = _runner(mux.home)
     legacy_source = fresh3.runner._restored_source(SessionEntry.from_dict(legacy))
     assert identity_of(legacy_source) is None
-    assert fresh3.runner._adapter_for_source(legacy_source) is fresh3.primary  # the heuristic, as before
+    assert fresh3.runner._delivery_adapter_for(legacy_source) is fresh3.primary  # the heuristic, as before
 
 
 def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, monkeypatch):
@@ -150,5 +150,5 @@ def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, 
     fresh = _runner(home, multiplex=False)
     restored = fresh.runner._restored_source(SessionEntry.from_dict(entry.to_dict()))
     assert identity_of(restored) is None
-    assert fresh.runner._adapter_for_source(restored) is fresh.primary
+    assert fresh.runner._delivery_adapter_for(restored) is fresh.primary
     assert fresh.runner._session_key_for_source(restored) == "agent:main:telegram:dm:4040"

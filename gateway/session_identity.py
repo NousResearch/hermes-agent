@@ -57,6 +57,11 @@ class RoutingIdentity:
     # Receiving adapter; None for restored/synthetic sources (no live provenance → fail closed).
     # Provenance, not identity: two events from the same bot share one identity.
     transport: Optional[weakref.ref] = field(default=None, compare=False, hash=False)
+    # True when nothing named the receiving bot (no live adapter, no persisted transport_profile,
+    # no explicit hint) and ``transport_profile`` is the primary by default. A hand-built or
+    # pre-column source. Delivery may still fall back to the runtime profile's unique adapter for
+    # these; an identity whose transport is KNOWN (live or restored) never does.
+    transport_inferred: bool = field(default=False, compare=False, hash=False)
 
     @property
     def namespace(self) -> str:
@@ -221,6 +226,7 @@ def resolve_identity(
             source._transport_adapter_ref = weakref.ref(adapter)
         _registered, owner_profile = runner._owning_profile(adapter, platform)
     transport_name = _name(transport_profile) or _name(owner_profile) or primary_profile
+    transport_inferred = adapter is None and _name(transport_profile) is None and _name(owner_profile) is None
     transport_ref = weakref.ref(adapter) if adapter is not None else None
 
     if not multiplexed:
@@ -262,6 +268,6 @@ def resolve_identity(
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,
-        multiplexed=True, transport=transport_ref)
+        multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred)
     setattr(source, _IDENTITY_ATTR, identity)
     return identity

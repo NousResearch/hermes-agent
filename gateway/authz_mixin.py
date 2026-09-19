@@ -300,6 +300,17 @@ class GatewayAuthorizationMixin:
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter
+        # A pinned identity NAMES the receiving bot (live or restored from ``transport_profile``).
+        # If that bot has no adapter right now it is offline: fail closed rather than fall through to
+        # the runtime profile's bot — that fallthrough is the "restored lane answers from the wrong
+        # bot" row the identity exists to close. Only an identity-less source (legacy row, bare
+        # fixture) uses the unique-owner heuristic below.
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None and identity.multiplexed and not identity.transport_inferred:
+            return None
+        # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
+        # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
         return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
 

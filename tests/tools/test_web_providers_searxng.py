@@ -253,3 +253,67 @@ class TestSearXNGOnlyExtractCrawlErrors:
         result = json.loads(result_str)
         assert result["success"] is False
         assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# SEARXNG_SEARCH_DELAY pacing
+# ---------------------------------------------------------------------------
+
+
+class TestSearXNGSearchPacing:
+    """Optional SEARXNG_SEARCH_DELAY env paces consecutive searches; unset = stock."""
+
+    _SAMPLE = {"results": [{"title": "R", "url": "https://r.example", "content": "d", "score": 1.0}]}
+
+    @staticmethod
+    def _provider():
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        return SearXNGWebSearchProvider()
+
+    def _mock_http(self, monkeypatch):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = self._SAMPLE
+        mock_resp.raise_for_status = MagicMock()
+        monkeypatch.setattr("plugins.web.searxng.provider.http_get_json",
+                            lambda *a, **k: (self._SAMPLE, None))
+
+    def test_no_delay_by_default(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.delenv("SEARXNG_SEARCH_DELAY", raising=False)
+        self._mock_http(monkeypatch)
+        with patch("plugins.web.searxng.provider.time.sleep") as mock_sleep:
+            result = self._provider().search("q", limit=1)
+        assert result["success"] is True
+        mock_sleep.assert_not_called()
+
+    def test_delay_sleeps_on_rapid_consecutive_search(self, monkeypatch):
+        import plugins.web.searxng.provider as prov
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("SEARXNG_SEARCH_DELAY", "5")
+        self._mock_http(monkeypatch)
+        with patch.object(prov, "_LAST_SEARCH_TS", prov.time.monotonic()):
+            with patch("plugins.web.searxng.provider.time.sleep") as mock_sleep:
+                self._provider().search("q", limit=1)  # immediately after a prior search
+        mock_sleep.assert_called_once()
+        slept = mock_sleep.call_args[0][0]
+        assert 0 < slept <= 5
+
+    def test_first_search_never_sleeps(self, monkeypatch):
+        import plugins.web.searxng.provider as prov
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("SEARXNG_SEARCH_DELAY", "5")
+        self._mock_http(monkeypatch)
+        with patch.object(prov, "_LAST_SEARCH_TS", 0.0):
+            with patch("plugins.web.searxng.provider.time.sleep") as mock_sleep:
+                self._provider().search("q", limit=1)
+        mock_sleep.assert_not_called()
+
+    def test_invalid_delay_value_ignored(self, monkeypatch):
+        import plugins.web.searxng.provider as prov
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("SEARXNG_SEARCH_DELAY", "not-a-number")
+        self._mock_http(monkeypatch)
+        with patch.object(prov, "_LAST_SEARCH_TS", 0.0):
+            result = self._provider().search("q", limit=1)
+        assert result["success"] is True

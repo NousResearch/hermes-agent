@@ -3,12 +3,14 @@
 import json
 
 from agent.tool_guardrails import (
+    PROGRESS_RESET_TOOL_NAMES,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
     canonical_tool_args,
     classify_tool_failure,
 )
+from agent.tool_result_classification import FILE_MUTATING_TOOL_NAMES
 
 
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():
@@ -341,6 +343,38 @@ def test_intervening_mutation_resets_the_replay_streak_only_once():
         assert c.before_call("terminal", _PYTEST).allows_execution
         c.after_call("terminal", _PYTEST, _RED, failed=True)
     assert c.before_call("terminal", _PYTEST).action == "block"
+
+
+def test_benign_successful_read_between_identical_failures_does_not_disarm_the_replay_detector():
+    # #115482: the reported setup loop is `run the tool -> read a log -> run it again`,
+    # with the read SUCCEEDING. `terminal` is in PROGRESS_RESET_TOOL_NAMES for its role
+    # (edit -> re-run), but a shell command that only read (ls/cat/which) exits 0 having
+    # changed nothing: counting that as progress wiped the failure streaks, so the turn ran
+    # to the iteration budget with no warning and no block even with hard stops on.
+    c = _HARD()
+    reads = {"command": "ls -la ~/.config/himalaya"}
+    green_read = '{"output": "config.toml", "exit_code": 0}'
+    warns = []
+    for _ in range(5):
+        assert c.before_call("terminal", _PYTEST).allows_execution
+        decision = c.after_call("terminal", _PYTEST, _RED, failed=True)
+        if decision.action == "warn":
+            warns.append(decision.code)
+        assert c.before_call("terminal", reads).allows_execution
+        c.after_call("terminal", reads, green_read, failed=False)
+
+    assert warns, "the identical red command kept failing with no loop warning at all"
+    blocked = c.before_call("terminal", _PYTEST)
+    assert blocked.action == "block" and blocked.code == "repeated_exact_failure_block"
+
+
+def test_every_tool_that_can_report_a_landed_mutation_is_in_the_progress_reset_set():
+    # The reset condition drops the old ``or file_mutation_result_landed(...)`` disjunct, which is a
+    # pure simplification only while every tool that can report a landed mutation is already in
+    # PROGRESS_RESET_TOOL_NAMES. A mutating tool added outside that set would silently stop
+    # counting as progress -- a behavior change beyond the described fix -- so pin the relation.
+    # ``file_mutation_result_landed`` gates on FILE_MUTATING_TOOL_NAMES, so this is the invariant.
+    assert FILE_MUTATING_TOOL_NAMES <= PROGRESS_RESET_TOOL_NAMES
 
 
 def test_distinct_failing_terminal_commands_warn_but_never_halt():

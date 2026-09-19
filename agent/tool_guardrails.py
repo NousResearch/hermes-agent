@@ -65,6 +65,17 @@ PROGRESS_RESET_TOOL_NAMES = frozenset({
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
 })
 
+# Membership in PROGRESS_RESET_TOOL_NAMES is a claim that the call's SUCCESS changed something.
+# That claim is false for the shell tools: a command exits 0 after only reading (``ls``, ``cat``,
+# ``which``, ``git status``), so a single benign read between two identical failures wiped every
+# counter below — the exact-args replay streak (``_progress_since_failure``), the same-tool streak
+# and its warnings — and the whole detector stayed disarmed for the rest of the turn. A retrying
+# setup loop (run the tool, read a log, run it again unchanged) then ran to the iteration budget
+# with no warning and no block, even where hard stops are on (#115482). Only a landed mutation
+# (``write_file``/``patch``, both in the set above) proves the loop is making progress.
+_OPAQUE_SUCCESS_TOOL_NAMES = frozenset({"terminal", "execute_code"})
+
+
 _BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
 # Threshold field -> (nested section, nested key). The flat legacy key is the field name itself.
 _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
@@ -415,7 +426,7 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts.pop(tool_name, None)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
-        if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
+        if tool_name in PROGRESS_RESET_TOOL_NAMES and tool_name not in _OPAQUE_SUCCESS_TOOL_NAMES:
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
         if not self._is_idempotent(tool_name):

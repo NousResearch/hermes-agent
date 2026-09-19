@@ -138,8 +138,10 @@ class BackupInProgressError(RuntimeError):
     """Raised when another process already owns the Hermes backup slot."""
 
 
-class _SQLiteSnapshotError(RuntimeError):
-    pass
+class _BackupWouldBeEmptyError(RuntimeError):
+    """Every file targeted for a full-zip backup failed to archive -- raised so the atomic
+    write is discarded (preserving any previous valid archive) instead of publishing an
+    empty zip that would silently look like a successful backup."""
 
 
 class _SQLiteBackupTimeout(RuntimeError):
@@ -1628,9 +1630,22 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",
                 (time.monotonic() - scan_started) * 1000, len(files_to_add))
 
+    failed = {"count": 0}
+
     def _db_failure(rel_path: Path) -> None:
-        logger.warning("Full-zip backup aborted: SQLite snapshot failed for %s", rel_path)
-        raise _SQLiteSnapshotError(str(rel_path))
+        # Skip and continue, same as on_error below -- one locked/unreadable .db (e.g. a
+        # browser profile's own internal SQLite file, unrelated to Hermes' own state) must
+        # not blow up an otherwise-good backup of everything else. Previously this raised
+        # and aborted the entire backup, so a single always-locked incidental file (Chrome
+        # keeps its profile DBs open while running) made every pre-update backup silently
+        # produce nothing at all, every time. Counted below: if EVERY file fails, there is
+        # nothing this loop actually adds, and archiving is still bailed out below.
+        failed["count"] += 1
+        logger.warning("Skipping %s in zip backup: SQLite snapshot failed (locked or unreadable)", rel_path)
+
+    def _on_error(rel_path: Path, exc: Exception) -> None:
+        failed["count"] += 1
+        logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
 
     archive_started = time.monotonic()
     try:
@@ -1638,10 +1653,17 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
-                on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
+                on_error=_on_error,
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
-    except (OSError, _SQLiteSnapshotError) as exc:
+            if failed["count"] >= len(files_to_add):
+                # Every single targeted file failed -- the archive would be empty. An empty
+                # backup is worse than none (it would silently overwrite a previous good
+                # archive with nothing useful), so discard it the same way a hard write
+                # failure does: raise inside the block so _atomic_output_path drops the
+                # partial and any existing out_path is left untouched.
+                raise _BackupWouldBeEmptyError(f"all {len(files_to_add)} targeted file(s) failed to archive")
+    except (OSError, _BackupWouldBeEmptyError) as exc:
         # The hidden partial is already gone; ``out_path`` may be a previous valid backup: keep it.
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None

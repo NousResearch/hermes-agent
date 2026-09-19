@@ -1796,6 +1796,47 @@ class TestPreUpdateBackup:
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
+    def test_one_locked_db_does_not_abort_the_whole_backup(self, hermes_home, monkeypatch):
+        """A single unreadable/locked .db (e.g. a browser profile's own internal SQLite
+        file that happens to be open, unrelated to Hermes' own state) must not discard
+        the entire backup. Previously `_db_failure` raised and the caller treated that
+        as fatal, so `hermes update`'s auto-backup silently produced NOTHING whenever
+        any .db anywhere under HERMES_HOME was locked -- including files that have
+        nothing to do with Hermes and are essentially always open (e.g. a running
+        browser's own profile databases)."""
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import create_pre_update_backup
+
+        locked_dir = hermes_home / "chrome-profile" / "Default"
+        locked_dir.mkdir(parents=True)
+        locked_db = locked_dir / "declarative_performance_observer.db"
+        locked_db.write_bytes(b"SQLite format 3\x00")
+
+        real_safe_copy_db = backup_mod._safe_copy_db
+
+        def fake_safe_copy_db(src, dst, **kwargs):
+            if src == locked_db:
+                return False  # simulates "database is locked" / unreadable
+            return real_safe_copy_db(src, dst, **kwargs)
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", fake_safe_copy_db)
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+
+        assert out is not None, (
+            "one locked, unrelated .db file must not make the entire pre-update "
+            "backup disappear -- it should be skipped, not fatal")
+        with zipfile.ZipFile(out) as zf:
+            names = set(zf.namelist())
+        # The locked file is correctly absent (we can't back up what we can't read) ...
+        assert not any("declarative_performance_observer.db" in n for n in names)
+        # ... but everything else -- including Hermes' OWN databases, real SQLite
+        # snapshots that must still succeed -- is present.
+        assert "config.yaml" in names
+        assert "sessions/abc123.json" in names
+        assert "memory_store.db" in names
+        assert "hermes_state.db" in names
+
 
 class TestRunPreUpdateBackup:
     """Tests for the ``_run_pre_update_backup`` wrapper in main.py —

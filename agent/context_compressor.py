@@ -4165,22 +4165,24 @@ Write only the summary body. Do not include any preamble or prefix."""
         return idx
 
     @classmethod
+    def _is_real_user_turn(cls, message: Dict[str, Any]) -> bool:
+        """Actionable user turn that is not synthetic scaffolding — the shared row test for both index scans."""
+        return cls._is_actionable_user_turn(message) and not cls._is_synthetic_compression_user_turn(message)
+
+    @classmethod
     def _real_user_indices_desc(cls, messages: List[Dict[str, Any]], head_end: int) -> list[int]:
         """Newest-first indices of actionable, non-synthetic user turns at or after *head_end* (no handoffs/blank echoes)."""
         return [
             i for i in range(len(messages) - 1, head_end - 1, -1)
-            if cls._is_actionable_user_turn(messages[i])
-            and not cls._is_synthetic_compression_user_turn(messages[i])
+            if cls._is_real_user_turn(messages[i])
         ]
 
     def _find_last_user_message_idx(self, messages: List[Dict[str, Any]], head_end: int) -> int:
         """Return the latest actionable user turn at or after *head_end*, or -1."""
-        # Early-exit generator: only the newest hit is needed, and this runs on every boundary
-        # computation — collecting every index (``_real_user_indices_desc``) costs a full scan.
+        # Early-exit generator: callers want the newest hit only, and collecting every index
+        # (``_real_user_indices_desc``) costs a full backward scan per call.
         return next(
-            (i for i in range(len(messages) - 1, head_end - 1, -1)
-             if self._is_actionable_user_turn(messages[i])
-             and not self._is_synthetic_compression_user_turn(messages[i])),
+            (i for i in range(len(messages) - 1, head_end - 1, -1) if self._is_real_user_turn(messages[i])),
             -1,
         )
 
@@ -4498,7 +4500,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # soft ceiling, anchoring its opening request retains the whole turn and blows the budget by
         # design — then the clean tool-group boundary above wins and that request rides the handoff
         # (#80449). The N-user promise (#70250) is never relaxed.
-        last_user_idx = self._find_last_user_message_idx(messages, head_end)
+        # Only batch/manual compaction can take the exception below, and only that path reads the
+        # newest user index, so the scan is not paid on the rolling micro-compaction pass.
+        last_user_idx = self._find_last_user_message_idx(messages, head_end) if allow_split_turn else -1
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
         split_oversized_turn = False
         # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the

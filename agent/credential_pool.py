@@ -126,6 +126,9 @@ SUPPORTED_POOL_STRATEGIES = {
 # briefly so single-key setups recover; 429/402/other take an hour.
 # Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60
+# An unclassified 403 is the same user-fixable auth failure as a 401 (bad/rotated key),
+# so it gets the same minutes-scale bench instead of the hour-long default.
+EXHAUSTED_TTL_403_SECONDS = 5 * 60
 EXHAUSTED_TTL_429_SECONDS = 60 * 60
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
 # When the offending key is the sole non-DEAD entry, an hour-long bench means
@@ -370,7 +373,16 @@ def _exhausted_ttl(
     """
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
-    base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
+    # 401/403 that the classifier did NOT call billing are the same user-fixable auth failure class
+    # (bad or rotated key): bench for minutes, not the hour-long default. Billing-classified 403s
+    # (key-limit / spending-limit / plan-credit-exhaustion) keep the full bench — retrying a spent
+    # account
+    # every few minutes would just re-fail. Assigned to ``base`` rather than returned so the
+    # sole-credential and unverified-billing degradations below still apply.
+    if error_code == 403 and failure_reason != FAILURE_REASON_BILLING:
+        base = EXHAUSTED_TTL_403_SECONDS
+    else:
+        base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
     if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING

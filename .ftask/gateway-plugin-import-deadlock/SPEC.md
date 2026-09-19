@@ -15,7 +15,7 @@
 > The crisp goal the interview converges to. Must be checkable, not vague —
 > it doubles as the future drive-to-green stop condition.
 > e.g. 'subscribe-v3 import maps all 7 fields; imported row count = source ±0'.
-- Gateway `run` must never start plugin discovery on a background thread before gateway imports complete; the focused launcher regression test and a real local cold start both complete without an import-lock stall, chat still backgrounds discovery, and the canonical CI full-suite/E2E path runs exactly once.
+- Gateway `run` must never start plugin discovery on a background thread before gateway imports complete; the focused launcher regression test and a real local cold start both complete without an import-lock stall, while chat still backgrounds discovery.
 
 ## What sunke wants (plain language)  [Objective]
 - Eliminate the intermittent startup freeze caused by directory plugins and publish the minimal compatibility fix upstream.
@@ -56,7 +56,6 @@ Format: 'user does X → observe Y' (use → to separate action from outcome)
 - Gateway runtime still discovers and registers enabled plugins before platform startup.
 - Chat startup latency optimization and TUI ownership remain unchanged.
 - No plugin-specific special case or new configuration flag is introduced.
-- The canonical full-suite and E2E jobs run once through the CI orchestrator; the direct PR discovery path must not duplicate or cancel them.
 
 ### Targeted tests (repo-relative paths; one per bullet, or `full-suite`)
 > The direction model lists only tests affected by this task. Invalid/missing targets block; full-suite is CI-only.

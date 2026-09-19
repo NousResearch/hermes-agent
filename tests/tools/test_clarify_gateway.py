@@ -228,10 +228,17 @@ class TestClarifyTimeoutResolution:
     """resolve_clarify_timeout is the single source of truth for the clarify
     timeout, shared by the CLI, TUI/desktop, and messaging-gateway paths."""
 
-    def test_canonical_agent_key(self):
+    def test_canonical_agent_key_and_platform_cap(self):
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
         from tools import clarify_gateway as cm
 
         assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 900}}) == 900
+        assert cm.resolve_clarify_timeout(
+            {"agent": {"clarify_timeout": 315_360_000}}
+        ) == int(MAX_SAFE_TIMEOUT_S)
+        assert cm.resolve_clarify_timeout(
+            {"agent": {"clarify_timeout": float("inf")}}
+        ) == 3600
 
 
     def test_cli_defaults_do_not_shadow_agent_clarify_timeout(self):

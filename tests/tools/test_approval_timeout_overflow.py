@@ -1,5 +1,5 @@
 """Regression tests for #83220: oversized approvals.timeout must never
-overflow platform wait primitives (macOS time_t OverflowError).
+overflow platform wait primitives.
 
 The clamp lives at the single config-read site (_get_approval_timeout), so
 every consumer — CLI prompt thread.join, gateway poll deadline, human-wait
@@ -11,6 +11,8 @@ from __future__ import annotations
 import threading
 
 from unittest.mock import patch
+
+import pytest
 
 from agent.deadline import MAX_SAFE_TIMEOUT_S
 
@@ -39,6 +41,12 @@ class TestApprovalTimeoutOverflowClamp:
         from tools.approval_context import _get_approval_timeout
 
         with _with_configured_timeout("soon"):
+            assert _get_approval_timeout() == 300
+
+    def test_non_finite_value_falls_back_to_default(self):
+        from tools.approval_context import _get_approval_timeout
+
+        with _with_configured_timeout(float("inf")):
             assert _get_approval_timeout() == 300
 
     def test_oversized_float_value_clamped(self):
@@ -78,7 +86,7 @@ class TestApprovalTimeoutOverflowClamp:
         monkeypatch.setattr(builtins, "__import__", _blocked)
         with _with_configured_timeout(10**18):
             value = _get_approval_timeout()
-        assert value == 365 * 24 * 3600
+        assert value == int(min(365 * 24 * 3600, threading.TIMEOUT_MAX))
         # Still platform-safe for the crashing primitive.
         lock = threading.Lock()
         assert lock.acquire(timeout=value)
@@ -108,11 +116,14 @@ class TestApprovalTimeoutOverflowClamp:
         assert not t.is_alive()
 
     def test_human_wait_ceiling_inherits_clamp(self):
-        from tools.approval_human_wait import HUMAN_WAIT_MARGIN_S, human_wait_ceiling
+        from tools.approval_human_wait import human_wait_ceiling
 
         with _with_configured_timeout(10**18):
             ceiling = human_wait_ceiling()
-        assert ceiling == float(int(MAX_SAFE_TIMEOUT_S)) + HUMAN_WAIT_MARGIN_S
+        from tools.approval_human_wait import HUMAN_WAIT_MARGIN_S
+
+        assert ceiling == MAX_SAFE_TIMEOUT_S + HUMAN_WAIT_MARGIN_S
+        assert ceiling <= threading.TIMEOUT_MAX
         lock = threading.Lock()
         assert lock.acquire(timeout=ceiling)
         lock.release()
@@ -137,3 +148,25 @@ class TestApprovalTimeoutOverflowClamp:
             bound = _authorization_gate_lock_timeout()
         assert bound > _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
         assert bound == 3600 + 60.0  # approvals.timeout + HUMAN_WAIT_MARGIN_S
+
+    @pytest.mark.windows_only
+    def test_field_value_safe_for_authorization_gate(self):
+        from agent.deadline import _LOOP_BLOCKED_DUMP_GRACE_S, _PLATFORM_WAIT_HEADROOM_S, clamp_timeout
+        from agent.tool_executor import _ConcurrentToolAuthorizationGate
+        from tools.approval_human_wait import HUMAN_WAIT_MARGIN_S, human_wait_ceiling
+
+        field_value = 315_360_000
+        assert MAX_SAFE_TIMEOUT_S <= threading.TIMEOUT_MAX - _PLATFORM_WAIT_HEADROOM_S
+        assert MAX_SAFE_TIMEOUT_S + HUMAN_WAIT_MARGIN_S <= threading.TIMEOUT_MAX
+        assert MAX_SAFE_TIMEOUT_S + _LOOP_BLOCKED_DUMP_GRACE_S <= threading.TIMEOUT_MAX
+        assert clamp_timeout(field_value) == MAX_SAFE_TIMEOUT_S
+
+        with _with_configured_timeout(field_value):
+            ceiling = human_wait_ceiling()
+            gate = _ConcurrentToolAuthorizationGate(session_key="test-overflow")
+            assert gate.run(lambda: "ran") == "ran"
+
+        assert ceiling == MAX_SAFE_TIMEOUT_S + HUMAN_WAIT_MARGIN_S
+        lock = threading.Lock()
+        assert lock.acquire(timeout=ceiling)
+        lock.release()

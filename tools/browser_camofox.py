@@ -98,7 +98,8 @@ def is_camofox_mode() -> bool:
     written, a set ``CAMOFOX_URL`` still activates Camofox). A CDP override (``BROWSER_CDP_URL``
     env or ``browser.cdp_url``, same precedence as ``browser_tool_cdp._get_cdp_override()``) wins.
     """
-    if os.getenv("BROWSER_CDP_URL", "").strip() or _config_cdp_url():
+    from tools.browser_tool_cdp import _env_cdp_override  # late-bound: module-level would be circular
+    if _env_cdp_override() or _config_cdp_url():
         return False
     try:
         from tools.tool_backend_helpers import read_selection

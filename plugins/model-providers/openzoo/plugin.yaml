@@ -1,0 +1,6 @@
+name: openzoo-provider
+kind: model-provider
+version: 1.0.0
+description: openzoo — pay-per-call inference over x402 via the local proxy (no API key)
+author: Jarett Dunn
+homepage: https://github.com/staccDOTsol/openzoo

@@ -19,6 +19,14 @@ from agent.message_metadata import append_message
 from agent.turn_failure_copy import site_copy
 from agent.turn_recovery import interruptible_backoff_sleep
 
+# Sentinel this module injects as assistant content when a model returns nothing
+# usable (see ``_terminal_empty`` and the post-tool nudge below). Defined HERE,
+# beside the injection sites, so the guard that detects a model echoing it back
+# cannot drift from them. ``agent/turn_final_response.py`` imports it from here;
+# the reverse import would be circular, because that module already imports
+# ``recover_empty_response`` from this one.
+EMPTY_RESPONSE_SENTINEL = "(empty)"
+
 logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
@@ -107,7 +115,7 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
     reasoning_text = agent._extract_reasoning(assistant_message)
     agent._drop_trailing_empty_response_scaffolding(messages)
     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
-    assistant_msg["content"] = "(empty)"
+    assistant_msg["content"] = EMPTY_RESPONSE_SENTINEL
     assistant_msg["_empty_terminal_sentinel"] = True
     append_message(messages, assistant_msg)
 
@@ -123,7 +131,7 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
             + (" and fallback attempts." if agent._fallback_chain else
                ". No fallback providers configured.")
         )
-        return "(empty)"
+        return EMPTY_RESPONSE_SENTINEL
 
     reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
     logger.warning(
@@ -158,8 +166,18 @@ def recover_empty_response(
 
     # Partial stream recovery: content streamed before the connection died becomes the
     # final response instead of fallback or retries.
+    #
+    # Fenced against the leaked ``(empty)`` sentinel. This path re-delivers the
+    # streamed text verbatim, and the streamed text holds the leak. Without the
+    # fence, a caller that routed here BECAUSE of a leaked sentinel receives the
+    # same shorthand back with extra steps.
     _partial_streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    if agent._has_content_after_think_block(_partial_streamed):
+    if (
+        agent._has_content_after_think_block(_partial_streamed)
+        and not agent._strip_think_blocks(_partial_streamed).lstrip().startswith(
+            EMPTY_RESPONSE_SENTINEL
+        )
+    ):
         _turn_exit_reason = "partial_stream_recovery"
         _recovered = agent._strip_think_blocks(_partial_streamed).strip()
         logger.info(
@@ -207,7 +225,7 @@ def recover_empty_response(
         agent._buffer_diagnostic_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
         # tool → assistant("(empty)") → user keeps the sequence valid.
         _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
-        _nudge_msg["content"] = "(empty)"
+        _nudge_msg["content"] = EMPTY_RESPONSE_SENTINEL
         _nudge_msg["_empty_recovery_synthetic"] = True
         append_message(messages, _nudge_msg)
         append_message(messages, {

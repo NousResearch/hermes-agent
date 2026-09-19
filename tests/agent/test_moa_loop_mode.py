@@ -1,9 +1,15 @@
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from run_agent import AIAgent
+from tests.agent._liveness import PEER_THREAD_LIVENESS_S
+
+# Reference slots in ``test_references_run_in_parallel`` that reach ``call_llm``
+# (its "moa" slot is a recursion guard and is never dispatched).
+_DISPATCHED_REFERENCES = 3
 
 
 def _response(content="done", *, tool_calls=None):
@@ -536,8 +542,12 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 def test_references_run_in_parallel(monkeypatch):
     """References fan out concurrently (delegate-batch semantics), not serially.
 
-    Each reference sleeps; wall-time must approximate the slowest single call,
-    not the sum. Order is preserved and a failing reference is isolated.
+    The concurrency claim is observed, not timed: every dispatched reference
+    blocks on a barrier that only releases once all of them are in flight, so a
+    serial implementation leaves its first call waiting there instead of merely
+    taking longer than a wall-clock threshold (a loaded runner stretched the old
+    ``elapsed < 0.95`` past the 1.0s serial floor). Order is preserved and a
+    failing reference is isolated.
     """
     import time
 
@@ -546,10 +556,20 @@ def test_references_run_in_parallel(monkeypatch):
     # Force _extract_text down its fallback path (no transport normalize).
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
 
-    barrier_hits = []
+    # Three slots are dispatched; the "moa" slot is a recursion guard, not a call.
+    in_flight = threading.Barrier(
+        _DISPATCHED_REFERENCES, timeout=PEER_THREAD_LIVENESS_S
+    )
+    serialized = []
 
     def slow_call_llm(**kwargs):
-        barrier_hits.append(time.monotonic())
+        try:
+            in_flight.wait()
+        except threading.BrokenBarrierError:
+            # Only reachable if the references were not overlapped: the first
+            # call waited alone until the barrier gave up.
+            serialized.append(kwargs["model"])
+            raise
         model = kwargs["model"]
         if model == "boom":
             raise RuntimeError("kaboom")
@@ -565,17 +585,14 @@ def test_references_run_in_parallel(monkeypatch):
         {"provider": "p3", "model": "ok"},
     ]
 
-    start = time.monotonic()
     out = moa_loop._run_references_parallel(
         refs, [{"role": "user", "content": "hi"}], temperature=0.6, max_tokens=64
     )
-    elapsed = time.monotonic() - start
 
-    # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
-    # Threshold sits at 0.95s (not tight against 0.5s) to tolerate CI
-    # thread-pool startup jitter while still failing hard if the two calls
-    # ran serially (which would be ≥1.0s).
-    assert elapsed < 0.95, f"references did not run in parallel (took {elapsed:.2f}s)"
+    assert not serialized, (
+        f"references did not run in parallel — {serialized} waited alone at the "
+        f"barrier instead of overlapping the other calls"
+    )
     # Output order matches input order (stable Reference N labelling).
     assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]

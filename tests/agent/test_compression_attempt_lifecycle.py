@@ -31,6 +31,7 @@ import pytest
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     CompressionCommitFence,
+    _CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS,
     _claim_compressor_attempt,
     _mark_compressor_working_attempt,
     compress_context,
@@ -38,6 +39,16 @@ from agent.conversation_compression import (
     run_compress_context_with_progress_timeout,
 )
 from hermes_state import SessionDB
+from tests.agent._liveness import PEER_THREAD_LIVENESS_S
+
+# The bounded-grace join on the total-ceiling path gets ``min(production grace,
+# ceiling)``, and the host clamps the ceiling up to the idle budget
+# (``ceiling = max(total_ceiling_seconds, idle_timeout_seconds)``). A test that
+# wants to observe a *cooperative* worker being reaped therefore has to budget
+# the full production grace — a smaller ceiling leaves the worker only that much
+# time to be scheduled, poll the poison fence and unwind, which is a claim about
+# the host rather than about the join.
+_CEILING_FAILSAFE_S = _CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS * 3
 
 
 def _build_agent(tmp_path: Path, session_id: str, db: SessionDB | None = None):
@@ -68,6 +79,25 @@ def _messages():
     return [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
 
+class _SteadyProgressFence(CompressionCommitFence):
+    """A fence whose worker is making steady progress, without depending on that
+    worker being *scheduled* every ``idle`` seconds.
+
+    The host picks between the idle-stall budget and the total ceiling with
+    ``fence.seconds_since_progress() < idle``; the production worker keeps that
+    age fresh by polling ``touch_progress()`` between provider phases, so a real
+    heartbeat here would make these tests claim "the worker thread got a core
+    every 100ms for 300ms" — a claim about the host. An uninterruptible worker
+    parks inside a provider call, and the class under test is the ceiling path,
+    so reporting a fresh progress age keeps the ceiling the only budget that can
+    expire. This is what ``touch_progress()`` already means; it just does not
+    depend on when the test thread is scheduled.
+    """
+
+    def seconds_since_progress(self) -> float:
+        return 0.0
+
+
 class TestWorkerTeardownOnCeiling:
     def test_cooperative_worker_joined_within_grace(self):
         """A worker that exits promptly after cancel is joined on the
@@ -82,7 +112,9 @@ class TestWorkerTeardownOnCeiling:
             # Continuous progress (the #97488 'last progress 0.0s ago'
             # shape) so only the TOTAL ceiling expires; poll the poison
             # fence like the production worker does between provider phases.
-            deadline = time.monotonic() + 5.0
+            # The failsafe deadline is a multiple of the ceiling so the
+            # ceiling is unambiguously what ended this worker.
+            deadline = time.monotonic() + _CEILING_FAILSAFE_S
             while time.monotonic() < deadline:
                 if fence.is_cancelled:
                     break
@@ -91,19 +123,23 @@ class TestWorkerTeardownOnCeiling:
             # Cooperative-but-not-instant exit: the unwind after seeing the
             # poison takes real time (rollback, telemetry). Long enough that
             # a host WITHOUT the bounded-grace join returns first; far
-            # inside the 5s grace for a host WITH it.
+            # inside the production grace for a host WITH it.
             time.sleep(0.08)
             worker_done.set()
             return (original, "late")
 
-        fence = CompressionCommitFence()
+        fence = _SteadyProgressFence()
         msgs, prompt = run_compress_context_with_progress_timeout(
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            # Keep idle expiry out of this total-ceiling test under runner load.
+            # The idle budget cannot expire against a steady-progress fence, so
+            # only the TOTAL ceiling ends this wait — the production grace, so
+            # the bounded-grace join this test pins gets that grace in full
+            # rather than whatever a loaded host left of a 0.2s ceiling (which
+            # the host clamps up to the idle budget anyway).
             idle_timeout_seconds=2.0,
-            total_ceiling_seconds=0.2,
+            total_ceiling_seconds=_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS,
             fence=fence,
             stall_fallback=False,
         )
@@ -144,7 +180,7 @@ class TestWorkerTeardownOnCeiling:
             finally:
                 fence.finish_commit()
 
-        fence = CompressionCommitFence()
+        fence = _SteadyProgressFence()
         fence.register_cancelled_lock_release(
             lambda: lock_released.append(time.monotonic())
         )
@@ -167,7 +203,9 @@ class TestWorkerTeardownOnCeiling:
             "alive — overlap window reopened (#97488)"
         )
         release.set()
-        assert worker_finished.wait(timeout=2)
+        assert worker_finished.wait(timeout=PEER_THREAD_LIVENESS_S), (
+            "the released worker never exited"
+        )
         # Late result was fence-poisoned, never adopted.
         assert msgs == [{"role": "user", "content": "keep"}]
 

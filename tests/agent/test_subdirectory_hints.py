@@ -1,5 +1,6 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import threading
 import time
 
 import pytest
@@ -173,25 +174,44 @@ class TestSubdirectoryHintTracker:
         monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
 
         original_read_text = Path.read_text
+        # A read that cannot finish until the TEST releases it. ``check_tool_call``
+        # returning with ``read_released`` still unset is the invariant — it
+        # returned without waiting for the slow read. The old ``elapsed < 0.4``
+        # ceiling was a proxy for that, but it sat close to the 0.6s the stub
+        # sleeps for, so a loaded runner turned "did the read time out" into a
+        # timing coin flip (observed 0.45s at load 230; it was reported FLAKY).
+        read_entered = threading.Event()
+        read_released = threading.Event()
 
         def slow_read_text(self, *args, **kwargs):
             if self.name.lower() == "agents.md" and self.parent == backend:
-                time.sleep(0.6)
+                read_entered.set()
+                # Failsafe, not a budget: a read that is never released would
+                # otherwise park this daemon thread for the rest of the session.
+                read_released.wait(timeout=30.0)
             return original_read_text(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", slow_read_text)
 
         tracker = SubdirectoryHintTracker(working_dir=str(project))
-        start = time.monotonic()
-        with caplog.at_level("WARNING", logger="agent.prompt_builder"):
-            result = tracker.check_tool_call(
-                "read_file", {"path": str(project / "backend" / "src" / "main.py")}
-            )
-        elapsed = time.monotonic() - start
+        try:
+            with caplog.at_level("WARNING", logger="agent.prompt_builder"):
+                result = tracker.check_tool_call(
+                    "read_file", {"path": str(project / "backend" / "src" / "main.py")}
+                )
 
-        assert elapsed < 0.4, f"hint load blocked for {elapsed:.2f}s"
-        assert result is None
-        assert "timed out" in caplog.text.lower()
+            # The read was attempted and had NOT completed when the call
+            # returned: exactly the property the elapsed ceiling was proxying.
+            assert read_entered.is_set(), (
+                "the slow hint read was never attempted — this test proves nothing"
+            )
+            assert not read_released.is_set(), (
+                "hint load blocked until the slow read finished instead of timing out"
+            )
+            assert result is None
+            assert "timed out" in caplog.text.lower()
+        finally:
+            read_released.set()
 
 
 class TestPermissionErrorHandling:

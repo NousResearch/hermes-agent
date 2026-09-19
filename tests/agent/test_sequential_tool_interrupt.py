@@ -22,6 +22,13 @@ from agent.tool_executor import (
     _ToolCancelledResult,
     _run_sequential_tool_execution_middleware,
 )
+from tests.agent._liveness import wait_event
+
+# The reported tool runtime (the non-cooperative tool in this file blocks this
+# long): a ceiling tied to *that* is the invariant under test — "abandons well
+# before the tool's own runtime" — instead of a free-floating wall-clock number
+# that quietly encodes how fast the host was.
+_TOOL_RUNTIME_S = 30.0
 
 
 class _FakeAgent:
@@ -54,13 +61,26 @@ def _fast_polls(monkeypatch):
 
 
 def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_polls):
-    """A blocking tool is abandoned within ~poll+grace once interrupted."""
+    """The wait is abandoned without waiting for the tool to finish.
+
+    The invariant is an ordering, not a duration: the executor returns a
+    cancelled result *while the tool is still running*. The tool blocks until
+    this test releases it (its own ``_TOOL_RUNTIME_S`` is only a failsafe, so a
+    regression that blocks inline returns at the tool's runtime instead of
+    hanging the file).
+    """
 
     started = threading.Event()
+    tool_returned = threading.Event()
+    tool_released = threading.Event()
 
     def _fake_middleware(agent_arg, **kwargs):
         started.set()
-        time.sleep(30)  # non-cooperative: never checks is_interrupted()
+        # Non-cooperative: never checks is_interrupted(), and cannot finish
+        # until the test lets it. The bound mirrors the reported tool runtime —
+        # "abandons well before the tool's own 30s" is the claim under test.
+        tool_released.wait(timeout=_TOOL_RUNTIME_S)
+        tool_returned.set()
         return _ManagedToolResult(
             result="late result", args={}, middleware_trace=[],
             blocked=False, dispatched=True,
@@ -74,30 +94,40 @@ def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_p
     )
 
     def _interrupt_soon():
-        started.wait(5)
+        wait_event(started, "the tool never started")
         time.sleep(0.1)
         fake_agent._interrupt_requested = True
 
     threading.Thread(target=_interrupt_soon, daemon=True).start()
 
-    t0 = time.monotonic()
-    managed = _run_sequential_tool_execution_middleware(
-        fake_agent,
-        function_name="image_generate",
-        function_args={"prompt": "x"},
-        effective_task_id="t",
-        tool_call_id="call_1",
-        execute=lambda a: "unused",
-    )
-    elapsed = time.monotonic() - t0
+    try:
+        t0 = time.monotonic()
+        managed = _run_sequential_tool_execution_middleware(
+            fake_agent,
+            function_name="image_generate",
+            function_args={"prompt": "x"},
+            effective_task_id="t",
+            tool_call_id="call_1",
+            execute=lambda a: "unused",
+        )
+        elapsed = time.monotonic() - t0
 
-    assert isinstance(managed.result, _ToolCancelledResult)
-    assert "cancelled" in str(managed.result)
-    # poll (0.05s) + interrupt delay (0.1s) + grace (3s) + slack — nowhere
-    # near the 30s tool runtime.
-    assert elapsed < 10.0
-    # The executor emitted the terminal post_tool_call itself.
-    assert any(kw.get("status") == "cancelled" for kw in _fast_polls)
+        assert isinstance(managed.result, _ToolCancelledResult)
+        assert "cancelled" in str(managed.result)
+        # The tool is still blocked, so the executor cannot have waited for it:
+        # this is the barrier, and it holds on an idle box and a loaded one alike.
+        assert not tool_returned.is_set(), (
+            "the executor waited for the non-cooperative tool to finish instead "
+            "of abandoning the wait"
+        )
+        assert elapsed < _TOOL_RUNTIME_S, (
+            f"abandon took {elapsed:.1f}s — not well before the tool's own "
+            f"{_TOOL_RUNTIME_S:.0f}s runtime"
+        )
+        # The executor emitted the terminal post_tool_call itself.
+        assert any(kw.get("status") == "cancelled" for kw in _fast_polls)
+    finally:
+        tool_released.set()
 
 
 def test_interrupt_prefers_real_result_from_cooperative_tool(

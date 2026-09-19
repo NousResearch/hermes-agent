@@ -11,6 +11,11 @@ from unittest.mock import MagicMock
 
 from tools.interrupt import get_interrupt_reason, set_interrupt, is_interrupted
 
+# How long the mock provider call below stays in flight. The interrupt must be
+# observed *before* this elapses; the design budget (0.2s set delay + 0.3s poll
+# interval) is 10x smaller, so this is a floor, not a budget.
+_PROVIDER_CALL_S = 5.0
+
 
 class TestInterruptPropagationToChild(unittest.TestCase):
     """Verify interrupt propagates from parent to child agent."""
@@ -143,9 +148,15 @@ class TestInterruptPropagationToChild(unittest.TestCase):
 
         # Mock a slow API call
         mock_client = MagicMock()
+        call_finished = threading.Event()
+
         def slow_api_call(**kwargs):
-            time.sleep(5)  # Would take 5s normally
-            return MagicMock()
+            try:
+                time.sleep(5)  # Would take 5s normally
+                return MagicMock()
+            finally:
+                call_finished.set()
+
         mock_client.chat.completions.create = slow_api_call
         mock_client.close = MagicMock()
         child.client = mock_client
@@ -163,8 +174,19 @@ class TestInterruptPropagationToChild(unittest.TestCase):
             self.fail("Should have raised InterruptedError")
         except InterruptedError:
             elapsed = time.monotonic() - start
-            # Should detect within ~0.5s (0.2s delay + 0.3s poll interval)
-            assert elapsed < 1.0, f"Took {elapsed:.2f}s to detect interrupt (expected < 1.0s)"
+            # The invariant is ordering, not duration: the interrupt must be
+            # observed while the provider call is still in flight (the mock
+            # sleeps 5s), not after it returns. A 1.0s wall-clock ceiling here
+            # asserted only how fast this box schedules the polling thread —
+            # 10x the 0.5s design budget (0.2s delay + 0.3s poll) still flaked.
+            assert not call_finished.is_set(), (
+                f"interrupt was only observed after the provider call returned "
+                f"({elapsed:.2f}s)"
+            )
+            assert elapsed < _PROVIDER_CALL_S, (
+                f"Took {elapsed:.2f}s to detect interrupt (call in flight "
+                f"{_PROVIDER_CALL_S:.0f}s)"
+            )
         finally:
             t.join(timeout=2)
             set_interrupt(False)

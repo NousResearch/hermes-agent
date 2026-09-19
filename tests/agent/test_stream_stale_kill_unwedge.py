@@ -30,6 +30,16 @@ import pytest
 import run_agent
 from agent import chat_completion_helpers as helpers
 
+# The byte-read timeout for the wedged-reader scenario (see the env set in
+# ``test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects``), and
+# the recovery budget derived from it. Not the 120 default: for a local endpoint
+# an unset/literal-default read timeout is raised to the full API timeout.
+_READ_TIMEOUT_S = 60.0
+# A reader that is NOT unwedged by the kill can only be recovered by that read
+# timeout, so "recovered in well under it" is the invariant — a wall-clock
+# number below the read timeout, not a number that happens to fit one host.
+_RECOVERY_BUDGET_S = _READ_TIMEOUT_S / 2
+
 
 # ── unit: the kill reaches the killed attempt's socket, never closes it ──
 
@@ -162,7 +172,12 @@ def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wir
     error is transient, and the retry lands."""
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "1")
     monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
-    monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "20")
+    # The byte-read timeout is the ONLY competing recovery path for a parked
+    # reader, so the assertion below is stated relative to it rather than as a
+    # free-floating number: recovery must be attributable to the stale kill.
+    # (60 rather than the 120 default: an explicitly local endpoint with the
+    # default read timeout is raised to the full API timeout instead.)
+    monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", str(int(_READ_TIMEOUT_S)))
     agent = run_agent.AIAgent(
         api_key="test-key", base_url=silent_wire.base_url, model="m", provider="custom",
         platform="cli",  # worker thread + monitor thread: the gateway shape from the report
@@ -170,6 +185,14 @@ def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wir
     )
     agent.api_mode = "chat_completions"
     agent._interrupt_requested = False
+    # Mechanism attribution, with no clock in it: record the activity trace and
+    # pin the stale kill itself. A retry landing is not proof of *which*
+    # mechanism unwedged the reader — the byte-read timeout also ends the call
+    # and retries — so the elapsed budget below is backed by this marker.
+    # (``_consecutive_stale_streams`` is bumped by the kill but cleared again
+    # when the reconnected attempt produces deltas, so it reads 0 here.)
+    activity: list[str] = []
+    monkeypatch.setattr(agent, "_touch_activity", lambda message, **_kw: activity.append(message))
 
     started = time.time()
     response = agent._interruptible_streaming_api_call(
@@ -181,6 +204,18 @@ def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wir
         "the reader stayed parked instead of unwinding"
     )
     assert response.choices[0].message.content == "reconnected"
-    # The stale budget is 2s; the byte-read timeout is 20s. A parked reader can
-    # only be recovered by the read timeout, which is what this pins out.
-    assert elapsed < 12.0, f"stream took {elapsed:.1f}s to recover — the reader was not unwedged by the kill"
+    # The detector's own trace is the clock-free half of the claim: the retry
+    # landing does not say *which* mechanism unwedged the reader, the byte-read
+    # timeout also ends the call and retries. Both halves are needed — the kill
+    # firing while the recovery still beat the read timeout.
+    assert any("stale stream detected" in message for message in activity), (
+        "the stale detector never fired: the parked reader cannot have been "
+        "unwedged by the stale kill"
+    )
+    # A parked reader can only be recovered by the byte-read timeout (60s here,
+    # i.e. ~30x the ~2s this takes unwedged). Recovering in well under it is
+    # what pins the kill as the recovery path.
+    assert elapsed < _RECOVERY_BUDGET_S, (
+        f"stream took {elapsed:.1f}s to recover — the reader was not unwedged by "
+        f"the kill but by the {_READ_TIMEOUT_S:.0f}s byte-read timeout"
+    )

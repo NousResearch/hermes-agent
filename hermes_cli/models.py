@@ -929,6 +929,17 @@ def detect_static_provider_for_model(
     if _model_in_provider_catalog(name_lower, current_keys):
         return None
 
+    return next(_static_catalog_matches(name, current_provider), None)
+
+
+def _static_catalog_matches(name: str, current_provider: str):
+    """Yield every ``(provider_id, name)`` whose static catalog lists *name*, in ladder order.
+
+    Several first-party providers list the same slug (``gpt-5.6-luna`` on ``openai-api`` AND
+    ``openai-codex``); the first is only a guess, so callers that gate on credentials need the
+    siblings too (#102775)."""
+    name_lower = name.lower()
+    current_keys = _provider_keys(current_provider)
     # Step 1: direct static-catalog match. Aggregators list other vendors' models — never
     # auto-switch TO them. A custom endpoint (custom / custom:*) is never auto-switched away
     # from: the user configured it deliberately and may serve the same model name there.
@@ -937,15 +948,13 @@ def detect_static_provider_for_model(
             if pid in current_keys or pid in _AGGREGATOR_PROVIDERS or pid in _BORROWED_MODEL_PROVIDERS:
                 continue
             if _model_in_provider_catalog(name_lower, {pid}):
-                return (pid, name)
+                yield (pid, name)
 
     # Borrow-list providers (re-expose other vendors' models) only after every native-vendor
     # catalog, and only when one is the current provider.
     for pid in _BORROWED_MODEL_PROVIDERS:
         if pid not in current_keys and _model_in_provider_catalog(name_lower, {pid}):
-            return (pid, name)
-
-    return None
+            yield (pid, name)
 
 
 def _configured_provider_ids() -> set[str]:
@@ -1013,14 +1022,18 @@ def detect_provider_for_model(
         return None
 
     no_selection = (current_provider or "").strip().lower() in {"", "auto"}
+    first_guess = None
     for candidate in _detection_candidates(name, current_provider):
         if candidate is None:
             return None  # the current catalog owns this name
-        if no_selection or candidate[0] == current_provider or provider_has_credentials(candidate[0]):
+        if candidate[0] == current_provider or provider_has_credentials(candidate[0]):
             return candidate
         if _PROVIDER_ALIASES.get(name.lower(), name.lower()) == candidate[0]:
             return candidate  # explicitly named provider: let the credential step report it
+        first_guess = first_guess or candidate
         logger.debug("Skipping auto-switch of '%s' to %s: no credentials configured", name, candidate[0])
+    if no_selection and first_guess:
+        return first_guess  # nothing usable anywhere: fail loudly on the first guess
     # A ``vendor/model`` prefix naming a provider the user DECLARED in ``providers:`` is a selection,
     # not a guess — hand it back even before its key is wired up.
     return _resolve_provider_prefix(name)
@@ -1032,6 +1045,11 @@ def _detection_candidates(name: str, current_provider: str):
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         yield static_match
+        # Sibling catalogs listing the same slug (openai-api / openai-codex share the gpt-5.6
+        # family): the credential gate downstream takes the first one the user can actually use.
+        for sibling in _static_catalog_matches(name, current_provider):
+            if sibling != static_match:
+                yield sibling
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         yield None
         return

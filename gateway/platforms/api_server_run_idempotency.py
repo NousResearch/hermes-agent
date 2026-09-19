@@ -52,8 +52,8 @@ def _outcome(row, fingerprint):
 
 class RunIdempotencyStore:
     """Durable, tenant-scoped reservations for ``POST /v1/runs``: a unique ``(scope, key)`` row
-    inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Only
-    fingerprints and public run status are stored — never request bodies or credentials."""
+    inserted inside a serialized write transaction so separate workers cannot both admit one
+    request. Only fingerprints and public run status are stored, never request bodies or credentials."""
 
     RETENTION_SECONDS = 24 * 60 * 60
     ACKNOWLEDGED_RETENTION_SECONDS = 24 * 60 * 60
@@ -70,6 +70,25 @@ class RunIdempotencyStore:
             except Exception:
                 db_path = ":memory:"
         self._db_path = None if db_path == ":memory:" else db_path
+        from hermes_state_backend import resolve_database_settings
+        settings = resolve_database_settings(db_path)
+        self._postgres = settings.backend == "postgres"
+        self._extend_by_key = _EXTEND_RETENTION_BY_KEY
+        self._extend_by_run = _EXTEND_RETENTION_BY_RUN
+        if self._postgres:
+            import uuid
+            from hermes_cli.postgres_util import connect
+            from gateway.platforms.api_server_postgres import RUN_SCHEMA
+            self._conn = connect(settings, "api_runs", initialize=lambda conn: conn.executescript(RUN_SCHEMA))
+            self._settings = settings
+            self._owner_token = uuid.uuid4().hex
+            self._extend_by_key = _EXTEND_RETENTION_BY_KEY.replace("MAX(", "GREATEST(")
+            self._extend_by_run = _EXTEND_RETENTION_BY_RUN.replace("MAX(", "GREATEST(")
+            self._lock = threading.Lock()
+            self._lease_stop = threading.Event()
+            self._lease_thread = threading.Thread(target=self._renew_leases, daemon=True, name="api-run-leases")
+            self._lease_thread.start()
+            return
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         except Exception as exc:
@@ -121,9 +140,9 @@ class RunIdempotencyStore:
 
     @contextmanager
     def _immediate_txn(self):
-        """Hold the lock inside ``BEGIN IMMEDIATE``; the body commits, errors roll back."""
+        """Hold the local and database write locks; the body commits, errors roll back."""
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.begin_write() if self._postgres else self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield
             except Exception:
@@ -141,7 +160,7 @@ class RunIdempotencyStore:
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             if row is not None:
                 if retention_until:
-                    self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
+                    self._conn.execute(self._extend_by_key, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
             self._conn.execute(
@@ -151,6 +170,9 @@ class RunIdempotencyStore:
                 ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now))
+            if self._postgres:
+                self._conn.execute("UPDATE run_idempotency SET owner_token=?, owner_expires_at=? WHERE run_id=?",
+                    (self._owner_token, now + 300, run_id))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
@@ -160,7 +182,7 @@ class RunIdempotencyStore:
         retention_until = max(0.0, float(retention_until or 0))
         with self._immediate_txn():
             if retention_until:
-                self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
+                self._conn.execute(self._extend_by_key, (retention_until, scope, key, fingerprint))
             self._prune_stale_terminal_locked(now)
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             self._conn.commit()
@@ -191,15 +213,19 @@ class RunIdempotencyStore:
         retention_until = max(0.0, float(retention_until or 0))
         with self._lock:
             if retention_until:
-                self._conn.execute(_EXTEND_RETENTION_BY_RUN, (retention_until, scope, run_id))
+                self._conn.execute(self._extend_by_run, (retention_until, scope, run_id))
                 self._conn.commit()
             row = self._conn.execute(
-                "SELECT status_json, owner_pid, owner_started, updated_at "
-                "FROM run_idempotency WHERE scope=? AND run_id=?",
+                ("SELECT status_json, owner_pid, owner_started, updated_at"
+                 + (", owner_expires_at" if self._postgres else "")
+                 + " FROM run_idempotency WHERE scope=? AND run_id=?"),
                 (scope, run_id)).fetchone()
         if row is None:
             return None
-        return {k: v for k, v in _record(None, *row).items() if k != "run_id"}
+        record = {k: v for k, v in _record(None, *row[:4]).items() if k != "run_id"}
+        if self._postgres:
+            record["owner_alive"] = bool(row[4] and row[4] > time.time())
+        return record
 
     def extend_retention(self, scope: str, run_id: str, until: float) -> bool:
         """Persist the latest verified recovery horizon for an active grant."""
@@ -207,7 +233,7 @@ class RunIdempotencyStore:
         if not checked_until:
             return False
         with self._lock:
-            changed = self._conn.execute(_EXTEND_RETENTION_BY_RUN, (checked_until, scope, run_id)).rowcount
+            changed = self._conn.execute(self._extend_by_run, (checked_until, scope, run_id)).rowcount
             self._conn.commit()
         return changed == 1
 
@@ -224,6 +250,22 @@ class RunIdempotencyStore:
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
 
+    def _renew_leases(self):
+        from hermes_cli.postgres_util import connect
+        while not self._lease_stop.wait(60):
+            try:
+                connection = connect(self._settings, "api_runs")
+                try:
+                    connection.execute("UPDATE run_idempotency SET owner_expires_at=? WHERE owner_token=?",
+                        (time.time() + 300, self._owner_token))
+                finally:
+                    connection.close()
+            except Exception:
+                logger.warning("Could not renew API run ownership leases", exc_info=True)
+
     def close(self) -> None:
+        if self._postgres:
+            self._lease_stop.set()
+            self._lease_thread.join(timeout=10)
         with self._lock:
             self._conn.close()

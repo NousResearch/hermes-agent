@@ -1034,10 +1034,14 @@ class TestSkillsEndpoint:
             {"name": "github", "description": "GitHub workflow skill", "category": "github"},
             {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
         ]
-        with patch(
-            "tools.skills_tool._find_all_skills",
-            return_value=list(fake_skills),
-        ):
+        # A function with the REAL signature, not a Mock: a Mock accepts any
+        # keyword, so the route kept passing ``include_editorial=True`` for
+        # five days after ``_find_all_skills`` dropped that parameter and this
+        # test stayed green while the live route answered 500.
+        def fake_find_all_skills(*, skip_disabled=False):
+            return list(fake_skills)
+
+        with patch("tools.skills_tool._find_all_skills", side_effect=fake_find_all_skills):
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/v1/skills")

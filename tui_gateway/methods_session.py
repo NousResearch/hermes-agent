@@ -889,7 +889,7 @@ def _(rid, params: dict, session: dict) -> dict:
         return _err(rid, 4016, "cwd required")
     try:
         cwd = _set_session_cwd(session, raw)
-    except ValueError as e:
+    except (ValueError, RuntimeError, OSError) as e:
         return _err(rid, 4017, str(e))
     info = _cwd_info(session, cwd)
     _emit("session.info", params.get("session_id", ""), info)
@@ -899,8 +899,8 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.workspace.move")
 def _(rid, params: dict) -> dict:
     """Re-home a STORED session's workspace (by ``session_key``; no live agent required). git branch/root are
-    REPLACED (a stale ``git_repo_root`` kept the session under the project it left); a live agent follows even
-    mid-turn (refusing made the UI claim success while state.db kept the old cwd)."""
+    REPLACED (a stale ``git_repo_root`` kept the session under the project it left). A live running
+    session must finish its foreground tools before its sandbox can be replaced."""
     if not (target := _str_param(params, "session_key")):
         return _err(rid, 4007, "session_key required")
     if not (raw := _str_param(params, "cwd")):
@@ -913,24 +913,38 @@ def _(rid, params: dict) -> dict:
     with _sessions_lock:
         live_sid, live = next(
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
+    if live is not None and live.get("running"):
+        return _err(rid, 4009, "session busy; retry workspace move after the turn finishes")
     branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
     with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         # A draft has no row yet; the live re-home still applies (row inherits cwd on write).
-        if not db.get_session(target):
-            if live is None:
-                return _err(rid, 4007, "session not found")
-        else:
+        stored = db.get_session(target)
+        if not stored and live is None:
+            return _err(rid, 4007, "session not found")
+        previous = dict(live) if live is not None else None
+        if live is not None:
+            try:
+                _set_session_cwd(live, resolved, persist=False)
+            except (ValueError, RuntimeError, OSError) as e:
+                return _err(rid, 4017, str(e))
+        if stored:
             try:
                 db.update_session_cwd(target, resolved, branch, root, replace_git_meta=True)
             except Exception as e:
+                if live is not None and previous is not None:
+                    try:
+                        _register_session_cwd(previous)
+                        for key in ("cwd", "explicit_cwd", "cwd_from_settle"):
+                            if key in previous:
+                                live[key] = previous[key]
+                            else:
+                                live.pop(key, None)
+                    except Exception as rollback_error:
+                        return _err(rid, 5007, f"move failed: {e}; sandbox rollback failed: {rollback_error}")
                 return _err(rid, 5007, f"move failed: {e}")
     if live is not None:
-        try:
-            _set_session_cwd(live, resolved)
-        except ValueError as e:
-            return _err(rid, 4017, str(e))
         _emit("session.info", live_sid, _cwd_info(live, resolved, branch=branch))
     return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
 

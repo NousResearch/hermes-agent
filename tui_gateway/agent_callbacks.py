@@ -174,11 +174,14 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
              if c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key),
             ("", None))
     resolved = os.path.abspath(os.path.expanduser(str(path)))
-    if session is None or not os.path.isdir(resolved):
-        return
-    # explicit switch supersedes a settle-adopted cwd
+    if session is None:
+        raise ValueError("project workspace has no live session")
+    if not os.path.isdir(resolved):
+        raise ValueError(f"project workspace does not exist: {resolved}")
+    # Replace the old sandbox mount before claiming this workspace in memory or DB.
+    candidate = {**session, "cwd": resolved, "explicit_cwd": True, "cwd_from_settle": False}
+    _register_session_cwd(candidate)
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
-    _register_session_cwd(session)
     _persist_session_cwd_and_schedule_git_meta(session, resolved)
     try:
         agent = session.get("agent")

@@ -80,6 +80,17 @@ class TestPreviewHandler(unittest.TestCase):
 
 
 class TestProjectHandler(unittest.TestCase):
+    def test_project_switch_reports_failed_workspace_callback(self):
+        from types import SimpleNamespace
+        from tools import project_tools as pt
+
+        project = SimpleNamespace(id="project", slug="project", name="Project",
+                                  primary_path="/repo", folders=[])
+        with patch.object(pt, "_workspace_callback", side_effect=RuntimeError("sandbox removal failed")):
+            result = json.loads(pt._activated(project, "chat"))
+        self.assertFalse(result["success"])
+        self.assertIn("sandbox removal failed", result["error"])
+
     def test_dispatch_shapes(self):
         import tools.project_tools as pt
 

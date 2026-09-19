@@ -178,6 +178,12 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
     container_paths = _uses_container_paths(task_id)
+    if container_paths and _terminal_env_type_for_task(task_id) == "docker":
+        from tools.terminal_tool import _map_host_workspace_path
+
+        mapped = _map_host_workspace_path(filepath, task_id)
+        if mapped is not None:
+            return PurePosixPath(mapped)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 

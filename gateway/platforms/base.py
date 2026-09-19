@@ -111,7 +111,10 @@ def _float_env(name: str, default: float) -> float:
     return _or_default(lambda: float(raw) if raw else default, default)
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(
+    source, reply_to_message_id: str | None = None, *,
+    allow_source_message_id_fallback: bool = True,
+) -> dict | None:
     """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
     ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` when supported."""
@@ -126,10 +129,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if not metadata:
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
-        metadata["telegram_dm_topic_reply_fallback"] = True
         if str(thread_id) not in {"", "1"}:
             metadata["direct_messages_topic_id"] = str(thread_id)
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        anchor = reply_to_message_id
+        if anchor is None and allow_source_message_id_fallback:
+            anchor = getattr(source, "message_id", None)
+        if allow_source_message_id_fallback:
+            metadata["telegram_dm_topic_reply_fallback"] = True
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
     # Routed profile (multiplex / profile_routes): outbound prune paths must not assume the
@@ -142,7 +148,12 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
 def _thread_metadata_for_event(event) -> dict | None:
     """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    scheduled_heartbeat = bool(getattr(event, "_heartbeat_session_id", None))
+    return _thread_metadata_for_source(
+        event.source,
+        _reply_anchor_for_event(event),
+        allow_source_message_id_fallback=not scheduled_heartbeat,
+    )
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:

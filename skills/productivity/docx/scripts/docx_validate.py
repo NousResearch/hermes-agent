@@ -13,8 +13,10 @@ Checks (health-check tier, NOT full XSD schema validation):
   - r:embed / r:id references in document.xml resolve to relationships
   - embedded images are non-empty and start with known magic bytes
     (PNG/JPEG/GIF/BMP/TIFF/EMF/WMF/SVG); no PIL required
-  - paragraph and run style ids referenced by the document exist in
-    styles.xml
+  - paragraph, run, and table style references in document, comments,
+    headers, footers, footnotes, and endnotes resolve to explicit styles
+    or the implicit CommentText/CommentReference built-ins; malformed
+    optional stories are reported without stopping other style checks
 
 Output: {"ok": bool, "issues": [{"severity": "error"|"warning", ...}]}
 Exit code 1 when any error-severity issue is found (warnings exit 0).
@@ -49,6 +51,19 @@ def _issue(issues, severity, code, detail):
 def _rel_target(base_part: str, target: str) -> str:
     base_dir = posixpath.dirname(base_part)
     return posixpath.normpath(posixpath.join(base_dir, target)).lstrip("/")
+
+
+def _check_style_references(root, part_name, defined, issues):
+    # python-docx's native comment producer deliberately emits these without
+    # definitions (CT_Comments.add_comment / CT_R._new_comment_reference).
+    # latentStyles holds UI metadata, not a generic style-name -> styleId map.
+    implicit = {("pStyle", "CommentText"), ("rStyle", "CommentReference")}
+    for tag in ("pStyle", "rStyle", "tblStyle"):
+        for el in root.iter(f"{{{W}}}{tag}"):
+            sid = el.get(f"{{{W}}}val")
+            if sid and sid not in defined and (tag, sid) not in implicit:
+                detail = f"{part_name}: style id referenced but not defined: {sid}"
+                _issue(issues, "error", "missing-style", detail)
 
 
 def validate(path: str) -> dict:
@@ -122,14 +137,22 @@ def validate(path: str) -> dict:
         styles_root = etree.fromstring(zf.read("word/styles.xml"))
         defined = {s.get(f"{{{W}}}styleId")
                    for s in styles_root.iter(f"{{{W}}}style")}
-    for tag, attr in ((f"{{{W}}}pStyle", f"{{{W}}}val"),
-                      (f"{{{W}}}rStyle", f"{{{W}}}val"),
-                      (f"{{{W}}}tblStyle", f"{{{W}}}val")):
-        for el in doc_root.iter(tag):
-            sid = el.get(attr)
-            if sid and sid not in defined:
-                _issue(issues, "error", "missing-style",
-                       f"style id referenced but not defined: {sid}")
+    _check_style_references(doc_root, "word/document.xml", defined, issues)
+    optional_stories = {"word/comments.xml", "word/footnotes.xml", "word/endnotes.xml"}
+    optional_stories.update(
+        name for name in names
+        if posixpath.dirname(name) == "word"
+        and posixpath.basename(name).startswith(("header", "footer"))
+        and name.endswith(".xml")
+    )
+    for part_name in sorted(optional_stories & names):
+        try:
+            root = etree.fromstring(zf.read(part_name))
+        except etree.XMLSyntaxError as exc:
+            code = "bad-comments-xml" if part_name == "word/comments.xml" else "bad-story-xml"
+            _issue(issues, "error", code, f"{part_name}: {exc}")
+            continue
+        _check_style_references(root, part_name, defined, issues)
 
     # --- python-docx can open it ------------------------------------------
     try:

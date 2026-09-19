@@ -13,7 +13,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import signal
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -356,19 +355,16 @@ class LSPClient:
             if proc is None or proc.returncode is not None:
                 return
             try:
-                # The server owns a process group (``start_new_session=True``).  Kill the
-                # whole tree so JVM/Gradle and launcher grandchildren cannot survive the
-                # client that owned them.  Windows maps both signals to taskkill /T /F.
+                # ``shutdown`` has already given the protocol a grace period.  Hard-kill
+                # the tree while its ancestry is still observable: waiting for the launcher
+                # after SIGTERM can let an ignoring descendant become reparented and escape.
+                # Windows maps this to taskkill /T /F.
                 from agent.deadline import kill_process_tree
 
-                if not kill_process_tree(proc.pid, sig=signal.SIGTERM):
-                    proc.terminate()
-                try:
+                if not kill_process_tree(proc.pid):
+                    proc.kill()
+                with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
-                    if not kill_process_tree(proc.pid, sig=getattr(signal, "SIGKILL", signal.SIGTERM)):
-                        proc.kill()
-                    await proc.wait()
             except ProcessLookupError:
                 pass
 

@@ -590,6 +590,18 @@ class A2AAdapter(BasePlatformAdapter):
             from tools.environments.local import served_profile_child_env
             env = served_profile_child_env(target_home=_profile_home(profile), inherit_credentials=True)
             env["HERMES_A2A_PEER"] = peer
+            # Mark as a non-interactive session so approval.py respects
+            # approvals.cron_mode (default "deny") instead of waiting the
+            # full approvals.timeout (default 300 s) for a human who will
+            # never appear.  Without this, any gated dangerous command
+            # stalls for 300 s, then the A2A caller has disconnected and
+            # the turn reply lands on a closed socket (BrokenPipeError).
+            # Reusing HERMES_CRON_SESSION is intentional: the desired
+            # behaviour is identical — block and let the agent reroute.
+            # Operators who want auto-approve can set
+            # approvals.cron_mode: approve in their config.yaml.
+            # Fixes #98488.
+            env.setdefault("HERMES_CRON_SESSION", "1")
             start = time.time()
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",

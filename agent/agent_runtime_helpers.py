@@ -2971,31 +2971,6 @@ _ACK_WORKSPACE_MARKERS = (
     "project", "folder", "filesystem", "file tree", "files", "path",
 )
 
-def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Fix orphaned tool_call / tool_result pairs before every LLM call; runs unconditionally (not
-    gated on the compressor). Order matters: empty non-final messages are healed first so the
-    substituted turn participates in the pairing and dedup passes."""
-    messages = _drop_invalid_roles(messages)
-    messages = repair_empty_non_final_messages(messages)
-    messages = _drop_empty_tool_calls_arrays(messages)
-    _repair_nameless_tool_calls(messages)
-    messages = _drop_results_without_ids(messages)
-    messages = _pair_tool_calls_positionally(messages)
-    messages = _dedupe_tool_call_ids(messages)
-    return _realign_tool_result_names(messages)
-
-
-_ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
-_ACK_ACTION_MARKERS = (
-    "look into", "look at", "inspect", "scan", "check", "analyz", "review", "explore", "read", "open",
-    "run", "test", "fix", "debug", "search", "find", "walkthrough", "report back", "summarize",
-)
-_ACK_WORKSPACE_MARKERS = (
-    "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",
-    "project", "folder", "filesystem", "file tree", "files", "path",
-)
-
-
 def looks_like_codex_intermediate_ack(
     agent, user_message: Any, assistant_content: str, messages: List[Dict[str, Any]],
     require_workspace: bool = True,

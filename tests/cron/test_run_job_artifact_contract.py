@@ -33,6 +33,7 @@ def agentless_run_job(monkeypatch):
 
             class _Setup:
                 model = "test-model"
+                fallback_notice = None  # KENSEI MERGE: matches _CronAgentSetup field
 
             return agent
 
@@ -71,6 +72,7 @@ def _stub_pipeline(monkeypatch, final_response):
     class _Setup:
         model = "test-model"
         blocked = None
+        fallback_notice = None  # KENSEI MERGE: matches _CronAgentSetup field
 
     monkeypatch.setattr(sched, "_CronRunScope", _Scope)
     monkeypatch.setattr(sched, "_load_cron_job_config", lambda job, job_id, job_name: _Cfg())

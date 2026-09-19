@@ -439,16 +439,18 @@ class ChatCompletionsTransport(ProviderTransport):
         Returns the input list unchanged when nothing needs sanitizing.
         """
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        # KENSEI MERGE: upstream's host-based route gate (#70233) + our per-profile native
-        # reasoning-details filtering (port of PR #105863) in one sanitize pass. The route
-        # gate wins: on a non-replaying route the whole field drops; on a replaying route
-        # the native-type filter still applies. The profile's base_url feeds the route gate
-        # when the caller doesn't pass one.
-        _route_base_url = kwargs.get("base_url")
-        if _route_base_url is None:
-            _route_base_url = getattr(kwargs.get("provider_profile"), "base_url", None)
-        strip_reasoning_details = not _route_replays_reasoning_details(_route_base_url)
-        native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None)
+        # KENSEI MERGE: two sanitize regimes for reasoning_details.
+        # - provider_profile path (our port of PR #105863): the profile's own ownership
+        #   filter governs (native_reasoning_details_type) — the host heuristic must not
+        #   strip a field the profile explicitly owns.
+        # - legacy path: upstream's host-based route gate (#70233) drops the whole field
+        #   unless the route replays it (OpenRouter/Nous Portal).
+        _profile = kwargs.get("provider_profile")
+        native_type = getattr(_profile, "native_reasoning_details_type", None)
+        if _profile is not None:
+            strip_reasoning_details = False
+        else:
+            strip_reasoning_details = not _route_replays_reasoning_details(kwargs.get("base_url"))
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, native_type, strip_reasoning_details)) for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages

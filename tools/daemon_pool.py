@@ -38,6 +38,11 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     def _adjust_thread_count(self) -> None:
         # Mirrors CPython's implementation with two changes:
         # daemon=True and no _threads_queues registration.
+        # Python 3.14 refactored ThreadPoolExecutor — initializer/initargs
+        # are now stored inside the worker context returned by
+        # _create_worker_context(), and _worker() takes (ref, ctx, queue)
+        # instead of (ref, queue, initializer, initargs). Mirrors the
+        # refactor in CPython 3.14's Lib/concurrent/futures/thread.py.
         if self._idle_semaphore.acquire(timeout=0):
             return
 

@@ -43,4 +43,35 @@ describe('spawnHistoryStore status normalization', () => {
 
     expect(status).toBe('completed')
   })
+
+  it('pluralizes the fallback label as singular for exactly one subagent', () => {
+    pushDiskSnapshot(
+      {
+        finished_at: 1_700_000_021,
+        session_id: 'sess-3',
+        started_at: 1_700_000_020,
+        subagents: [{ goal: 'lone child', id: 'sa-solo', index: 0, status: 'completed' }]
+      },
+      '/tmp/snap-one.json'
+    )
+
+    expect(getSpawnHistory()[0]?.label).toBe('1 subagent')
+  })
+
+  it('pluralizes the fallback label for multiple subagents', () => {
+    pushDiskSnapshot(
+      {
+        finished_at: 1_700_000_031,
+        session_id: 'sess-4',
+        started_at: 1_700_000_030,
+        subagents: [
+          { goal: 'first child', id: 'sa-a', index: 0, status: 'completed' },
+          { goal: 'second child', id: 'sa-b', index: 1, status: 'completed' }
+        ]
+      },
+      '/tmp/snap-two.json'
+    )
+
+    expect(getSpawnHistory()[0]?.label).toBe('2 subagents')
+  })
 })

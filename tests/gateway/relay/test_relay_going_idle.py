@@ -43,6 +43,7 @@ class _IdleAwareServer:
     def __init__(self):
         self.received: list[dict] = []
         self.inbound_acks: list[str] = []
+        self.inbound_ack_received = asyncio.Event()
         self.going_idle_count = 0
         self._server = None
         self.url = ""
@@ -84,6 +85,7 @@ class _IdleAwareServer:
             await ws.send(json.dumps({"type": "going_idle_ack"}) + "\n")
         elif ftype == "inbound_ack":
             self.inbound_acks.append(frame.get("bufferId"))
+            self.inbound_ack_received.set()
 
 
 @pytest_asyncio.fixture
@@ -133,6 +135,64 @@ async def test_buffered_inbound_is_acked_after_handler(server):
         assert server.inbound_acks == ["buf-42"]
     finally:
         await t.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_buffered_passthrough_ack_follows_successful_delivery(server):
+    frame = {"type": "passthrough_forward", "bufferId": "pbuf-7",
+             "forward": {"platform": "discord", "method": "POST",
+                         "path": "/interactions", "bodyB64": ""}}
+    server._to_push = [frame]
+    received, release = asyncio.Event(), asyncio.Event()
+
+    async def handler(forward, buffer_id):
+        assert buffer_id == "pbuf-7"
+        received.set()
+        await release.wait()
+
+    transport = WebSocketRelayTransport(server.url, "discord", "appShared")
+    transport.set_passthrough_handler(handler)
+    await transport.connect()
+    try:
+        await transport.handshake()
+        await asyncio.wait_for(received.wait(), 5)
+        assert server.inbound_acks == []
+        release.set()
+        await asyncio.wait_for(server.inbound_ack_received.wait(), 5)
+        assert server.inbound_acks == ["pbuf-7"]
+    finally:
+        release.set()
+        await transport.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["live", "unhandled", "failed"])
+async def test_passthrough_does_not_ack_undelivered_or_live_frames(mode):
+    import base64
+    from unittest.mock import AsyncMock
+    from gateway.config import PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.relay.descriptor import CapabilityDescriptor
+
+    transport = WebSocketRelayTransport("ws://unused", "discord", "appShared")
+    transport._send_inbound_ack = AsyncMock()
+    adapter = RelayAdapter(PlatformConfig(enabled=True), CapabilityDescriptor.from_json(json.dumps(DESCRIPTOR)), transport)
+    adapter.handle_message = AsyncMock(side_effect=RuntimeError("delivery failed") if mode == "failed" else None)
+    if mode != "unhandled":
+        transport.set_passthrough_handler(adapter._on_passthrough)
+    body = {"type": 2, "data": {"name": "hello"}, "channel_id": "c1", "user": {"id": "u1"}}
+    frame = {"type": "passthrough_forward", "forward": {"platform": "discord",
+             "bodyB64": base64.b64encode(json.dumps(body).encode()).decode()}}
+    if mode != "live":
+        frame["bufferId"] = "pbuf-7"
+    if mode == "failed":
+        with pytest.raises(RuntimeError, match="delivery failed"):
+            await transport._handle_frame(json.dumps(frame))
+    else:
+        await transport._handle_frame(json.dumps(frame))
+    transport._send_inbound_ack.assert_not_awaited()
+    if mode != "unhandled":
+        adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -346,5 +406,3 @@ async def test_adapter_go_dormant_delegates_to_transport(server):
         assert transport._dormant is True
     finally:
         await adapter.disconnect()
-
-

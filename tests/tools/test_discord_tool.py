@@ -307,6 +307,34 @@ class TestCreateThread:
         )
 
 
+class TestChannelWrites:
+    @pytest.mark.parametrize(
+        "action,params,method,path,body,result_key,result_value",
+        [
+            (
+                "set_channel_topic", {"topic": "Project home"}, "PATCH", "/channels/11",
+                {"topic": "Project home"}, "topic", "Project home",
+            ),
+            (
+                "send_channel_message", {"content": "Hello"}, "POST", "/channels/11/messages",
+                {"content": "Hello"}, "message_id", "900",
+            ),
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_channel_write_uses_expected_api_route(
+        self, mock_req, monkeypatch, action, params, method, path, body, result_key, result_value,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "11" if action == "set_channel_topic" else "900", "topic": params.get("topic")}
+
+        result = json.loads(discord_admin_handler(action=action, channel_id="11", **params))
+
+        assert result["success"] is True
+        assert result[result_key] == result_value
+        mock_req.assert_called_once_with(method, path, "test-token", body=body)
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

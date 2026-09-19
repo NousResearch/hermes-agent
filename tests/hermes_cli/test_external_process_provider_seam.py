@@ -73,6 +73,26 @@ def test_an_out_of_tree_external_process_provider_resolves_end_to_end(fake_cli, 
     assert (runtime["provider"], runtime["base_url"], runtime["source"]) == ("acme-acp", "acp://acme", "process")
 
 
+def test_external_process_provider_registered_after_auth_import_is_resolved():
+    """Late discovery must refresh auth's registry before rejecting a provider."""
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+
+    profile = _AcmeACPProfile(
+        name="late-acme-acp",
+        aliases=("late-acme",),
+        display_name="Late Acme ACP",
+        base_url="acp://late-acme",
+        auth_type="external_process",
+        process_command="late-acme-cli",
+    )
+    assert "late-acme-acp" not in PROVIDER_REGISTRY
+
+    register_provider(profile)
+
+    assert resolve_provider("late-acme") == "late-acme-acp"
+    assert PROVIDER_REGISTRY["late-acme"] is PROVIDER_REGISTRY["late-acme-acp"]
+
+
 def test_copilot_acp_launch_details_are_unchanged(fake_cli, monkeypatch):
     from hermes_cli.auth import resolve_external_process_provider_credentials
     from hermes_cli.runtime_provider import resolve_runtime_provider

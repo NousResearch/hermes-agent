@@ -275,13 +275,18 @@ def _register_plugin_provider(pp: Any) -> None:
         PROVIDER_REGISTRY.setdefault(alias, pconfig)
 
 
-try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
-        if _pp.name not in PROVIDER_REGISTRY:
-            _register_plugin_provider(_pp)
-except Exception:
-    pass
+def _refresh_plugin_provider_registry() -> None:
+    """Merge newly discovered provider profiles without replacing built-in handlers."""
+    try:
+        from providers import list_providers as _list_providers_for_registry
+        for _pp in _list_providers_for_registry():
+            if _pp.name not in PROVIDER_REGISTRY:
+                _register_plugin_provider(_pp)
+    except Exception:
+        pass
+
+
+_refresh_plugin_provider_registry()
 
 
 def get_anthropic_key() -> str:
@@ -1351,6 +1356,9 @@ def resolve_provider(
     if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
+        _refresh_plugin_provider_registry()
+        if normalized in PROVIDER_REGISTRY:
+            return normalized
         hint = _get_config_hint_for_unknown_provider(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "
                 "or run 'hermes doctor' to diagnose config issues.")

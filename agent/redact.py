@@ -1132,9 +1132,10 @@ _BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,
 
 def redact_for_egress(text: str) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
-    telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
-    sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
-    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    telemetry, memory providers). ``redact_sensitive_text(force=True)`` — the only secret-pattern
+    list — plus a bearer sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries
+    no shape the prefix matcher can key on. Fails CLOSED: if the redactor raises, the raw text
+    is never returned."""
     text = str(text or "")
     try:
         text = redact_sensitive_text(text, force=True)

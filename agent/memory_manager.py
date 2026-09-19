@@ -17,6 +17,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from agent.redact import redact_for_egress
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -57,6 +58,46 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
         return False
     kind = getattr(params.get("require_checkpoint"), "kind", None)
     return _has_var_kwargs(params) or kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+
+
+# -- Provider egress redaction -----------------------------------------------
+
+def _redact_string_leaves(obj: Any) -> Any:
+    """Scrub every string leaf of a row tree (content text, ``tool_calls[].function.arguments``
+    JSON, multimodal part text) with the egress redactor. Returns the input object unchanged when
+    nothing matched, so clean transcripts are not copied on every turn."""
+    if isinstance(obj, str):
+        scrubbed = redact_for_egress(obj)
+        return obj if scrubbed == obj else scrubbed
+    if isinstance(obj, list):
+        items = [_redact_string_leaves(item) for item in obj]
+        return obj if all(new is old for new, old in zip(items, obj)) else items
+    if isinstance(obj, dict):
+        values = {key: _redact_string_leaves(value) for key, value in obj.items()}
+        return (
+            obj
+            if all(new is old for new, old in zip(values.values(), obj.values()))
+            else values
+        )
+    return obj
+
+
+def _redact_rows_for_provider(
+    messages: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Scrub every string leaf of OpenAI-style rows before they leave the process for a
+    memory provider (a remote reader like chat platforms or telemetry). Returns the input list
+    unchanged when nothing matched; scrubbed rows are fresh containers, so the caller's
+    list/dicts are never mutated. Non-string leaves pass through as-is.
+    """
+    if not messages:
+        return messages
+    scrubbed = [_redact_string_leaves(row) for row in messages]
+    return (
+        messages
+        if all(new is old for new, old in zip(scrubbed, messages))
+        else scrubbed
+    )
 
 
 # -- Tool-schema plumbing -----------------------------------------------------
@@ -392,10 +433,16 @@ class MemoryManager:
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
+        """Merge non-empty prefetch context from all providers (failures are non-fatal).
+
+        The query is scrubbed with ``redact_for_egress`` before it leaves the process, so a query
+        containing a secret is retrieved against (and archived by providers that log queries) in
+        its redacted form — retrieval semantics follow egress, not just archival.
+        """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
+        clean_query = redact_for_egress(clean_query)
         parts = self._each_provider(
             "prefetch failed (non-fatal)", lambda p: self._prefetch_provider(p, clean_query, session_id=session_id),
         )
@@ -461,11 +508,16 @@ class MemoryManager:
         return "  ".join(segments)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
+        """Queue background prefetch on all providers for the next turn (see ``sync_all``).
+
+        The query is scrubbed with ``redact_for_egress`` before it leaves the process
+        (same retrieval-semantics note as ``prefetch_all``).
+        """
         providers = list(self._providers)
         clean_query = self._strip_skill_scaffolding(query) if providers else None
         if not clean_query:
             return
+        clean_query = redact_for_egress(clean_query)
         self._submit_background(lambda: self._each_provider(
             "queue_prefetch failed (non-fatal)", lambda p: p.queue_prefetch(clean_query, session_id=session_id),
             providers=providers,
@@ -485,11 +537,17 @@ class MemoryManager:
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
+        Content is scrubbed with ``redact_for_egress`` (fail-closed) before the fan-out: providers are
+        remote readers and their stores archive turns verbatim, so secrets echoed into tool output must
+        not reach them even with ``security.redact_secrets`` on (it covers display/telemetry surfaces).
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
+        clean_user_content = redact_for_egress(clean_user_content)
+        assistant_content = redact_for_egress(assistant_content)
+        messages = _redact_rows_for_provider(messages)
         optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
@@ -599,6 +657,8 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        message = redact_for_egress(message)
+
         def _tick(p: MemoryProvider) -> None:
             # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.
             params = _signature_params(p.on_turn_start)
@@ -608,7 +668,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
+        redacted = _redact_rows_for_provider(messages)
+        self._each_provider("on_session_end failed", lambda p: p.on_session_end(redacted), level=logging.WARNING,
                             exc_info=True)
 
     def commit_session_boundary_async(self, messages: List[Dict[str, Any]], *, new_session_id: str,
@@ -679,7 +740,11 @@ class MemoryManager:
         ``messages`` is the raw v1 transcript; ``evidence_messages`` is the host-normalized list handed
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
+        Both lists are scrubbed with ``redact_for_egress`` on a copy before the fan-out (caller-owned
+        rows are never mutated); providers see the redacted form.
         """
+        scrubbed_messages = _redact_rows_for_provider(messages)
+        scrubbed_evidence = _redact_rows_for_provider(evidence_messages)
         parts = []
         checkpoint_succeeded = False
         for provider in self._providers:
@@ -687,8 +752,8 @@ class MemoryManager:
             if version is None:
                 version = _LEGACY_PRE_COMPRESS_API_VERSION
             is_checkpoint_provider = version >= checkpoint_api_version
-            use_evidence = is_checkpoint_provider and evidence_messages is not None
-            provider_messages = evidence_messages if use_evidence else messages
+            use_evidence = is_checkpoint_provider and scrubbed_evidence is not None
+            provider_messages = scrubbed_evidence if use_evidence else scrubbed_messages
             kwargs: Dict[str, Any] = {}
             # v1 providers and bare-shape v2 providers never see the signal.
             if is_checkpoint_provider and _accepts_require_checkpoint(provider.on_pre_compress):

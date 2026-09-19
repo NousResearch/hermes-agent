@@ -24655,7 +24655,7 @@
       },
       "SessionControlArgs": {
         "additionalProperties": false,
-        "description": "``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``.",
+        "description": "``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``; the\ncreate / update actions read ``prompt``, ``criteria``, ``max_turns``, ``interval_seconds``,\n``run_limit`` and ``stop_condition``.",
         "properties": {
           "text": {
             "anyOf": [
@@ -24680,6 +24680,81 @@
             ],
             "default": null,
             "title": "Index"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "criteria": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Criteria"
+          },
+          "max_turns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Turns"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Interval Seconds"
+          },
+          "run_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Limit"
+          },
+          "stop_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stop Condition"
           }
         },
         "title": "SessionControlArgs",
@@ -24789,6 +24864,11 @@
               }
             ],
             "default": null
+          },
+          "include_loop_min_interval": {
+            "default": false,
+            "title": "Include Loop Min Interval",
+            "type": "boolean"
           }
         },
         "required": [
@@ -24816,6 +24896,11 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "include_loop_min_interval": {
+            "default": false,
+            "title": "Include Loop Min Interval",
+            "type": "boolean"
           }
         },
         "required": [
@@ -24856,7 +24941,7 @@
       },
       "SessionControlSnapshot": {
         "additionalProperties": false,
-        "description": "``_snapshot_control`` \u2014 ``revision`` is a hash of the visible state (``\"\"`` when empty);\n``updated_at`` is the newest persisted timestamp (``0`` when none).",
+        "description": "``_snapshot_control`` \u2014 ``revision`` is a hash of the visible state (``\"\"`` when empty);\n``updated_at`` is the newest persisted timestamp (``0`` when none); ``loop_min_interval_seconds``\nrides along only when the read opted in.",
         "properties": {
           "goal": {
             "anyOf": [
@@ -24895,6 +24980,18 @@
           "updated_at": {
             "title": "Updated At",
             "type": "number"
+          },
+          "loop_min_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Loop Min Interval Seconds"
           }
         },
         "required": [

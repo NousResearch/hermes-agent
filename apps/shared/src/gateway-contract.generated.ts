@@ -803,17 +803,19 @@ export interface ImageGenerateResult {
 export interface SessionControlReadParams {
   profile?: string | null
   session_id: string
+  include_loop_min_interval?: boolean
 }
 export interface SessionControlReadResult {
   control: SessionControlSnapshot
 }
-/** ``_snapshot_control`` — ``revision`` is a hash of the visible state (``""`` when empty); ``updated_at`` is the newest persisted timestamp (``0`` when none). */
+/** ``_snapshot_control`` — ``revision`` is a hash of the visible state (``""`` when empty); ``updated_at`` is the newest persisted timestamp (``0`` when none); ``loop_min_interval_seconds`` rides along only when the read opted in. */
 export interface SessionControlSnapshot {
   goal: GoalSnapshot | null
   loop: LoopSnapshot | null
   heartbeat: HeartbeatSnapshot | null
   revision: string
   updated_at: number
+  loop_min_interval_seconds?: number | null
 }
 /** ``methods_session_control.py::_safe_goal_snapshot`` — the frontend-safe GoalState subset. */
 export interface GoalSnapshot {
@@ -889,11 +891,18 @@ export interface SessionControlParams {
   session_id: string
   action: string
   args?: SessionControlArgs | null
+  include_loop_min_interval?: boolean
 }
-/** ``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. */
+/** ``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``; the create / update actions read ``prompt``, ``criteria``, ``max_turns``, ``interval_seconds``, ``run_limit`` and ``stop_condition``. */
 export interface SessionControlArgs {
   text?: string | null
   index?: number | null
+  prompt?: string | null
+  criteria?: string[] | null
+  max_turns?: number | null
+  interval_seconds?: number | null
+  run_limit?: number | null
+  stop_condition?: string | null
 }
 export interface SessionControlResult {
   control: SessionControlSnapshot

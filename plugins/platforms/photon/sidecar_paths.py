@@ -11,6 +11,7 @@ Resolution never happens at import time (it probes/copies on disk).
 from __future__ import annotations
 
 import filecmp
+import json
 import logging
 import os
 import shutil
@@ -20,15 +21,54 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
-# Files that define the sidecar; node_modules is deliberately absent (baked on managed
-# images or installed by npm in the mirror).
-_MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs")
+
+# The files that define the sidecar. Mirrored into the writable runtime dir
+# when the install tree is read-only. node_modules is deliberately absent —
+# it is either baked (managed image) or installed by npm in the mirror.
+_MIRROR_FILES = (
+    "index.mjs",
+    "package.json",
+    "package-lock.json",
+    "provider-capabilities.mjs",
+    "reply-content.mjs",
+    "send-format.mjs",
+    "spectrum-runtime.mjs",
+    "stream-staleness.mjs",
+)
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
 # Written by `hermes photon install-sidecar` on npm failure so check_requirements() can
 # surface the root cause later; cleared on success.
 _NPM_ERROR_LOG: Optional[Path] = None
 _NPM_ERROR_LOG_MAX_CHARS = 300
+
+
+def sidecar_manifest_error(sidecar_dir: Path) -> Optional[str]:
+    """Return why npm must not run in *sidecar_dir*, or ``None`` when safe.
+
+    A live gateway may notice lockfile mtimes while a merge is still writing
+    the manifests. Refuse both unresolved conflict markers and malformed JSON
+    so the automatic repair cannot turn a transient merge state into a partial
+    ``node_modules`` install.
+    """
+    for name in ("package.json", "package-lock.json"):
+        path = sidecar_dir / name
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"{name} cannot be read: {exc}"
+        if any(
+            line.startswith(("<<<<<<<", "=======", ">>>>>>>"))
+            for line in raw.splitlines()
+        ):
+            return f"{name} contains unresolved merge-conflict markers"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return f"{name} is not valid JSON ({exc.msg} at line {exc.lineno})"
+        if not isinstance(parsed, dict):
+            return f"{name} must contain a JSON object"
+    return None
 
 
 def dir_writable(path: Path) -> bool:

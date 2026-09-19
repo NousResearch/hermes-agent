@@ -124,6 +124,12 @@ def _patch_spawn(
     # sidecar_deps_installed() checks the dependency's own directory, not just
     # node_modules/ (9cf2046081) — mirror a real completed install.
     (sidecar_dir / "node_modules" / "spectrum-ts").mkdir(parents=True)
+    (sidecar_dir / "package.json").write_text(
+        '{"name": "photon-sidecar"}', encoding="utf-8"
+    )
+    (sidecar_dir / "package-lock.json").write_text(
+        '{"lockfileVersion": 3}', encoding="utf-8"
+    )
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", sidecar_dir)
     monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
 
@@ -229,5 +235,4 @@ async def test_standalone_send_consumes_record_when_env_missing(
     url, _body, headers = _SendClient.calls[0]
     assert ":9111/" in url
     assert headers["X-Hermes-Sidecar-Token"] == "record-token"
-
 

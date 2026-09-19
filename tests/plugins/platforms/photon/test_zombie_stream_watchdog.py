@@ -17,9 +17,8 @@ The salvaged design has two layers:
    inconclusive).
 
 These tests execute the real node decision module and drive the adapter
-against mocked ``/healthz`` responses — style follows
-test_overflow_recovery.py / test_spectrum_patch.py. No ports are bound and no
-gRPC traffic occurs.
+against mocked ``/healthz`` responses. No ports are bound and no gRPC traffic
+occurs.
 """
 from __future__ import annotations
 

@@ -701,7 +701,8 @@ def _dispatch_authorized_once(
     if ref.name == "memory":
         agent._turns_since_memory = 0
     elif ref.name == "skill_manage":
-        agent._iters_since_skill = 0
+        from agent.review_cadence import reset_skill_review_cadence
+        reset_skill_review_cadence(agent)
 
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)

@@ -869,33 +869,35 @@ export interface ConnectionOperationStatus {
   settled: boolean
   settled_at?: number | null
   settled_by?: ConnectionSettleReason | null
-  targets: ConnectionOperationTarget[]
+  legs: ConnectionLeg[]
 }
 /** ``tools/connectors/contract.py::SettleReason``. */
 export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
-/** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
-export interface ConnectionOperationTarget {
+/** ``Leg.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
+export interface ConnectionLeg {
   name: string
-  kind: ConnectionTargetKind
-  action: ConnectionTargetAction
-  state: ConnectionTargetState
+  kind: ConnectionLegKind
+  action: ConnectionLegAction
+  state: ConnectionLegState
   detail?: string | null
   connect_url?: string | null
   connection_id?: string | null
   attempt?: string | null
-  required_env?: ConnectionTargetEnvField[] | null
+  required_env?: ConnectionLegEnvField[] | null
   tools?: string[] | null
   hint?: string | null
 }
-export type ConnectionTargetKind = 'connector' | 'mcp'
-export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
-/** ``tools/connectors/contract.py::TargetState``. */
-export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'unavailable' | 'not_connected'
+export type ConnectionLegKind = 'connector' | 'mcp'
+export type ConnectionLegAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
+/** ``tools/connectors/contract.py::LegState``. */
+export type ConnectionLegState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'unavailable' | 'not_connected'
 /** One credential an MCP install still needs; the card renders a field per entry and sends the values back with the approval. */
-export interface ConnectionTargetEnvField {
+export interface ConnectionLegEnvField {
   name: string
   required: boolean
   prompt?: string | null
+  secret: boolean
+  default?: string | null
 }
 export interface ConnectionWakeResult {
   status: string
@@ -906,19 +908,19 @@ export interface ConnectionRespondParams {
   op_id: string
   result: ConnectionAnswer
 }
-/** The card's answer: per-target outcomes and an optional Continue (``settled_by: "continue"``). Settlement is derived from target states afterwards. */
+/** The card's answer: per-leg outcomes and an optional Continue (``settled_by: "continue"``). Settlement is derived from leg states afterwards. */
 export interface ConnectionAnswer {
-  targets?: ConnectionAnswerTarget[]
+  legs?: ConnectionAnswerLeg[]
   settled_by?: ConnectionSettleReason | null
 }
 /** One row's answer from the card. ``env`` carries the credential values an install asked for through ``required_env``. */
-export interface ConnectionAnswerTarget {
+export interface ConnectionAnswerLeg {
   name: string
   status: ConnectionAnswerStatus
   detail?: string | null
   env?: Record<string, string> | null
 }
-/** What the card says about one row: ``tools/connectors/mcp.py::apply_answer``. */
+/** What the card says about one row: ``tools/connectors/legs/mcp.py::apply_answer``. */
 export type ConnectionAnswerStatus = 'approved' | 'skipped'
 export interface ConnectionRespondResult {
   status: string
@@ -956,7 +958,7 @@ export interface ConnectorsConnectResult {
   settled: boolean
   settled_at?: number | null
   settled_by?: ConnectionSettleReason | null
-  targets: ConnectionOperationTarget[]
+  legs: ConnectionLeg[]
   status?: string | null
   note?: string | null
 }
@@ -2688,7 +2690,7 @@ export interface ConnectionRequestPayload {
   seq: number
   deadline_at: number
   timeout_seconds: number
-  targets: ConnectionOperationTarget[]
+  legs: ConnectionLeg[]
   tool_call_id?: string | null
 }
 /** ``tool_progress._normalize_todo_state``: the authoritative todo snapshot. */
@@ -3942,7 +3944,7 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
-/** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
+/** ``methods_connectors._connection_update``: one leg transition (``leg``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
   op_id: string
   seq: number
@@ -3950,11 +3952,11 @@ export interface ConnectionUpdatePayload {
   settled: boolean
   settled_at?: number | null
   settled_by?: ConnectionSettleReason | null
-  targets: ConnectionOperationTarget[]
+  legs: ConnectionLeg[]
   owner: SessionOwner | AccountOwner
-  target?: string | null
-  from?: ConnectionTargetState | null
-  to?: ConnectionTargetState | null
+  leg?: string | null
+  from?: ConnectionLegState | null
+  to?: ConnectionLegState | null
   actor?: ConnectionActor | null
   detail?: string | null
 }
@@ -4384,7 +4386,7 @@ export interface RpcMethods {
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
   /** Masked, display-ready config summary (model / agent / environment rows). */
   'config.show': { params: ConfigShowParams; result: ConfigShowResult }
-  /** Per-target outcomes from the card, and an optional Continue. */
+  /** Per-leg outcomes from the card, and an optional Continue. */
   'connection.respond': { params: ConnectionRespondParams; result: ConnectionRespondResult }
   /** The scoped member's hosted connector accounts, optionally filtered by connector slug. */
   'connectors.accounts': { params: ConnectorAccountsParams; result: ConnectorAccountsResult }

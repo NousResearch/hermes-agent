@@ -1,12 +1,12 @@
 import type {
+  ConnectionLeg,
+  ConnectionLegAction,
+  ConnectionLegEnvField,
+  ConnectionLegKind,
+  ConnectionLegState,
   ConnectionOperationStatus,
-  ConnectionOperationTarget,
   ConnectionRequestPayload,
   ConnectionSettleReason,
-  ConnectionTargetAction,
-  ConnectionTargetEnvField,
-  ConnectionTargetKind,
-  ConnectionTargetState,
   ConnectionUpdatePayload
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
@@ -16,35 +16,46 @@ import type { ConnectorCardField } from '@/components/ui/connector-card'
 import { $gateway } from './gateway'
 
 /** The backend sends ``prompt`` as null when the catalog entry has none; the card takes an absent one. */
-const envFields = (fields: ConnectionTargetEnvField[] | null | undefined): ConnectorCardField[] =>
-  (fields ?? []).map(({ name, prompt, required }) => ({ name, prompt: prompt ?? undefined, required }))
+const envFields = (fields: ConnectionLegEnvField[] | null | undefined): ConnectionEnvField[] =>
+  (fields ?? []).map(({ default: defaultValue, name, prompt, required, secret }) => ({
+    default: defaultValue ?? null,
+    name,
+    prompt: prompt ?? undefined,
+    required,
+    secret
+  }))
 
 export type {
-  ConnectionSettleReason,
-  ConnectionTargetAction,
-  ConnectionTargetEnvField,
-  ConnectionTargetKind,
-  ConnectionTargetState
+  ConnectionLegAction,
+  ConnectionLegEnvField,
+  ConnectionLegKind,
+  ConnectionLegState,
+  ConnectionSettleReason
 }
 
-/** One target of the operation as the renderer knows it. State comes only from the backend
+/** One leg of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
-export interface ConnectionTarget {
+export interface ConnectionEnvField extends ConnectorCardField {
+  default: string | null
+  secret: boolean
+}
+
+export interface ConnectionRequestLeg {
   name: string
-  kind: ConnectionTargetKind
-  action: ConnectionTargetAction
-  state: ConnectionTargetState
+  kind: ConnectionLegKind
+  action: ConnectionLegAction
+  state: ConnectionLegState
   detail: string
   connectUrl: null | string
-  /** The vendor account of a managed target once a mint named one; empty before that and on MCP targets. */
+  /** The vendor account of a managed leg once a mint named one; empty before that and on MCP legs. */
   connectionId: string
-  /** Toolkit metadata on connector targets; empty on an MCP target. */
+  /** Toolkit metadata on connector legs; empty on an MCP leg. */
   tools: string[]
-  /** Credentials an MCP install is still waiting for; empty on every other target. */
-  requiredEnv: ConnectorCardField[]
+  /** Credentials an MCP install is still waiting for; empty on every other leg. */
+  requiredEnv: ConnectionEnvField[]
 }
 
-/** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
+/** The session's connection operation. `deadlineAt`, `opId`, `legs[].state`, `settled` and
  *  `settledBy` are backend-owned; the renderer holds a cache and drives it through `connection.respond`. */
 export interface ConnectionRequest {
   /** The model's tool call that opened the operation. The card lives on that row and no other. */
@@ -54,7 +65,7 @@ export interface ConnectionRequest {
   seq: number
   /** Unix seconds; backend-owned. */
   deadlineAt: number
-  targets: ConnectionTarget[]
+  legs: ConnectionRequestLeg[]
   settled: boolean
   settledBy: ConnectionSettleReason | null
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
@@ -62,15 +73,15 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** Answers the card may give for one target: the user said no, or the user consented and the backend
- *  does the work. The card never reports an outcome; only the backend moves a target. */
-export type ConnectionTargetOutcome =
+/** Answers the card may give for one leg: the user said no, or the user consented and the backend
+ *  does the work. The card never reports an outcome; only the backend moves a leg. */
+export type ConnectionLegOutcome =
   | { name: string; status: 'skipped' }
   | { env?: Record<string, string>; name: string; status: 'approved' }
 
 export interface ConnectionOutcome {
-  targets?: ConnectionTargetOutcome[]
-  /** `continue` ends the operation now with unresolved targets stamped `not_connected`. */
+  legs?: ConnectionLegOutcome[]
+  /** `continue` ends the operation now with unresolved legs stamped `not_connected`. */
   settled_by?: 'continue'
 }
 
@@ -81,7 +92,7 @@ export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 export const sessionConnectionRequest = (sessionId: string | null) =>
   computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
 
-const TARGET_STATES: readonly ConnectionTargetState[] = [
+const LEG_STATES: readonly ConnectionLegState[] = [
   'connected',
   'expired',
   'failed',
@@ -92,7 +103,7 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
   'unavailable'
 ]
 
-const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
+const ACTIONS: readonly ConnectionLegAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
 const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt', 'unavailable']
 
 // The wire carries these as typed literals already; the lookups defend against a backend a version ahead.
@@ -101,11 +112,11 @@ const oneOf =
   (value: null | string | undefined): T | undefined =>
     allowed.find(candidate => candidate === value)
 
-const targetState = oneOf(TARGET_STATES)
-const targetAction = oneOf(ACTIONS)
+const legState = oneOf(LEG_STATES)
+const legAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
 
-function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
+function parseLeg(entry: ConnectionLeg): ConnectionRequestLeg | null {
   const name = entry.name.trim()
 
   if (!name) {
@@ -113,12 +124,12 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
   }
 
   return {
-    action: targetAction(entry.action) ?? 'install',
+    action: legAction(entry.action) ?? 'install',
     connectUrl: entry.connect_url ?? null,
     detail: entry.detail ?? '',
     kind: entry.kind === 'connector' ? 'connector' : 'mcp',
     name,
-    state: targetState(entry.state) ?? 'pending',
+    state: legState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
     connectionId: entry.connection_id ?? '',
     requiredEnv: envFields(entry.required_env)
@@ -126,7 +137,7 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
 }
 
 /** Parse a `connection.request` event or the `pending_connection` resume field. Null when the payload
- *  carries no usable operation (no op id, no deadline, no targets). */
+ *  carries no usable operation (no op id, no deadline, no legs). */
 export function normalizeConnectionRequest(
   payload: ConnectionRequestPayload | null | undefined,
   sessionId: string | null
@@ -135,9 +146,9 @@ export function normalizeConnectionRequest(
     return null
   }
 
-  const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
+  const legs = payload.legs.map(parseLeg).filter((leg): leg is ConnectionRequestLeg => leg !== null)
 
-  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
+  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || legs.length === 0) {
     return null
   }
 
@@ -149,7 +160,7 @@ export function normalizeConnectionRequest(
     sessionId,
     settled: false,
     settledBy: null,
-    targets,
+    legs,
     toolCallId: payload.tool_call_id
   }
 }
@@ -165,12 +176,12 @@ export function applyOperationStatus(
     return request
   }
 
-  const byName = new Map(status.targets.map(target => [target.name, target] as const))
+  const byName = new Map(status.legs.map(leg => [leg.name, leg] as const))
 
-  const targets = request.targets.map(target => {
-    const live: ConnectionOperationTarget | undefined = byName.get(target.name)
+  const legs = request.legs.map(leg => {
+    const live: ConnectionLeg | undefined = byName.get(leg.name)
 
-    return live ? mergeLiveTarget(target, live) : target
+    return live ? mergeLiveLeg(leg, live) : leg
   })
 
   const settledBy = settleReason(status.settled_by) ?? null
@@ -181,47 +192,49 @@ export function applyOperationStatus(
     request.seq === status.seq &&
     request.settled === status.settled &&
     request.settledBy === settledBy &&
-    targets.every((target, index) => target === request.targets[index])
+    legs.every((leg, index) => leg === request.legs[index])
 
   return unchanged
     ? request
-    : { ...request, deadlineAt: status.deadline_at, seq: status.seq, settled: status.settled, settledBy, targets }
+    : { ...request, deadlineAt: status.deadline_at, seq: status.seq, settled: status.settled, settledBy, legs }
 }
 
-function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
-  const next: ConnectionTarget = {
-    ...target,
-    connectUrl: live.connect_url ?? target.connectUrl,
-    detail: live.detail ?? target.detail,
+function mergeLiveLeg(leg: ConnectionRequestLeg, live: ConnectionLeg): ConnectionRequestLeg {
+  const next: ConnectionRequestLeg = {
+    ...leg,
+    connectUrl: live.connect_url ?? leg.connectUrl,
+    detail: live.detail ?? leg.detail,
     state: live.state,
-    tools: live.tools ?? target.tools,
-    connectionId: live.connection_id ?? target.connectionId,
-    requiredEnv: live.required_env ? envFields(live.required_env) : target.requiredEnv
+    tools: live.tools ?? leg.tools,
+    connectionId: live.connection_id ?? leg.connectionId,
+    requiredEnv: live.required_env ? envFields(live.required_env) : leg.requiredEnv
   }
 
   const same =
-    next.connectUrl === target.connectUrl &&
-    next.connectionId === target.connectionId &&
-    next.detail === target.detail &&
-    next.state === target.state &&
-    next.tools.length === target.tools.length &&
-    next.tools.every((tool, index) => tool === target.tools[index]) &&
-    sameEnvFields(next.requiredEnv, target.requiredEnv)
+    next.connectUrl === leg.connectUrl &&
+    next.connectionId === leg.connectionId &&
+    next.detail === leg.detail &&
+    next.state === leg.state &&
+    next.tools.length === leg.tools.length &&
+    next.tools.every((tool, index) => tool === leg.tools[index]) &&
+    sameEnvFields(next.requiredEnv, leg.requiredEnv)
 
-  return same ? target : next
+  return same ? leg : next
 }
 
 // Every frame carries a fresh array, so identity would churn the row and remount its open inputs.
-const sameEnvFields = (next: ConnectorCardField[], previous: ConnectorCardField[]): boolean =>
+const sameEnvFields = (next: ConnectionEnvField[], previous: ConnectionEnvField[]): boolean =>
   next.length === previous.length &&
   next.every(
     (field, index) =>
       field.name === previous[index].name &&
       field.prompt === previous[index].prompt &&
-      field.required === previous[index].required
+      field.default === previous[index].default &&
+      field.required === previous[index].required &&
+      field.secret === previous[index].secret
   )
 
-/** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
+/** Apply one `connection.update` frame. Every frame carries the operation's full leg snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */
 export function applyConnectionUpdate(
   request: ConnectionRequest,
@@ -302,9 +315,9 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
   return true
 }
 
-/** Not now on one target. */
-export const skipConnectionTarget = (request: ConnectionRequest, name: string): Promise<boolean> =>
-  respondToConnectionRequest(request, { targets: [{ name, status: 'skipped' }] })
+/** Not now on one leg. */
+export const skipConnectionLeg = (request: ConnectionRequest, name: string): Promise<boolean> =>
+  respondToConnectionRequest(request, { legs: [{ name, status: 'skipped' }] })
 
 /** Continue: end the operation now with whatever is unresolved. */
 export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>

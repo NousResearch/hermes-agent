@@ -17,7 +17,7 @@ import pytest
 ])
 def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, enabled, disabled, allowed):
     import model_tools
-    from tools.connectors import managed
+    from tools.connectors.legs import managed
     from tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)

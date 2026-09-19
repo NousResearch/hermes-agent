@@ -1,7 +1,7 @@
-"""MCP targets of ``manage_connections``: the backend installs, enables and authorizes; the card is
+"""MCP legs of ``manage_connections``: the backend installs, enables and authorizes; the card is
 a projection of the operation and may only say approved, skipped or continue.
 
-An MCP target runs the same ``run.py`` lifecycle a managed connector runs. ``prepare`` starts an
+An MCP leg runs the same ``run.py`` lifecycle a managed connector runs. ``prepare`` starts an
 OAuth flow, or records the credentials an install still needs; the card's approval starts the
 install or the enable; ``observe`` reads the outcome on every tick. Off the desktop there is no
 card, so every action runs at once and the result carries the authorization URL for the user.
@@ -17,20 +17,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from tools.connectors.contract import Actor, SettleReason, TargetState
+from tools.connectors.contract import Actor, SettleReason, LegState
 from tools.connectors.gateway.config import operation_session_key, session_platform
-from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
-from tools.connectors.run import Kind, run_operation
+from tools.connectors.operation import ConnectionOperation, IllegalTransition, Leg
+from tools.connectors.run import LegDriver, run_operation
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# One wait for every authorization URL of a call, not one per target: the flows are started
+# One wait for every authorization URL of a call, not one per leg: the flows are started
 # together, and a provider that is slow to publish its URL must not delay the others.
 PREPARE_WAIT_SECONDS = 30.0
 
 NOTE = (
-    "Settled once; do not re-ask for any target the user skipped or that timed out — continue "
+    "Settled once; do not re-ask for any leg the user skipped or that timed out — continue "
     "without it or ask in chat. Tools of a newly installed or authorized server become available "
     "on your next turn."
 )
@@ -38,7 +38,7 @@ NOTE = (
 OFF_DESKTOP_NOTE = (
     "There is no approval card in this session. Show any connect_url to the user so they open it "
     "in a browser. The authorization then finishes in the background, and the server's tools "
-    "arrive on your next turn; ask the user to say when they are done. A failed target's detail "
+    "arrive on your next turn; ask the user to say when they are done. A failed leg's detail "
     "says what the user must do; do not retry it on your own."
 )
 
@@ -93,19 +93,20 @@ def _catalog_entry(name: str):
 
 
 class _CatalogBackend:
-    """The real work behind an MCP target. One object so a caller can pass another one in."""
+    """The real work behind an MCP leg. One object so a caller can pass another one in."""
 
     def required_env(self, name: str) -> List[Dict[str, Any]]:
         """The credentials the catalog entry declares that have no value yet."""
         from hermes_cli.config import get_env_value
 
-        return [{"name": spec.name, "prompt": spec.prompt, "required": spec.required}
+        return [{"name": spec.name, "prompt": spec.prompt, "required": spec.required,
+                 "secret": spec.secret, "default": spec.default or None}
                 for spec in (_catalog_entry(name).auth.env or []) if not get_env_value(spec.name)]
 
     def start_oauth(self, name: str) -> Any:
-        from tools.connectors import mcp_oauth
+        from tools.connectors.legs import oauth
 
-        return mcp_oauth.start(name)
+        return oauth.start(name)
 
     def install(self, name: str, env: Dict[str, str]) -> List[str]:
         """Write the declared credentials, install the entry, report the tools it offers."""
@@ -120,11 +121,25 @@ class _CatalogBackend:
             if key not in declared:
                 raise ValueError(f"'{name}' does not declare the environment variable {key}")
             validate_env_var_name_for_write(key)
+        from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+
+        # install_entry's prompt and the probe's ${VAR} interpolation both read get_secret, so the
+        # values reach them through the scope and touch disk only after both succeed.
+        token = set_secret_scope({**(current_secret_scope() or {}), **{k: v for k, v in env.items() if v}})
+        try:
+            install_entry(entry, enable=True)
+            tools = _probe_tool_names(name)
+        except Exception:
+            from hermes_cli.mcp_config import _remove_mcp_server
+
+            _remove_mcp_server(name)
+            raise
+        finally:
+            reset_secret_scope(token)
         for key, value in env.items():
             if value:
                 save_env_value(key, value)
-        install_entry(entry, enable=True)
-        return _probe_tool_names(name)
+        return tools
 
     def enable(self, name: str) -> None:
         """Flip ``enabled`` under the scope and lock the dashboard's toggle route uses
@@ -159,7 +174,7 @@ def _default_backend() -> Any:
 
 @dataclass
 class _Work:
-    """One target's work in flight: an OAuth attempt the watcher polls, or a worker's outcome."""
+    """One leg's work in flight: an OAuth attempt the watcher polls, or a worker's outcome."""
 
     attempt: Any = None
     done: threading.Event = field(default_factory=threading.Event)
@@ -168,30 +183,28 @@ class _Work:
 
 
 class _Runner:
-    """The backend plus the work for one operation's targets."""
+    """The backend plus the work for one operation's legs."""
 
     def __init__(self, action: str, backend: Any):
         self.action = action
         self.backend = backend
         self.op_id: Optional[str] = None
         self.work: Dict[str, _Work] = {}
-        # The credentials the card approved, per target. Try again carries none (a failed row has
-        # no fields), so the install that runs again is the one the user approved. Kept here and
-        # not on the target: the values are secrets, and the runner is the one object whose life
-        # is exactly the operation's.
+        # Approved credentials per leg. Try again sends none, so a retried install reuses these.
+        # Kept off the Leg: the values are secrets and the runner lives exactly as long as the operation.
         self.approved_env: Dict[str, Dict[str, str]] = {}
 
-    def run(self, table: Dict[str, Callable], operation: ConnectionOperation, target: Target,
+    def run(self, table: Dict[str, Callable], operation: ConnectionOperation, leg: Leg,
             env: Optional[Dict[str, str]] = None) -> None:
-        table[self.action](self, operation, target, env or {})
+        table[self.action](self, operation, leg, env or {})
 
-    def spawn(self, operation: ConnectionOperation, target: Target, call: Callable[[], Any]) -> None:
+    def spawn(self, operation: ConnectionOperation, leg: Leg, call: Callable[[], Any]) -> None:
         """Run one blocking backend call on a worker thread; ``observe`` reports its outcome."""
         if operation.settled:  # Continue landed between the state read and here
-            logger.debug("mcp %s %s: not started, the operation settled first", self.action, target.name)
+            logger.debug("mcp %s %s: not started, the operation settled first", self.action, leg.name)
             return
         work = _Work()
-        self.work[target.name] = work
+        self.work[leg.name] = work
 
         def body() -> None:
             tools: List[str] = []
@@ -203,7 +216,7 @@ class _Runner:
             if operation.settled:
                 # The result froze while the work ran; there is no row left to report into.
                 logger.debug("mcp %s %s: outcome dropped, the operation settled first",
-                             self.action, target.name)
+                             self.action, leg.name)
                 return
             work.tools, work.error = tools, error
             work.done.set()
@@ -212,21 +225,21 @@ class _Runner:
         # The worker runs in a copy of the calling thread's context: a named-profile turn binds its
         # home through a contextvar, and the install must write the credentials into that home.
         threading.Thread(target=contextvars.copy_context().run, args=(body,), daemon=True,
-                         name=f"mcp-{self.action}-{target.name}").start()
+                         name=f"mcp-{self.action}-{leg.name}").start()
 
     def prepare(self, operation: ConnectionOperation) -> None:
         _RUNNERS[operation.op_id] = self
         self.op_id = operation.op_id
-        if self.action == "authorize" and len(operation.targets) > 1:
+        if self.action == "authorize" and len(operation.legs) > 1:
             self._prepare_together(operation)
             return
-        for target in operation.targets:
-            self.run(_PREPARE, operation, target)
+        for leg in operation.legs:
+            self.run(_PREPARE, operation, leg)
 
     def _prepare_together(self, operation: ConnectionOperation) -> None:
         """Start every OAuth flow at once and wait for the URLs once. Each flow blocks until its
         provider publishes an authorization URL, so a sequential prepare would keep the card empty
-        for one wait per target.
+        for one wait per leg.
 
         The wait bounds how long prepare blocks, not how long a provider may take: a row still
         pending afterwards is left to its own thread, which is the only writer of that row and
@@ -237,8 +250,8 @@ class _Runner:
         binds its home through a contextvar, and the flow resolves ``mcp_servers`` and stores the
         token by that home."""
         threads = [threading.Thread(target=contextvars.copy_context().run,
-                                    args=(self.run, _PREPARE, operation, target), daemon=True,
-                                    name=f"mcp-prepare-{target.name}") for target in operation.targets]
+                                    args=(self.run, _PREPARE, operation, leg), daemon=True,
+                                    name=f"mcp-prepare-{leg.name}") for leg in operation.legs]
         for thread in threads:
             thread.start()
         deadline = time.time() + PREPARE_WAIT_SECONDS
@@ -246,11 +259,11 @@ class _Runner:
             thread.join(max(0.0, deadline - time.time()))
 
     def observe(self, operation: ConnectionOperation) -> None:
-        for target in operation.targets:
-            # Only a live target can be advanced by a read; a failed one waits for Try again.
-            if operation.settled or target.state not in (TargetState.pending, TargetState.initiated):
+        for leg in operation.legs:
+            # Only a live leg can be advanced by a read; a failed one waits for Try again.
+            if operation.settled or leg.state not in (LegState.pending, LegState.initiated):
                 continue
-            _OBSERVE[self.action](self, operation, target)
+            _OBSERVE[self.action](self, operation, leg)
 
     def close(self) -> None:
         if self.op_id is not None:
@@ -271,158 +284,158 @@ def _detail(exc: Exception) -> str:
     return str(exc) or exc.__class__.__name__
 
 
-def _move(operation: ConnectionOperation, target: Target, to: TargetState, actor: Actor, **fields: Any) -> bool:
-    """Move one target from the prepare, worker-outcome or observe path.
+def _move(operation: ConnectionOperation, leg: Leg, to: LegState, actor: Actor, **fields: Any) -> bool:
+    """Move one leg from the prepare, worker-outcome or observe path.
 
-    Continue on the RPC thread can settle the operation between any read of the target's state and
+    Continue on the RPC thread can settle the operation between any read of the leg's state and
     this call. A settled operation has a frozen result, so the lost move is dropped rather than
     raised into the tool result; anything else is a real contract violation."""
     try:
-        operation.transition(target.name, to, actor, **fields)
+        operation.transition(leg.name, to, actor, **fields)
         return True
     except IllegalTransition:
         if not operation.settled:
             raise
-        logger.debug("mcp target %s: %s dropped, the operation settled first", target.name, to.value)
+        logger.debug("mcp leg %s: %s dropped, the operation settled first", leg.name, to.value)
         return False
 
 
-def _fail(operation: ConnectionOperation, target: Target, detail: str) -> None:
+def _fail(operation: ConnectionOperation, leg: Leg, detail: str) -> None:
     """Report a failure, whatever the row was doing: a repeated failure has no state change to
     emit, only newer text."""
     if operation.settled:
-        logger.debug("mcp target %s: failure dropped, the operation settled first", target.name)
+        logger.debug("mcp leg %s: failure dropped, the operation settled first", leg.name)
         return
-    if target.state == TargetState.failed:
-        operation.refresh(target.name, connect_url=None, detail=detail, actor=Actor.backend_watcher)
+    if leg.state == LegState.failed:
+        operation.refresh(leg.name, connect_url=None, detail=detail, actor=Actor.backend_watcher)
         return
-    target.connect_url = None  # whatever link the row was offering is dead
-    _move(operation, target, TargetState.failed, Actor.backend_watcher, detail=detail)
+    leg.connect_url = None  # whatever link the row was offering is dead
+    _move(operation, leg, LegState.failed, Actor.backend_watcher, detail=detail)
 
 
-def _connect(operation: ConnectionOperation, target: Target, tools: List[str]) -> None:
+def _connect(operation: ConnectionOperation, leg: Leg, tools: List[str]) -> None:
     extra = {"tools": tools} if tools else {}
-    _move(operation, target, TargetState.connected, Actor.backend_watcher, **extra)
+    _move(operation, leg, LegState.connected, Actor.backend_watcher, **extra)
 
 
-def _actor(target: Target) -> Actor:
+def _actor(leg: Leg) -> Actor:
     """Try again is the user's move; a first attempt is the backend's."""
-    return Actor.user if target.state == TargetState.failed else Actor.backend_watcher
+    return Actor.user if leg.state == LegState.failed else Actor.backend_watcher
 
 
-def _start_oauth(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
-    actor = _actor(target)
+def _start_oauth(runner: _Runner, operation: ConnectionOperation, leg: Leg, env: Dict[str, str]) -> None:
+    actor = _actor(leg)
     try:
-        attempt = runner.backend.start_oauth(target.name)
+        attempt = runner.backend.start_oauth(leg.name)
     except Exception as exc:
-        _fail(operation, target, _detail(exc))
+        _fail(operation, leg, _detail(exc))
         return
-    runner.work[target.name] = _Work(attempt=attempt)
-    _move(operation, target, TargetState.initiated, actor, connect_url=attempt.auth_url, detail="")
+    runner.work[leg.name] = _Work(attempt=attempt)
+    _move(operation, leg, LegState.initiated, actor, connect_url=attempt.auth_url, detail="")
 
 
-def _declare_env(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+def _declare_env(runner: _Runner, operation: ConnectionOperation, leg: Leg, env: Dict[str, str]) -> None:
     """The install row waits pending; the card draws a field per credential it still needs."""
     try:
-        required = runner.backend.required_env(target.name)
+        required = runner.backend.required_env(leg.name)
     except Exception as exc:
-        _fail(operation, target, _detail(exc))
+        _fail(operation, leg, _detail(exc))
         return
-    target.required_env = required
+    leg.required_env = required
 
 
-def _missing_required(runner: _Runner, target: Target, env: Dict[str, str]) -> List[Dict[str, Any]]:
+def _missing_required(runner: _Runner, leg: Leg, env: Dict[str, str]) -> List[Dict[str, Any]]:
     """The declared credentials that still have no value. The install runs on a worker thread,
     where ``install_entry``'s prompt for a missing credential would block on stdin forever."""
-    declared = runner.backend.required_env(target.name)
+    declared = runner.backend.required_env(leg.name)
     return [spec for spec in declared
             if spec.get("required", True) and not env.get(str(spec.get("name") or ""))]
 
 
-def _start_install(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
-    approved = {**runner.approved_env.get(target.name, {}), **env}
+def _start_install(runner: _Runner, operation: ConnectionOperation, leg: Leg, env: Dict[str, str]) -> None:
+    approved = {**runner.approved_env.get(leg.name, {}), **env}
     try:
-        missing = _missing_required(runner, target, approved)
+        missing = _missing_required(runner, leg, approved)
     except Exception as exc:
-        _fail(operation, target, _detail(exc))
+        _fail(operation, leg, _detail(exc))
         return
     if missing:
         # The row stays pending and the card draws a field per credential it still needs; the
         # refresh is what tells the renderer to ask again.
-        target.required_env = missing
-        operation.refresh(target.name, connect_url=target.connect_url, actor=Actor.backend_watcher,
+        leg.required_env = missing
+        operation.refresh(leg.name, connect_url=leg.connect_url, actor=Actor.backend_watcher,
                           detail=f"waiting for {', '.join(str(spec['name']) for spec in missing)}")
         return
-    runner.approved_env[target.name] = approved
-    actor = _actor(target)
-    target.required_env = []  # the credentials are written by the install; the row stops asking
-    if not _move(operation, target, TargetState.initiated, actor, detail=""):
+    runner.approved_env[leg.name] = approved
+    actor = _actor(leg)
+    leg.required_env = []  # the credentials are written by the install; the row stops asking
+    if not _move(operation, leg, LegState.initiated, actor, detail=""):
         return
-    runner.spawn(operation, target, lambda: runner.backend.install(target.name, approved))
+    runner.spawn(operation, leg, lambda: runner.backend.install(leg.name, approved))
 
 
-def _do_enable(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
-    actor = _actor(target)
-    if not _move(operation, target, TargetState.initiated, actor, detail=""):
+def _do_enable(runner: _Runner, operation: ConnectionOperation, leg: Leg, env: Dict[str, str]) -> None:
+    actor = _actor(leg)
+    if not _move(operation, leg, LegState.initiated, actor, detail=""):
         return
     try:
-        runner.backend.enable(target.name)
+        runner.backend.enable(leg.name)
     except Exception as exc:
-        _fail(operation, target, _detail(exc))
+        _fail(operation, leg, _detail(exc))
         return
-    _connect(operation, target, [])
+    _connect(operation, leg, [])
 
 
-def _install_now(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+def _install_now(runner: _Runner, operation: ConnectionOperation, leg: Leg, env: Dict[str, str]) -> None:
     """Off the desktop nobody can fill a credential in, so a missing one is the answer."""
     try:
-        missing = [spec["name"] for spec in runner.backend.required_env(target.name) if spec.get("required", True)]
+        missing = [spec["name"] for spec in runner.backend.required_env(leg.name) if spec.get("required", True)]
     except Exception as exc:
-        _fail(operation, target, _detail(exc))
+        _fail(operation, leg, _detail(exc))
         return
     if missing:
         from hermes_constants import display_hermes_home
 
-        _fail(operation, target, f"set {', '.join(missing)} in the environment or "
+        _fail(operation, leg, f"set {', '.join(missing)} in the environment or "
                                  f"{display_hermes_home()}/.env, then install again")
         return
-    actor = _actor(target)
-    _move(operation, target, TargetState.initiated, actor)
+    actor = _actor(leg)
+    _move(operation, leg, LegState.initiated, actor)
     try:
-        tools = [str(name) for name in (runner.backend.install(target.name, {}) or [])]
+        tools = [str(name) for name in (runner.backend.install(leg.name, {}) or [])]
     except Exception as exc:
-        _fail(operation, target, _detail(exc))
+        _fail(operation, leg, _detail(exc))
         return
-    _connect(operation, target, tools)
+    _connect(operation, leg, tools)
 
 
-def _observe_oauth(runner: _Runner, operation: ConnectionOperation, target: Target) -> None:
-    work = runner.work.get(target.name)
+def _observe_oauth(runner: _Runner, operation: ConnectionOperation, leg: Leg) -> None:
+    work = runner.work.get(leg.name)
     if work is None or work.attempt is None:
         return
     snapshot = work.attempt.poll()
     status = snapshot.get("status")
     if status not in ("approved", "error"):
         return
-    runner.work.pop(target.name, None)
+    runner.work.pop(leg.name, None)
     if status == "approved":
-        _connect(operation, target, list(snapshot.get("tools") or []))
+        _connect(operation, leg, list(snapshot.get("tools") or []))
         return
-    _fail(operation, target, snapshot.get("error") or "the authorization flow failed")
+    _fail(operation, leg, snapshot.get("error") or "the authorization flow failed")
 
 
-def _observe_worker(runner: _Runner, operation: ConnectionOperation, target: Target) -> None:
-    work = runner.work.get(target.name)
+def _observe_worker(runner: _Runner, operation: ConnectionOperation, leg: Leg) -> None:
+    work = runner.work.get(leg.name)
     if work is None or not work.done.is_set():
         return
-    runner.work.pop(target.name, None)
+    runner.work.pop(leg.name, None)
     if work.error:
-        _fail(operation, target, work.error)
+        _fail(operation, leg, work.error)
         return
-    _connect(operation, target, work.tools)
+    _connect(operation, leg, work.tools)
 
 
-def _nothing(runner: _Runner, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+def _nothing(runner: _Runner, operation: ConnectionOperation, leg: Leg, env: Dict[str, str]) -> None:
     """Authorize needs no approval: the row's verb opens the link the flow already minted."""
 
 
@@ -454,11 +467,11 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
     if not isinstance(answer, dict):
         answer = {}
     runner = _RUNNERS.get(operation.op_id)
-    for entry in answer.get("targets") or ():
+    for entry in answer.get("legs") or ():
         if not isinstance(entry, dict):
             continue
-        target = operation.target(str(entry.get("name") or "").strip().lower())
-        if target is None:
+        leg = operation.leg(str(entry.get("name") or "").strip().lower())
+        if leg is None:
             continue
         status = str(entry.get("status") or "").lower()
         if status == "skipped":
@@ -466,18 +479,18 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
             # the answer still applies. A settled operation is frozen. The check and the move are
             # not one step, so the refusal itself is the witness, not a read taken before it.
             try:
-                operation.transition(target.name, TargetState.skipped, Actor.user)
+                operation.transition(leg.name, LegState.skipped, Actor.user)
             except IllegalTransition:
-                if not target.resolved and not operation.settled:
+                if not leg.resolved and not operation.settled:
                     raise
-        elif status == "approved" and runner is not None and target.state == TargetState.pending:
-            runner.run(_APPROVE, operation, target, _answer_env(entry))
+        elif status == "approved" and runner is not None and leg.state == LegState.pending:
+            runner.run(_APPROVE, operation, leg, _answer_env(entry))
     if answer.get("settled_by") == SettleReason.continue_.value and not operation.all_resolved:
         operation.settle(SettleReason.continue_)
 
 
 def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
-    """Re-run the named MCP targets on the open operation (the card's Try again): a fresh OAuth
+    """Re-run the named MCP legs on the open operation (the card's Try again): a fresh OAuth
     flow, a fresh install, a fresh enable. Returns an error message when the operation is not one
     this module is running."""
     runner = _RUNNERS.get(operation.op_id)
@@ -486,9 +499,9 @@ def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
     if operation.settled:
         return "this operation has settled; its result is frozen"
     for name in names:
-        target = operation.target(name)
-        if target is not None:
-            runner.run(_RETRY, operation, target)
+        leg = operation.leg(name)
+        if leg is not None:
+            runner.run(_RETRY, operation, leg)
     return None
 
 
@@ -506,11 +519,11 @@ class _DetachedOperation(ConnectionOperation):
 
 
 def _off_desktop_result(runner: _Runner, names: List[str], action: str, session_key: str) -> str:
-    operation = _DetachedOperation([Target(n, "mcp", action) for n in names], session_key=session_key)
-    for target in operation.targets:
-        runner.run(_OFF_DESKTOP, operation, target)
+    operation = _DetachedOperation([Leg(n, "mcp", action) for n in names], session_key=session_key)
+    for leg in operation.legs:
+        runner.run(_OFF_DESKTOP, operation, leg)
     payload = operation.result(with_urls=True)
-    payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
+    payload["status"] = "initiated" if any(t.state == LegState.initiated for t in operation.legs) else "settled"
     payload["note"] = OFF_DESKTOP_NOTE
     return json.dumps(payload, ensure_ascii=False)
 
@@ -537,8 +550,8 @@ def run_mcp_operation(
         return _off_desktop_result(runner, names, action, session_key)
     try:
         return run_operation(
-            [Target(n, "mcp", action) for n in names],
-            Kind(prepare=runner.prepare, observe=runner.observe, note=NOTE),
+            [Leg(n, "mcp", action) for n in names],
+            LegDriver(prepare=runner.prepare, observe=runner.observe, note=NOTE),
             session_key=session_key, tool_call_id=tool_call_id,
             connection_callback=connection_callback, with_urls_in_result=False,
         )

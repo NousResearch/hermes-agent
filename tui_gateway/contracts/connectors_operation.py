@@ -1,10 +1,10 @@
 """The connection operation (``manage_connections`` card): the request event that opens a card,
 the update frames that drive it, and the RPCs the card answers through.
 
-Shapes are typed from ``tools/connectors/operation.py`` (``Target.snapshot``,
+Shapes are typed from ``tools/connectors/operation.py`` (``Leg.snapshot``,
 ``ConnectionOperation.request_payload`` / ``_snapshot_locked``) and
 ``tui_gateway/methods_connectors.py`` (``_operation_view``, ``_connection_update``). The card is a
-projection: every frame carries the full target snapshot, and the renderer never derives state.
+projection: every frame carries the full leg snapshot, and the renderer never derives state.
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from .common import ConnectorOwner, ProfileParams
 from .registry import event, method
 
 
-class ConnectionTargetKind(WireEnum):
+class ConnectionLegKind(WireEnum):
     connector = "connector"
     mcp = "mcp"
 
 
-class ConnectionTargetAction(WireEnum):
+class ConnectionLegAction(WireEnum):
     authorize = "authorize"
     connect = "connect"
     enable = "enable"
@@ -29,8 +29,8 @@ class ConnectionTargetAction(WireEnum):
     reconnect = "reconnect"
 
 
-class ConnectionTargetState(WireEnum):
-    """``tools/connectors/contract.py::TargetState``."""
+class ConnectionLegState(WireEnum):
+    """``tools/connectors/contract.py::LegState``."""
 
     pending = "pending"
     initiated = "initiated"
@@ -60,30 +60,32 @@ class ConnectionSettleReason(WireEnum):
     unavailable = "unavailable"
 
 
-class ConnectionTargetEnvField(Payload):
+class ConnectionLegEnvField(Payload):
     """One credential an MCP install still needs; the card renders a field per entry and sends the
     values back with the approval."""
 
     name: str
     required: bool
     prompt: str | None = None
+    secret: bool
+    default: str | None = None
 
 
-class ConnectionOperationTarget(Payload):
-    """``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``
+class ConnectionLeg(Payload):
+    """``Leg.snapshot``: the link minted up front rides here, never in the model result. ``extra``
     keys a leg records (``tools``, ``hint``) are typed here as they appear."""
 
     name: str
-    kind: ConnectionTargetKind
-    action: ConnectionTargetAction
-    state: ConnectionTargetState
+    kind: ConnectionLegKind
+    action: ConnectionLegAction
+    state: ConnectionLegState
     detail: str | None = None
     connect_url: str | None = None
     # The vendor account a managed mint created or observed; never the desktop transport's id.
     connection_id: str | None = None
     attempt: str | None = None
     # Present only on an MCP install that is waiting for credentials.
-    required_env: list[ConnectionTargetEnvField] | None = None
+    required_env: list[ConnectionLegEnvField] | None = None
     tools: list[str] | None = None
     hint: str | None = None
 
@@ -98,7 +100,7 @@ class ConnectionRequestPayload(Payload):
     seq: int
     deadline_at: float
     timeout_seconds: float
-    targets: list[ConnectionOperationTarget]
+    legs: list[ConnectionLeg]
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: str | None = None
 
@@ -116,17 +118,17 @@ class ConnectionOperationStatus(Result):
     settled: bool
     settled_at: float | None = None
     settled_by: ConnectionSettleReason | None = None
-    targets: list[ConnectionOperationTarget]
+    legs: list[ConnectionLeg]
 
 
 class ConnectionUpdatePayload(ConnectionOperationStatus, Payload):
-    """``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/
+    """``methods_connectors._connection_update``: one leg transition (``leg``/``from``/``to``/
     ``actor``) or the settlement (none of those), with the full snapshot."""
 
     owner: ConnectorOwner
-    target: str | None = None
-    from_: ConnectionTargetState | None = Field(default=None, alias="from")  # ``from`` is a keyword
-    to: ConnectionTargetState | None = None
+    leg: str | None = None
+    from_: ConnectionLegState | None = Field(default=None, alias="from")  # ``from`` is a keyword
+    to: ConnectionLegState | None = None
     actor: ConnectionActor | None = None
     detail: str | None = None
 
@@ -152,13 +154,13 @@ method("connectors.operation.wake", params=ConnectionOperationParams, result=Con
 
 
 class ConnectionAnswerStatus(WireEnum):
-    """What the card says about one row: ``tools/connectors/mcp.py::apply_answer``."""
+    """What the card says about one row: ``tools/connectors/legs/mcp.py::apply_answer``."""
 
     approved = "approved"
     skipped = "skipped"
 
 
-class ConnectionAnswerTarget(Params):
+class ConnectionAnswerLeg(Params):
     """One row's answer from the card. ``env`` carries the credential values an install asked for
     through ``required_env``."""
 
@@ -169,10 +171,10 @@ class ConnectionAnswerTarget(Params):
 
 
 class ConnectionAnswer(Params):
-    """The card's answer: per-target outcomes and an optional Continue
-    (``settled_by: "continue"``). Settlement is derived from target states afterwards."""
+    """The card's answer: per-leg outcomes and an optional Continue
+    (``settled_by: "continue"``). Settlement is derived from leg states afterwards."""
 
-    targets: list[ConnectionAnswerTarget] = Field(default_factory=list)
+    legs: list[ConnectionAnswerLeg] = Field(default_factory=list)
     settled_by: ConnectionSettleReason | None = None
 
 
@@ -186,4 +188,4 @@ class ConnectionRespondResult(Result):
 
 
 method("connection.respond", params=ConnectionRespondParams, result=ConnectionRespondResult,
-       doc="Per-target outcomes from the card, and an optional Continue.")
+       doc="Per-leg outcomes from the card, and an optional Continue.")

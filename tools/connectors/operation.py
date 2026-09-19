@@ -8,7 +8,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from tools.connectors.contract import RESOLVED_STATES, Actor, SettleReason, TargetState, allowed
+from tools.connectors.contract import RESOLVED_STATES, Actor, LegState, SettleReason, allowed
+from tools.operations import Owner
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
 OPERATION_DEADLINE_SECONDS = 300.0
@@ -19,11 +20,11 @@ class IllegalTransition(ValueError):
 
 
 @dataclass
-class Target:
+class Leg:
     name: str
     kind: str
     action: str
-    state: TargetState = TargetState.pending
+    state: LegState = LegState.pending
     detail: str = ""
     connect_url: Optional[str] = None
     # The vendor account a managed mint created or observed. Not the desktop transport's connection id.
@@ -36,7 +37,7 @@ class Target:
     # The credentials an MCP install still needs ({name, prompt, required}); the card draws a
     # field per entry and holds its verb until every required one has text.
     required_env: List[Dict[str, Any]] = field(default_factory=list)
-    # Fields a transition passes through to the model (``tools`` on a connected MCP target).
+    # Fields a transition passes through to the model (``tools`` on a connected MCP leg).
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -66,17 +67,17 @@ class ConnectionOperation:
         Optional[Callable[["ConnectionOperation", Optional[Dict[str, Any]], Dict[str, Any]], None]]
     ] = None
 
-    targets: List[Target]
+    legs: List[Leg]
     session_key: str = ""
-    # Stamped by ``live.open``: the profile home the operation was opened under.
-    profile_key: str = ""
+    # Stamped by ``operations.open`` from the opening thread's profile unless the caller names one.
+    owner: Optional[Owner] = None
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: Optional[str] = None
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
     deadline_at: float = 0.0
     settled_at: Optional[float] = None
-    settled_by: Optional[SettleReason] = None
+    _settled_by: Optional[SettleReason] = field(default=None, repr=False)
     # Monotonic write counter. Every frame carries the seq of the snapshot it was built from, so a
     # renderer that keeps the highest seq per op can drop a frame that arrives after a newer one.
     seq: int = 0
@@ -89,54 +90,57 @@ class ConnectionOperation:
         if not self.deadline_at:
             self.deadline_at = self.created_at + OPERATION_DEADLINE_SECONDS
 
-    def target(self, name: str) -> Optional[Target]:
-        return next((t for t in self.targets if t.name == name), None)
+    @property
+    def key(self) -> str:
+        return self.session_key
+
+    def leg(self, name: str) -> Optional[Leg]:
+        return next((leg for leg in self.legs if leg.name == name), None)
 
     def transition(
-        self, name: str, to: TargetState, actor: Actor, *, detail: Optional[str] = None,
+        self, name: str, to: LegState, actor: Actor, *, detail: Optional[str] = None,
         connect_url: Optional[str] = None, connection_id: Optional[str] = None, attempt: Optional[str] = None,
         **extra: Any,
     ) -> Optional[Dict[str, Any]]:
-        """Move one target; the contract decides whether ``actor`` may. Returns the change, or None
-        when the target is already in ``to``. Allowed after settlement: the frozen result stays."""
-        target = self.target(name)
-        if target is None:
-            raise IllegalTransition(f"unknown target {name!r}")
+        """Move one leg when the contract permits ``actor`` to do so."""
+        leg = self.leg(name)
+        if leg is None:
+            raise IllegalTransition(f"unknown leg {name!r}")
         with self._lock:
-            if target.state == to:
+            if leg.state == to:
                 return None
-            if allowed(target.kind, target.state, to) != actor:
-                raise IllegalTransition(f"{target.kind} {name}: {target.state.value} -> {to.value} by {actor.value}")
-            change = {"target": name, "from": target.state.value, "to": to.value, "actor": actor.value}
-            target.state = to
+            if allowed(leg.kind, leg.state, to) != actor:
+                raise IllegalTransition(f"{leg.kind} {name}: {leg.state.value} -> {to.value} by {actor.value}")
+            change = {"leg": name, "from": leg.state.value, "to": to.value, "actor": actor.value}
+            leg.state = to
             if detail is not None:
-                target.detail = detail
-            change["detail"] = target.detail
+                leg.detail = detail
+            change["detail"] = leg.detail
             if connect_url is not None:
-                target.connect_url = connect_url
+                leg.connect_url = connect_url
             if connection_id is not None:
-                target.connection_id = connection_id
+                leg.connection_id = connection_id
             if attempt is not None:
-                target.attempt = attempt
+                leg.attempt = attempt
             if extra:
-                target.extra = dict(extra)
+                leg.extra = dict(extra)
             snapshot = self._bump_locked()
         self.wake.set()
         self._changed(change, snapshot)
         return change
 
     def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user) -> None:
-        """Replace a target's link and detail without a state change (a repeated failure).
+        """Replace a leg's link and detail without a state change.
 
         ``actor`` says who produced the new text: a second failure of a backend attempt is the
         backend's report, not the user's move, and the frame must not claim otherwise."""
-        target = self.target(name)
-        if target is None:
-            raise IllegalTransition(f"unknown target {name!r}")
+        leg = self.leg(name)
+        if leg is None:
+            raise IllegalTransition(f"unknown leg {name!r}")
         with self._lock:
-            target.connect_url = connect_url
-            target.detail = detail
-            change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": actor.value,
+            leg.connect_url = connect_url
+            leg.detail = detail
+            change = {"leg": name, "from": leg.state.value, "to": leg.state.value, "actor": actor.value,
                       "detail": detail}
             snapshot = self._bump_locked()
         self.wake.set()
@@ -160,25 +164,33 @@ class ConnectionOperation:
 
     @property
     def all_resolved(self) -> bool:
-        return bool(self.targets) and all(t.resolved for t in self.targets)
+        return bool(self.legs) and all(leg.resolved for leg in self.legs)
 
     @property
     def settled(self) -> bool:
         return self.settled_at is not None
 
+    @property
+    def settled_by(self) -> Optional[str]:
+        return self._settled_by.value if self._settled_by else None
+
+    @property
+    def settle_reason(self) -> Optional[SettleReason]:
+        return self._settled_by
+
     def remaining_seconds(self, now: Optional[float] = None) -> float:
         return max(0.0, self.deadline_at - (time.time() if now is None else now))
 
-    def settle(self, by: SettleReason, now: Optional[float] = None) -> bool:
+    def settle(self, by: SettleReason | str, now: Optional[float] = None) -> bool:
         """Compare-and-set: the first caller freezes the result."""
         with self._lock:
             if self.settled_at is not None:
                 return False
             self.settled_at = time.time() if now is None else now
-            self.settled_by = by
-            for target in self.targets:
-                if not target.resolved:
-                    target.state = TargetState.not_connected
+            self._settled_by = SettleReason(by)
+            for leg in self.legs:
+                if not leg.resolved:
+                    leg.state = LegState.not_connected
             self._settled_snapshot = self._bump_locked()
         self.wake.set()
         self._changed(None, self._settled_snapshot)
@@ -193,17 +205,17 @@ class ConnectionOperation:
             "seq": self.seq,
             "deadline_at": self.deadline_at,
             "settled_at": self.settled_at,
-            "settled_by": self.settled_by.value if self.settled_by else None,
-            "targets": [t.snapshot(with_url=with_urls) for t in self.targets],
+            "settled_by": self.settled_by,
+            "legs": [leg.snapshot(with_url=with_urls) for leg in self.legs],
         }
 
     def _result_locked(self, *, with_urls: bool = True) -> Dict[str, Any]:
         if self._settled_snapshot is not None:
-            targets = [dict(t) for t in self._settled_snapshot["targets"]]
+            legs = [dict(leg) for leg in self._settled_snapshot["legs"]]
             if not with_urls:
-                for t in targets:
-                    t.pop("connect_url", None)
-            return dict(self._settled_snapshot, targets=targets)
+                for leg in legs:
+                    leg.pop("connect_url", None)
+            return dict(self._settled_snapshot, legs=legs)
         return self._snapshot_locked(with_urls=with_urls)
 
     def result(self, *, with_urls: bool = True) -> Dict[str, Any]:
@@ -212,18 +224,20 @@ class ConnectionOperation:
             return self._result_locked(with_urls=with_urls)
 
     def request_payload(self) -> Dict[str, Any]:
-        """The ``connection.request`` payload and the resume snapshot: identity, live target snapshots
-        (links included, the panel owns them), server-owned deadline."""
+        """Return the ``connection.request`` payload and resume snapshot."""
         with self._lock:
-            targets = [t.snapshot() for t in self.targets]
+            legs = [leg.snapshot() for leg in self.legs]
             seq = self.seq
         payload: Dict[str, Any] = {
             "op_id": self.op_id,
             "seq": seq,
             "deadline_at": self.deadline_at,
             "timeout_seconds": OPERATION_DEADLINE_SECONDS,
-            "targets": targets,
+            "legs": legs,
         }
         if self.tool_call_id:
             payload["tool_call_id"] = self.tool_call_id
         return payload
+
+    def snapshot(self) -> Dict[str, Any]:
+        return self.request_payload()

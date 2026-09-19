@@ -62,7 +62,7 @@ def test_connect_off_desktop_returns_a_link_per_target():
             client_factory=lambda: client,
         )
     )
-    assert out["targets"][0]["connect_url"] == "https://connect.example/gmail"
+    assert out["legs"][0]["connect_url"] == "https://connect.example/gmail"
     assert out["status"] == "initiated"
     assert client.calls == [("connections", ("gmail",), False)]
 
@@ -116,9 +116,7 @@ def test_gateway_failure_is_a_model_actionable_error():
     assert "connector gateway request failed" in out["error"]
 
 
-def test_mcp_actions_belong_to_mcp_targets_only():
-    # The MCP verbs are in the enum for mcp:true targets only. The callback that an earlier
-    # fold could not reach through registry.dispatch now arrives via the inline executor.
+def test_mcp_actions_belong_to_mcp_legs_only():
     enum = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]["action"]["enum"]
     assert {"install", "enable", "authorize"} <= set(enum)
 

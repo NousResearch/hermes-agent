@@ -86,7 +86,7 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` (under a non-local `terminal.backend`, `complete.path` lists the directory through the session's terminal backend — never the gateway host, whose same-named tree would look right and be wrong) |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
 | Plugin compat notice | — | `plugins.compat_report` (see `plugins/AGENTS.md`) |
-| Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
+| Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op is registered in `tools/operations` (`Owner(profile, session_key)`); the card never parks the tool thread (`methods_connectors.py`). |
 
 ## Shared subagent snapshots
 

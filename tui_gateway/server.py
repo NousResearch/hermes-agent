@@ -728,12 +728,14 @@ def _open_requests(sid: str) -> list[dict]:
 def _pending_connection_request_payload(sid: str) -> dict | None:
     """The open connection operation on *sid* as its ``connection.request`` payload, so a client
     that missed the event (or restarted) restores the card with the server's deadline."""
-    from tools.connectors import live
+    from tools.operations import Owner, operations
 
     session = _sessions.get(sid)
-    operation = (live.current(str(session.get("session_key") or ""), profile_home=session.get("profile_home"))
-                 if session else None)
-    return operation.request_payload() if operation is not None else None
+    if session is None:
+        return None
+    owner = Owner.of(str(session.get("session_key") or ""), profile_home=session.get("profile_home"))
+    ops = operations.current(owner)
+    return ops[0].snapshot() if ops else None
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:

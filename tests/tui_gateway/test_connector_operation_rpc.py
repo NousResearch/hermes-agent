@@ -2,9 +2,9 @@
 
 - ``connectors.operation.status`` reads the live operation with the same ownership checks as
   ``connectors.list`` (4000 / 4001); ``deadline_at`` is the server's, never recomputed
-- ``connection.respond`` finds the op by ``op_id`` and drives target transitions; a foreign
+- ``connection.respond`` finds the op by ``op_id`` and drives leg transitions; a foreign
   transport cannot
-- every target transition and the settlement emit ``connection.update`` to the session
+- every leg transition and the settlement emit ``connection.update`` to the session
 - ``pending_connection`` on resume comes from the live registry
 """
 
@@ -16,9 +16,10 @@ from contextlib import ExitStack, suppress
 
 import pytest
 
-from tools.connectors import live, mcp
-from tools.connectors.contract import Actor, TargetState
-from tools.connectors.operation import ConnectionOperation, Target
+from tools.connectors.legs import mcp
+from tools.operations import Owner, operations
+from tools.connectors.contract import Actor, LegState
+from tools.connectors.operation import ConnectionOperation, Leg
 from tui_gateway import server
 from tui_gateway.transport import StdioTransport
 
@@ -59,7 +60,7 @@ SID = "op-rpc-session"
 
 @pytest.fixture
 def owned(monkeypatch):
-    live.reset_for_tests()
+    operations.reset_for_tests()
     with ExitStack() as stack:
         owner, stranger = PipeClient(stack), PipeClient(stack)
         session = dict(transport=owner.transport, agent=None, session_key=SID, history=[],
@@ -67,7 +68,7 @@ def owned(monkeypatch):
                        source="desktop")
         monkeypatch.setitem(server._sessions, SID, session)
         yield owner, stranger, session
-    live.reset_for_tests()
+    operations.reset_for_tests()
 
 
 def _rpc(client, method, **params):
@@ -89,22 +90,22 @@ def _connect_rpc(client, **params):
 
 
 def _open_op():
-    operation = ConnectionOperation([Target("gmail", "connector", "connect"), Target("notion", "connector", "connect")],
+    operation = ConnectionOperation([Leg("gmail", "connector", "connect"), Leg("notion", "connector", "connect")],
                                     session_key=SID)
-    live.open(operation)
+    operations.open(operation)
     return operation
 
 
 def test_operation_status_returns_the_live_snapshot_with_the_server_deadline(owned):
     owner, _, _ = owned
     operation = _open_op()
-    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/gmail")
+    operation.transition("gmail", LegState.initiated, Actor.backend_watcher, connect_url="https://l/gmail")
     reply = _rpc(owner, "connectors.operation.status", op_id=operation.op_id)
     result = reply["result"]
     assert result["op_id"] == operation.op_id
     assert result["deadline_at"] == operation.deadline_at
     assert result["settled"] is False and result["settled_by"] is None
-    by = {t["name"]: t for t in result["targets"]}
+    by = {t["name"]: t for t in result["legs"]}
     assert by["gmail"]["state"] == "initiated" and by["gmail"]["connect_url"] == "https://l/gmail"
     assert by["notion"]["state"] == "pending"
 
@@ -120,19 +121,19 @@ def test_operation_status_is_owner_only_and_validates_params(owned):
 def test_respond_drives_the_live_operation_and_emits_update(owned):
     owner, stranger, _ = owned
     operation = _open_op()
-    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
+    operation.transition("gmail", LegState.initiated, Actor.backend_watcher)
     foreign = _rpc(stranger, "connection.respond", op_id=operation.op_id,
-                   result={"targets": [{"name": "notion", "status": "skipped"}]})
+                   result={"legs": [{"name": "notion", "status": "skipped"}]})
     assert foreign["error"]["code"] == 4001
-    assert operation.target("notion").state == TargetState.pending
+    assert operation.leg("notion").state == LegState.pending
 
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                 result={"targets": [{"name": "notion", "status": "skipped"}]})
+                 result={"legs": [{"name": "notion", "status": "skipped"}]})
     assert "result" in reply, reply
-    assert operation.target("notion").state == TargetState.skipped
+    assert operation.leg("notion").state == LegState.skipped
     assert operation.wake.is_set()
     updates = owner.events("connection.update", expect=2)
-    assert updates and updates[-1]["payload"]["target"] == "notion"
+    assert updates and updates[-1]["payload"]["leg"] == "notion"
     assert updates[-1]["payload"]["to"] == "skipped" and updates[-1]["payload"]["actor"] == "user"
     assert updates[-1]["payload"]["op_id"] == operation.op_id
 
@@ -153,17 +154,17 @@ def test_respond_applies_the_answer_under_the_session_s_profile(owned, monkeypat
         (path / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {"paper": {"command": "paper-mcp", "enabled": False}}}))
     session["profile_home"] = str(profile)
 
-    operation = ConnectionOperation([Target("paper", "mcp", "enable")], session_key=SID)
+    operation = ConnectionOperation([Leg("paper", "mcp", "enable")], session_key=SID)
     token = set_hermes_home_override(profile)
     try:
-        live.open(operation)  # the tool thread opens it under the turn's profile
+        operations.open(operation)  # the tool thread opens it under the turn's profile
     finally:
         reset_hermes_home_override(token)
     runner = mcp.open_runner("enable")  # the real catalog backend: the write is the point
     runner.prepare(operation)
     try:
         reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                     result={"targets": [{"name": "paper", "status": "approved"}]})
+                     result={"legs": [{"name": "paper", "status": "approved"}]})
     finally:
         runner.close()
 
@@ -172,18 +173,18 @@ def test_respond_applies_the_answer_under_the_session_s_profile(owned, monkeypat
     assert yaml.safe_load((home / "config.yaml").read_text())["mcp_servers"]["paper"]["enabled"] is False
 
 
-def test_respond_cannot_claim_an_outcome_for_any_target(owned):
+def test_respond_cannot_claim_an_outcome_for_any_leg(owned):
     """The card renders the operation; only skip, approve and Continue are its to say. The contract
     refuses any other claim (4002) before it reaches the operation."""
     owner, _, _ = owned
     operation = _open_op()
-    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
+    operation.transition("gmail", LegState.initiated, Actor.backend_watcher)
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                 result={"targets": [{"name": "gmail", "status": "connected"},
+                 result={"legs": [{"name": "gmail", "status": "connected"},
                                      {"name": "notion", "status": "failed"}]})
     assert reply["error"]["code"] == 4002, reply
-    assert operation.target("gmail").state == TargetState.initiated
-    assert operation.target("notion").state == TargetState.pending
+    assert operation.leg("gmail").state == LegState.initiated
+    assert operation.leg("notion").state == LegState.pending
 
 
 def test_respond_continue_settles_and_emits_the_settlement_update(owned):
@@ -191,7 +192,7 @@ def test_respond_continue_settles_and_emits_the_settlement_update(owned):
     operation = _open_op()
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id, result={"settled_by": "continue"})
     assert "result" in reply
-    assert operation.settled and operation.settled_by.value == "continue"
+    assert operation.settled and operation.settled_by == "continue"
     settled = [u for u in owner.events("connection.update") if u["payload"].get("settled")]
     assert settled and settled[-1]["payload"]["settled_by"] == "continue"
 
@@ -201,18 +202,18 @@ def test_pending_connection_on_resume_comes_from_the_live_registry(owned):
     payload = server._pending_connection_request_payload(SID)
     assert payload["op_id"] == operation.op_id
     assert payload["deadline_at"] == operation.deadline_at
-    live.close(operation)
+    operations.close(operation)
     assert server._pending_connection_request_payload(SID) is None
 
 
 def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
-    """Try again re-mints a failed or expired target; a waiting target keeps the link it was minted
+    """Try again re-mints a failed or expired leg; a waiting leg keeps the link it was minted
     with (the card reopens it), so the RPC refuses rather than spend a second mint."""
     owner, _, _ = owned
     operation = _open_op()
-    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/gmail/1")
-    operation.transition("notion", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
-    operation.transition("notion", TargetState.failed, Actor.backend_watcher, detail="vendor: nope")
+    operation.transition("gmail", LegState.initiated, Actor.backend_watcher, connect_url="https://l/gmail/1")
+    operation.transition("notion", LegState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
+    operation.transition("notion", LegState.failed, Actor.backend_watcher, detail="vendor: nope")
     mints = []
 
     class Client:
@@ -227,22 +228,22 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
 
     refused = _connect_rpc(owner, connectors=["gmail"])
     assert refused["error"]["code"] == 4002 and mints == []
-    assert operation.target("gmail").connect_url == "https://l/gmail/1"
+    assert operation.leg("gmail").connect_url == "https://l/gmail/1"
 
     reply = _connect_rpc(owner, connectors=["notion"])
     assert "result" in reply, reply
     assert mints == [(("notion",), True)]
-    assert operation.target("notion").state == TargetState.initiated
-    assert operation.target("notion").connect_url == "https://l/notion/2"
+    assert operation.leg("notion").state == LegState.initiated
+    assert operation.leg("notion").connect_url == "https://l/notion/2"
 
 
-@pytest.mark.parametrize("dead", [TargetState.failed, TargetState.expired])
+@pytest.mark.parametrize("dead", [LegState.failed, LegState.expired])
 def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch, dead):
     """Try again whose mint fails must not show the row as waiting on the old dead link."""
     owner, _, _ = owned
     operation = _open_op()
-    operation.transition("notion", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
-    actor = Actor.clock if dead == TargetState.expired else Actor.backend_watcher
+    operation.transition("notion", LegState.initiated, Actor.backend_watcher, connect_url="https://l/notion/1")
+    actor = Actor.clock if dead == LegState.expired else Actor.backend_watcher
     operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
@@ -258,8 +259,8 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     deadline = time.time() + 2
     while time.time() < deadline and not [f for f in list(owner.frames)[before:] if f.get("id") == 7]:
         time.sleep(0.01)
-    target = operation.target("notion")
-    assert target.state == TargetState.failed
+    target = operation.leg("notion")
+    assert target.state == LegState.failed
     assert target.connect_url is None
     assert target.detail == "vendor: still no"
 
@@ -274,7 +275,7 @@ class FakeOAuthAttempt:
 
 
 class FakeMcpBackend:
-    """The MCP work behind an authorize target; the managed gateway has no part in it."""
+    """The MCP work behind an authorize leg; the managed gateway has no part in it."""
 
     def __init__(self):
         self.starts = []
@@ -284,18 +285,18 @@ class FakeMcpBackend:
         return FakeOAuthAttempt(f"https://auth.example/{name}/{len(self.starts)}")
 
 
-def test_try_again_on_an_mcp_target_re_runs_its_flow_and_never_calls_the_managed_gateway(owned, monkeypatch):
+def test_try_again_on_an_mcp_leg_re_runs_its_flow_and_never_calls_the_managed_gateway(owned, monkeypatch):
     owner, _, _ = owned
-    operation = ConnectionOperation([Target("linear", "mcp", "authorize")], session_key=SID)
-    live.open(operation)
+    operation = ConnectionOperation([Leg("linear", "mcp", "authorize")], session_key=SID)
+    operations.open(operation)
     backend = FakeMcpBackend()
     runner = mcp.open_runner("authorize", backend)
     runner.prepare(operation)  # the first flow: the row waits on the link it minted
-    operation.transition("linear", TargetState.failed, Actor.backend_watcher, detail="the provider timed out")
+    operation.transition("linear", LegState.failed, Actor.backend_watcher, detail="the provider timed out")
 
     class Forbidden:
         def __init__(self):
-            raise AssertionError("an MCP target must never reach the managed gateway")
+            raise AssertionError("an MCP leg must never reach the managed gateway")
 
     monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Forbidden)
     monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
@@ -304,23 +305,23 @@ def test_try_again_on_an_mcp_target_re_runs_its_flow_and_never_calls_the_managed
     reply = _connect_rpc(owner, connectors=["linear"], reconnect=True)
     assert "result" in reply, reply
     assert backend.starts == ["linear", "linear"]
-    target = operation.target("linear")
-    assert target.state == TargetState.initiated
+    target = operation.leg("linear")
+    assert target.state == LegState.initiated
     assert target.connect_url == "https://auth.example/linear/2"
     assert target.detail == ""
     runner.close()
 
 
-def test_try_again_refuses_an_mcp_target_the_contract_cannot_run_again(owned, monkeypatch):
-    """Only a state the transition table can leave may be run again. An MCP target has no move out
+def test_try_again_refuses_an_mcp_leg_the_contract_cannot_run_again(owned, monkeypatch):
+    """Only a state the transition table can leave may be run again. An MCP leg has no move out
     of ``expired``, so Try again on one is refused instead of dropping a flow that goes nowhere."""
     owner, _, _ = owned
-    operation = ConnectionOperation([Target("linear", "mcp", "authorize")], session_key=SID)
-    live.open(operation)
+    operation = ConnectionOperation([Leg("linear", "mcp", "authorize")], session_key=SID)
+    operations.open(operation)
     backend = FakeMcpBackend()
     runner = mcp.open_runner("authorize", backend)
     runner.prepare(operation)
-    operation.target("linear").state = TargetState.expired
+    operation.leg("linear").state = LegState.expired
 
     monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
     monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
@@ -333,14 +334,14 @@ def test_try_again_refuses_an_mcp_target_the_contract_cannot_run_again(owned, mo
 
 
 def test_try_again_refuses_an_operation_that_settled_during_the_call(owned):
-    """Continue can settle the operation between the target read and the re-run; the result is
+    """Continue can settle the operation between the leg read and the re-run; the result is
     already frozen, so the re-run would spend a flow nothing can report."""
-    operation = ConnectionOperation([Target("linear", "mcp", "authorize")], session_key=SID)
-    live.open(operation)
+    operation = ConnectionOperation([Leg("linear", "mcp", "authorize")], session_key=SID)
+    operations.open(operation)
     backend = FakeMcpBackend()
     runner = mcp.open_runner("authorize", backend)
     runner.prepare(operation)
-    operation.transition("linear", TargetState.failed, Actor.backend_watcher, detail="the provider timed out")
+    operation.transition("linear", LegState.failed, Actor.backend_watcher, detail="the provider timed out")
     operation.settled_at = time.time()
 
     reply = server._reissue(7, operation, {"connectors": ["linear"]})
@@ -360,8 +361,8 @@ def test_every_connection_frame_carries_a_rising_seq(owned):
     status reply is never behind the last frame it sent."""
     owner, _, _ = owned
     operation = _open_op()
-    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
-    operation.transition("gmail", TargetState.connected, Actor.backend_watcher)
+    operation.transition("gmail", LegState.initiated, Actor.backend_watcher)
+    operation.transition("gmail", LegState.connected, Actor.backend_watcher)
     seqs = [update["payload"]["seq"] for update in owner.events("connection.update", expect=2)]
     assert len(seqs) == len(set(seqs)) and seqs == sorted(seqs)
     status = _rpc(owner, "connectors.operation.status", op_id=operation.op_id)["result"]
@@ -382,22 +383,22 @@ def test_wake_is_owner_only_and_names_a_live_operation(owned):
 def test_a_wake_makes_the_watch_loop_read_before_its_next_tick(owned):
     """The browser came back from the vendor's done page: read the account now, not a tick from now."""
     from tools.connectors.contract import SettleReason
-    from tools.connectors.run import Kind, run_operation
+    from tools.connectors.run import LegDriver, run_operation
 
     owner, _, _ = owned
     read = threading.Event()
     finished = threading.Event()
 
     def run():
-        run_operation([Target("gmail", "connector", "connect")],
-                      Kind(prepare=lambda operation: None, observe=lambda operation: read.set(), note=""),
+        run_operation([Leg("gmail", "connector", "connect")],
+                      LegDriver(prepare=lambda operation: None, observe=lambda operation: read.set(), note=""),
                       session_key=SID, tool_call_id=None, connection_callback=None,
                       tick_seconds=30.0, with_urls_in_result=False)
         finished.set()
 
     threading.Thread(target=run, daemon=True).start()
     assert read.wait(2), "the loop reads once before it sleeps"
-    operation = live.current(SID)
+    operation = next(iter(operations.current(Owner.of(SID))), None)
     read.clear()
 
     assert _rpc(owner, "connectors.operation.wake", op_id=operation.op_id)["result"] == {"status": "ok"}

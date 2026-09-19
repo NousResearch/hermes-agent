@@ -24,7 +24,7 @@ const REQUEST: ConnectionRequest = {
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
-  targets: [
+  legs: [
     {
       action: 'connect',
       connectUrl: 'https://connect.example/gmail',

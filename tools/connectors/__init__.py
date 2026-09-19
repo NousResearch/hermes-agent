@@ -2,8 +2,8 @@
 
 Only the names below are cross-package surface; imports beyond it need a design decision.
 Siblings: ``contract`` (states, actors, transition table), ``operation`` (the record),
-``live`` (open operation per session), ``run`` (the lifecycle loop), ``managed`` / ``mcp``
-(per-kind hooks), ``targets``, ``search``, ``dispatch``, ``gateway/`` (HTTP wire + client).
+``run`` (the lifecycle loop), ``legs.managed`` / ``legs.mcp``
+(per-leg hooks), ``legs.normalize``, ``search``, ``dispatch``, ``gateway/`` (HTTP wire + client).
 """
 
 from tools.connectors.dispatch import dispatch_connector_batch, dispatch_connector_call

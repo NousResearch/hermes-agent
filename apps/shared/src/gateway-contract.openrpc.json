@@ -548,7 +548,7 @@
     },
     {
       "name": "connection.respond",
-      "summary": "Per-target outcomes from the card, and an optional Continue.",
+      "summary": "Per-leg outcomes from the card, and an optional Continue.",
       "params": [
         {
           "name": "params",
@@ -8457,13 +8457,13 @@
       },
       "ConnectionAnswer": {
         "additionalProperties": false,
-        "description": "The card's answer: per-target outcomes and an optional Continue\n(``settled_by: \"continue\"``). Settlement is derived from target states afterwards.",
+        "description": "The card's answer: per-leg outcomes and an optional Continue\n(``settled_by: \"continue\"``). Settlement is derived from leg states afterwards.",
         "properties": {
-          "targets": {
+          "legs": {
             "items": {
-              "$ref": "#/components/schemas/ConnectionAnswerTarget"
+              "$ref": "#/components/schemas/ConnectionAnswerLeg"
             },
-            "title": "Targets",
+            "title": "Legs",
             "type": "array"
           },
           "settled_by": {
@@ -8481,16 +8481,7 @@
         "title": "ConnectionAnswer",
         "type": "object"
       },
-      "ConnectionAnswerStatus": {
-        "description": "What the card says about one row: ``tools/connectors/mcp.py::apply_answer``.",
-        "enum": [
-          "approved",
-          "skipped"
-        ],
-        "title": "ConnectionAnswerStatus",
-        "type": "string"
-      },
-      "ConnectionAnswerTarget": {
+      "ConnectionAnswerLeg": {
         "additionalProperties": false,
         "description": "One row's answer from the card. ``env`` carries the credential values an install asked for\nthrough ``required_env``.",
         "properties": {
@@ -8533,8 +8524,217 @@
           "name",
           "status"
         ],
-        "title": "ConnectionAnswerTarget",
+        "title": "ConnectionAnswerLeg",
         "type": "object"
+      },
+      "ConnectionAnswerStatus": {
+        "description": "What the card says about one row: ``tools/connectors/legs/mcp.py::apply_answer``.",
+        "enum": [
+          "approved",
+          "skipped"
+        ],
+        "title": "ConnectionAnswerStatus",
+        "type": "string"
+      },
+      "ConnectionLeg": {
+        "additionalProperties": false,
+        "description": "``Leg.snapshot``: the link minted up front rides here, never in the model result. ``extra``\nkeys a leg records (``tools``, ``hint``) are typed here as they appear.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionLegKind"
+          },
+          "action": {
+            "$ref": "#/components/schemas/ConnectionLegAction"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ConnectionLegState"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "connect_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connect Url"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
+          },
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attempt"
+          },
+          "required_env": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConnectionLegEnvField"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Required Env"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hint"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "action",
+          "state"
+        ],
+        "title": "ConnectionLeg",
+        "type": "object"
+      },
+      "ConnectionLegAction": {
+        "enum": [
+          "authorize",
+          "connect",
+          "enable",
+          "install",
+          "reconnect"
+        ],
+        "title": "ConnectionLegAction",
+        "type": "string"
+      },
+      "ConnectionLegEnvField": {
+        "additionalProperties": false,
+        "description": "One credential an MCP install still needs; the card renders a field per entry and sends the\nvalues back with the approval.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "boolean"
+          },
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default"
+          }
+        },
+        "required": [
+          "name",
+          "required",
+          "secret"
+        ],
+        "title": "ConnectionLegEnvField",
+        "type": "object"
+      },
+      "ConnectionLegKind": {
+        "enum": [
+          "connector",
+          "mcp"
+        ],
+        "title": "ConnectionLegKind",
+        "type": "string"
+      },
+      "ConnectionLegState": {
+        "description": "``tools/connectors/contract.py::LegState``.",
+        "enum": [
+          "pending",
+          "initiated",
+          "connected",
+          "skipped",
+          "failed",
+          "expired",
+          "unavailable",
+          "not_connected"
+        ],
+        "title": "ConnectionLegState",
+        "type": "string"
       },
       "ConnectionOperationParams": {
         "additionalProperties": false,
@@ -8624,11 +8824,11 @@
             ],
             "default": null
           },
-          "targets": {
+          "legs": {
             "items": {
-              "$ref": "#/components/schemas/ConnectionOperationTarget"
+              "$ref": "#/components/schemas/ConnectionLeg"
             },
-            "title": "Targets",
+            "title": "Legs",
             "type": "array"
           }
         },
@@ -8637,126 +8837,9 @@
           "seq",
           "deadline_at",
           "settled",
-          "targets"
+          "legs"
         ],
         "title": "ConnectionOperationStatus",
-        "type": "object"
-      },
-      "ConnectionOperationTarget": {
-        "additionalProperties": false,
-        "description": "``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``\nkeys a leg records (``tools``, ``hint``) are typed here as they appear.",
-        "properties": {
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/ConnectionTargetKind"
-          },
-          "action": {
-            "$ref": "#/components/schemas/ConnectionTargetAction"
-          },
-          "state": {
-            "$ref": "#/components/schemas/ConnectionTargetState"
-          },
-          "detail": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Detail"
-          },
-          "connect_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Connect Url"
-          },
-          "connection_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Connection Id"
-          },
-          "attempt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Attempt"
-          },
-          "required_env": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/ConnectionTargetEnvField"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Required Env"
-          },
-          "tools": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tools"
-          },
-          "hint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Hint"
-          }
-        },
-        "required": [
-          "name",
-          "kind",
-          "action",
-          "state"
-        ],
-        "title": "ConnectionOperationTarget",
         "type": "object"
       },
       "ConnectionRequestPayload": {
@@ -8779,11 +8862,11 @@
             "title": "Timeout Seconds",
             "type": "number"
           },
-          "targets": {
+          "legs": {
             "items": {
-              "$ref": "#/components/schemas/ConnectionOperationTarget"
+              "$ref": "#/components/schemas/ConnectionLeg"
             },
-            "title": "Targets",
+            "title": "Legs",
             "type": "array"
           },
           "tool_call_id": {
@@ -8804,7 +8887,7 @@
           "seq",
           "deadline_at",
           "timeout_seconds",
-          "targets"
+          "legs"
         ],
         "title": "ConnectionRequestPayload",
         "type": "object"
@@ -8889,75 +8972,9 @@
         "title": "ConnectionSettleReason",
         "type": "string"
       },
-      "ConnectionTargetAction": {
-        "enum": [
-          "authorize",
-          "connect",
-          "enable",
-          "install",
-          "reconnect"
-        ],
-        "title": "ConnectionTargetAction",
-        "type": "string"
-      },
-      "ConnectionTargetEnvField": {
-        "additionalProperties": false,
-        "description": "One credential an MCP install still needs; the card renders a field per entry and sends the\nvalues back with the approval.",
-        "properties": {
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "required": {
-            "title": "Required",
-            "type": "boolean"
-          },
-          "prompt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Prompt"
-          }
-        },
-        "required": [
-          "name",
-          "required"
-        ],
-        "title": "ConnectionTargetEnvField",
-        "type": "object"
-      },
-      "ConnectionTargetKind": {
-        "enum": [
-          "connector",
-          "mcp"
-        ],
-        "title": "ConnectionTargetKind",
-        "type": "string"
-      },
-      "ConnectionTargetState": {
-        "description": "``tools/connectors/contract.py::TargetState``.",
-        "enum": [
-          "pending",
-          "initiated",
-          "connected",
-          "skipped",
-          "failed",
-          "expired",
-          "unavailable",
-          "not_connected"
-        ],
-        "title": "ConnectionTargetState",
-        "type": "string"
-      },
       "ConnectionUpdatePayload": {
         "additionalProperties": false,
-        "description": "``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/\n``actor``) or the settlement (none of those), with the full snapshot.",
+        "description": "``methods_connectors._connection_update``: one leg transition (``leg``/``from``/``to``/\n``actor``) or the settlement (none of those), with the full snapshot.",
         "properties": {
           "op_id": {
             "title": "Op Id",
@@ -8998,11 +9015,11 @@
             ],
             "default": null
           },
-          "targets": {
+          "legs": {
             "items": {
-              "$ref": "#/components/schemas/ConnectionOperationTarget"
+              "$ref": "#/components/schemas/ConnectionLeg"
             },
-            "title": "Targets",
+            "title": "Legs",
             "type": "array"
           },
           "owner": {
@@ -9023,7 +9040,7 @@
             ],
             "title": "Owner"
           },
-          "target": {
+          "leg": {
             "anyOf": [
               {
                 "type": "string"
@@ -9033,12 +9050,12 @@
               }
             ],
             "default": null,
-            "title": "Target"
+            "title": "Leg"
           },
           "from": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConnectionTargetState"
+                "$ref": "#/components/schemas/ConnectionLegState"
               },
               {
                 "type": "null"
@@ -9049,7 +9066,7 @@
           "to": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConnectionTargetState"
+                "$ref": "#/components/schemas/ConnectionLegState"
               },
               {
                 "type": "null"
@@ -9086,7 +9103,7 @@
           "seq",
           "deadline_at",
           "settled",
-          "targets",
+          "legs",
           "owner"
         ],
         "title": "ConnectionUpdatePayload",
@@ -9974,11 +9991,11 @@
             ],
             "default": null
           },
-          "targets": {
+          "legs": {
             "items": {
-              "$ref": "#/components/schemas/ConnectionOperationTarget"
+              "$ref": "#/components/schemas/ConnectionLeg"
             },
-            "title": "Targets",
+            "title": "Legs",
             "type": "array"
           },
           "status": {
@@ -10011,7 +10028,7 @@
           "seq",
           "deadline_at",
           "settled",
-          "targets"
+          "legs"
         ],
         "title": "ConnectorsConnectResult",
         "type": "object"

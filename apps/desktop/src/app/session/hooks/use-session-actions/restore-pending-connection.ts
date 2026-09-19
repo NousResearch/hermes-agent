@@ -59,8 +59,8 @@ export function restorePendingConnectionFromSnapshot(
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
   return {
     args: {
-      action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),
-      connectors: request.targets.map(target => ({ mcp: target.kind === 'mcp', name: target.name }))
+      action: request.legs[0]?.action ?? (request.legs[0]?.kind === 'connector' ? 'connect' : 'install'),
+      connectors: request.legs.map(leg => ({ mcp: leg.kind === 'mcp', name: leg.name }))
     },
     name: 'manage_connections',
     tool_id: request.toolCallId

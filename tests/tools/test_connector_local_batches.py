@@ -37,9 +37,9 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
     from hermes_state import SessionDB
-    from tools.connectors import live
+    from tools.operations import Owner, operations
     from tools.connectors.contract import SettleReason
-    from tools.connectors.mcp import apply_answer
+    from tools.connectors.legs.mcp import apply_answer
     from tools.todo_tool import TodoStore
 
     from gateway.session_context import reset_session_vars, set_session_vars
@@ -55,10 +55,10 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         callbacks.append(payload)
 
         def respond():
-            operation = live.get("current-session", payload["op_id"])
+            operation = operations.get(Owner.of("current-session"), payload["op_id"])
             if operation is not None:
                 apply_answer(operation, json.dumps(
-                    {"targets": [{"name": t["name"], "status": "skipped"} for t in payload["targets"]]}))
+                    {"legs": [{"name": leg["name"], "status": "skipped"} for leg in payload["legs"]]}))
                 operation.settle(SettleReason.all_resolved)
 
         threading.Timer(0.02, respond).start()
@@ -89,9 +89,9 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
                 agent, name, args, "task", tool_call_id="call", pre_tool_block_checked=True)))
         assert "live-db-proof" in json.dumps(results[0])
         assert agent._todo_store.read()[0]["content"] == "live-store-proof"
-        assert results[2]["targets"][0] == {
+        assert results[2]["legs"][0] == {
             "name": "linear", "kind": "mcp", "action": "install", "state": "skipped"}
-        assert [(c["tool_call_id"], [t["name"] for t in c["targets"]]) for c in callbacks] == [("call", ["linear"])]
+        assert [(c["tool_call_id"], [leg["name"] for leg in c["legs"]]) for c in callbacks] == [("call", ["linear"])]
     finally:
         db.close()
         reset_session_vars()

@@ -1,10 +1,4 @@
-"""The one lifecycle every ``manage_connections`` operation follows, whatever the target kind.
-
-``run_operation`` mints the op, registers it in ``live``, lets the kind prepare its targets (a
-managed mint, an MCP catalog check), emits the card through the session callback, then loops:
-sleep on ``op.wake`` for at most one tick, run the kind's ``observe`` hook, settle when every
-target is resolved or the deadline passes. ``connection.respond`` reaches the loop by transitioning
-the op through ``live`` and setting ``wake``; ``/stop`` sets the thread interrupt flag."""
+"""The lifecycle for each ``manage_connections`` operation."""
 
 from __future__ import annotations
 
@@ -13,21 +7,18 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from tools.connectors import live
+from tools.connectors.operation import ConnectionOperation, Leg
 from tools.connectors.contract import SettleReason
-from tools.connectors.operation import ConnectionOperation, Target
+from tools.operations import OperationAlreadyOpen, operations
 
 WATCH_INTERVAL_SECONDS = 5.0
-# The interrupt flag has no wake hook, so the tick sleep is sliced and the flag read each slice.
-_WAKE_SLICE_SECONDS = 0.25
 
 Callback = Callable[[Dict[str, Any]], Optional[str]]
 
 
 @dataclass
-class Kind:
-    """Per-kind hooks. ``prepare`` runs once before the card; ``observe`` runs every tick and may
-    transition targets; ``note`` is the model-facing guidance appended to the settled result."""
+class LegDriver:
+    """Hooks that prepare, observe, and describe one operation's legs."""
 
     prepare: Callable[[ConnectionOperation], None]
     observe: Callable[[ConnectionOperation], None]
@@ -35,8 +26,8 @@ class Kind:
 
 
 def run_operation(
-    targets: List[Target],
-    kind: Kind,
+    legs: List[Leg],
+    kind: LegDriver,
     *,
     session_key: str,
     tool_call_id: Optional[str],
@@ -44,11 +35,11 @@ def run_operation(
     tick_seconds: Optional[float] = None,
     with_urls_in_result: bool,
 ) -> str:
-    """Block the tool thread until the operation settles; return the tool's JSON string."""
-    operation = ConnectionOperation(targets, session_key=session_key, tool_call_id=tool_call_id)
+    """Block the tool thread until the operation settles and return JSON."""
+    operation = ConnectionOperation(legs, session_key=session_key, tool_call_id=tool_call_id)
     try:
-        live.open(operation)
-    except live.OperationAlreadyOpen as exc:
+        operations.open(operation, exclusive=True)
+    except OperationAlreadyOpen as exc:
         from tools.registry import tool_error
 
         return tool_error(
@@ -66,13 +57,13 @@ def run_operation(
 
 def drive_operation(
     operation: ConnectionOperation,
-    kind: Kind,
+    kind: LegDriver,
     *,
     connection_callback: Optional[Callback],
     tick_seconds: Optional[float] = None,
     with_urls_in_result: bool,
 ) -> str:
-    """Run an already-registered operation to settlement; the caller owns its registration."""
+    """Run an already-registered operation to settlement."""
     try:
         kind.prepare(operation)
         operation.settle_if_all_resolved()
@@ -80,14 +71,14 @@ def drive_operation(
             connection_callback(operation.request_payload())
         _watch(operation, kind, tick_seconds)
     finally:
-        live.close(operation)
+        operations.close(operation)
     payload = operation.result(with_urls=with_urls_in_result)
     payload["status"] = "settled"
     payload["note"] = kind.note
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _watch(operation: ConnectionOperation, kind: Kind, tick_seconds: Optional[float]) -> None:
+def _watch(operation: ConnectionOperation, kind: LegDriver, tick_seconds: Optional[float]) -> None:
     from tools.interrupt import is_interrupted
 
     tick = WATCH_INTERVAL_SECONDS if tick_seconds is None else tick_seconds
@@ -99,21 +90,6 @@ def _watch(operation: ConnectionOperation, kind: Kind, tick_seconds: Optional[fl
             operation.settle(SettleReason.deadline)
             return
         kind.observe(operation)
-        # The card or the clock may have settled the op during the read; its result is frozen.
         if operation.settled or operation.settle_if_all_resolved():
             return
-        _sleep_until_wake(operation, tick)
-
-
-def _sleep_until_wake(operation: ConnectionOperation, tick: float) -> None:
-    """Sleep up to one tick, leaving early on ``wake``, the deadline, or the interrupt flag."""
-    from tools.interrupt import is_interrupted
-
-    until = min(time.time() + tick, operation.deadline_at)
-    while not operation.settled and not is_interrupted():
-        remaining = until - time.time()
-        if remaining <= 0:
-            break
-        if operation.wake.wait(min(_WAKE_SLICE_SECONDS, remaining)):
-            break
-    operation.wake.clear()
+        operations.wait(operation, timeout=tick)

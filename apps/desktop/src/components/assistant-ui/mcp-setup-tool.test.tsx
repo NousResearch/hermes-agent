@@ -10,7 +10,7 @@ import { I18nProvider } from '@/i18n'
 import {
   $connectionRequests,
   type ConnectionRequest,
-  type ConnectionTarget,
+  type ConnectionRequestLeg,
   setConnectionRequest
 } from '@/store/connection-request'
 import { $gateway, setPrimaryGateway } from '@/store/gateway'
@@ -19,7 +19,7 @@ const SESSION_ID = 'session-1'
 // A null connection id routes the card's own RPCs through the primary gateway socket.
 const PRIMARY_OWNER: ConnectorOwner = { connectionId: null, profile: 'default' }
 
-const LINEAR: ConnectionTarget = {
+const LINEAR: ConnectionRequestLeg = {
   action: 'install',
   connectUrl: null,
   connectionId: '',
@@ -39,7 +39,7 @@ const REQUEST: ConnectionRequest = {
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
-  targets: [LINEAR, { ...LINEAR, name: 'postgres' }]
+  legs: [LINEAR, { ...LINEAR, name: 'postgres' }]
 }
 
 const ARGS = {
@@ -116,7 +116,7 @@ afterEach(() => {
 })
 
 describe('the MCP setup card', () => {
-  it('shows one row per target with its verb, and Continue below', () => {
+  it('shows one row per leg with its verb, and Continue below', () => {
     setConnectionRequest(REQUEST)
 
     renderTool()
@@ -142,7 +142,7 @@ describe('the MCP setup card', () => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
         owner: { session_id: SESSION_ID, type: 'session' },
-        result: { targets: [{ name: 'linear', status: 'approved' }] }
+        result: { legs: [{ name: 'linear', status: 'approved' }] }
       })
     })
     expect(request.mock.calls.map(([method]) => method)).toEqual(['connection.respond'])
@@ -159,7 +159,7 @@ describe('the MCP setup card', () => {
     renderOffer(
       {
         ...REQUEST,
-        targets: [{ ...LINEAR, action: 'authorize', connectUrl: 'https://mcp.example/auth', state: 'initiated' }]
+        legs: [{ ...LINEAR, action: 'authorize', connectUrl: 'https://mcp.example/auth', state: 'initiated' }]
       },
       'authorize'
     )
@@ -170,6 +170,42 @@ describe('the MCP setup card', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it('prefills a non-secret field with its catalog default and leaves it unmasked', () => {
+    renderOffer({
+      ...REQUEST,
+      legs: [
+        {
+          ...LINEAR,
+          requiredEnv: [
+            { default: 'https://n8n.example', name: 'N8N_URL', prompt: 'n8n URL', required: true, secret: false }
+          ]
+        }
+      ]
+    })
+
+    const field = screen.getByLabelText<HTMLInputElement>('n8n URL *')
+    expect(field.value).toBe('https://n8n.example')
+    expect(field.getAttribute('type')).toBe('text')
+  })
+
+  it('masks a secret field and leaves it empty when the catalog supplies a default', () => {
+    renderOffer({
+      ...REQUEST,
+      legs: [
+        {
+          ...LINEAR,
+          requiredEnv: [
+            { default: 'catalog-value', name: 'N8N_API_KEY', prompt: 'n8n API key', required: true, secret: true }
+          ]
+        }
+      ]
+    })
+
+    const field = screen.getByLabelText<HTMLInputElement>('n8n API key *')
+    expect(field.value).toBe('')
+    expect(field.getAttribute('type')).toBe('password')
+  })
+
   it('a row waiting on credentials shows the fields, holds Install, and sends what was typed', async () => {
     const request = vi.fn().mockResolvedValue({ status: 'ok' })
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
@@ -178,7 +214,7 @@ describe('the MCP setup card', () => {
 
     renderOffer({
       ...REQUEST,
-      targets: [{ ...LINEAR, requiredEnv: [{ name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: true }] }]
+      legs: [{ ...LINEAR, requiredEnv: [{ default: null, name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: true, secret: true }] }]
     })
 
     expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true)
@@ -193,17 +229,17 @@ describe('the MCP setup card', () => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
         owner: { session_id: SESSION_ID, type: 'session' },
-        result: { targets: [{ env: { LINEAR_API_KEY: 'lin_123' }, name: 'linear', status: 'approved' }] }
+        result: { legs: [{ env: { LINEAR_API_KEY: 'lin_123' }, name: 'linear', status: 'approved' }] }
       })
     })
   })
 
   it('Try again on a failed row re-runs the flow on the open operation', async () => {
-    const request = vi.fn().mockResolvedValue({ targets: [{ name: 'linear', state: 'initiated' }] })
+    const request = vi.fn().mockResolvedValue({ legs: [{ name: 'linear', state: 'initiated' }] })
     // SAFETY: the card calls only `request` on the primary socket; nothing else on the client is touched.
     setPrimaryGateway({ request } as never)
 
-    renderOffer({ ...REQUEST, targets: [{ ...LINEAR, state: 'failed' }] })
+    renderOffer({ ...REQUEST, legs: [{ ...LINEAR, state: 'failed' }] })
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
 
     await waitFor(() => {
@@ -251,15 +287,15 @@ describe('the MCP setup card', () => {
   })
 
   it('leaves the keyboard in a credential field while another row moves', async () => {
-    const offer = (postgres: ConnectionTarget['state']) => (
+    const offer = (postgres: ConnectionRequestLeg['state']) => (
       <I18nProvider configClient={null} initialLocale="en">
         <McpSetupOffer
           action="install"
           owner={PRIMARY_OWNER}
           request={{
             ...REQUEST,
-            targets: [
-              { ...LINEAR, requiredEnv: [{ name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: true }] },
+            legs: [
+              { ...LINEAR, requiredEnv: [{ default: null, name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: true, secret: true }] },
               { ...LINEAR, name: 'postgres', state: postgres }
             ]
           }}
@@ -280,12 +316,12 @@ describe('the MCP setup card', () => {
   })
 
   it('hands the keyboard to the row itself when its new verb cannot take focus', async () => {
-    const offer = (linear: ConnectionTarget['state']) => (
+    const offer = (linear: ConnectionRequestLeg['state']) => (
       <I18nProvider configClient={null} initialLocale="en">
         <McpSetupOffer
           action="install"
           owner={PRIMARY_OWNER}
-          request={{ ...REQUEST, targets: [{ ...LINEAR, state: linear }, { ...LINEAR, name: 'postgres' }] }}
+          request={{ ...REQUEST, legs: [{ ...LINEAR, state: linear }, { ...LINEAR, name: 'postgres' }] }}
         />
       </I18nProvider>
     )
@@ -327,14 +363,14 @@ describe('the MCP setup card', () => {
     $gateway.set({ request } as never)
     setConnectionRequest(REQUEST)
 
-    const field = { name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: false }
+    const field = { default: null, name: 'LINEAR_API_KEY', prompt: 'Linear API key', required: false, secret: true }
 
     const offer = (seq: number, detail: string) => (
       <I18nProvider configClient={null} initialLocale="en">
         <McpSetupOffer
           action="install"
           owner={PRIMARY_OWNER}
-          request={{ ...REQUEST, seq, targets: [{ ...LINEAR, detail, requiredEnv: [field] }] }}
+          request={{ ...REQUEST, seq, legs: [{ ...LINEAR, detail, requiredEnv: [field] }] }}
         />
       </I18nProvider>
     )
@@ -358,18 +394,18 @@ describe('the MCP setup card', () => {
   })
 
   it('offers nothing to approve on an authorize row: the backend is still minting the link', () => {
-    renderOffer({ ...REQUEST, targets: [{ ...LINEAR, action: 'authorize', state: 'pending' }] }, 'authorize')
+    renderOffer({ ...REQUEST, legs: [{ ...LINEAR, action: 'authorize', state: 'pending' }] }, 'authorize')
 
     expect(screen.queryByRole('button', { name: 'Authorize' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
   })
 
-  it('drops its controls the moment the operation settles, and says how each target ended', () => {
+  it('drops its controls the moment the operation settles, and says how each leg ended', () => {
     renderOffer({
       ...REQUEST,
       settled: true,
       settledBy: 'continue',
-      targets: [
+      legs: [
         { ...LINEAR, state: 'connected', tools: ['a', 'b'] },
         { ...LINEAR, name: 'postgres', state: 'skipped' }
       ]
@@ -385,11 +421,11 @@ describe('the MCP setup card', () => {
     ).toBe(true)
   })
 
-  it('lists every target once settled, in the same three words as the connector card', () => {
+  it('lists every leg once settled, in the same three words as the connector card', () => {
     renderTool({
       settled_by: 'continue',
       status: 'settled',
-      targets: [
+      legs: [
         { action: 'install', kind: 'mcp', name: 'linear', state: 'connected', tools: ['a', 'b'] },
         { action: 'install', detail: 'catalog write failed', kind: 'mcp', name: 'postgres', state: 'not_connected' }
       ]

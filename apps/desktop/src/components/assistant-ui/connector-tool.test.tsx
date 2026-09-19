@@ -15,7 +15,7 @@ import { I18nProvider } from '@/i18n'
 import {
   $connectionRequests,
   type ConnectionRequest,
-  type ConnectionTarget,
+  type ConnectionRequestLeg,
   setConnectionRequest
 } from '@/store/connection-request'
 import { $gateway, setPrimaryGateway } from '@/store/gateway'
@@ -28,7 +28,7 @@ const OWNER = { connectionId: 'connection-1', profile: 'default' }
 // A null connection id routes the card's own RPCs through the primary gateway socket.
 const PRIMARY_OWNER = { connectionId: null, profile: 'default' }
 
-const GMAIL: ConnectionTarget = {
+const GMAIL: ConnectionRequestLeg = {
   action: 'connect',
   connectUrl: 'https://connect.example/gmail',
   connectionId: '',
@@ -48,7 +48,7 @@ const REQUEST: ConnectionRequest = {
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
-  targets: [GMAIL]
+  legs: [GMAIL]
 }
 
 function props(): ToolCallMessagePartProps {
@@ -136,7 +136,7 @@ describe('ConnectorTool operation card', () => {
   it('offers one verb per row and Continue below; nothing per row says no', () => {
     renderOffer({
       ...REQUEST,
-      targets: [
+      legs: [
         { ...GMAIL, state: 'initiated' },
         { ...GMAIL, connectUrl: null, name: 'notion', state: 'failed' },
         { ...GMAIL, name: 'linear', state: 'connected' }
@@ -155,7 +155,7 @@ describe('ConnectorTool operation card', () => {
     // SAFETY: the card reads only `openExternal` from the preload bridge.
     window.hermesDesktop = { openExternal } as never
 
-    renderConnector({ ...REQUEST, targets: [{ ...GMAIL, state: 'initiated' }] })
+    renderConnector({ ...REQUEST, legs: [{ ...GMAIL, state: 'initiated' }] })
 
     const connect = await waitFor(() => screen.getByRole('button', { name: 'Connect' }))
     expect(connect.hasAttribute('disabled')).toBe(false)
@@ -171,13 +171,13 @@ describe('ConnectorTool operation card', () => {
     window.hermesDesktop = { openExternal } as never
 
     const request = vi.fn().mockResolvedValue({
-      targets: [{ connect_url: 'https://connect.example/gmail-2', name: 'gmail', state: 'initiated' }]
+      legs: [{ connect_url: 'https://connect.example/gmail-2', name: 'gmail', state: 'initiated' }]
     })
 
     // SAFETY: the card calls only `request` on the primary socket; nothing else on the client is touched.
     setPrimaryGateway({ request } as never)
 
-    renderOffer({ ...REQUEST, targets: [{ ...GMAIL, connectUrl: null, state: 'failed' }] })
+    renderOffer({ ...REQUEST, legs: [{ ...GMAIL, connectUrl: null, state: 'failed' }] })
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
 
     await waitFor(() => {
@@ -196,7 +196,7 @@ describe('ConnectorTool operation card', () => {
     // SAFETY: the card calls only `request` on the primary socket; nothing else on the client is touched.
     setPrimaryGateway({ request } as never)
 
-    renderOffer({ ...REQUEST, targets: [{ ...GMAIL, connectUrl: null, state: 'failed' }] })
+    renderOffer({ ...REQUEST, legs: [{ ...GMAIL, connectUrl: null, state: 'failed' }] })
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
 
     await waitFor(() => {
@@ -297,13 +297,13 @@ describe('ConnectorTool operation card', () => {
   })
 
   it('hands the keyboard to the row the backend moved, and only while the card holds focus', async () => {
-    const offer = (gmail: ConnectionTarget['state'], notion: ConnectionTarget['state']) => (
+    const offer = (gmail: ConnectionRequestLeg['state'], notion: ConnectionRequestLeg['state']) => (
       <I18nProvider configClient={null} initialLocale="en">
         <ConnectorOffer
           owner={PRIMARY_OWNER}
           request={{
             ...REQUEST,
-            targets: [
+            legs: [
               { ...GMAIL, state: gmail },
               { ...GMAIL, connectUrl: null, name: 'notion', state: notion }
             ]
@@ -338,7 +338,7 @@ describe('ConnectorTool operation card', () => {
       ...REQUEST,
       settled: true,
       settledBy: 'deadline',
-      targets: [
+      legs: [
         { ...GMAIL, state: 'connected' },
         { ...GMAIL, name: 'notion', state: 'skipped' },
         { ...GMAIL, detail: 'Access denied by user', name: 'linear', state: 'not_connected' }

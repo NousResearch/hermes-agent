@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import type { ConnectionTargetState } from '@hermes/shared'
+import type { ConnectionLegState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -22,7 +22,7 @@ import {
 import {
   $connectionRequests,
   type ConnectionRequest,
-  type ConnectionTarget,
+  type ConnectionRequestLeg,
   continueConnectionRequest,
   sessionConnectionRequest
 } from '@/store/connection-request'
@@ -120,9 +120,9 @@ export async function openConnectionDoneLink(
   }
 }
 
-/** Try again for one target of the open operation: one RPC, and the fresh link when the backend
+/** Try again for one leg of the open operation: one RPC, and the fresh link when the backend
  *  minted one. The backend re-mints only what is actually dead. */
-export async function reissueConnectionTarget(
+export async function reissueConnectionLeg(
   owner: ConnectorOwner,
   request: ConnectionRequest,
   name: string
@@ -143,7 +143,7 @@ export async function reissueConnectionTarget(
     45000
   )
 
-  const rows = recordOf(reply).targets
+  const rows = recordOf(reply).legs
   const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === name) : undefined
 
   return connectorAuthorizationUrl(minted?.connect_url)
@@ -185,14 +185,14 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const storedId = useStore(view.$storedId)
   const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
   const request = useStore($request)
-  const targetNames = requestedConnectorNames(props.args)
+  const legNames = requestedConnectorNames(props.args)
 
-  const untargetedStatus =
+  const unlegedStatus =
     props.toolName === 'manage_connections' &&
     (recordOf(props.args).action ?? 'status') === 'status' &&
-    targetNames.length === 0
+    legNames.length === 0
 
-  const live = !untargetedStatus && connectionRequestOwnsPart(props, request)
+  const live = !unlegedStatus && connectionRequestOwnsPart(props, request)
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
   const owner = useConnectionOwner(storedId, live)
 
@@ -232,7 +232,7 @@ export const CONNECTOR_CARD_PHASES = {
   pending: { mark: 'idle', resolved: false, settled: notConnected, verb: 'open' },
   skipped: { mark: 'idle', resolved: true, settled: skipped, verb: 'none' },
   unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
-} satisfies Record<ConnectionTargetState, ConnectorCardPhase>
+} satisfies Record<ConnectionLegState, ConnectorCardPhase>
 
 // A disabled verb (a working row, a waiting row with no link yet) refuses focus, and the keyboard
 // would land on the document body; so the first control that can take it, else the row itself.
@@ -252,25 +252,25 @@ function focusChangedRow(card: HTMLElement, name: string): void {
  *  out of a field the user is typing in — a transition the user is not looking at must not take
  *  the keyboard away from wherever they are. */
 export function useConnectorFocusHandoff(
-  targets: readonly ConnectionTarget[],
+  legs: readonly ConnectionRequestLeg[],
   cardRef: RefObject<HTMLDivElement | null>
 ): void {
-  const seen = useRef<Map<string, ConnectionTargetState> | null>(null)
-  const states = targets.map(target => `${target.name}=${target.state}`).join('|')
+  const seen = useRef<Map<string, ConnectionLegState> | null>(null)
+  const states = legs.map(leg => `${leg.name}=${leg.state}`).join('|')
 
   // The ref holds what the last frame said, for comparison only: nothing renders from it, so it
   // cannot lag a render the way a mirrored atom would.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     const previous = seen.current
-    seen.current = new Map(targets.map(target => [target.name, target.state]))
+    seen.current = new Map(legs.map(leg => [leg.name, leg.state]))
 
     const card = cardRef.current
 
-    const moved = targets.find(target => {
-      const before = previous?.get(target.name)
+    const moved = legs.find(leg => {
+      const before = previous?.get(leg.name)
 
-      return before !== undefined && before !== target.state
+      return before !== undefined && before !== leg.state
     })
 
     const active = document.activeElement
@@ -280,7 +280,7 @@ export function useConnectorFocusHandoff(
     }
 
     focusChangedRow(card, moved.name)
-    // The target states are the whole input; `states` changes exactly when one of them moves.
+    // The leg states are the whole input; `states` changes exactly when one of them moves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [states])
 }
@@ -300,46 +300,46 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const { t } = useI18n()
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
-  const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
+  const unresolved = request.legs.some(leg => !CONNECTOR_CARD_PHASES[leg.state].resolved)
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
 
-  useConnectorFocusHandoff(request.targets, cardRef)
+  useConnectorFocusHandoff(request.legs, cardRef)
 
   // The fresh link opens at once, and the update frame then paints the row as waiting. A refused
   // re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
-  const reissue = async (target: ConnectionTarget): Promise<void> => {
-    setReissuing(current => new Set(current).add(target.name))
+  const reissue = async (leg: ConnectionRequestLeg): Promise<void> => {
+    setReissuing(current => new Set(current).add(leg.name))
 
     try {
-      const url = await reissueConnectionTarget(owner, request, target.name)
+      const url = await reissueConnectionLeg(owner, request, leg.name)
 
       if (url) {
         void window.hermesDesktop?.openExternal?.(url)
       }
     } catch (error) {
-      notifyError(error, copy.connectErrorFor(connectorTitle(target.name)))
+      notifyError(error, copy.connectErrorFor(connectorTitle(leg.name)))
     } finally {
       setReissuing(current => {
         const next = new Set(current)
-        next.delete(target.name)
+        next.delete(leg.name)
 
         return next
       })
     }
   }
 
-  // A settled operation is a static per-target summary: no controls, no polling, nothing live.
+  // A settled operation is a static per-leg summary: no controls, no polling, nothing live.
   if (request.settled) {
     return (
       <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
-        {request.targets.map(target => {
-          const { meta, tone } = CONNECTOR_CARD_PHASES[target.state].settled(copy)
+        {request.legs.map(leg => {
+          const { meta, tone } = CONNECTOR_CARD_PHASES[leg.state].settled(copy)
 
           return (
             <ConnectorSummary
-              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
-              key={target.name}
+              connector={{ iconUrl: connectorIconUrl(leg.name), name: leg.name, title: connectorTitle(leg.name) }}
+              key={leg.name}
               meta={meta}
               tone={tone}
             />
@@ -352,9 +352,9 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   return (
     <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer ref={cardRef}>
       <ConnectorCard title={copy.title}>
-        {request.targets.map(target => {
-          const phase = CONNECTOR_CARD_PHASES[target.state]
-          const busy = reissuing.has(target.name)
+        {request.legs.map(leg => {
+          const phase = CONNECTOR_CARD_PHASES[leg.state]
+          const busy = reissuing.has(leg.name)
 
           const action =
             phase.verb === 'none'
@@ -362,15 +362,15 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
               : {
                   busy,
                   // Prevent concurrent sign-in tabs; a waiting row without a link has nothing to open yet.
-                  disabled: (reissuing.size > 0 && !busy) || (phase.verb === 'open' && target.connectUrl === null),
+                  disabled: (reissuing.size > 0 && !busy) || (phase.verb === 'open' && leg.connectUrl === null),
                   label: phase.verb === 'open' ? copy.connect : copy.retry,
                   onClick: () => {
-                    if (phase.verb === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
-                      void window.hermesDesktop.openExternal(target.connectUrl)
+                    if (phase.verb === 'open' && leg.connectUrl && window.hermesDesktop?.openExternal) {
+                      void window.hermesDesktop.openExternal(leg.connectUrl)
                     }
 
                     if (phase.verb === 'reissue') {
-                      void reissue(target)
+                      void reissue(leg)
                     }
                   }
                 }
@@ -378,9 +378,9 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
           return (
             <ConnectorRow
               action={action}
-              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
+              connector={{ iconUrl: connectorIconUrl(leg.name), name: leg.name, title: connectorTitle(leg.name) }}
               cue={phase.mark === 'waiting' ? copy.waiting : undefined}
-              key={target.name}
+              key={leg.name}
               mark={phase.mark}
               markLabel={MARK_LABEL[phase.mark](copy)}
             />
@@ -432,7 +432,7 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
     !request.settled &&
     matchingTargetNames(
       repair,
-      request.targets.map(target => target.name)
+      request.legs.map(leg => leg.name)
     )
 
   return (

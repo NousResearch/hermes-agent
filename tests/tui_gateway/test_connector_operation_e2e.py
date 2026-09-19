@@ -9,9 +9,9 @@ from contextlib import ExitStack, suppress
 import pytest
 
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
-from tools.connectors import live
-from tools.connectors.contract import Actor, TargetState
-from tools.connectors.operation import ConnectionOperation, Target
+from tools.operations import Owner, operations
+from tools.connectors.contract import Actor, LegState
+from tools.connectors.operation import ConnectionOperation, Leg
 from tools.connectors.tool import manage_connections
 from tui_gateway import server
 from tui_gateway.transport import StdioTransport
@@ -127,7 +127,7 @@ def owned_session(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     reset_session_vars()
-    live.reset_for_tests()
+    operations.reset_for_tests()
     with ExitStack() as stack:
         owner, stranger = PipeClient(stack), PipeClient(stack)
         session = {
@@ -143,7 +143,7 @@ def owned_session(monkeypatch, tmp_path):
         }
         monkeypatch.setitem(server._sessions, SID, session)
         yield owner, stranger
-    live.reset_for_tests()
+    operations.reset_for_tests()
     reset_session_vars()
 
 
@@ -165,7 +165,7 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
     """The actual tool thread waits for the gateway card outcome, not a fake callback."""
     owner, _ = owned_session
     client = FakeConnectorClient()
-    monkeypatch.setattr("tools.connectors.managed.WATCH_TICK_SECONDS", 0.05)
+    monkeypatch.setattr("tools.connectors.legs.managed.WATCH_TICK_SECONDS", 0.05)
     result = {}
     finished = threading.Event()
 
@@ -193,11 +193,11 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
 
     (request,) = owner.events("connection.request")
     assert request["op_id"]
-    assert len(request["targets"]) == 2
+    assert len(request["legs"]) == 2
     assert request["deadline_at"] > time.time()
 
     initiated = _rpc(owner, "connectors.operation.status", op_id=request["op_id"])["result"]
-    by_name = {target["name"]: target for target in initiated["targets"]}
+    by_name = {target["name"]: target for target in initiated["legs"]}
     assert {name: target["state"] for name, target in by_name.items()} == {
         "gmail": "initiated",
         "notion": "initiated",
@@ -207,14 +207,14 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
     client.set_connected("gmail")
     assert owner.events(
         "connection.update",
-        lambda payload: payload.get("target") == "gmail" and payload.get("to") == "connected",
+        lambda payload: payload.get("leg") == "gmail" and payload.get("to") == "connected",
     )
 
     response = _rpc(
         owner,
         "connection.respond",
         op_id=request["op_id"],
-        result={"targets": [{"name": "notion", "status": "skipped"}]},
+        result={"legs": [{"name": "notion", "status": "skipped"}]},
     )
     assert response["result"] == {"status": "ok", "settled": True}
 
@@ -226,19 +226,19 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
     settled = json.loads(result["raw"])
     assert settled["status"] == "settled"
     assert settled["settled_by"] == "all_resolved"
-    assert {target["name"]: target["state"] for target in settled["targets"]} == {
+    assert {target["name"]: target["state"] for target in settled["legs"]} == {
         "gmail": "connected",
         "notion": "skipped",
     }
     assert "connect_url" not in json.dumps(settled)
-    assert live.current(SID) is None
+    assert next(iter(operations.current(Owner.of(SID))), None) is None
 
     # A settled operation leaves the registry: the frozen result travelled in the tool result and
     # in the last connection.update; the status RPC has nothing left to serve.
     closed = _rpc(owner, "connectors.operation.status", op_id=request["op_id"])
     assert closed["error"]["code"] == 4004
     final_update = owner.events("connection.update", lambda payload: payload.get("settled") is True)[-1]
-    assert {target["name"]: target["state"] for target in final_update["targets"]} == {
+    assert {target["name"]: target["state"] for target in final_update["legs"]} == {
         "gmail": "connected",
         "notion": "skipped",
     }
@@ -261,30 +261,30 @@ def test_cli_connect_returns_urls_without_emitting_a_card(owned_session):
         clear_session_vars(tokens)
 
     assert result["status"] == "initiated"
-    assert all(target["connect_url"] for target in result["targets"])
+    assert all(target["connect_url"] for target in result["legs"])
     assert owner.events("connection.request") == []
-    assert live.current(SID) is None
+    assert next(iter(operations.current(Owner.of(SID))), None) is None
 
 
 def test_connection_respond_ignores_outcome_claims_and_rejects_strangers(owned_session):
     owner, stranger = owned_session
-    operation = ConnectionOperation([Target("gmail", "connector", "connect")], session_key=SID)
-    live.open(operation)
-    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
+    operation = ConnectionOperation([Leg("gmail", "connector", "connect")], session_key=SID)
+    operations.open(operation)
+    operation.transition("gmail", LegState.initiated, Actor.backend_watcher)
 
     refused = _rpc(
         owner,
         "connection.respond",
         op_id=operation.op_id,
-        result={"targets": [{"name": "gmail", "status": "connected"}]},
+        result={"legs": [{"name": "gmail", "status": "connected"}]},
     )
     assert refused["error"]["code"] == 4002, refused
-    assert operation.target("gmail").state == TargetState.initiated
+    assert operation.leg("gmail").state == LegState.initiated
 
     foreign = _rpc(
         stranger,
         "connection.respond",
         op_id=operation.op_id,
-        result={"targets": [{"name": "gmail", "status": "skipped"}]},
+        result={"legs": [{"name": "gmail", "status": "skipped"}]},
     )
     assert foreign["error"]["code"] == 4001

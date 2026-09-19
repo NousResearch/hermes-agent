@@ -7,14 +7,15 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 
-from tools.connectors import live
-from tools.connectors import managed
-from tools.connectors.operation import ConnectionOperation, Target
+from tools.connectors.legs import managed
+from tools.connectors.operation import ConnectionOperation, Leg
 from tools.connectors.run import drive_operation
+from tools.operations import Owner, operations
 
 
 _PREPARE_WAIT_SECONDS = 31.0
 _start_lock = threading.Lock()
+_by_connector: dict[tuple[str, str], ConnectionOperation] = {}
 
 
 @dataclass
@@ -25,8 +26,13 @@ class AccountOperationStart:
     failed: bool = False
 
 
-def _matching_open_operation(names: list[str], *, profile_home: str | None) -> ConnectionOperation | None:
-    matches = [live.find_target(name, profile_home=profile_home) for name in names]
+def _open_leg(name: str, profile: str) -> ConnectionOperation | None:
+    operation = _by_connector.get((profile, name))
+    return operation if operation is not None and not operation.settled else None
+
+
+def _matching_open_operation(names: list[str], *, profile: str) -> ConnectionOperation | None:
+    matches = [_open_leg(name, profile) for name in names]
     first = next((operation for operation in matches if operation is not None), None)
     if first is None:
         return None
@@ -42,12 +48,15 @@ def find_or_start_operation(
     profile_home: str | None,
 ) -> AccountOperationStart:
     """Join the exact open managed operation, or atomically reserve and start a new one."""
+    profile = Owner.of("", profile_home=profile_home).profile
     with _start_lock:
-        if operation := _matching_open_operation(names, profile_home=profile_home):
+        if operation := _matching_open_operation(names, profile=profile):
             return AccountOperationStart(operation=operation, started=False)
+        session_key = f"account:{uuid.uuid4().hex}"
         operation = ConnectionOperation(
-            [Target(name, "connector", action) for name in names],
-            session_key=f"account:{uuid.uuid4().hex}",
+            [Leg(name, "connector", action) for name in names],
+            session_key=session_key,
+            owner=Owner.of(session_key, profile_home=profile_home),
         )
         started = AccountOperationStart(operation=operation, started=True)
         context = contextvars.copy_context()
@@ -57,28 +66,35 @@ def find_or_start_operation(
             name="connector-account-operation",
         )
         try:
-            live.open(operation)
+            operations.open(operation, exclusive=True)
+            for leg in operation.legs:
+                _by_connector[(profile, leg.name)] = operation
             thread.start()
         except Exception:
-            live.close(operation)
+            operations.close(operation)
+            for leg in operation.legs:
+                _by_connector.pop((profile, leg.name), None)
             raise
     return started
 
 
 def _run(start: AccountOperationStart, action: str) -> None:
+    operation = start.operation
     try:
         drive_operation(
-            start.operation,
+            operation,
             managed.managed_kind(managed.managed_client(), action, force=False),
             connection_callback=lambda _payload: start.done.set(),
             tick_seconds=managed.WATCH_TICK_SECONDS,
             with_urls_in_result=False,
         )
     except Exception:
-        # A failure before ``drive_operation`` leaves a registered operation every later connect joins forever.
-        live.close(start.operation)
+        operations.close(operation)
         start.failed = True
     finally:
+        profile = operation.owner.profile if operation.owner else None
+        for leg in operation.legs:
+            _by_connector.pop((profile, leg.name), None)
         start.done.set()
 
 

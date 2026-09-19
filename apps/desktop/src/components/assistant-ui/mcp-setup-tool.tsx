@@ -10,7 +10,7 @@ import {
   CONNECTOR_CARD_PHASES,
   type ConnectorOwner,
   MARK_LABEL,
-  reissueConnectionTarget,
+  reissueConnectionLeg,
   useConnectionOwner,
   useConnectorFocusHandoff
 } from '@/components/assistant-ui/connector-tool'
@@ -18,15 +18,16 @@ import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowAction, ConnectorSummary } from '@/components/ui/connector-card'
+import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { connectorText, type McpTarget, mcpTargets } from '@/lib/connector-tools'
 import { Loader2 } from '@/lib/icons'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import {
+  type ConnectionLegState,
   type ConnectionRequest,
-  type ConnectionTarget,
-  type ConnectionTargetState,
+  type ConnectionRequestLeg,
   continueConnectionRequest,
   respondToConnectionRequest,
   sessionConnectionRequest
@@ -73,23 +74,23 @@ const MCP_VERBS = {
   pending: 'approve',
   skipped: 'none',
   unavailable: 'none'
-} satisfies Record<ConnectionTargetState, McpVerb>
+} satisfies Record<ConnectionLegState, McpVerb>
 
 // Two states read differently per action. A pending authorize is the backend still minting the link,
 // so there is nothing for the user to consent to; an initiated install or enable is the backend
 // working, while an initiated authorize is the link waiting to be opened.
-const rowVerb = (target: ConnectionTarget, action: SetupAction): McpVerb => {
+const rowVerb = (leg: ConnectionRequestLeg, action: SetupAction): McpVerb => {
   if (action === 'authorize') {
-    return target.state === 'pending' ? 'none' : MCP_VERBS[target.state]
+    return leg.state === 'pending' ? 'none' : MCP_VERBS[leg.state]
   }
 
-  return target.state === 'initiated' ? 'working' : MCP_VERBS[target.state]
+  return leg.state === 'initiated' ? 'working' : MCP_VERBS[leg.state]
 }
 
 function readSetupAction(args: unknown): SetupAction {
-  const [target] = mcpTargets('manage_connections', parseMaybeObject(args))
+  const [leg] = mcpTargets('manage_connections', parseMaybeObject(args))
 
-  return target?.action ?? 'install'
+  return leg?.action ?? 'install'
 }
 
 interface SettledTarget {
@@ -98,7 +99,7 @@ interface SettledTarget {
   tools: number
 }
 
-/** A settled operation is a static per-target summary: one word per row, no controls. */
+/** A settled operation is a static per-leg summary: one word per row, no controls. */
 function McpSetupSummary({ action, rows }: { action: SetupAction; rows: SettledTarget[] }) {
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
@@ -130,13 +131,13 @@ function McpSetupSummary({ action, rows }: { action: SetupAction; rows: SettledT
 
 function readSetupResult(result: unknown): SettledTarget[] {
   const row = parseMaybeObject(result)
-  const targets = Array.isArray(row.targets) ? row.targets.map(parseMaybeObject) : []
+  const legs = Array.isArray(row.legs) ? row.legs.map(parseMaybeObject) : []
 
-  return targets.flatMap(target => {
-    const name = connectorText(target.name)
+  return legs.flatMap(leg => {
+    const name = connectorText(leg.name)
 
     return name
-      ? [{ name, state: connectorText(target.state) ?? '', tools: Array.isArray(target.tools) ? target.tools.length : 0 }]
+      ? [{ name, state: connectorText(leg.state) ?? '', tools: Array.isArray(leg.tools) ? leg.tools.length : 0 }]
       : []
   })
 }
@@ -201,25 +202,25 @@ interface McpSetupOfferProps {
   request: ConnectionRequest
 }
 
-/** The card is a projection of the operation: one row per target, one verb per row, Continue below. */
+/** The card is a projection of the operation: one row per leg, one verb per row, Continue below. */
 export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
-  const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
+  const unresolved = request.legs.some(leg => !CONNECTOR_CARD_PHASES[leg.state].resolved)
 
-  const settledRows = request.targets.map(target => ({
-    name: target.name,
-    state: target.state,
-    tools: target.tools.length
+  const settledRows = request.legs.map(leg => ({
+    name: leg.name,
+    state: leg.state,
+    tools: leg.tools.length
   }))
 
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
 
-  useConnectorFocusHandoff(request.targets, cardRef)
+  useConnectorFocusHandoff(request.legs, cardRef)
 
-  // Try again is one RPC on the open operation. An authorize target comes back with a fresh link,
+  // Try again is one RPC on the open operation. An authorize leg comes back with a fresh link,
   // which opens at once; install and enable simply run again and report through connection.update.
   const reissue = async (name: string): Promise<void> => {
     if (!owner) {
@@ -229,7 +230,7 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
     setReissuing(current => new Set(current).add(name))
 
     try {
-      const url = await reissueConnectionTarget(owner, request, name)
+      const url = await reissueConnectionLeg(owner, request, name)
 
       if (url) {
         void window.hermesDesktop?.openExternal?.(url)
@@ -253,15 +254,15 @@ export function McpSetupOffer({ action, owner, request }: McpSetupOfferProps) {
   return (
     <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer ref={cardRef}>
       <ConnectorCard title={TITLE[action](copy)}>
-        {request.targets.map(target => (
+        {request.legs.map(leg => (
           <McpSetupRow
             action={action}
-            key={target.name}
-            onReissue={() => void reissue(target.name)}
+            key={leg.name}
+            leg={leg}
+            onReissue={() => void reissue(leg.name)}
             reissueBlocked={!owner || reissuing.size > 0}
-            reissuing={reissuing.has(target.name)}
+            reissuing={reissuing.has(leg.name)}
             request={request}
-            target={target}
           />
         ))}
       </ConnectorCard>
@@ -283,27 +284,31 @@ interface McpSetupRowProps {
   reissueBlocked: boolean
   reissuing: boolean
   request: ConnectionRequest
-  target: ConnectionTarget
+  leg: ConnectionRequestLeg
 }
 
-function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, target }: McpSetupRowProps) {
+function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, leg }: McpSetupRowProps) {
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
-  const [envDraft, setEnvDraft] = useState<Record<string, string>>({})
+
+  const [envDraft, setEnvDraft] = useState<Record<string, string>>(() =>
+    Object.fromEntries(leg.requiredEnv.filter(field => !field.secret).map(field => [field.name, field.default ?? '']))
+  )
+
   // The operation's seq when the consent was sent; null when nothing is in flight.
   const [sentAtSeq, setSentAtSeq] = useState<null | number>(null)
-  const server = target.name
-  const phase = CONNECTOR_CARD_PHASES[target.state]
-  const verb = rowVerb(target, action)
-  const fields = target.requiredEnv
+  const server = leg.name
+  const phase = CONNECTOR_CARD_PHASES[leg.state]
+  const verb = rowVerb(leg, action)
+  const fields = leg.requiredEnv
   const missing = fields.some(field => field.required && !envDraft[field.name]?.trim())
 
   // The composer's MCP suggestion index caches the configured servers; this row just changed them.
   useEffect(() => {
-    if (target.state === 'connected') {
+    if (leg.state === 'connected') {
       invalidateMcpSuggestionIndex()
     }
-  }, [target.state])
+  }, [leg.state])
 
   // The verb stays held until the backend answers with a frame, not until the RPC returns: a second
   // click in that window would send the consent twice. The answer is any frame past the seq the
@@ -317,7 +322,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
 
     try {
       const sent = await respondToConnectionRequest(request, {
-        targets: [fields.length > 0 ? { env: envDraft, name: server, status: 'approved' } : { name: server, status: 'approved' }]
+        legs: [fields.length > 0 ? { env: envDraft, name: server, status: 'approved' } : { name: server, status: 'approved' }]
       })
 
       if (!sent) {
@@ -334,11 +339,11 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   const ACTIONS = {
     approve: { busy: sending, disabled: missing || sending, label, onClick: () => void approve() },
     open: {
-      disabled: target.connectUrl === null,
+      disabled: leg.connectUrl === null,
       label,
       onClick: () => {
-        if (target.connectUrl) {
-          void window.hermesDesktop?.openExternal?.(target.connectUrl)
+        if (leg.connectUrl) {
+          void window.hermesDesktop?.openExternal?.(leg.connectUrl)
         }
       }
     },
@@ -347,18 +352,34 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   } satisfies Record<Exclude<McpVerb, 'none'>, ConnectorRowAction>
 
   return (
-    <ConnectorRow
-      action={verb === 'none' ? undefined : ACTIONS[verb]}
-      connector={{ name: server, title: prettyName(server) }}
-      // The one cue belongs to the row whose link is open in the user's browser.
-      cue={verb === 'open' ? t.connectors.waiting : undefined}
-      envDraft={envDraft}
-      envFields={fields}
-      envOpen={verb === 'approve' && fields.length > 0}
-      envRequired={copy.envRequired}
-      mark={phase.mark}
-      markLabel={MARK_LABEL[phase.mark](t.connectors)}
-      onEnvChange={(key, value) => setEnvDraft(prev => ({ ...prev, [key]: value }))}
-    />
+    <>
+      <ConnectorRow
+        action={verb === 'none' ? undefined : ACTIONS[verb]}
+        connector={{ name: server, title: prettyName(server) }}
+        // The one cue belongs to the row whose link is open in the user's browser.
+        cue={verb === 'open' ? t.connectors.waiting : undefined}
+        mark={phase.mark}
+        markLabel={MARK_LABEL[phase.mark](t.connectors)}
+      />
+      {verb === 'approve' && fields.length > 0 ? (
+        <div className="grid gap-2 pb-1.5 pl-13" data-slot="connector-row-env">
+          <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
+          {fields.map(field => (
+            <label className="grid gap-1" key={field.name}>
+              <span className="text-[0.6875rem] text-(--ui-text-secondary)">
+                {field.prompt || field.name}
+                {field.required ? ' *' : ''}
+              </span>
+              <Input
+                className="h-7 text-xs"
+                onChange={event => setEnvDraft(previous => ({ ...previous, [field.name]: event.currentTarget.value }))}
+                type={field.secret ? 'password' : 'text'}
+                value={envDraft[field.name] ?? (field.secret ? '' : (field.default ?? ''))}
+              />
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </>
   )
 }

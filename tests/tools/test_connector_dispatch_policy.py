@@ -112,7 +112,7 @@ def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypat
 
 
 def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatch):
-    from tools.connectors import managed
+    from tools.connectors.legs import managed
     from tools.connectors.gateway import config
     from tools.registry import registry
 

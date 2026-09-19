@@ -11,8 +11,8 @@ import {
   normalizeConnectionRequest,
   respondToConnectionRequest,
   setConnectionRequest,
+  skipConnectionLeg,
   skipConnectionRequest,
-  skipConnectionTarget,
   updateConnectionRequest
 } from './connection-request'
 import { $gateway } from './gateway'
@@ -23,7 +23,7 @@ const WIRE = {
   seq: 1,
   tool_call_id: 'call-1',
   timeout_seconds: 120,
-  targets: [
+  legs: [
     { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
     { action: 'connect' as const, kind: 'connector' as const, name: 'notion', state: 'pending' as const }
   ]
@@ -47,9 +47,9 @@ type Frame = Parameters<typeof applyConnectionUpdate>[1]
  *  built later is newer than one built earlier unless a test says otherwise. */
 let nextSeq = WIRE.seq + 1
 
-/** Every `connection.update` frame carries the operation snapshot; `states` overrides per-target state. */
+/** Every `connection.update` frame carries the operation snapshot; `states` overrides per-leg state. */
 function frame(
-  states: Record<string, Snapshot['targets'][number]['state']>,
+  states: Record<string, Snapshot['legs'][number]['state']>,
   extra: Partial<Frame> = {}
 ): Frame {
   return {
@@ -59,7 +59,7 @@ function frame(
     seq: nextSeq++,
     settled: false,
     settled_by: null,
-    targets: WIRE.targets.map(target => ({ ...target, state: states[target.name] ?? target.state })),
+    legs: WIRE.legs.map(leg => ({ ...leg, state: states[leg.name] ?? leg.state })),
     ...extra
   }
 }
@@ -79,7 +79,7 @@ describe('connection-request store', () => {
 
     expect(parsed?.deadlineAt).toBe(WIRE.deadline_at)
     expect(parsed?.opId).toBe('op-1')
-    expect(parsed?.targets.map(t => [t.name, t.kind, t.state])).toEqual([
+    expect(parsed?.legs.map(t => [t.name, t.kind, t.state])).toEqual([
       ['gmail', 'connector', 'pending'],
       ['notion', 'connector', 'pending']
     ])
@@ -87,30 +87,30 @@ describe('connection-request store', () => {
   })
 
   it('carries the account id the mint named through unchanged', () => {
-    const decorated = { ...WIRE, targets: [{ ...WIRE.targets[0], connection_id: 'ca_1' }] }
+    const decorated = { ...WIRE, legs: [{ ...WIRE.legs[0], connection_id: 'ca_1' }] }
     const parsed = normalizeConnectionRequest(decorated, 's')!
 
-    expect(parsed.targets[0]).toMatchObject({ connectionId: 'ca_1' })
+    expect(parsed.legs[0]).toMatchObject({ connectionId: 'ca_1' })
 
-    const updated = applyConnectionUpdate(parsed, frame({ gmail: 'initiated' }, { targets: decorated.targets.map(t => ({ ...t, state: 'initiated' as const })) }))
+    const updated = applyConnectionUpdate(parsed, frame({ gmail: 'initiated' }, { legs: decorated.legs.map(t => ({ ...t, state: 'initiated' as const })) }))
 
-    expect(updated.targets[0]).toMatchObject({ connectionId: 'ca_1', state: 'initiated' })
+    expect(updated.legs[0]).toMatchObject({ connectionId: 'ca_1', state: 'initiated' })
   })
 
   it('carries the credentials an MCP install still waits for, and holds the row across a repeat frame', () => {
-    const target = {
+    const leg = {
       action: 'install' as const,
       kind: 'mcp' as const,
       name: 'postgres',
-      required_env: [{ name: 'PG_URL', prompt: 'Connection string', required: true }],
+      required_env: [{ default: null, name: 'PG_URL', prompt: 'Connection string', required: true, secret: true }],
       state: 'pending' as const
     }
 
-    const parsed = normalizeConnectionRequest({ ...WIRE, targets: [target] }, 's')!
+    const parsed = normalizeConnectionRequest({ ...WIRE, legs: [leg] }, 's')!
 
-    expect(parsed.targets[0].requiredEnv).toEqual([{ name: 'PG_URL', prompt: 'Connection string', required: true }])
-    // A connector target never lists credentials.
-    expect(normalizeConnectionRequest(WIRE, 's')!.targets[0].requiredEnv).toEqual([])
+    expect(parsed.legs[0].requiredEnv).toEqual([{ default: null, name: 'PG_URL', prompt: 'Connection string', required: true, secret: true }])
+    // A connector leg never lists credentials.
+    expect(normalizeConnectionRequest(WIRE, 's')!.legs[0].requiredEnv).toEqual([])
 
     // The next frame carries a fresh array with the same fields; the row must keep its identity so the
     // open credential inputs do not remount under the user.
@@ -120,10 +120,10 @@ describe('connection-request store', () => {
       seq: nextSeq++,
       settled: false,
       settled_by: null,
-      targets: [{ ...target, required_env: [{ name: 'PG_URL', prompt: 'Connection string', required: true }] }]
+      legs: [{ ...leg, required_env: [{ default: null, name: 'PG_URL', prompt: 'Connection string', required: true, secret: true }] }]
     })
 
-    expect(repeat.targets[0]).toBe(parsed.targets[0])
+    expect(repeat.legs[0]).toBe(parsed.legs[0])
   })
 
   it('binds to the model tool call that opened the operation, on a live request and on resume', () => {
@@ -136,8 +136,8 @@ describe('connection-request store', () => {
     expect(normalizeConnectionRequest(snapshot, 's1')).toBeNull()
   })
 
-  it('rejects a payload with no targets, no op id or no deadline', () => {
-    expect(normalizeConnectionRequest({ ...WIRE, targets: [] }, 's1')).toBeNull()
+  it('rejects a payload with no legs, no op id or no deadline', () => {
+    expect(normalizeConnectionRequest({ ...WIRE, legs: [] }, 's1')).toBeNull()
     expect(normalizeConnectionRequest({ ...WIRE, op_id: '' }, 's1')).toBeNull()
     expect(normalizeConnectionRequest({ ...WIRE, deadline_at: 0 }, 's1')).toBeNull()
     expect(normalizeConnectionRequest(null, 's1')).toBeNull()
@@ -152,23 +152,23 @@ describe('connection-request store', () => {
       seq: nextSeq++,
       settled: false,
       settled_by: null,
-      targets: [
+      legs: [
         { action: 'connect', connect_url: 'https://l/gmail', kind: 'connector', name: 'gmail', state: 'initiated' },
         { action: 'connect', kind: 'connector', name: 'notion', state: 'pending' }
       ]
     })
 
     expect(overlaid.deadlineAt).toBe(WIRE.deadline_at)
-    expect(overlaid.targets[0]).toMatchObject({ connectUrl: 'https://l/gmail', state: 'initiated' })
+    expect(overlaid.legs[0]).toMatchObject({ connectUrl: 'https://l/gmail', state: 'initiated' })
 
     const updated = applyConnectionUpdate(overlaid, {
-      ...frame({ gmail: 'connected' }, { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }),
+      ...frame({ gmail: 'connected' }, { actor: 'backend_watcher', from: 'initiated', leg: 'gmail', to: 'connected' }),
       deadline_at: 42 // a frame must never move the deadline the card already holds from the request
     })
 
     expect(updated.deadlineAt).toBe(42) // the backend is the owner; the store copies whatever it sends
-    expect(updated.targets[0].state).toBe('connected')
-    expect(updated.targets[0].connectUrl).toBe('https://l/gmail')
+    expect(updated.legs[0].state).toBe('connected')
+    expect(updated.legs[0].connectUrl).toBe('https://l/gmail')
   })
 
   it('ignores an update for another operation or after settlement', () => {
@@ -181,7 +181,7 @@ describe('connection-request store', () => {
 
     expect(settled.settled).toBe(true)
     expect(settled.settledBy).toBe('deadline')
-    expect(settled.targets.every(target => target.state === 'not_connected')).toBe(true)
+    expect(settled.legs.every(leg => leg.state === 'not_connected')).toBe(true)
     expect(applyConnectionUpdate(settled, frame({ gmail: 'connected' }))).toBe(settled)
   })
 
@@ -192,7 +192,7 @@ describe('connection-request store', () => {
 
     const newer = applyConnectionUpdate(req, frame({ gmail: 'connected' }, { seq: 5 }))
 
-    expect(newer.targets[0].state).toBe('connected')
+    expect(newer.legs[0].state).toBe('connected')
     expect(newer.seq).toBe(5)
 
     // Seq 5 is what the backend last wrote; a repeat of 5 and a late 4 are the transport reordering.
@@ -208,8 +208,8 @@ describe('connection-request store', () => {
     updateConnectionRequest('a', frame({}, { op_id: 'op-9' }))
     expect($connectionRequests.get().a).toBe(before)
 
-    updateConnectionRequest('a', frame({ notion: 'skipped' }, { actor: 'user', target: 'notion', to: 'skipped' }))
-    expect($connectionRequests.get().a.targets[1].state).toBe('skipped')
+    updateConnectionRequest('a', frame({ notion: 'skipped' }, { actor: 'user', leg: 'notion', to: 'skipped' }))
+    expect($connectionRequests.get().a.legs[1].state).toBe('skipped')
   })
 
   it('keeps requests from concurrent sessions independent', () => {
@@ -235,10 +235,10 @@ describe('connection-request store', () => {
     const req = request('a')
     setConnectionRequest(req)
 
-    expect(await skipConnectionTarget(req, 'notion')).toBe(true)
+    expect(await skipConnectionLeg(req, 'notion')).toBe(true)
     expect(rpc.mock.calls[0][0]).toBe('connection.respond')
     expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', owner: { session_id: 'a', type: 'session' } })
-    expect(rpc.mock.calls[0][1].result).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
+    expect(rpc.mock.calls[0][1].result).toEqual({ legs: [{ name: 'notion', status: 'skipped' }] })
     expect($connectionRequests.get().a).toBeDefined()
 
     updateConnectionRequest('a', frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' }))
@@ -246,7 +246,7 @@ describe('connection-request store', () => {
     expect(hasConnectionRequest('a')).toBe(false)
   })
 
-  it('typing while the card is open sends Continue, not a per-target decline', async () => {
+  it('typing while the card is open sends Continue, not a per-leg decline', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: true })
     $gateway.set(fakeGateway(rpc))
     setConnectionRequest(request('a'))

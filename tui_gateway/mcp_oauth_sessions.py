@@ -16,7 +16,7 @@ from contextlib import suppress
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-from tools.connectors.mcp_oauth import run_worker
+from tools.connectors.legs.oauth import run_worker
 
 # session_id -> record wrapping the shared DashboardOAuthFlow bridge plus bookkeeping.
 _sessions: Dict[str, Dict[str, Any]] = {}

@@ -91,7 +91,7 @@ class LiveSessionSnapshot(Result):
     queued: QueuedPrompt | None = None
     pending_approval: PendingApproval | None = None
     open_requests: list[OpenRequestEntry] | None = None
-    # The open connection operation (``tools/connectors/live.current``) as its ``connection.request``
+    # The open connection operation (``tools.operations.operations.current``) as its ``connection.request``
     # payload: the card restores with the server's deadline after a reconnect or restart.
     pending_connection: ConnectionRequestPayload | None = None
     todo_state: TodoState | None = None

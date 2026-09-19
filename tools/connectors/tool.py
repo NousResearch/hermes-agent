@@ -7,9 +7,9 @@ Disconnecting accounts remains a portal-only user decision.
 from typing import Any, Callable, Dict, Optional
 
 from tools.connectors.gateway import config as gateway_config
-from tools.connectors.managed import run_managed_action
-from tools.connectors.mcp import run_mcp_operation
-from tools.connectors.targets import ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
+from tools.connectors.legs.managed import run_managed_action
+from tools.connectors.legs.mcp import run_mcp_operation
+from tools.connectors.legs.normalize import ALL_ACTIONS, MCP_ACTIONS, normalize_legs, validate_action
 from tools.registry import registry, tool_error
 
 
@@ -24,16 +24,16 @@ def manage_connections(
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
     action = str(args.get("action") or "status").strip().lower()
-    managed, mcp_targets, target_error = normalize_targets(args.get("connectors"))
-    if target_error:
-        return tool_error(target_error)
-    action_error = validate_action(action, managed, mcp_targets)
+    managed, mcp_legs, leg_error = normalize_legs(args.get("connectors"))
+    if leg_error:
+        return tool_error(leg_error)
+    action_error = validate_action(action, managed, mcp_legs)
     if action_error:
         return tool_error(action_error)
 
     if action in MCP_ACTIONS:
         return run_mcp_operation(
-            mcp_targets, action, backend=mcp_backend,
+            mcp_legs, action, backend=mcp_backend,
             connection_callback=connection_callback, session_id=session_id, tool_call_id=tool_call_id,
         )
 
@@ -48,7 +48,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
     "name": "manage_connections",
     "description": (
         "Connect the user to apps: managed connector accounts (Gmail, Notion, ...) served "
-        "through the tool gateway, and local MCP servers from the catalog. Targets go in "
+        "through the tool gateway, and local MCP servers from the catalog. Legs go in "
         "'connectors': a bare slug or {\"name\": \"gmail\"} is a managed connector; "
         "{\"name\": \"linear\", \"mcp\": true} is a local MCP server. "
         "Managed actions: 'status' lists connectors and whether each is connected; 'connect' "
@@ -60,7 +60,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "a link. Elsewhere the result carries a connect_url per app for the USER to open in a "
         "browser (never open it yourself); ask them to say when they are done, then use 'status'. "
         "When a connector tool call returns CONNECTION_REQUIRED, use 'connect'. "
-        "MCP actions (targets must carry \"mcp\": true): 'install' adds a catalog entry, "
+        "MCP actions (legs must carry \"mcp\": true): 'install' adds a catalog entry, "
         "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. "
         "They show the user an approval card and block until it settles. Never hand-edit "
         "mcp_servers config — always use this tool. Never re-ask after a skip or timeout: continue "
@@ -76,7 +76,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": list(ALL_ACTIONS),
-                "description": "Defaults to status. install/enable/authorize need mcp:true targets.",
+                "description": "Defaults to status. install/enable/authorize need mcp:true legs.",
             },
             "connectors": {
                 "type": "array",
@@ -95,7 +95,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                     ]
                 },
                 "description": (
-                    "Targets. REQUIRED for every action but status "
+                    "Legs. REQUIRED for every action but status "
                     "(e.g. [\"gmail\", {\"name\": \"linear\", \"mcp\": true}]); optional filter for status."
                 ),
             },

@@ -114,7 +114,7 @@ def _session_connector_rpc(rid, request, session, action):
     import model_tools
     import uuid
 
-    from tools.connectors import live
+    from tools.operations import Owner, operations
     from tui_gateway.connector_payload import connector_ui_payload
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
@@ -128,7 +128,7 @@ def _session_connector_rpc(rid, request, session, action):
     if action == "connect":
         args["connectors"] = request.connectors
     if action == "connect" and (
-            operation := live.current(session["session_key"], profile_home=session.get("profile_home"))) is not None:
+            operation := next(iter(operations.current(Owner.of(session["session_key"], profile_home=session.get("profile_home")))), None)) is not None:
         return _reissue(rid, operation, args)
     raw = model_tools.handle_function_call(
         "manage_connections",
@@ -146,13 +146,13 @@ def _session_connector_rpc(rid, request, session, action):
         if not isinstance(data.get("connectors"), list) or any(not isinstance(row, dict) for row in data["connectors"]):
             return _connector_rpc_error(rid, 5034, ConnectorErrorReason.invalid_connector_response, "Connector service returned an invalid response.")
         return _ok(rid, {"available": True, "connectors": connector_ui_payload(data["connectors"])})
-    if not isinstance(data.get("targets"), list):
+    if not isinstance(data.get("legs"), list):
         return _connector_rpc_error(rid, 5034, ConnectorErrorReason.invalid_connector_response, "Connector service returned no authorization results.")
     return _ok(rid, connector_ui_payload(data))
 
 
 def _account_connector_list(rid):
-    from tools.connectors.managed import managed_client
+    from tools.connectors.legs.managed import managed_client
     from tui_gateway.connector_payload import connector_ui_payload
 
     return _ok(rid, {"available": True, "connectors": connector_ui_payload(managed_client().list_connectors())})
@@ -167,10 +167,10 @@ def _account_connector_connect(rid, request):
     try:
         start = account.find_or_start_operation(request.connectors, action=action, profile_home=_account_home(request))
         if not start.started:
-            from tools.connectors.contract import TargetState
+            from tools.connectors.contract import LegState
 
-            targets = [start.operation.target(name) for name in request.connectors]
-            if any(target.state in (TargetState.failed, TargetState.expired) for target in targets):
+            legs = [start.operation.leg(name) for name in request.connectors]
+            if any(leg.state in (LegState.failed, LegState.expired) for leg in legs):
                 return _reissue(rid, start.operation, {"connectors": request.connectors})
             return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
         if not account.wait_for_prepare(start) or start.failed:
@@ -211,38 +211,38 @@ def _connector_rpc(rid, params, action):
 
 
 def _reissue(rid, operation, args):
-    from tools.connectors.contract import TargetState, allowed
+    from tools.connectors.contract import LegState, allowed
     from tui_gateway.connector_payload import connector_ui_payload
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
-    targets = [operation.target(name) for name in args["connectors"]]
-    if any(target is None for target in targets):
-        return _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_target, "No such target on the open operation.")
-    if len({target.kind for target in targets}) != 1:
-        return _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "One target kind per request.")
-    stale = [target.name for target in targets if target.state in (TargetState.failed, TargetState.expired)]
-    if len(stale) != len(targets):
+    legs = [operation.leg(name) for name in args["connectors"]]
+    if any(leg is None for leg in legs):
+        return _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_target, "No such leg on the open operation.")
+    if len({leg.kind for leg in legs}) != 1:
+        return _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "One leg kind per request.")
+    stale = [leg.name for leg in legs if leg.state in (LegState.failed, LegState.expired)]
+    if len(stale) != len(legs):
         return _connector_rpc_error(rid, 4002, ConnectorErrorReason.link_still_valid, "Reopen the stored link.")
     if operation.settled:
         return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "The operation has settled.")
-    if any(allowed(target.kind, target.state, TargetState.initiated) is None for target in targets):
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "This target cannot be run again.")
-    error = _REISSUE_BY_KIND[targets[0].kind](operation, stale)
+    if any(allowed(leg.kind, leg.state, LegState.initiated) is None for leg in legs):
+        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "This leg cannot be run again.")
+    error = _REISSUE_BY_KIND[legs[0].kind](operation, stale)
     if error:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "The target cannot be run again.")
+        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "The leg cannot be run again.")
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 
 def _remint_managed(operation, names):
     from tools.connectors.contract import Actor
-    from tools.connectors.managed import managed_client, mint
+    from tools.connectors.legs.managed import managed_client, mint
 
     mint(managed_client(), operation, names, reinitiate=True, actor=Actor.user)
     return None
 
 
 def _rerun_mcp(operation, names):
-    from tools.connectors.mcp import retry
+    from tools.connectors.legs.mcp import retry
 
     return retry(operation, names)
 
@@ -285,16 +285,16 @@ def _account_scope(request):
 
 
 def _operation_for_request(rid, request, session):
-    from tools.connectors import live
+    from tools.operations import Owner, operations
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
     if request.owner.type == "session":
-        operation = live.get(session["session_key"], request.op_id, profile_home=session.get("profile_home"))
+        operation = operations.get(Owner.of(session["session_key"], profile_home=session.get("profile_home")), request.op_id)
     else:
         with _account_scope(request):
             if closed := _account_gate_closed(rid):
                 return None, closed
-            operation = live.get_by_op_id(request.op_id, profile_home=_account_home(request))
+            operation = operations.find(Owner.of('', profile_home=_account_home(request)).profile, request.op_id)
     if operation is None:
         return None, _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_operation, "No open operation with that op_id.")
     return operation, None
@@ -354,9 +354,9 @@ def _(rid, params):
 
 
 def _apply_connection_answer(rid, answer, operation):
-    from tools.connectors import live
+    from tools.operations import operations
     from tools.connectors.contract import SettleReason
-    from tools.connectors.mcp import apply_answer
+    from tools.connectors.legs.mcp import apply_answer
     from tools.connectors.operation import IllegalTransition
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
@@ -367,7 +367,7 @@ def _apply_connection_answer(rid, answer, operation):
     if not operation.settled and operation.all_resolved:
         operation.settle(SettleReason.all_resolved)
     if operation.settled:
-        live.close(operation)
+        operations.close(operation)
     return _ok(rid, {"status": "ok", "settled": operation.settled})
 
 
@@ -388,9 +388,9 @@ def _connection_update(operation, change, snapshot):
         payload.update(change)
     if operation.session_key.startswith("account:"):
         # The broadcast reaches every client, so the link and the account id are stripped here.
-        payload["targets"] = [
-            {key: value for key, value in target.items() if key not in ("connect_url", "connection_id")}
-            for target in payload["targets"]
+        payload["legs"] = [
+            {key: value for key, value in leg.items() if key not in ("connect_url", "connection_id")}
+            for leg in payload["legs"]
         ]
         payload["owner"] = {"type": "account"}
         server._broadcast_global_event("connection.update", payload)

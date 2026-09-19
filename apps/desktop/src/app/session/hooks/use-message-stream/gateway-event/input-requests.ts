@@ -61,7 +61,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       }
 
       dispatchNativeNotification({
-        body: request.targets.map(target => target.name).join(', '),
+        body: request.legs.map(leg => leg.name).join(', '),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

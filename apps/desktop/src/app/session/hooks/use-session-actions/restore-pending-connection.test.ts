@@ -17,7 +17,7 @@ const SNAPSHOT = {
   op_id: 'op-1',
   seq: 3,
   timeout_seconds: 300,
-  targets: [{ action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const }],
+  legs: [{ action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const }],
   tool_call_id: 'call-1'
 }
 
@@ -64,7 +64,7 @@ describe('restoring a pending connection from a resume snapshot', () => {
       owner: { session_id: SESSION_ID, type: 'session' },
       seq: 7,
       settled: false,
-      targets: [{ action: 'connect', kind: 'connector', name: 'gmail', state: 'connected' }]
+      legs: [{ action: 'connect', kind: 'connector', name: 'gmail', state: 'connected' }]
     })
 
     setConnectionRequest(live)
@@ -72,7 +72,7 @@ describe('restoring a pending connection from a resume snapshot', () => {
     const state = restorePendingConnectionFromSnapshot({ pending_connection: SNAPSHOT }, SESSION_ID, Date.now() / 1000)
 
     expect($connectionRequests.get()[SESSION_ID]).toBe(live)
-    expect($connectionRequests.get()[SESSION_ID].targets[0].state).toBe('connected')
+    expect($connectionRequests.get()[SESSION_ID].legs[0].state).toBe('connected')
     // The live card is still the pending card: the session keeps waiting on it.
     expect(state.request).toBe(live)
   })

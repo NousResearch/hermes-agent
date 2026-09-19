@@ -361,3 +361,27 @@ def test_dispatch_ignores_invalid_refs_but_rejects_forged_observation_authority(
             assert response["error"]["code"] == 4000
             assert key in response["error"]["message"]
     assert calls == ["words"] * 8
+
+def test_batched_terminal_byte_eviction_keeps_retained_revisions_above_watermark():
+    import json
+    from tui_gateway.input_observation import record_outcome, MAX_BYTES, MAX_RECORDS
+
+    session = {"history_lock": threading.Lock()}
+    texts = [f"model work {n}" for n in range(MAX_RECORDS)]
+    for text in texts:
+        server._enqueue_prompt(session, text, None, input_batch=new_input(session, text, "\\" * 64))
+    entry = session["queued_prompt"]
+    inputs = project_inputs(session, entry["input_batch"])
+    assert inputs["inputs_complete"] and len(inputs["inputs"]) == MAX_RECORDS
+    turn = {"id": "t" * 32, "source": {"kind": "connection", "socket_id": "s" * 32}}
+    record_outcome(session, entry["input_batch"], "terminal", turn=turn, status="complete")
+    current = snapshot(session)
+    outcomes = current["outcomes"]
+    assert 0 < len(outcomes) < MAX_RECORDS  # Byte eviction within this single batch.
+    assert [item["input"] for item in outcomes] == inputs["inputs"][-len(outcomes):]
+    assert all(item["disposition"] == "terminal" and item["status"] == "complete"
+               and item["turn"] == turn for item in outcomes)
+    assert len(json.dumps(outcomes, separators=(",", ":"), ensure_ascii=True).encode("ascii")) <= MAX_BYTES
+    watermark = current["outcomes_truncated_before_revision"]
+    assert watermark is not None and all(item["revision"] > watermark for item in outcomes)
+    assert entry["text"] == "\n\n".join(texts)

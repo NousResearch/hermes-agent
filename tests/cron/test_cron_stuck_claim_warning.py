@@ -137,3 +137,45 @@ def test_repeated_scan_warns_only_once_per_cooldown(monkeypatch, tmp_path, caplo
     )
     with caplog.at_level(logging.WARNING, logger="cron.executions"):
         assert executions.warn_stuck_claims(inactivity_timeout=10.0) == 1
+
+
+def test_multiplex_scans_keep_each_others_cooldown(monkeypatch, tmp_path, caplog):
+    """Multiplex A,B,A scans: the B scan must not prune A's cooldown entry.
+
+    Regression test: the cooldown map was process-global but pruned against
+    each scan's own ledger, so an A,B,A probe warned 1,1,1 instead of 1,1,0.
+    """
+    import logging
+    import sqlite3
+
+    import cron.executions as executions
+
+    executions._stuck_claim_warned_at.clear()
+    ledger_a = tmp_path / "a" / "cron" / "executions.db"
+    ledger_b = tmp_path / "b" / "cron" / "executions.db"
+    monkeypatch.setattr(executions, "_owner_is_live", lambda _pid, _started: True)
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", ledger_a)
+    record_a = executions.create_execution("job-a", source="builtin")
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", ledger_b)
+    record_b = executions.create_execution("job-b", source="builtin")
+
+    old = (_hermes_now() - timedelta(seconds=3600)).isoformat()
+    with sqlite3.connect(ledger_a) as conn:
+        conn.execute(
+            "UPDATE executions SET claimed_at=? WHERE id=?", (old, record_a["id"])
+        )
+    with sqlite3.connect(ledger_b) as conn:
+        conn.execute(
+            "UPDATE executions SET claimed_at=? WHERE id=?", (old, record_b["id"])
+        )
+
+    with caplog.at_level(logging.WARNING, logger="cron.executions"):
+        monkeypatch.setattr(executions, "EXECUTIONS_FILE", ledger_a)
+        first_a = executions.warn_stuck_claims(inactivity_timeout=10.0)
+        monkeypatch.setattr(executions, "EXECUTIONS_FILE", ledger_b)
+        only_b = executions.warn_stuck_claims(inactivity_timeout=10.0)
+        monkeypatch.setattr(executions, "EXECUTIONS_FILE", ledger_a)
+        second_a = executions.warn_stuck_claims(inactivity_timeout=10.0)
+
+    assert (first_a, only_b, second_a) == (1, 1, 0)

@@ -34,7 +34,31 @@ STUCK_CLAIM_TIMEOUT_MULTIPLIER = 3
 # Per-claim warning rate limit: the recovery scan runs every few minutes, so
 # without dedupe the same old claim would re-log on every cycle.
 STUCK_CLAIM_WARN_COOLDOWN_SECONDS = 3600.0
-_stuck_claim_warned_at: Dict[str, float] = {}
+# Cooldown entries are keyed by (ledger scope, execution id). The scheduler can
+# scan several profile ledgers from one process; a process-global map keyed by
+# bare execution id would let one profile's scan prune another profile's
+# cooldown entry and re-warn the same unchanged claim.
+_stuck_claim_warned_at: Dict[tuple, float] = {}
+
+
+def _stuck_claim_scope(conn: sqlite3.Connection) -> str:
+    """Identify the ledger behind *conn* for cooldown scoping."""
+    try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            path = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+            if name == "main" and path:
+                return str(Path(str(path)).resolve())
+    except Exception:
+        pass
+    try:
+        if EXECUTIONS_FILE is not None:
+            return str(Path(str(EXECUTIONS_FILE)).resolve())
+        return str((get_hermes_home().resolve() / "cron" / "executions.db"))
+    except Exception:
+        return ""
+
+
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -412,12 +436,24 @@ def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: 
            WHERE status IN ('claimed','running')"""
     ).fetchall()
     candidates = [dict(row) for row in rows]
-    # Drop warned-state for rows that are gone so the map stays bounded.
-    live_ids = {candidate["id"] for candidate in candidates}
-    for known_id in list(_stuck_claim_warned_at):
-        if known_id not in live_ids:
-            del _stuck_claim_warned_at[known_id]
+    scope = _stuck_claim_scope(conn)
     now = time.time()
+    try:
+        cooldown = float(STUCK_CLAIM_WARN_COOLDOWN_SECONDS)
+    except (ValueError, TypeError):
+        cooldown = 0.0
+    # Prune only this ledger's scope so multiplex scans cannot drop each
+    # other's cooldown entries; also drop this scope's expired entries so
+    # the map stays bounded without relying on ledger membership.
+    live_ids = {candidate["id"] for candidate in candidates}
+    for known_key in list(_stuck_claim_warned_at):
+        known_scope, known_id = known_key
+        if known_scope != scope:
+            continue
+        if known_id not in live_ids:
+            del _stuck_claim_warned_at[known_key]
+        elif cooldown <= 0 or now - _stuck_claim_warned_at[known_key] >= cooldown:
+            del _stuck_claim_warned_at[known_key]
     warned = 0
     for candidate in candidates:
         try:
@@ -428,7 +464,7 @@ def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: 
             continue
         if age is None or age < threshold:
             continue
-        last_warned = _stuck_claim_warned_at.get(candidate["id"])
+        last_warned = _stuck_claim_warned_at.get((scope, candidate["id"]))
         if (
             last_warned is not None
             and now - last_warned < STUCK_CLAIM_WARN_COOLDOWN_SECONDS
@@ -443,7 +479,7 @@ def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: 
             candidate["id"], candidate["job_id"], candidate["status"],
             candidate["pid"], age, limit,
         )
-        _stuck_claim_warned_at[candidate["id"]] = now
+        _stuck_claim_warned_at[(scope, candidate["id"])] = now
         warned += 1
     return warned
 

@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -25,6 +26,12 @@ from hermes_time import now as _hermes_now
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
+# Wall-clock bound on a ``running`` execution whose owner process is still alive:
+# cron jobs are bounded by the inactivity watchdog (600 s) and the script timeout
+# (3600 s), so a run exceeding this ceiling is permanently wedged (e.g. deadlocked
+# on a futex behind a route flip, #115692) — never going to reach a terminal state
+# on its own. Generous enough that a legitimate long-running job is never cut off.
+STALE_RUNNING_CLAIM_TIMEOUT_SECONDS = 7200.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -276,8 +283,8 @@ def recover_interrupted_executions() -> int:
     recovered: List[Dict[str, Any]] = []
     with _transaction() as conn:
         rows = conn.execute(
-            """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at
+            """               SELECT id, status, process_id, pid, process_started_at,
+                      handoff_pending, handoff_started_at, claimed_at
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
@@ -285,7 +292,26 @@ def recover_interrupted_executions() -> int:
             if row["process_id"] == _PROCESS_ID:
                 continue
             if _owner_is_live(int(row["pid"]), row["process_started_at"]):
-                continue
+                # Owner process is alive. In the vast majority of cases the job is
+                # still running legitimately. But a worker permanently deadlocked
+                # on a lock (e.g. futex_wait after a route/proxy flip, #115692)
+                # also passes this check — the bounded wall-clock guard below
+                # catches that class: a cron job cannot legitimately outlast the
+                # script timeout (3600 s) plus the inactivity watchdog (600 s).
+                stale_claim = False
+                claimed_at_str = row["claimed_at"]
+                if claimed_at_str:
+                    try:
+                        claimed_dt = datetime.fromisoformat(claimed_at_str)
+                        if claimed_dt.tzinfo is None:
+                            claimed_dt = claimed_dt.replace(tzinfo=timezone.utc)
+                        elapsed = (datetime.now(timezone.utc) - claimed_dt).total_seconds()
+                        if elapsed > STALE_RUNNING_CLAIM_TIMEOUT_SECONDS:
+                            stale_claim = True
+                    except (ValueError, TypeError):
+                        pass
+                if not stale_claim:
+                    continue
             handoff_started_at = row["handoff_started_at"]
             if (
                 row["handoff_pending"]

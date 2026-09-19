@@ -1809,6 +1809,26 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 
 _strip_media_directives = _strip_media_tag_directives
 
+# Telegram refuses a caption longer than this; longer replies can never ride the audio.
+TELEGRAM_CAPTION_LIMIT = 1024
+
+
+def tts_caption_carries_text(platform: "Platform", text_content: Optional[str]) -> bool:
+    """True when the reply text will ride the FIRST TTS file as its Telegram caption.
+
+    Owns the caption decision for ``_play_tts_file`` and answers "may the text send be
+    skipped (or reordered)?" for callers ordering the written answer against the spoken
+    one: only the first file, only on Telegram, and only while the text still fits the
+    caption limit — a Telegram reply past the limit gets no caption at all, so treating
+    "Telegram" as "the caption will carry it" would hold the written answer behind the
+    whole playback on precisely the longest replies (#109996).
+    """
+    return bool(
+        platform == Platform.TELEGRAM
+        and text_content
+        and text_content[:TELEGRAM_CAPTION_LIMIT] == text_content
+    )
+
 
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
@@ -4012,9 +4032,10 @@ class BasePlatformAdapter(ABC):
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
         metadata: Dict[str, Any], record_delivery: Callable) -> bool:
         """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
+        along as a Telegram caption (first file, within the caption limit) so the text
+        send is skipped."""
         caption = None
-        if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
+        if first and tts_caption_carries_text(self.platform, text_content):
             caption = text_content
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
@@ -4371,8 +4392,19 @@ class BasePlatformAdapter(ABC):
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
+                # TTS plays before text only when the audio can carry the text: Telegram's
+                # first voice file rides the reply as its caption, but only within the
+                # 1024-char caption limit. Everywhere else the text is sent BEFORE the
+                # playback so the user reads the answer while it is spoken instead of
+                # waiting out the whole synthesis+playback (#109996).
+                _caption_eligible = tts_caption_carries_text(self.platform, text_content)
+                _text_first = bool(text_content) and not _caption_eligible
+                # Generated TTS files are removed after playback either way.
                 _tts_caption_delivered = False
+                if _text_first:
+                    await self._send_final_text(
+                        event, session_key, text_content, _final_thread_metadata,
+                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
@@ -4384,7 +4416,7 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
+                if text_content and not _tts_caption_delivered and not _text_first:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)

@@ -2,7 +2,7 @@ name: jev-approvals
 repo: https://github.com/anpicasso/hermes-jev-approvals
 sha: d323921ce3773dc50c26b00723009319ce6a4629
 subdir: plugin
-description: TypeSafe's Jev decision model as the smart-approval reviewer only: it cannot generate text and refuses any other prompt. Dual route (TypeSafe direct or OpenRouter), model listing from the live upstream, decision log, retries.
+description: "TypeSafe's Jev decision model as the smart-approval reviewer only: it cannot generate text and refuses any other prompt. Dual route (TypeSafe direct or OpenRouter), model listing from the live upstream, decision log, retries."
 maintainer: anpicasso
 tier: community
 category: models

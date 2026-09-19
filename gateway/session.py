@@ -1670,7 +1670,8 @@ class SessionStore(
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
     def switch_session(
-        self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
+        self, session_key: str, target_session_id: str, conversation_kind: str = "interactive",
+        persisted_cwd: Optional[str] = None, *, expected_session_id: Optional[str] = None,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI.

@@ -7606,6 +7606,7 @@ def _next_fallback_after_quarantine(
     discovery chain. ``task_chain_only`` (explicit-provider auth error) stops at the task chain —
     the user never opted that task into discovery or the main model."""
     reason = "fallback candidate unavailable"
+    fallback_kwargs = {"async_mode": True} if route.async_mode else {}
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
         failed_base_url=route.base_info, failure_scope=failure_scope)

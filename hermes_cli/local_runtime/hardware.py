@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_cli.local_runtime.devices import probe_devices as _accelerator_devices
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,11 @@ _POOL_NEGATIVE_TTL_S = 60.0
 _pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
-# — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
-_DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
+# '  Vulkan0: AMD Radeon RX 6800 XT (16368 MiB, 14692 MiB free)'
+# — greedy name pins the LAST parenthesized group, so names with parentheses parse.
+_DEVICE_LINE_RE = re.compile(
+    r"^\s*(?P<backend>[A-Za-z]+)\d+:\s*(?P<name>.*)\s+"
+    r"\((?P<total>\d+)\s*MiB,\s*(?P<free>\d+)\s*MiB free\)\s*$")
 
 
 def _stdout(*argv: str) -> str:
@@ -193,29 +197,38 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
-def _engine_device_pool() -> "tuple[int, bool | None] | None":
-    """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
-    fallback when the driver API is unreachable: asks the exact binary that will do the
-    allocating. Carries no integrated verdict — callers must gate it."""
+def _engine_device_info() -> "tuple[int, int, str, str] | None":
+    """Return total, free, backend and name from an accelerated runtime."""
     with suppress(Exception):  # a probe miss must never block budgeting
         from hermes_cli.local_runtime.binaries import installed_tags, runtimes_root, server_binary
 
-        tags = installed_tags()
-        if not tags:
-            return None
-        backend_dirs = [d for d in (runtimes_root() / tags[0]).iterdir() if d.is_dir()]
-        if not backend_dirs:
-            return None
-        exe = server_binary(backend_dirs[0])
-        out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, timeout=30, cwd=str(exe.parent))
-        if out.returncode != 0:
-            return None
-        for line in (out.stdout + out.stderr).splitlines():
-            m = _DEVICE_LINE_RE.search(line)
-            if m:
-                return int(m.group(1)) << 20, None
+        priority = {"cuda": 0, "hip": 1, "vulkan": 2, "metal": 3}
+        for tag in installed_tags():
+            root = runtimes_root() / tag
+            backend_dirs = sorted(
+                (d for d in root.iterdir() if d.is_dir() and d.name.lower() in priority),
+                key=lambda d: priority[d.name.lower()])
+            for backend_dir in backend_dirs:
+                try:
+                    exe = server_binary(backend_dir)
+                    out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
+                                         text=True, timeout=30, cwd=str(exe.parent))
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                if out.returncode != 0:
+                    continue
+                for line in (out.stdout + out.stderr).splitlines():
+                    if (match := _DEVICE_LINE_RE.search(line)) is not None:
+                        return (int(match.group("total")) << 20,
+                                int(match.group("free")) << 20,
+                                match.group("backend"), match.group("name").strip())
     return None
+
+
+def _engine_device_pool() -> "tuple[int, bool | None] | None":
+    """Allocator total from an accelerated runtime, without an integrated verdict."""
+    info = _engine_device_info()
+    return (info[0], None) if info is not None and info[2].lower() == "cuda" else None
 
 
 def _device_pool_view() -> "tuple[int, bool | None] | None":
@@ -256,7 +269,31 @@ def _uma_budget(base: int, total: int) -> HardwareBudget:
                           ram_available_bytes=0, uma=True)
 
 
-def probe_budget(*, planning: bool = False) -> HardwareBudget:
+def _configured_install_dir() -> Path:
+    from hermes_cli.config import load_config
+    from hermes_cli.local_runtime.binaries import default_tag, installed_tags, runtimes_root, select_backend
+    from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
+
+    from hermes_cli.local_runtime.recovery import read_state, recorded_process
+
+    state = read_state()
+    if recorded_process(state) is not None:
+        with suppress(ValueError):
+            relative = Path(state["executable"]).relative_to(runtimes_root())
+            if len(relative.parts) >= 3:
+                return runtimes_root() / relative.parts[0] / relative.parts[1]
+    section = load_config().get("local_runtime") or {}
+    backend = section.get("backend", "auto")
+    if backend == "auto":
+        backend = select_backend(_detect_gpu_vendor())
+    tags = installed_tags()
+    requested = section.get("tag") or default_tag()
+    tag = requested if requested in tags else next(iter(tags), requested)
+    directory = runtimes_root() / tag / backend
+    return directory
+
+
+def probe_budget(*, planning: bool = False, install_dir: Path | None = None) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
     ``planning=False``: LIVE budget (free VRAM now) for launch-time fit and growth re-grants.
@@ -265,14 +302,31 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
     ram_total, ram_avail = _ram_bytes()
+    install_dir = install_dir if install_dir is not None else _configured_install_dir()
+    backend = install_dir.name if install_dir is not None else None
+    if backend in ("cpu", "metal"):
+        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+    if backend in ("vulkan", "hip"):
+        devices = _accelerator_devices(install_dir)
+        if not devices:
+            return HardwareBudget(0, 0, ram_total if planning else ram_avail)
+        device = max(devices, key=lambda d: (d["type"] == 1, d["total"]))
+        if device["type"] == 2:
+            budget = _uma_budget(ram_total if planning else ram_avail, ram_total)
+            budget.device = device["name"]
+            return budget
+        total, free = device["total"], device["free"]
+        margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
+        return HardwareBudget(max(0, (total if planning else free) - margin), total,
+                              ram_total if planning else ram_avail, device=device["name"])
     vram = _nvidia_vram()
+    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
@@ -290,8 +344,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         return _uma_budget(base, unified)
 
     if vram is None:
-        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
-        # Silicon) — conservative for discrete AMD until a vendor probe lands.
+        # Metal and CPU paths budget from RAM as UMA; unknown accelerators stay conservative.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
     total, free = vram

@@ -304,7 +304,7 @@ def test_growth_requires_an_admissible_materialized_preset(hermes_home, tmp_path
     _stage_fake_gguf(mdir, model_id)
     profile = replace(entry.profile(entry.variants[-1]), kv_scale=1.0)
     monkeypatch.setattr(bootstrap, "staged_models", lambda: list(mdir.glob("*.gguf")))
-    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True, install_dir=tmp_path / "cpu"))
     monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
     from hermes_cli.local_runtime import gguf, estimator
     monkeypatch.setattr(gguf, "read_gguf_header", lambda p: _header_stub())

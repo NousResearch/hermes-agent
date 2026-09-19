@@ -36,11 +36,11 @@ export function installLocalRuntime(backend?: string): Promise<{ backend: string
 }
 
 export interface QuickstartResponse {
-  display_name: string
-  download_bytes: number
+  display_name: null | string
+  download_bytes: null | number
   job_id: string
-  model_id: string
-  needs_download: boolean
+  model_id: null | string
+  needs_download: boolean | null
   needs_runtime: boolean
 }
 

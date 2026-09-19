@@ -1325,6 +1325,16 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
     from tui_gateway import server_requests
     if questions:
+        if len(questions) == 1:
+            # Keep the legacy scalar bridge so older Desktop clients can render
+            # and answer this one-question batch.
+            entry = questions[0]
+            payload = {"question": entry["question"], "choices": entry["choices"]}
+            if entry["multi_select"]:
+                payload["multi_select"] = True
+            result = server_requests.send("clarify", sid, payload, timeout=_clarify_timeout_seconds())
+            answer = (result or {}).get("answer", "")
+            return answer if isinstance(answer, str) else ""
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
         result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),

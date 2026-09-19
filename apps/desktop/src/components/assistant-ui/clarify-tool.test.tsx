@@ -235,6 +235,33 @@ describe('ClarifyTool choice selection', () => {
     })
     expect(hasOpenServerRequest('request-1')).toBe(false)
   })
+
+  it('keeps the legacy single-question response scalar for a one-entry batch fallback', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    // The gateway intentionally emits this historical shape when a batch has
+    // exactly one entry, so an older Desktop can render and answer it.
+    setClarifyRequest({
+      choices: ['a', 'b'],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'legacy-single-batch',
+      sessionId: 'session-1'
+    })
+    renderClarify(<ClarifyTool {...liveClarifyProps(['a', 'b'])} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Bb/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'b',
+        request_id: 'legacy-single-batch'
+      })
+    })
+  })
 })
 
 describe('readClarifyResult', () => {

@@ -302,6 +302,30 @@ describe('clarify request stream hydration', () => {
     expect($clarifyRequests.get()[SID]?.questions).toHaveLength(2)
   })
 
+  it('handles a one-entry batch through the legacy single-question wire payload', () => {
+    mountStream()
+
+    toolStart({
+      args: { questions: [{ question: 'Deploy?', choices: ['now', 'later'] }] },
+      name: 'clarify',
+      tool_id: 'call-one-entry-batch'
+    })
+    // The backend deliberately omits `questions` here for old Desktop clients.
+    clarifyRequest({ choices: ['now', 'later'], question: 'Deploy?', request_id: 'req-one-entry-batch' })
+
+    expect(clarifyParts()).toHaveLength(1)
+    expect(clarifyParts()[0]).toMatchObject({
+      args: { questions: [{ choices: ['now', 'later'], question: 'Deploy?' }] },
+      toolCallId: 'call-one-entry-batch'
+    })
+    expect(clarifyParts()[0]).not.toHaveProperty('result')
+    expect($clarifyRequests.get()[SID]).toMatchObject({
+      question: 'Deploy?',
+      requestId: 'req-one-entry-batch'
+    })
+    expect($clarifyRequests.get()[SID]?.questions).toBeUndefined()
+  })
+
   it('does not duplicate when the batch clarify.request arrives before tool.start', () => {
     mountStream()
 

@@ -10,6 +10,7 @@ from tools.clarify_tool import (
     MAX_CHOICES,
     MAX_QUESTIONS,
     CLARIFY_SCHEMA,
+    TIMEOUT_RESPONSE,
     _flatten_choice,
 )
 
@@ -504,6 +505,65 @@ class TestClarifyBatchValidation:
 
 class TestClarifyBatchDispatch:
     """Batch-capable callbacks get the list once. Legacy callbacks loop."""
+
+    def test_one_entry_batch_accepts_legacy_scalar_response(self):
+        """A batch callback may use the legacy one-question wire contract."""
+        seen = {}
+
+        def legacy_wire_cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return "blue"
+
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "Color?", "choices": ["blue", "red"]}],
+            callback=legacy_wire_cb,
+        ))
+
+        assert seen["questions"][0]["qid"] == "q0"
+        assert result == {
+            "responses": [{
+                "question": "Color?", "choices_offered": ["blue", "red"],
+                "user_response": "blue",
+            }]
+        }
+
+    def test_one_entry_batch_accepts_json_string_scalar_response(self):
+        def legacy_wire_cb(question, choices, multi_select=False, questions=None):
+            return json.dumps("blue")
+
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "Color?", "choices": ["blue", "red"]}],
+            callback=legacy_wire_cb,
+        ))
+
+        assert result["responses"][0]["user_response"] == "blue"
+
+    def test_one_entry_batch_accepts_legacy_multiselect_replies(self):
+        """One-question multi-select keeps JSON-array / list / comma replies."""
+        questions = [{
+            "question": "Colors?",
+            "choices": ["red", "blue", "green"],
+            "multi_select": True,
+        }]
+        for raw in ('["red", "blue"]', ["red", "blue"], "red, blue"):
+            def legacy_wire_cb(question, choices, multi_select=False, questions=None, _raw=raw):
+                return _raw
+
+            result = json.loads(clarify_tool("", questions=questions, callback=legacy_wire_cb))
+            assert result["responses"][0]["user_response"] == ["red", "blue"], raw
+
+    def test_one_entry_legacy_timeout_remains_unanswered(self):
+        def legacy_wire_cb(question, choices, multi_select=False, questions=None):
+            return TIMEOUT_RESPONSE
+
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "Color?"}], callback=legacy_wire_cb,
+        ))
+
+        assert result == {
+            "responses": [{"question": "Color?", "choices_offered": None, "user_response": ""}],
+            "timed_out": True,
+        }
 
     def test_batch_callback_receives_list_once(self):
         calls = []

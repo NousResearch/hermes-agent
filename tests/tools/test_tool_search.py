@@ -46,6 +46,21 @@ class TestConfigParsing:
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 5.0
 
+    def test_default_defer_set_is_shared_with_config_registry(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
+
+        configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+        assert configured
+        assert _DEFAULT_DEFERRED_TOOLS == configured
+        assert ToolSearchConfig.from_raw(None).effective_defer_tools == configured
+
+    def test_explicit_defer_list_and_empty_list_override_default(self):
+        from tools.tool_search import ToolSearchConfig
+
+        assert ToolSearchConfig.from_raw({"defer": ["terminal"]}).effective_defer_tools == {"terminal"}
+        assert ToolSearchConfig.from_raw({"defer": []}).effective_defer_tools == set()
+
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(True)

@@ -16,6 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
@@ -127,17 +128,12 @@ def _core_tool_names() -> frozenset[str]:
 # their schema; once enabled they stay direct unless the deferral list names them.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
-# Event-triggered core tools deferred BY DEFAULT (a catalog stub suffices); the ``defer``
-# config replaces this wholesale ([] = everything eager). POST-rename names. ``clarify``
-# is deliberately absent: A/B showed deferring it collapsed structured-clarify usage
-# (18/18 -> 7/18) — the ask-the-user affordance must be ambient, a stub is not enough.
-_DEFAULT_DEFERRED_TOOLS = frozenset({
-    "computer_use", "session_search", "image_generate",
-    "todo_list", "process_manage", "cronjob_manage",
-    # Desktop GUI surface (desktop_ui + project toolsets)
-    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
-    "show_tip", "desktop_project", "close_terminal",
-    "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
+# Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
+# list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
+# ``defer`` list replaces this wholesale ([] = everything eager). ``clarify`` is deliberately
+# absent: A/B showed deferring it collapsed structured-clarify usage (18/18 -> 7/18) — the
+# ask-the-user affordance must be ambient, a stub is not enough.
+_DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
 
 
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:

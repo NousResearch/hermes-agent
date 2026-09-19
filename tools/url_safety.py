@@ -157,8 +157,10 @@ def _resolve_allow_private_urls() -> bool:
     if env_val in {"false", "0", "no"}:
         return False  # explicit false does not fall through to config
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
+        # Effective user config, not the raw file: an administrator pins this policy in the
+        # managed scope (/etc/hermes/config.yaml), which read_raw_config() does not see.
+        from hermes_cli.config_effective import load_user_config_effective
+        cfg = load_user_config_effective()
         for section in ("security", "browser"):  # preferred, then legacy
             block = cfg.get(section, {})
             if isinstance(block, dict) and is_truthy_value(block.get("allow_private_urls"), default=False):

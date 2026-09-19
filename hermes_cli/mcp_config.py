@@ -7,6 +7,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.redact import redact_credential_url
+
 from hermes_cli.config import (
     cfg_get,
     load_config,
@@ -177,6 +179,16 @@ def _redact_probe_exception(exc: BaseException) -> Exception:
     except Exception:
         pass
     return RuntimeError(safe)
+
+
+def _redact_url(url: Any) -> str:
+    """Mask sensitive-looking query parameter values in a URL."""
+    return redact_credential_url(str(url))
+
+
+def _redact_diagnostic(text: Any) -> str:
+    """Mask credential-bearing URL values and residual MCP probe header leaks."""
+    return redact_mcp_probe_text(redact_credential_url(text))
 
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -535,7 +547,7 @@ def _configure_http_auth(
             else:
                 _warning("OAuth setup failed — MCP SDK auth module not available")
         except Exception as exc:
-            _warning(f"OAuth error: {exc}")
+            _warning(f"OAuth error: {_redact_diagnostic(exc)}")
         if not oauth_ok:
             _info("This server may not support OAuth.")
             if not _confirm("Continue without authentication?", default=True):
@@ -543,7 +555,7 @@ def _configure_http_auth(
                 return False
         return True
 
-    _info(f"Connecting to {url}")
+    _info(f"Connecting to {_redact_url(url)}")
     needs_auth = _confirm("Does this server require authentication?", default=True)
     if needs_auth and (auth_type == "header" or not auth_type):
         env_key = _env_key_for_server(name)
@@ -651,7 +663,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {_probe_failure_reason(exc)}")
+        _error(f"Failed to connect: {_redact_diagnostic(_probe_failure_reason(exc))}")
         _info(_probe_failure_next_step(name, exc))
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
@@ -719,7 +731,7 @@ def cmd_mcp_list(args=None):
 
     for name, cfg in servers.items():
         if "url" in cfg:
-            transport = cfg["url"]
+            transport = _redact_url(cfg["url"])
         elif "command" in cfg:
             transport = cfg["command"]
             cmd_args = cfg.get("args", [])
@@ -779,7 +791,7 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        _info(f"Transport: HTTP → {_redact_url(cfg['url'])}")
     else:
         _info(f"Transport: stdio → {cfg.get('command', '?')}")
 
@@ -800,7 +812,7 @@ def cmd_mcp_test(args):
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
         elapsed = time.monotonic() - start
-        _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
+        _error(f"Connection failed ({elapsed:.1f}s): {_redact_diagnostic(_probe_failure_reason(exc))}")
         _info(_probe_failure_next_step(name, exc))
         return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
@@ -837,7 +849,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         if selected_flow == "browser":
             get_manager().remove(name)
     except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
+        _warning(f"Could not clear existing OAuth state: {_redact_diagnostic(exc)}")
 
     print()
     _info(f"Starting OAuth flow for '{name}'...")
@@ -875,7 +887,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             )
             print()
             for line in (
-                "mcp_servers:", f"  {name}:", f"    url: {url}", "    auth: oauth", "    oauth:",
+                "mcp_servers:", f"  {name}:", f"    url: {_redact_url(url)}", "    auth: oauth", "    oauth:",
                 '      client_id: "<your-oauth-client-id>"',
                 '      client_secret: "<your-oauth-client-secret>"',
             ):
@@ -894,7 +906,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {redact_mcp_probe_text(humanized or exc)}")
+        _error(f"Authentication failed: {_redact_diagnostic(humanized or exc)}")
         return False
 
 
@@ -989,7 +1001,7 @@ def cmd_mcp_configure(args):
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
+        _error(f"Failed to connect: {_redact_diagnostic(exc)}")
         return
     if not all_tools:
         _warning("Server reports no tools.")

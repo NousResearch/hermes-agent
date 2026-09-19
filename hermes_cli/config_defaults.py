@@ -911,7 +911,9 @@ DEFAULT_CONFIG = {
         # Per-platform: display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,
-            "fields": ["model", "context_pct", "cwd"],  # order shown; drop any to hide
+            # order shown; drop any to hide. Opt-in extras: latency, served_model (alias → the
+            # deployment a routing proxy reported / Hermes' fallback route).
+            "fields": ["model", "context_pct", "cwd"],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
         # config controls visibility not ordering); empty = default set. Available: model,

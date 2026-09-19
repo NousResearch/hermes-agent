@@ -29,9 +29,9 @@ export interface FuzzyMatch {
 
 const WORD_BOUNDARY = /[-_/.\s]/
 
-/** Length-preserving search fold: lower-case and `[-_.]` → space. */
+/** Length-preserving search fold: lower-case and `[-_./]` → space. */
 export function searchFold(value: string): string {
-  return value.toLowerCase().replace(/[-_.]/g, ' ')
+  return value.toLowerCase().replace(/[-_./]/g, ' ')
 }
 
 function isBoundary(target: string, index: number): boolean {

@@ -261,7 +261,9 @@ export function FloatingOverlays({
   }
 
   if (overlay.modelPicker) {
-    const initialRefresh = typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true
+    const pickerOpts = typeof overlay.modelPicker === 'object' ? overlay.modelPicker : {}
+    const initialRefresh = pickerOpts.refresh === true
+    const initialStage = pickerOpts.stage
 
     widgets.push({
       id: 'model-picker',
@@ -270,6 +272,7 @@ export function FloatingOverlays({
           <ModelPicker
             gw={gw}
             initialRefresh={initialRefresh}
+            initialStage={initialStage}
             maxWidth={width}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}

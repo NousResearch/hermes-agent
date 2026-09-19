@@ -1892,28 +1892,7 @@ class GatewayShutdownMixin:
         # never accounts for — the close-time page-write damage in #101093 and the split WAL generation in
         # #101064. The wait is bounded and clamped to what is left of the shutdown watchdog leash (minus a
         # second for the close itself), so a stuck worker can never cost us the post-close cleanup window
-        # Quiesce cron/deferred workers first.
-        _writer_quiesce_budget = resolve_cron_drain_budget(
-            timeout, DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
-            watchdog_delay=resolve_shutdown_watchdog_delay(timeout), elapsed=ctx.elapsed()
-        )
-        _writer_deadline = time.monotonic() + _writer_quiesce_budget
-        _remaining_cron = self._active_cron_job_count()
-        _remaining_deferred = ctx.deferred_count()
-        while (_remaining_cron > 0 or _remaining_deferred > 0) and time.monotonic() < _writer_deadline:
-            time.sleep(0.1)
-            _remaining_cron = self._active_cron_job_count()
-            _remaining_deferred = ctx.deferred_count()
-
-        if _remaining_cron > 0 or _remaining_deferred > 0:
-            logger.warning(
-                "Shutdown phase: %d cron job(s) and %d deferred worker(s) still running after a %.2fs "
-                "quiesce \u2014 skipping the SessionDB close/checkpoint to avoid racing a live write (#102219); "
-                "handles are left open for SQLite to recover on next open",
-                _remaining_cron, _remaining_deferred, _writer_quiesce_budget,
-            )
-            return
-
+        # (#82161).
         _exec_quiesce_budget = max(
             0.0, min(_EXECUTOR_QUIESCE_TIMEOUT, resolve_shutdown_watchdog_delay(timeout) - ctx.elapsed() - 1.0),
         )
@@ -1925,6 +1904,16 @@ class GatewayShutdownMixin:
                 "Shutdown phase: %d executor worker(s) still running after a %.2fs quiesce — skipping the "
                 "SessionDB close/checkpoint to avoid racing a live write (#101093); handles are left "
                 "open for SQLite to recover on next open", _exec_live, _exec_quiesce_budget,
+            )
+            return
+        # Cron jobs run on the scheduler's own pool, not self._executor, so the join above never sees
+        # them. A writer that outlived the cron drain is mid-write for the same #101093 reasons; the
+        # drain already spent its budget, so no second wait — leave the handles open (#102198).
+        _cron_live = self._active_cron_job_count()
+        if _cron_live:
+            logger.warning(
+                "Shutdown phase: %d cron job(s) still running after the cron drain — skipping the SessionDB "
+                "close/checkpoint, leaving state.db open for the cron writer (#102198)", _cron_live,
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())

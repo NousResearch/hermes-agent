@@ -753,8 +753,22 @@ def _handle_request_review(args: dict, **kw) -> str:
                 f"Your task is still in-flight (no state change) and its scratch workspace was "
                 f"kept. Fix the artifact path or storage error, then retry "
                 f"kanban_request_review with the same handoff.")
-        _check(ok, f"could not request review for {tid}: "
-                   f"{fail_reason or 'unknown id or not in running/ready'}")
+        if not ok:
+            # request_review reports the parent-dependency refusal as one generic
+            # string (kanban_db._ret), same collapse kanban_complete had before it
+            # started naming the blockers: a worker or operator seeing "parent
+            # dependencies are not satisfied" with no ids has to go dig for which
+            # parent reopened. Name them via the same shared query kanban_complete,
+            # the CLI and kanban_show all use (kanban_db.unsatisfied_parents).
+            if fail_reason == "parent dependencies are not satisfied":
+                blockers = kb.unsatisfied_parents(conn, tid)
+                if blockers:
+                    detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                    raise _Reject(
+                        f"could not request review for {tid}: unsatisfied parent dependencies: "
+                        f"{detail}; complete the parents first (done or archived)")
+            _check(False, f"could not request review for {tid}: "
+                          f"{fail_reason or 'unknown id or not in running/ready'}")
         return _ok_landed(kb, conn, tid, "review")
 
 

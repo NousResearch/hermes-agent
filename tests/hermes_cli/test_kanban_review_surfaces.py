@@ -434,3 +434,64 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
         dashboard = _compute_task_diagnostics(conn, task_ids=[parent_id])
     assert dashboard[parent_id][0]["kind"] == "review_dependency_deadlock"
     assert dashboard[parent_id][0]["data"]["waiting_child_ids"] == [child_id]
+
+
+def _reopened_parent_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """A claimed (running) child whose parent reopened mid-run. Returns (parent_id, child_id) —
+    mirrors tests/tools/test_kanban_complete_parents_tool.py's running_child_with_parent fixture,
+    which proved kanban_complete had this same generic-refusal collapse (#113373)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="gate", assignee="op")
+        assert kb.complete_task(conn, parent_id, result="parent shipped")
+        child_id = kb.create_task(conn, title="child work", assignee="builder", parents=[parent_id])
+        assert kb.claim_task(conn, child_id, claimer="builder:1") is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'todo', completed_at = NULL WHERE id = ?",
+                (parent_id,),
+            )
+    return parent_id, child_id
+
+
+def test_request_review_tool_names_unsatisfied_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """kanban_request_review must name the blocking parent, not collapse into the generic
+    "parent dependencies are not satisfied" — the same collapse kanban_complete had before
+    #113373's fix (50edbb3d5d) taught it to name the blockers via kanban_tools's own
+    ``_unsatisfied_parent_blockers`` helper. request_review shares the exact same
+    kanban_db._parents_satisfied gate but never got the same treatment."""
+    parent_id, child_id = _reopened_parent_child(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", child_id)
+
+    from tools import kanban_tools as tools
+
+    out = json.loads(tools._handle_request_review({"summary": "genuinely done work"}))
+    assert "error" in out
+    assert parent_id in out["error"]
+    assert "parent" in out["error"].lower()
+    assert "not satisfied" not in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, child_id).status == "running"
+
+
+def test_request_review_cli_names_unsatisfied_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same regression as the tool test above, on the CLI surface (``hermes kanban
+    request-review``), which shares kanban_db.request_review's generic ``fail_reason``."""
+    parent_id, child_id = _reopened_parent_child(tmp_path, monkeypatch)
+
+    output = kc.run_slash(f"request-review {child_id} --summary 'genuinely done work'")
+    assert parent_id in output
+    assert "parent" in output.lower()
+    assert "not satisfied" not in output
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, child_id).status == "running"

@@ -18,6 +18,7 @@ import { clearAllSessionStates } from './session-states'
 import {
   $sessionSeenCounts,
   $unreadFinishedMarkers,
+  ackStoredSessionId,
   forgetSessionUnread,
   markSessionUnreadFinished
 } from './session-unread'
@@ -183,6 +184,38 @@ describe('persisted unread (session-unread)', () => {
 
     expect($sessionSeenCounts.get()).toEqual({ alpha: { s1: 3 }, beta: { s1: 6 } })
     expect($unreadFinishedMarkers.get()).toEqual({ alpha: ['s1'] })
+  })
+
+  it('acks a marker filed under a non-active profile when the row is not loaded', () => {
+    // A session in another profile finishes while the gateway is on 'default'.
+    // The live edge files the marker under the ROW's own profile ('alpha')…
+    setSessions([session({ id: 's2', profile: 'alpha', message_count: 4 })])
+    markSessionUnreadFinished('s2')
+    expect($unreadFinishedMarkers.get()).toEqual({ alpha: ['s2'] })
+
+    // …then the profile's section unloads (scope switch, collapsed profile),
+    // and the user opens the session. No row is loaded and the selection
+    // carries no owner hint, so the ack must retire the marker from EVERY
+    // bucket — the active gateway's bucket ('default') is empty; the marker
+    // lives in alpha's.
+    setSessions([])
+    setSelectedStoredSessionId('s2')
+    expect($unreadFinishedMarkers.get()).toEqual({})
+
+    // A later refresh must not repaint the dot from the stale marker.
+    setSessions([session({ id: 's2', profile: 'alpha', message_count: 4 })])
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('keeps a hinted no-row ack scoped to the hinted bucket', () => {
+    // Hidden sessions (e.g. a Bot Mode canonical chat) pass the owning
+    // profile as the hint; the ack must not touch other profiles'
+    // identically-named ids.
+    $unreadFinishedMarkers.set({ alpha: ['s2'], beta: ['s2'] })
+
+    ackStoredSessionId('s2', 'alpha')
+
+    expect($unreadFinishedMarkers.get()).toEqual({ beta: ['s2'] })
   })
 
   it('files a live-edge marker with no loaded row under the active gateway profile', () => {

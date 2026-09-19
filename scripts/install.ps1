@@ -2602,6 +2602,19 @@ function Install-Venv {
     $venvBackupName = $null
     $venvParked = $false
     try {
+    # A previous venv stage may have finished (or been interrupted after
+    # parking the old tree) without reaching dependency validation. Restore
+    # that transaction's original generation before beginning another recreate
+    # so a retry cannot promote the unverified replacement to rollback source.
+    $pendingVenvBackup = Get-PendingVenvBackup
+    if ($pendingVenvBackup) {
+        Write-Warn "Reconciling unfinished venv transaction before retrying"
+        Restore-VenvBackup
+        if (Get-PendingVenvBackup) {
+            throw "Could not restore the original venv from $pendingVenvBackup; retry aborted during transaction recovery."
+        }
+    }
+
     if (Test-Path -LiteralPath "venv") {
         $venvHadExistingVenv = $true
         Write-Info "Virtual environment already exists, recreating..."
@@ -2695,11 +2708,17 @@ function Install-Venv {
         # interpreter and no rollback source. Abort with the previous install
         # intact so the user can close holders and retry.
         $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+        # Publish intent before the atomic rename. If this process is killed
+        # after publication but before the rename, Get-PendingVenvBackup drops
+        # the marker because its target does not exist. If it is killed after
+        # the rename, the next attempt can restore this original generation.
+        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
         try {
             Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
             $venvParked = $true
         } catch {
             $renameErr = $_.Exception.Message
+            Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
             throw (
                 "Could not move the existing venv aside ($renameErr). " +
                 "A process still has the install directory open (often a non-Hermes " +
@@ -2755,10 +2774,9 @@ function Install-Venv {
     # committed after Install-Dependencies' baseline-import gate passes -- the
     # bootstrap runs the stages as separate processes, and every dependency
     # tier (or the import validation) can still fail after this stage
-    # succeeds. Record the parked backup so the dependency stage can restore
-    # it on failure and commit its cleanup only after validation (#83149).
+    # succeeds. The marker was published before parking the original so an
+    # interruption cannot strand the only rollback source without a pointer.
     if ($venvParked) {
-        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
         Write-Info "Previous venv parked at $venvBackupName until the dependency install is verified"
     }
 
@@ -2791,6 +2809,7 @@ function Install-Venv {
                     Write-Warn "Failed replacement parked at $failedVenvName"
                 }
                 Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
+                Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
                 Write-Warn "Restored previous virtual environment after failed recreate"
             } catch {
                 $rollbackError = $_.Exception.Message

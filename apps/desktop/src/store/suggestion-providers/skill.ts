@@ -64,6 +64,15 @@ export function skillHit(pattern: RegExp, haystack: string): boolean {
   return false
 }
 
+/** Strip whitespace-bounded /<token> slash commands the user authored, so a
+ *  skill name inside a command ("run /github-auth") does not self-trigger the
+ *  prose suggestion. Whitespace-bounded on purpose: a URL like /api/v1 mid-prose
+ *  has no leading whitespace and is left intact. Exported so the provider and
+ *  its tests exercise the same sanitizer instead of a copy. */
+export function stripSlashTokens(text: string): string {
+  return text.replace(/\s\/[\w-]+/g, ' ')
+}
+
 /** Workspace homonym guard, exported for tests: a skill named like the
  *  working directory is the project's name, not a request for the skill.
  *  Working in `~/www/hermes-agent`, the draft says "hermes-agent" constantly
@@ -219,7 +228,10 @@ registerDraftProvider('skill', async ({ sessionId, text }) => {
     return []
   }
 
-  const haystack = text.toLowerCase()
+  // Strip any other /<token> the user has authored (whitespace-bounded, so
+  // URLs like /api/v1 mid-prose are not destroyed — a / preceded by another
+  // / is left alone because there is no whitespace boundary).
+  const haystack = stripSlashTokens(text).toLowerCase()
   const cwd = $currentCwd.get()
   const skills = await loadIndex()
   const matched = skills.filter(skill => skillHit(skill.pattern, haystack) && !collidesWithWorkspace(skill.name, cwd))

@@ -214,18 +214,19 @@ async def test_stuck_worker_skips_the_session_db_close():
 
 
 @pytest.mark.asyncio
-async def test_stuck_cron_writer_skips_the_session_db_close(monkeypatch):
-    """A cron job that outlived the cron drain must not have state.db closed under it (#102198).
+@pytest.mark.parametrize("counter", ["_active_cron_job_count", "_active_api_run_count"])
+async def test_live_writer_outside_the_executor_skips_the_session_db_close(monkeypatch, counter):
+    """A cron job or API-server run that outlived the drain must not have state.db closed under it (#102198).
 
-    Cron jobs run on the scheduler's own pool, so the executor join above the
-    close block never sees them; the close has to consult the cron count too.
+    Both run outside ``self._executor`` (scheduler pool / loop default executor), so the executor
+    join above the close block never sees them; the close has to consult their counters too.
     The executor must still be sealed on this path (#101118).
     """
     import hermes_state_registry
 
     events = []
     gw = _FakeGateway(events)
-    monkeypatch.setattr(gw, "_active_cron_job_count", lambda: 1)
+    monkeypatch.setattr(gw, counter, lambda: 1)
     monkeypatch.setattr(
         hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
     )
@@ -233,9 +234,9 @@ async def test_stuck_cron_writer_skips_the_session_db_close(monkeypatch):
     await gw_mod.GatewayRunner.stop(gw)
 
     assert "close:session_db" not in events and "close_all" not in events, (
-        f"SessionDB closed despite a live cron writer: {events}"
+        f"SessionDB closed despite a live {counter} writer: {events}"
     )
-    assert gw._executor_closing is True, "executor left unsealed on the cron-busy path"
+    assert gw._executor_closing is True, "executor left unsealed on the outside-writer path"
 
 
 def test_shutdown_executor_defaults_to_no_wait():

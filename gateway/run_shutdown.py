@@ -1906,17 +1906,18 @@ class GatewayShutdownMixin:
                 "open for SQLite to recover on next open", _exec_live, _exec_quiesce_budget,
             )
             return
-        # Cron jobs run on the scheduler's own pool, not self._executor, so the join above never sees
-        # them. A writer that outlived the cron drain is mid-write for the same #101093 reasons; the
-        # drain already spent its budget, so no second wait — leave the handles open (#102198).
-        _cron_live = self._active_cron_job_count()
-        if _cron_live:
+        logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
+        # Cron jobs run on the scheduler's own pool and API-server runs on the loop's default executor,
+        # not self._executor, so the join above never sees them. A writer that outlived the drain is
+        # mid-write for the same #101093 reasons; the drain already spent its budget, so no second wait —
+        # leave the handles open (#102198).
+        _outside_live = self._active_cron_job_count() + self._active_api_run_count()
+        if _outside_live:
             logger.warning(
-                "Shutdown phase: %d cron job(s) still running after the cron drain — skipping the SessionDB "
-                "close/checkpoint, leaving state.db open for the cron writer (#102198)", _cron_live,
+                "Shutdown phase: %d cron/API-server job(s) still running after the drain — skipping the "
+                "SessionDB close/checkpoint, leaving state.db open for the live writer (#102198)", _outside_live,
             )
             return
-        logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
         # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.

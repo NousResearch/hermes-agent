@@ -137,12 +137,22 @@ import json, sqlite3, sys, time
 db_path, kind = sys.argv[1], sys.argv[2]
 now = time.time()
 con = sqlite3.connect(db_path)
-row = con.execute(
-    "SELECT session_key FROM sessions WHERE session_key != '' ORDER BY started_at DESC LIMIT 1"
-).fetchone()
-if row is None:
+
+# The session key of an app-created session lives in the row id; the session_key
+# column stays NULL for those rows. Poll briefly so the row's first write wins.
+key = None
+deadline = time.time() + 30
+while time.time() < deadline:
+    row = con.execute(
+        "SELECT id FROM sessions WHERE id <> '' ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    if row:
+        key = row[0]
+        break
+    time.sleep(0.5)
+if not key:
     sys.exit("no session row to seed")
-key = row[0]
+
 metas = {
     "goal": {
         "goal": "Ship with the panel controls",

@@ -1716,15 +1716,33 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
             orphan_identity[pid] = start
 
     reaped = False
+    windows = is_windows()
     for pid in orphans:
+        if windows:
+            expected_start_time = orphan_identity.get(pid)
+            if expected_start_time is None:
+                continue
+            with contextlib.suppress(Exception):
+                write_planned_stop_marker(
+                    pid, expected_start_time=expected_start_time
+                )
+            # SIGTERM is TerminateProcess on Windows. Give the gateway's
+            # planned-stop watcher the full drain window before escalating.
+            reaped = True
+            survivors = [
+                survivor
+                for survivor in _await_gateway_exit([pid], pid_exists=_pid_exists)
+                if survivor in orphan_identity
+            ]
+            _force_kill_survivors(
+                survivors,
+                expected_start_times={
+                    survivor: orphan_identity[survivor] for survivor in survivors
+                },
+            )
+            continue
         with contextlib.suppress(Exception):
             write_planned_stop_marker(pid)
-        # ``os.kill(..., SIGTERM)`` maps to TerminateProcess on Windows, so it
-        # would kill the gateway before its marker watcher can drain and close
-        # state cleanly. Let the bounded survivor wait below escalate instead.
-        if is_windows():
-            reaped = True
-            continue
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1736,10 +1754,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
 
     # Wait, then force-kill survivors so the replacement can bind the port cleanly.
     # Fail-closed: SIGKILL only a PID that still names the process fingerprinted at scan time.
-    _force_kill_survivors([
-        pid for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
-        if pid in orphan_identity and get_process_start_time(pid) == orphan_identity[pid]
-    ])
+    if not windows:
+        survivors = [
+            pid
+            for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
+            if pid in orphan_identity
+        ]
+        _force_kill_survivors(
+            survivors,
+            expected_start_times={pid: orphan_identity[pid] for pid in survivors},
+        )
     return reaped
 
 
@@ -1810,9 +1834,14 @@ def _await_gateway_exit(
     return survivors
 
 
-def _force_kill_survivors(survivors, *, kill=None) -> None:
+def _force_kill_survivors(
+    survivors, *, kill=None, expected_start_times: dict[int, int] | None = None
+) -> None:
     """SIGKILL processes that outlasted the grace period, loudly — a force-kill can tear the store, so
     it must leave a trace."""
+    terminate_pid = None
+    if kill is None and expected_start_times is not None:
+        from gateway.status import terminate_pid
     kill = kill or os.kill
     for pid in survivors:
         logger.warning(
@@ -1823,7 +1852,15 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
             pid, _ORPHAN_EXIT_GRACE_SECONDS,
         )
         with contextlib.suppress((ProcessLookupError, PermissionError, OSError)):
-            kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            expected_start_time = (
+                expected_start_times.get(pid) if expected_start_times is not None else None
+            )
+            if terminate_pid is not None:
+                if expected_start_time is None:
+                    continue
+                terminate_pid(pid, force=True, expected_start_time=expected_start_time)
+            else:
+                kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def _mark_planned_stop(pid: int | None = None) -> None:
@@ -1856,22 +1893,24 @@ def stop_profile_gateway() -> bool:
     if pid is None:
         return _reap_unsupervised_gateway_orphans()
 
-    if is_windows():
-        # Windows maps SIGTERM to TerminateProcess. The marker watcher is the
-        # gateway's graceful-stop IPC, so wait for it before force-killing a
-        # wedged process.
+    windows = is_windows()
+    if windows:
         from gateway.status import get_process_start_time
         from hermes_cli.gateway_windows import (
             _drain_gateway_pid,
             _force_terminate_known_gateway_pids,
+            _gateway_pid_identity_is_live,
             _windows_stop_drain_timeout,
         )
 
-        # Capture identity BEFORE the drain (as _escalate_wedged_gateway does): if the PID is
-        # recycled during the wait, terminate_pid's start-time mismatch refuses the taskkill.
         expected_start_time = get_process_start_time(pid)
-        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
+        if not _drain_gateway_pid(
+            pid, _windows_stop_drain_timeout(), expected_start_time
+        ):
             _force_terminate_known_gateway_pids({pid: expected_start_time})
+        if _gateway_pid_identity_is_live(pid, expected_start_time):
+            print(f"⚠ Gateway PID {pid} is still running")
+            return False
     else:
         _mark_planned_stop(pid)
         try:
@@ -1884,10 +1923,11 @@ def stop_profile_gateway() -> bool:
 
     # ``_pid_exists``, NOT ``os.kill(pid, 0)`` (TerminateProcess on Windows).
     from gateway.status import _pid_exists
-    for _ in range(20):
-        if not _pid_exists(pid):
-            break
-        time.sleep(0.5)
+    if not windows:
+        for _ in range(20):
+            if not _pid_exists(pid):
+                break
+            time.sleep(0.5)
 
     if get_running_pid() is None:
         remove_pid_file()

@@ -1581,12 +1581,19 @@ def _terminate_verified_owner(
     return None
 
 
-def write_planned_stop_marker(target_pid: int) -> bool:
+def write_planned_stop_marker(
+    target_pid: int, *, expected_start_time: int | None = None
+) -> bool:
     """Record that ``target_pid`` is being stopped intentionally: unexpected SIGTERM exits non-zero
     so service managers revive the gateway; the CLI writes this first so a deliberate stop exits
     cleanly."""
+    target_start_time = (
+        expected_start_time
+        if expected_start_time is not None
+        else _get_process_start_time(target_pid)
+    )
     return _write_marker(_get_planned_stop_marker_path(), {
-        "target_pid": target_pid, "target_start_time": _get_process_start_time(target_pid),
+        "target_pid": target_pid, "target_start_time": target_start_time,
         "stopper_pid": os.getpid(), "written_at": _utc_now_iso(),
     })
 

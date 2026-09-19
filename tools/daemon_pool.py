@@ -47,20 +47,23 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
             executor_ref = weakref.ref(self, weakref_cb)
-            if hasattr(self, "_create_worker_context"):
-                # Python 3.14 replaced _initializer/_initargs with a factory
-                # that supplies the worker's initializer context.
+            create_context = self._worker_context_factory()
+            if create_context is not None:
+                # 3.14+ worker ABI: (executor_ref, ctx, work_queue).
                 worker_args = (
                     executor_ref,
-                    self._create_worker_context(),
+                    create_context(),
                     self._work_queue,
                 )
             else:
+                # 3.8-3.13 worker ABI: (executor_ref, work_queue, initializer, initargs).
+                # Missing both fields (patched/frozen build) degrades to "no
+                # initializer" instead of raising AttributeError on every spawn.
                 worker_args = (
                     executor_ref,
                     self._work_queue,
-                    self._initializer,
-                    self._initargs,
+                    getattr(self, "_initializer", None),
+                    getattr(self, "_initargs", ()),
                 )
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile (#54937).
@@ -70,3 +73,22 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
             )
             t.start()
             self._threads.add(t)
+
+    def _worker_context_factory(self):
+        """Factory for the worker's initializer context, or None for the 3.8-3.13 ABI.
+
+        Probed by attribute rather than ``sys.version_info`` so patched/frozen
+        interpreters that only shuffle these private names keep working. 3.14
+        dropped ``_initializer``/``_initargs``; if a build also drops the
+        instance attribute it still ships the official ``prepare_context``.
+        """
+        factory = getattr(self, "_create_worker_context", None)
+        if factory is not None:
+            return factory
+        prepare = getattr(type(self), "prepare_context", None)
+        if prepare is None:
+            return None
+        try:
+            return prepare(None, ())[0]
+        except Exception:
+            return None

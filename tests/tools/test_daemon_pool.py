@@ -7,6 +7,7 @@ concurrent.futures.thread._threads_queues, whose atexit hook joins every
 worker unconditionally — even after shutdown(wait=False).
 """
 
+import inspect
 import subprocess
 import sys
 import threading
@@ -157,3 +158,125 @@ def _repo_root():
     import pathlib
 
     return pathlib.Path(__file__).resolve().parents[2]
+
+
+class _WorkerContext314:
+    """Stand-in for 3.14's ``concurrent.futures.thread.WorkerContext``."""
+
+    def __init__(self, initializer, initargs, events):
+        self.initializer = initializer
+        self.initargs = initargs
+        self.events = events
+
+    def initialize(self):
+        self.events.append("initialize")
+        if self.initializer is not None:
+            self.initializer(*self.initargs)
+
+    def finalize(self):
+        self.events.append("finalize")
+
+    def run(self, task):
+        fn, args, kwargs = task
+        return fn(*args, **kwargs)
+
+
+def _worker_314(_executor_reference, worker_context, work_queue):
+    """3.14's worker ABI: ``(executor_reference, ctx, work_queue)``."""
+    worker_context.initialize()
+    try:
+        while True:
+            item = work_queue.get()
+            if item is None:
+                return
+            if inspect.signature(item.run).parameters:
+                item.run(worker_context)  # 3.14 ``_WorkItem.run(ctx)``
+            else:
+                item.run()  # 3.8–3.13
+    finally:
+        worker_context.finalize()
+
+
+def test_python314_worker_context_runs_the_task_and_still_spawns_daemon_threads(monkeypatch):
+    """3.14 hand-off, end to end (#107121): the executor's worker context reaches a
+    worker that initializes with it, runs real work items, and stays a daemon —
+    reading the removed ``_initializer`` raised ``AttributeError`` on every spawn."""
+    events = []
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(daemon_pool, "_worker", _worker_314)
+    monkeypatch.setattr(
+        pool,
+        "_create_worker_context",
+        lambda: _WorkerContext314(None, (), events),
+        raising=False,
+    )
+    monkeypatch.delattr(pool, "_initializer", raising=False)
+    monkeypatch.delattr(pool, "_initargs", raising=False)
+    try:
+        is_daemon, worker, value = pool.submit(
+            lambda: (threading.current_thread().daemon, threading.current_thread(), "done")
+        ).result(timeout=10)
+    finally:
+        pool.shutdown(wait=True)
+    assert value == "done"
+    assert is_daemon is True
+    assert worker not in _threads_queues
+    assert events == ["initialize", "finalize"]
+
+
+def test_worker_uses_official_prepare_context_when_instance_factory_is_missing(monkeypatch):
+    """3.14 builds that only expose the classmethod still hand the worker a context."""
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    monkeypatch.delattr(pool, "_create_worker_context", raising=False)
+    monkeypatch.delattr(pool, "_initializer", raising=False)
+    monkeypatch.delattr(pool, "_initargs", raising=False)
+    monkeypatch.setattr(
+        type(pool),
+        "prepare_context",
+        lambda initializer, initargs: (
+            lambda: "official-context",
+            lambda fn, args, kwargs: (fn, args, kwargs),
+        ),
+        raising=False,
+    )
+    seen = _capture_worker_args(monkeypatch, pool)
+    try:
+        assert pool.submit(lambda: None).result(timeout=10) == "done"
+    finally:
+        pool.shutdown(wait=True)
+    ((executor_ref, ctx, work_queue),) = seen
+    assert executor_ref() is pool
+    assert ctx == "official-context"
+    assert work_queue is pool._work_queue
+
+
+def test_worker_runs_without_initializer_when_no_worker_api_is_readable(monkeypatch):
+    """Neither ABI readable: spawn a plain worker instead of raising
+    ``AttributeError: 'DaemonThreadPoolExecutor' object has no attribute '_initializer'``."""
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    monkeypatch.delattr(pool, "_create_worker_context", raising=False)
+    monkeypatch.delattr(pool, "_initializer", raising=False)
+    monkeypatch.delattr(pool, "_initargs", raising=False)
+    try:
+        is_daemon, worker, value = pool.submit(
+            lambda: (threading.current_thread().daemon, threading.current_thread(), "done")
+        ).result(timeout=10)
+    finally:
+        pool.shutdown(wait=True)
+    assert value == "done"
+    assert is_daemon is True
+    assert worker not in _threads_queues
+
+
+def test_legacy_initializer_still_runs_inside_the_worker():
+    """3.11–3.13 ABI unchanged: the initializer is passed through and runs on the
+    worker thread, so the probe never silently drops it."""
+    initialized_in = []
+    pool = DaemonThreadPoolExecutor(
+        max_workers=1, initializer=lambda: initialized_in.append(threading.get_ident())
+    )
+    try:
+        task_ident = pool.submit(threading.get_ident).result(timeout=10)
+    finally:
+        pool.shutdown(wait=True)
+    assert initialized_in == [task_ident]

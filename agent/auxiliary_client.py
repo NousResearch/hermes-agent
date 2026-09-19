@@ -3880,8 +3880,6 @@ def _fallback_request_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
         extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
-    if apply_fast_lane and fallback_max_tokens is not None and max_tokens is None:
-        fb_kwargs.update(auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model))
     return fb_kwargs
 
 
@@ -6047,41 +6045,29 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
 
 
 class CompressionFastLane(NamedTuple):
-    """Explicit, non-reasoning compression route safe for a bounded summary."""
+    """Explicit, non-reasoning compression route."""
 
     certified_non_reasoning: bool
-    max_tokens: Optional[int]
     reasoning_config: Optional[Dict[str, Any]]
 
 
-def _fast_lane_config_fields(config: Dict[str, Any]) -> tuple[str, str, bool, Optional[int]]:
-    """``(provider, model, non_reasoning, cap)`` from one task config.
-
-    ``non_reasoning`` only when ``reasoning_effort`` EXPLICITLY disables thinking (unset is NOT
-    non-reasoning); ``cap`` is a positive int ``max_output_tokens`` or None — booleans are config
-    drift, never a cap (``int(True) == 1``).
-    """
+def _fast_lane_config_fields(config: Dict[str, Any]) -> tuple[str, str, bool]:
+    """Only explicit reasoning disablement certifies a non-reasoning route."""
     from hermes_constants import parse_reasoning_effort
     provider = str(config.get("provider") or "").strip().lower()
     model = str(config.get("model") or "").strip()
     parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
     non_reasoning = parsed_effort is not None and parsed_effort.get("enabled") is False
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
-    except (TypeError, ValueError):
-        cap = 0
-    return provider, model, non_reasoning, (cap if cap > 0 else None)
+    return provider, model, non_reasoning
 
 
 def resolve_compression_fast_lane(
     actual_provider: str, actual_model: Optional[str], *, requested_provider: Optional[str] = None,
     requested_model: Optional[str] = None, route_config: Optional[Dict[str, Any]] = None,
 ) -> CompressionFastLane:
-    """Certify the opt-in fast lane: capped only when an explicit, operator-certified
-    non-reasoning provider/model exactly matches the route actually called."""
+    """Certify explicit non-reasoning settings only on the matching destination."""
     config = route_config if route_config is not None else _get_auxiliary_task_config("compression")
-    cfg_provider, cfg_model, non_reasoning, cap = _fast_lane_config_fields(config)
+    cfg_provider, cfg_model, non_reasoning = _fast_lane_config_fields(config)
     provider = str(requested_provider or "").strip().lower() or cfg_provider
     model = str(requested_model or "").strip() or cfg_model
     explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
@@ -6089,14 +6075,14 @@ def resolve_compression_fast_lane(
     provider_matches = actual_norm == _normalize_aux_provider(provider)
     model_matches = str(actual_model or "").strip().lower() == model.lower()
     if explicit_route and provider_matches and model_matches and non_reasoning:
-        return CompressionFastLane(True, cap, {"enabled": False, "effort": "none"})
-    return CompressionFastLane(False, None, None)
+        return CompressionFastLane(True, {"enabled": False, "effort": "none"})
+    return CompressionFastLane(False, None)
 
 
 def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     """Whether task config declares fast-only controls that cannot leak."""
-    provider, model, non_reasoning, cap = _fast_lane_config_fields(config)
-    return provider not in {"", "auto"} and model.lower() not in {"", "auto"} and non_reasoning and cap is not None
+    provider, model, non_reasoning = _fast_lane_config_fields(config)
+    return provider not in {"", "auto"} and model.lower() not in {"", "auto"} and non_reasoning
 
 
 def _compression_fast_lane_controls(
@@ -6116,7 +6102,7 @@ def _compression_fast_lane_controls(
             body["reasoning"] = lane.reasoning_config
     elif _compression_config_claims_fast_lane(leak_guard_config):
         body.pop("reasoning", None)
-    return lane.max_tokens, body
+    return max_tokens, body
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
@@ -7144,10 +7130,9 @@ def _prepare_aux_request(
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
-    fast_compression_cap = None
     if not async_mode:
         compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
-        fast_compression_cap, effective_extra_body = _compression_fast_lane_controls(
+        _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,
             leak_guard_config=compression_config, max_tokens=max_tokens,
@@ -7169,10 +7154,6 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
-    if fast_compression_cap is not None and max_tokens is None:
-        # The compression route is certified non-reasoning, so a bounded summary is
-        # intentional; explicit caller caps pass through untouched.
-        kwargs.update(auxiliary_max_tokens_param(fast_compression_cap, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

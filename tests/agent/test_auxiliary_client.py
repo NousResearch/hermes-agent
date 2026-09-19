@@ -506,6 +506,19 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_every_auth_alias_identically(self):
+        """The aux mirror must not drift from the authoritative auth table."""
+        from hermes_cli.auth import _PROVIDER_ALIASES as authoritative
+
+        for alias, canonical in authoritative.items():
+            assert _normalize_aux_provider(alias) == canonical, alias
+
+    def test_maps_opencode_family(self):
+        assert _normalize_aux_provider("opencode") == "opencode-zen"
+        assert _normalize_aux_provider("zen") == "opencode-zen"
+        assert _normalize_aux_provider("go") == "opencode-go"
+        assert _normalize_aux_provider("opencode-go-sub") == "opencode-go"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

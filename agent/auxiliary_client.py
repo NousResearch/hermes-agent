@@ -525,32 +525,20 @@ def _extract_url_query_params(url: str):
 # Warn only once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
-# Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp) route through the generic custom
-# provider — mirrors hermes_cli.auth._PROVIDER_ALIASES. Without this group an explicit
-# ``provider: ollama`` aux lane matches no registry entry and raises a misleading
-# ``OLLAMA_API_KEY`` error instead of using the lane's base_url (#106010).
-_LOCAL_SERVER_ALIASES = {
-    "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
-    "llama.cpp": "custom", "llama-cpp": "custom",
-}
+def _provider_aliases() -> Dict[str, str]:
+    """The authoritative ``hermes_cli.auth._PROVIDER_ALIASES`` table.
 
-_PROVIDER_ALIASES = {
-    "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-    "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-    "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-    "kimi": "kimi-coding", "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
-    "gmi-cloud": "gmi", "gmicloud": "gmi",
-    "actual-computer": "actual", "actualcomputer": "actual", "aci": "actual",
-    "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-    "claude": "anthropic", "claude-code": "anthropic",
-    "github": "copilot", "github-copilot": "copilot", "github-model": "copilot", "github-models": "copilot",
-    "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-    "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub", "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-    "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
-    **_LOCAL_SERVER_ALIASES,
-}
+    A hand-copied aux mirror drifted twice (#106010, #115006), so aux normalization reads the
+    same table the main path resolves against. Loaded lazily: ``hermes_cli.auth`` pulls in the
+    whole CLI auth stack, which the hot agent path must not import at module level.
+    """
+    aliases = getattr(_provider_aliases, "_cache", None)
+    if aliases is None:
+        from hermes_cli.auth import _PROVIDER_ALIASES as _authoritative
+
+        aliases = dict(_authoritative)
+        _provider_aliases._cache = aliases  # type: ignore[attr-defined]
+    return aliases
 
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
@@ -568,7 +556,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not main_prov or main_prov in {"auto", "main"}:
             return "custom"
         normalized = main_prov
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    return _provider_aliases().get(normalized, normalized)
 
 
 # Sentinel from _fixed_temperature_for_model(): callers strip ``temperature`` entirely.

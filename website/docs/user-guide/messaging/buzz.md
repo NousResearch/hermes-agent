@@ -101,6 +101,7 @@ gateway:
 
 ## Mentions, channels, and DMs
 
+- The watch set is the authoritative **joined** roster (`buzz channels list --member`). Joining or leaving a community while the Gateway runs adds or removes that channel's subscription live, on membership events over WebSocket and on the poll cadence; `channels` / `BUZZ_CHANNELS` only narrows the joined set, it cannot widen it. DMs are discovered independently.
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.

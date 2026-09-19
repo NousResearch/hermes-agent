@@ -3190,7 +3190,8 @@ class TestBuzzAdapterLifecycle:
         assert await adapter.connect() is False
         assert adapter._fatal_error_code == "buzz_lock"
         assert "other" in (adapter._fatal_error_message or "")
-        assert adapter._platform_lock_identity == "https://test.relay:" + SELF_PUBKEY
+        # Nothing was acquired, so the connect-failure disconnect has nothing to release.
+        assert adapter._platform_lock_identity is None
         # channels list must never run: the conflict branch short-circuits connect()
         assert not any(call[0][:2] == ["channels", "list"] for call in cli.calls)
 

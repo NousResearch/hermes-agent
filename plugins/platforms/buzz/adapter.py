@@ -150,6 +150,7 @@ _WS_READ_IDLE_TIMEOUT = 300.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discovery
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
+_WS_MEMBERSHIP_REMOVED_KIND = 44101
 # Credentials JSON fallback when BUZZ_PRIVATE_KEY is not set; module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
 # Buzz-hosted media is private to the community: same-relay URLs must be authenticated + localised for vision.
@@ -503,6 +504,21 @@ _MEDIA_KIND_PRIORITY = (("image", MessageType.PHOTO), ("audio", MessageType.AUDI
 _ATTACHMENT_KIND_TYPES = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO, "document": MessageType.DOCUMENT}
 
 
+def _cli_rejects_member_flag(stderr: str) -> bool:
+    """True when the CLI's argument parser rejected ``--member`` (binary predates the flag)."""
+    text = (stderr or "").lower()
+    return "--member" in text and ("unexpected argument" in text or "unknown" in text or "unrecognized" in text)
+
+
+def _is_valid_authoritative_channel_row(channel: object) -> bool:
+    """Validate required fields before an authoritative roster is applied."""
+    return bool(
+        isinstance(channel, dict)
+        and isinstance(channel.get("channel_id"), str)
+        and channel["channel_id"].strip()
+    )
+
+
 class BuzzAdapter(BasePlatformAdapter):
     """Buzz adapter (WebSocket push with poll fallback) for the BasePlatformAdapter interface."""
 
@@ -548,6 +564,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
         self._membership_since = self._poll_count = 0
+        self._joined_channel_ids: set[str] = set()
         # Channels the relay permanently rejected ("restricted"); persists across reconnects so we never re-subscribe.
         # channel_id -> { "chat_type", "last_ts", "seen": OrderedDict[event_id, None], "event_meta":
         # OrderedDict[event_id, (author_pubkey, content_snippet)], } event_meta backs NIP-10 reply-parent
@@ -641,57 +658,76 @@ class BuzzAdapter(BasePlatformAdapter):
         # Two profiles must not drive the same identity on one relay (duplicate replies, split de-dupe state).
         if not self._acquire_platform_lock(
                 "buzz", f"{self.relay_url}:{self._self_pubkey}", f"Buzz identity {self._self_pubkey[:8]}… on {self.relay_url}"):
+            # Nothing was acquired: the connect-failure disconnect must not release the holder's lock.
+            self._platform_lock_identity = None
             return False
-        # Map channel ids to names and pick the watch set.
-        code, out, err = await self._run_cli(["channels", "list"])
-        if code != 0:
-            message = _cli_error_message(err, code)
-            return self._connect_failed(
-                "connect_failed", message, "Buzz: failed to list channels — %s", message, retryable=code == 2
-            )
-        self._channel_names = {}
-        for ch in _parse_json_list(out):
-            if ch_id := ch.get("channel_id"):
-                self._channel_names[str(ch_id)] = str(ch.get("name") or ch_id)
-                self._channel_meta[str(ch_id)] = ch
-        watch = self.channels or list(self._channel_names)
-        if not watch:
-            return self._connect_failed(
-                "config_missing", "no Buzz channels to watch", "Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)"
-            )
-        # Seed high-water marks so a (re)start never replays history — except where a restored cursor lets
-        # events that landed while down still dispatch.
-        # Skip any channel the relay has permanently rejected in a previous session (e.g. "restricted: not a
-        # channel member") so we don't reconnect-loop on them. See #90464.
-        self._load_cursors()
-        for channel_id in watch:
-            if channel_id in self._restricted_channels:
-                logger.debug("Buzz: skipping restricted channel %s (relay rejected subscription)", channel_id)
-                continue
-            await self._seed_channel(channel_id, chat_type="group")
-        await self._discover_dms(seed=True)
-        self._save_cursors()
-        # Prefer the NIP-42 WebSocket push; poll when it can't be established (auto) or the user pinned "poll".
-        transport_used = "poll"
-        if self.transport in ("auto", "websocket"):
-            if await self._start_websocket():
-                transport_used = "websocket"
-            elif self.transport == "websocket":
-                self._set_fatal_error(
-                    "ws_auth_failed", "Buzz WebSocket transport did not authenticate (transport=websocket)", retryable=True
+        connected = False
+        try:
+            # Only the authoritative joined roster may expand the watch set.
+            code, out, err = await self._run_cli(["channels", "list", "--member"])
+            if code != 0:
+                if _cli_rejects_member_flag(err):
+                    # An older buzz binary. Retrying cannot help; say what to do instead.
+                    message = "buzz CLI does not support 'channels list --member'; upgrade the buzz binary"
+                    return self._connect_failed("connect_failed", message, "Buzz: %s", message, retryable=False)
+                message = _cli_error_message(err, code)
+                return self._connect_failed(
+                    "connect_failed", message, "Buzz: failed to list channels — %s", message, retryable=code == 2
                 )
+            listed = _json_or(out, None)
+            if not isinstance(listed, list) or not all(_is_valid_authoritative_channel_row(ch) for ch in listed):
+                return self._connect_failed("connect_failed", "malformed joined-channel payload",
+                                            "Buzz: malformed joined-channel payload")
+            self._channel_names = {}
+            self._channel_meta = {}
+            for ch in listed:
+                if ch_id := ch.get("channel_id"):
+                    self._channel_names[str(ch_id)] = str(ch.get("name") or ch_id)
+                    self._channel_meta[str(ch_id)] = ch
+            self._joined_channel_ids = set(self._channel_names)
+            if self.channels:
+                self._joined_channel_ids.intersection_update(self.channels)
+            watch = sorted(self._joined_channel_ids)
+            # Seed high-water marks so a (re)start never replays history — except where a restored cursor lets
+            # events that landed while down still dispatch.
+            # Skip any channel the relay has permanently rejected in a previous session (e.g. "restricted: not a
+            # channel member") so we don't reconnect-loop on them. See #90464.
+            self._load_cursors()
+            for channel_id in watch:
+                if channel_id in self._restricted_channels:
+                    logger.debug("Buzz: skipping restricted channel %s (relay rejected subscription)", channel_id)
+                    continue
+                await self._seed_channel(channel_id, chat_type="group")
+            await self._discover_dms(seed=True)
+            if not self._channel_state:
+                return self._connect_failed(
+                    "config_missing", "no Buzz channels to watch", "Buzz: no joined channels or DMs to watch"
+                )
+            self._save_cursors()
+            # Prefer the NIP-42 WebSocket push; poll when it can't be established (auto) or the user pinned "poll".
+            transport_used = "poll"
+            if self.transport in ("auto", "websocket"):
+                if await self._start_websocket():
+                    transport_used = "websocket"
+                elif self.transport == "websocket":
+                    self._set_fatal_error(
+                        "ws_auth_failed", "Buzz WebSocket transport did not authenticate (transport=websocket)", retryable=True
+                    )
+                    return False
+            if transport_used == "poll":
+                self._poll_task = asyncio.create_task(self._poll_loop())
+            self._mark_connected()
+            logger.info(
+                "Buzz: connected to %s as %s, watching %d channel(s) via %s%s",
+                self.relay_url, self._display_name or self._self_npub[:16], len(self._channel_state),
+                transport_used, "" if transport_used == "websocket" else f", poll interval {self.poll_interval:.1f}s",
+            )
+            self._wire_plugin_handlers(None)
+            connected = True
+            return True
+        finally:
+            if not connected:
                 await self.disconnect()
-                return False
-        if transport_used == "poll":
-            self._poll_task = asyncio.create_task(self._poll_loop())
-        self._mark_connected()
-        logger.info(
-            "Buzz: connected to %s as %s, watching %d channel(s) via %s%s",
-            self.relay_url, self._display_name or self._self_npub[:16], len(self._channel_state),
-            transport_used, "" if transport_used == "websocket" else f", poll interval {self.poll_interval:.1f}s",
-        )
-        self._wire_plugin_handlers(None)
-        return True
 
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
@@ -1054,10 +1090,55 @@ class BuzzAdapter(BasePlatformAdapter):
             subscriptions[f"hermes-buzz-{index}"] = channel_id
             await self._send_channel_subscription(websocket, f"hermes-buzz-{index}", channel_id)
         if self._self_pubkey:
-            membership = {"kinds": [_WS_MEMBERSHIP_KIND], "#p": [self._self_pubkey], "since": max(self._membership_since - 1, 0)}
+            membership = {"kinds": [_WS_MEMBERSHIP_KIND, _WS_MEMBERSHIP_REMOVED_KIND], "#p": [self._self_pubkey], "since": max(self._membership_since - 1, 0)}
             await self._send_req(websocket, _WS_MEMBERSHIP_SUB_ID, membership)
             subscriptions[_WS_MEMBERSHIP_SUB_ID] = None
         return subscriptions
+
+    async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
+        """Reconcile live subscriptions from the authoritative joined roster."""
+        created_at = int(event.get("created_at") or 0)
+        trustworthy_created_at = max(0, min(created_at, int(time.time())))
+        self._membership_since = max(self._membership_since, trustworthy_created_at)
+        target_channel_id = ""
+        for tag in event.get("tags") or []:
+            if isinstance(tag, list) and len(tag) > 1 and tag[0] == "h":
+                target_channel_id = str(tag[1] or "")
+                break
+        before = set(self._channel_state)
+        await self._discover_joined_channels(
+            since=trustworthy_created_at,
+            target_channel_id=target_channel_id,
+        )
+        for subscription_id, channel_id in list(subscriptions.items()):
+            if channel_id is not None and channel_id not in self._channel_state:
+                await websocket.send(
+                    json.dumps(["CLOSE", subscription_id], separators=(",", ":"))
+                )
+                subscriptions.pop(subscription_id, None)
+
+        async def subscribe_discovered() -> None:
+            # Snapshot: the discovery task may mutate _channel_state across the await below.
+            for channel_id in list(self._channel_state):
+                if channel_id in before:
+                    continue
+                subscription_index = len(subscriptions)
+                subscription_id = f"hermes-buzz-{subscription_index}"
+                while subscription_id in subscriptions:
+                    subscription_index += 1
+                    subscription_id = f"hermes-buzz-{subscription_index}"
+                subscriptions[subscription_id] = channel_id
+                await self._send_channel_subscription(
+                    websocket,
+                    subscription_id,
+                    channel_id,
+                )
+                before.add(channel_id)
+                logger.info("Buzz: subscribed to new conversation %s", channel_id)
+
+        await subscribe_discovered()
+        await self._discover_dms(seed=False)
+        await subscribe_discovered()
 
     async def _rediscover_and_subscribe(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
         """Rediscover conversations and subscribe to any adopted since (fresh DMs dispatch from their start)."""
@@ -1180,9 +1261,7 @@ class BuzzAdapter(BasePlatformAdapter):
             if not isinstance(event, dict):
                 return
             if subscription_id == _WS_MEMBERSHIP_SUB_ID:
-                # A membership event p-tagged to us: rediscover and subscribe to new conversations.
-                self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
-                await self._rediscover_and_subscribe(websocket, subscriptions)
+                await self._handle_membership_event(websocket, subscriptions, event)
                 return
             channel_id = subscriptions.get(subscription_id)
             state = self._channel_state.get(channel_id or "")
@@ -1212,6 +1291,7 @@ class BuzzAdapter(BasePlatformAdapter):
             self._poll_count += 1
             try:
                 if self._poll_count % _DM_DISCOVERY_EVERY == 0:
+                    await self._discover_joined_channels()
                     await self._discover_dms(seed=False)
                 for channel_id in list(self._channel_state):
                     await self._poll_channel(channel_id)
@@ -1219,6 +1299,65 @@ class BuzzAdapter(BasePlatformAdapter):
                 raise
             except Exception:
                 logger.warning("Buzz: poll sweep failed", exc_info=True)
+
+    async def _discover_joined_channels(
+        self,
+        *,
+        since: int = 0,
+        target_channel_id: str = "",
+    ) -> Optional[bool]:
+        """Reconcile the watched group set against the authoritative joined roster."""
+        code, out, _err = await self._run_cli(["channels", "list", "--member"])
+        if code != 0:
+            return None
+        try:
+            channels = json.loads(out)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(channels, list) or not all(
+            _is_valid_authoritative_channel_row(channel) for channel in channels
+        ):
+            return None
+        listed_ids = {
+            str(channel.get("channel_id") or "") for channel in channels
+        }
+        listed_ids.discard("")
+        configured_ids = set(self.channels)
+        joined_ids = listed_ids & configured_ids if configured_ids else listed_ids
+        before = set(self._joined_channel_ids)
+        if (
+            target_channel_id
+            and target_channel_id not in joined_ids
+            and target_channel_id not in self._channel_state
+        ):
+            return None
+        self._joined_channel_ids = joined_ids
+        changed = False
+        for watched_channel_id, state in list(self._channel_state.items()):
+            if (
+                state.get("chat_type") == "group"
+                and watched_channel_id not in joined_ids
+                and not self._may_reclassify_as_dm(watched_channel_id)
+            ):
+                self._channel_state.pop(watched_channel_id, None)
+                self._channel_names.pop(watched_channel_id, None)
+                self._channel_meta.pop(watched_channel_id, None)
+                changed = True
+        for channel in channels:
+            channel_id = str(channel.get("channel_id") or "")
+            if not channel_id or channel_id not in joined_ids or channel_id in self._restricted_channels:
+                continue
+            self._channel_names[channel_id] = str(channel.get("name") or channel_id)
+            self._channel_meta[channel_id] = channel
+            if channel_id in self._channel_state:
+                continue
+            if target_channel_id and channel_id == target_channel_id and since > 0:
+                self._channel_state[channel_id] = self._new_channel_state("group")
+                self._channel_state[channel_id]["last_ts"] = int(since)
+            else:
+                await self._seed_channel(channel_id, chat_type="group")
+            changed = True
+        return changed or joined_ids != before
 
     def _new_channel_state(self, chat_type: str) -> dict:
         return {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
@@ -1328,7 +1467,7 @@ class BuzzAdapter(BasePlatformAdapter):
             if dm_id and dm_id not in self._channel_state and dm_id not in self._restricted_channels:
                 await self._adopt_conversation(dm_id, seed)
                 self._channel_names.setdefault(dm_id, "DM")
-        code, out, _err = await self._run_cli(["channels", "list"])
+        code, out, _err = await self._run_cli(["channels", "list", "--member"])
         if code != 0:
             return
         for ch in _parse_json_list(out):

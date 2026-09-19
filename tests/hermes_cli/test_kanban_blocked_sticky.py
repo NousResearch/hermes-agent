@@ -162,3 +162,48 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test
 # here; dropped during salvage to avoid two assertions of the same contract.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# initial_status='blocked' (R3 human-ops hold) is sticky from birth
+# ---------------------------------------------------------------------------
+
+
+def test_created_blocked_task_is_not_auto_promoted(kanban_home: Path) -> None:
+    """A task born via create_task(initial_status='blocked') (the R3
+    human-ops gate) must stay blocked across dispatcher ticks. Before the
+    fix, no 'blocked' event existed at birth, _has_sticky_block() returned
+    False, and recompute_ready auto-promoted it — dispatching a card the
+    operator had parked for human review."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="REQUIRES HUMAN APPROVAL",
+            body="Parked for human ops.",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id", (tid,)
+        ).fetchall()]
+        assert kinds == ["created", "blocked"]
+        assert kb._has_sticky_block(conn, tid) is True
+        for _ in range(5):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+        # R3 flow end-to-end: operator unblocks after approval.
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_created_blocked_task_operator_promote_path(kanban_home: Path) -> None:
+    """promote_task (hermes kanban promote) must still accept a
+    created-blocked card: it is the deliberate operator route past the R3
+    gate."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="promote me", initial_status="blocked",
+        )
+        ok, reason = kb.promote_task(conn, tid, actor="operator", reason="approved")
+        assert ok is True, reason
+        assert kb.get_task(conn, tid).status == "ready"

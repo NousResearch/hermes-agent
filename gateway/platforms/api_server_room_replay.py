@@ -25,7 +25,7 @@ def _legacy_policy(adapter, record, scope, session_id):
     return policy
 
 
-def _require_unaccepted(adapter, dispatch, session_id):
+def _require_unaccepted(adapter, dispatch, session_id, scope):
     """A lost HTTP receipt cannot turn an accepted canonical attempt into NEW.
 
     Payload-free terminal evidence cannot identify the old logical task: hold
@@ -40,7 +40,12 @@ def _require_unaccepted(adapter, dispatch, session_id):
         rows = conn.execute("SELECT payload_json FROM session_admissions WHERE principal_id='api' "
                             'AND target_session_id=?', (session_id,)).fetchall()
         for row in rows:
-            old = json.loads(row[0]).get('api_turn_v1', {}).get('settings', {}).get('room_dispatch')
+            turn = json.loads(row[0]).get('api_turn_v1', {})
+            # The physical member session survives Home authority changes;
+            # task/generation alone must not alias a different signed scope.
+            if turn.get('run_owner_scope') not in (None, scope):
+                continue
+            old = turn.get('settings', {}).get('room_dispatch')
             if old is None or (old.get('task_id'), old.get('execution_generation')) == (
                     dispatch.task_id, dispatch.execution_generation):
                 raise RuntimeStoreError('storage_unavailable')
@@ -65,7 +70,7 @@ def room_replay(adapter, request, dispatch, *, _openai_error):
     key = request.headers.get('Idempotency-Key', '').strip()
     record = adapter._run_idempotency_store.replay_record(scope, key)
     if record is None:
-        _require_unaccepted(adapter, dispatch, session_id)
+        _require_unaccepted(adapter, dispatch, session_id, scope)
         return None
     policy = record['room_policy']
     if policy is None:

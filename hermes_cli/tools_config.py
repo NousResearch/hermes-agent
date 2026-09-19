@@ -550,13 +550,15 @@ def _context_engine_active(config: dict) -> bool:
 
 
 def _coerce_platform_toolsets_value(value):
-    """Read a JSON-list string saved for ``platform_toolsets.<platform>`` as the list it encodes.
+    """Read a list-literal string saved for ``platform_toolsets.<platform>`` as the list it encodes.
 
     ``hermes config set`` stores a bare ``[...]`` argument as a plain string, so an explicit
     selection like ``'["browser", "terminal"]'`` parses as str, not list — readers then treat
     the platform as unconfigured and substitute the platform default, and the next save
-    overwrites the user's entries (#115866). Anything that does not parse as a list keeps its
-    original value: a scalar string still means "not a list" and keeps the default fallback.
+    overwrites the user's entries (#115866). The parser is ``ast.literal_eval``, so any
+    Python list literal (JSON-style double quotes included) is accepted. Anything that does
+    not parse as a list keeps its original value: a scalar string still means "not a list"
+    and keeps the default fallback.
     """
     if isinstance(value, str) and value.strip().startswith("["):
         try:

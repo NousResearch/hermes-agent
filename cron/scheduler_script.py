@@ -296,7 +296,11 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
             f"there too, or edit the job with `hermes cron edit`."
         )
     if not path.is_file():
-        return None, f"Script path is not a file: {path}"
+        return None, (
+            f"Script path is not a file: {path}. Cron scripts are looked up only in this profile's folder "
+            f"({scripts_dir_resolved}); replace this path with a script file, or edit the job with "
+            f"`hermes cron edit`."
+        )
     return path, None
 
 

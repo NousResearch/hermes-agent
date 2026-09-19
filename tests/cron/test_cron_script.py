@@ -117,6 +117,20 @@ class TestRunJobScript:
         assert str(cron_env / "scripts") in output and "profile" in output
         assert "hermes cron edit" in output
 
+    def test_non_file_script_error_explains_profile_scope(self, cron_env):
+        from cron.scheduler_script import _run_job_script
+
+        directory = cron_env / "scripts" / "monitor.py"
+        directory.mkdir()
+
+        success, output = _run_job_script("monitor.py")
+
+        assert success is False
+        assert str(directory) in output
+        assert "not a file" in output
+        assert str(cron_env / "scripts") in output and "profile" in output
+        assert "hermes cron edit" in output
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""

@@ -89,7 +89,8 @@ def test_enqueue_coalesces_per_session_newest_wins_oldest_age():
         item = q._pending["s1"]
     # Newest snapshot won, but the age clock kept the ORIGINAL enqueue
     # time so a busy session cannot push its own age-out forever.
-    assert item.kwargs["messages_snapshot"] == ["new"]
+    assert item.frozen_snapshot == b'["new"]'
+    assert "messages_snapshot" not in item.kwargs
     assert item.enqueued_at == 100.0
 
 
@@ -345,3 +346,152 @@ def test_requeue_skips_non_managed(monkeypatch):
             {"task_cfg": {"defer": "auto"}, "focus": None,
              "_requeue_attempts": 1})
     assert calls["enqueued"] == []
+
+
+# ── queue memory ownership: weak parent, frozen snapshots, budgets ─
+
+
+def test_pending_entry_holds_frozen_bytes_not_transcript_objects():
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    transcript = [{"role": "user", "content": "x" * 500}]
+    q.enqueue(agent, "s1", {"messages_snapshot": transcript, "task_cfg": {}})
+
+    with q._lock:
+        item = q._pending["s1"]
+    assert isinstance(item.frozen_snapshot, bytes)
+    assert "messages_snapshot" not in item.kwargs
+    # The queue does not alias the live transcript's nested objects.
+    assert not any(
+        v is transcript
+        for v in (item.frozen_snapshot, item.kwargs, getattr(item, "agent_ref", None))
+    )
+
+
+def test_dead_parent_weakref_drops_review_at_dispatch():
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    q.enqueue(
+        agent,
+        "s1",
+        {"messages_snapshot": [{"role": "user", "content": "hi"}], "task_cfg": {}},
+    )
+    q.note_turn_started()
+    q.note_turn_finished()
+    clock["t"] += _IDLE_SETTLE_S + 1
+    item = q._pop_dispatchable()
+    assert item is not None
+    # The list outlives the agent; a strong-ref queue would keep the agent
+    # alive and the spawn would land here.
+    spy = agent.spawned
+    del agent
+    import gc
+
+    gc.collect()
+    q._dispatch(item)
+    assert spy == []
+
+
+def test_live_parent_dispatch_reconstructs_messages_and_releases_accounting():
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    q.enqueue(
+        agent,
+        "s1",
+        {"messages_snapshot": messages, "review_memory": True, "task_cfg": {}},
+    )
+    assert q.pending_bytes() > 0
+    q.note_turn_started()
+    q.note_turn_finished()
+    clock["t"] += _IDLE_SETTLE_S + 1
+    item = q._pop_dispatchable()
+    assert item is not None
+    assert q.pending_bytes() == 0  # popped accounting released
+    q._dispatch(item)
+    assert len(agent.spawned) == 1
+    assert agent.spawned[0]["messages_snapshot"] == messages
+    assert agent.spawned[0]["review_memory"] is True
+
+
+def test_coalesce_replaces_byte_accounting():
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    q.enqueue(agent, "s1", {"messages_snapshot": ["a" * 1000], "task_cfg": {}})
+    first = q.pending_bytes()
+    q.enqueue(agent, "s1", {"messages_snapshot": ["b" * 100], "task_cfg": {}})
+    with q._lock:
+        item = q._pending["s1"]
+    assert q.pending_count() == 1
+    assert q.pending_bytes() == item.snapshot_bytes
+    assert q.pending_bytes() < first
+
+
+def test_session_budget_evicts_oldest():
+    q, clock = _make_queue()
+    q._session_budget = 2
+    agent = _FakeAgent()
+    clock["t"] = 10.0
+    q.enqueue(agent, "s-old", {"messages_snapshot": ["x"], "task_cfg": {}})
+    clock["t"] = 20.0
+    q.enqueue(agent, "s-mid", {"messages_snapshot": ["x"], "task_cfg": {}})
+    clock["t"] = 30.0
+    q.enqueue(agent, "s-new", {"messages_snapshot": ["x"], "task_cfg": {}})
+    assert q.pending_count() == 2
+    with q._lock:
+        assert "s-old" not in q._pending
+        assert "s-mid" in q._pending
+        assert "s-new" in q._pending
+
+
+def test_byte_budget_evicts_oldest():
+    q, clock = _make_queue()
+    q._session_budget = 100
+    q._snapshot_budget_bytes = 2500
+    agent = _FakeAgent()
+    clock["t"] = 8.0
+    q.enqueue(agent, "s1", {"messages_snapshot": ["a" * 1000], "task_cfg": {}})
+    clock["t"] = 9.0
+    q.enqueue(agent, "s2", {"messages_snapshot": ["b" * 1000], "task_cfg": {}})
+    clock["t"] = 10.0
+    q.enqueue(agent, "s3", {"messages_snapshot": ["c" * 1000], "task_cfg": {}})
+    assert q.pending_count() == 2
+    assert q.pending_bytes() <= 2500
+    with q._lock:
+        assert "s1" not in q._pending
+        assert "s2" in q._pending
+        assert "s3" in q._pending
+
+
+def test_oversized_snapshot_rejected_whole():
+    q, clock = _make_queue()
+    q._snapshot_budget_bytes = 500
+    agent = _FakeAgent()
+    q.enqueue(agent, "s1", {"messages_snapshot": ["a" * 1000], "task_cfg": {}})
+    assert q.pending_count() == 0
+    assert q.pending_bytes() == 0
+
+
+def test_non_serializable_snapshot_rejected():
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    q.enqueue(agent, "s1", {"messages_snapshot": {object()}, "task_cfg": {}})
+    assert q.pending_count() == 0
+
+
+def test_corrupt_frozen_snapshot_fails_closed_at_dispatch():
+    q, clock = _make_queue()
+    agent = _FakeAgent()
+    q.enqueue(agent, "s1", {"messages_snapshot": ["ok"], "task_cfg": {}})
+    with q._lock:
+        q._pending["s1"].frozen_snapshot = b"\xff\xfe not json"
+    q.note_turn_started()
+    q.note_turn_finished()
+    clock["t"] += _IDLE_SETTLE_S + 1
+    item = q._pop_dispatchable()
+    assert item is not None
+    q._dispatch(item)  # corrupt payload: drop + warn, no spawn, no raise
+    assert agent.spawned == []

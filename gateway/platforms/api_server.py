@@ -2171,6 +2171,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
         # must not collide with the ``**runtime_kwargs`` spread).
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
+        runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(

@@ -107,9 +107,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
                             counts=lambda: billing(billing_mode="subscription_included"))
         return {}
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+    # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
+    # normalize_usage's codex_responses branch); CanonicalUsage.prompt_tokens re-adds cache_read on top of
+    # input_tokens, so the canonical input bucket must be the UNCACHED remainder or cached tokens count twice.
+    cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
     canonical_usage = CanonicalUsage(
-        input_tokens=_coerce_usage_int(usage.get("inputTokens")), output_tokens=_coerce_usage_int(usage.get("outputTokens")),
-        cache_read_tokens=_coerce_usage_int(usage.get("cachedInputTokens")), cache_write_tokens=0,
+        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens),
+        output_tokens=_coerce_usage_int(usage.get("outputTokens")),
+        cache_read_tokens=cache_read_tokens, cache_write_tokens=0,
         reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
     )
     prompt_tokens = canonical_usage.prompt_tokens

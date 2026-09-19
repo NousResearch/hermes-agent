@@ -2265,6 +2265,13 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
+        # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
+        # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
+        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        # requested_provider=None means resolve_runtime_provider read the persisted config provider.
+        primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
+        resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
+            primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         return resolution.selected_model, resolution.runtime
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
@@ -2337,6 +2344,7 @@ def _make_agent(
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2368,6 +2376,9 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    if fallback_notice:
+        # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
+        agent._pending_fallback_notice = fallback_notice
     return agent
 
 

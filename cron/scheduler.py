@@ -1589,6 +1589,12 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
+                # Delivered with the job output (#74349): a cron agent has no status rail, so the
+                # switch would otherwise stay in the scheduler log only. run_job pops it.
+                from hermes_cli.fallback_config import pre_agent_fallback_notice
+                runtime["_fallback_notice"] = pre_agent_fallback_notice(
+                    requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
+                    model, runtime.get("provider"), fb_model)
                 return runtime, fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
@@ -2170,6 +2176,7 @@ class _CronAgentSetup:
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
+    fallback_notice: Optional[str] = None
 
 
 def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _CronAgentSetup:
@@ -2195,6 +2202,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
         return setup
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
+    setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
@@ -2334,6 +2342,11 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
+                and _cron_failure_marker_error(final_response) is None):
+            # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
+            # agent-declared failure marker keep their first-line/whole-response contract.
+            final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"

@@ -142,6 +142,28 @@ class TestCreateSession:
         assert (seen[0]["enabled_toolsets"], seen[0]["disabled_toolsets"]) == (["hermes-acp", "mcp-cfg-server"], None)
         assert (seen[1]["enabled_toolsets"], seen[1]["disabled_toolsets"]) == (["hermes-acp", "mcp-acp-server"], ["browser"])
 
+    def test_make_agent_forwards_resolved_credential_pool(self, monkeypatch):
+        """#70292: the provider-scoped credential pool selected by resolve_runtime_provider reaches the
+        ACP agent by identity, so a long-lived session can refresh/rotate on 401 instead of needing a restart."""
+        seen: list[dict] = []
+        sentinel_pool = object()
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.append(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openai-codex"}})
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {
+            "provider": "openai-codex", "api_mode": "codex_app_server", "api_key": "test-key", "credential_pool": sentinel_pool,
+        })
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None)._make_agent(session_id="s", cwd=".")
+
+        assert seen[0]["credential_pool"] is sentinel_pool
+
 
 
 

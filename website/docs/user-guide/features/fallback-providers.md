@@ -186,7 +186,7 @@ fallback_providers:
 
 | Context | Fallback Supported |
 |---------|-------------------|
-| CLI sessions | ✔ |
+| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, and mid-session) |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
 | Cron jobs | ✔ (cron agents inherit configured fallback providers) |

@@ -40,7 +40,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import pre_agent_fallback_notice
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -2198,28 +2198,32 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
-    ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only."""
+    ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
+    An ``AuthError`` from the primary walks the configured fallback chain through the shared
+    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
     from hermes_cli.runtime_provider import (
-        resolve_runtime_provider, format_runtime_provider_error, _get_model_config)
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+        resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
+
+    # Capture primary provider/model from config before the try block so we
+    # can include it in the fallback notice if the primary fails (#74349).
+    _model_cfg = _get_model_config()
+    _primary_model = (_model_cfg.get("default") or "").strip()
+    _primary_provider = (_model_cfg.get("provider") or "").strip()
 
     try:
-        runtime = resolve_runtime_provider()
-    except AuthError as auth_exc:
-        # Rate-limit cap vs real auth failure: both use the fallback chain; the log must not mislabel.
-        # Distinguish a transient rate-limit/quota cap (credentials are fine, re-auth cannot help) from a
-        # genuine auth failure (expired/revoked token). See #32790.
-        if is_rate_limited_auth_error(auth_exc):
-            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
-        else:
-            logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
-        if fb_config is not None:
-            return fb_config
-        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config())
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    if fallback_entry is not None:
+        # The entry's model is the one this agent must send (#112600). Carry the fallback notice so the
+        # gateway can surface a user-visible provider switch (#74349); the caller must pop
+        # ``_fallback_notice`` before forwarding kwargs to AIAgent.
+        return {**_runtime_agent_kwargs(runtime), "model": fallback_entry["model"],
+                "_fallback_notice": pre_agent_fallback_notice(
+                    _primary_provider, _primary_model,
+                    runtime.get("provider") or fallback_entry.get("provider") or "unknown",
+                    fallback_entry.get("model") or "default")}
 
     capabilities = runtime.get("capabilities")
     capabilities = (
@@ -2377,39 +2381,6 @@ def _credential_pool_for_provider(provider: Optional[str]):
     except Exception:
         logger.debug("Failed to resolve credential pool for provider=%s", provider, exc_info=True)
         return None
-
-
-def _try_resolve_fallback_provider() -> dict | None:
-    """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    try:
-        cfg = _load_gateway_config()
-        fb_list = get_fallback_chain(cfg)
-        if not fb_list:
-            return None
-        for entry in fb_list:
-            try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry), target_model=entry.get("model") or None)
-                # Named custom entries resolve to the bare "custom" billing class; persist the configured
-                # identity so UI/billing rows match the manual-switch path (#98739).
-                runtime["provider"] = effective_runtime_provider(entry, runtime)
-                # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
-                logger.info(
-                    # Log the literal `provider` key from config, not the resolved runtime category — an
-                    # Ollama fallback resolves through the OpenAI-compatible path and would otherwise be
-                    # logged as "openrouter", contradicting the operator's config (#32790).
-                    "Fallback provider resolved: %s model=%s",
-                    entry.get("provider") or runtime.get("provider"), entry.get("model"))
-                return {**_runtime_agent_kwargs(runtime), "model": entry.get("model")}
-            except Exception as fb_exc:
-                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
-                continue
-    except Exception:
-        pass
-    return None
 
 
 def _event_media_type_at(event, index: int) -> str:

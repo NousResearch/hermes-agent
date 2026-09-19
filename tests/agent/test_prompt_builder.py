@@ -1268,3 +1268,26 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+class TestParallelGuidanceHardening:
+    """Pin the production-informed hardening of PARALLEL_TOOL_CALL_GUIDANCE.
+
+    Telemetry: 79% of tool rounds carried a single call despite the guidance
+    and runtime batching support; each serialized round costs a full model
+    round-trip (~12.2s measured mean). These assertions keep the measured
+    rationale in the prompt so it can't silently regress to the soft wording.
+    """
+
+    def test_names_round_trip_cost(self):
+        assert "full model round-trip" in PARALLEL_TOOL_CALL_GUIDANCE
+
+    def test_default_is_batched(self):
+        assert "The default is batched" in PARALLEL_TOOL_CALL_GUIDANCE
+
+    def test_caps_drip_feeding(self):
+        assert "at most one serialized round" in PARALLEL_TOOL_CALL_GUIDANCE
+        assert "drip 2-3 calls" in PARALLEL_TOOL_CALL_GUIDANCE
+
+    def test_serialization_exception_survives(self):
+        assert "Only serialize when a later call genuinely depends" in PARALLEL_TOOL_CALL_GUIDANCE

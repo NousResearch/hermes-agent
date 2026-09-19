@@ -2270,7 +2270,9 @@ PROCESS_SCHEMA = {
     # See #95681.
     "description": (
         "Poll, wait on, or kill background terminal processes (from "
-        "terminal(background=true)). "
+        "terminal(background=true)). Bounded tasks should be started with "
+        "notify=true instead of being polled: poll/wait blocks the agent turn, "
+        "notify delivers the result as a new message with zero turn time. "
         "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "

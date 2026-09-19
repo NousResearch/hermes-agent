@@ -314,17 +314,25 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
 # per-agent overrides work; the text lives here.
-_MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Memory has TWO distinct stores — pick the right one for each fact:\n"
+# Shared by the memory-only and combined review prompts: the memory tool has two targets and the
+# fork must pick one per fact. Without this the reviewer wrote profile data into MEMORY.md and the
+# same lesson into both stores until both hit their size limits (#30220).
+_MEMORY_ROUTING_BLOCK = (
+    "TWO distinct stores — pick the right one for each fact:\n"
     "  • USER.md (memory tool, target='user'): who the user is — persona, preferences, "
     "communication and work style, personal details they revealed, and expectations about how you "
     "should behave.\n"
     "  • MEMORY.md (memory tool, target='memory'): facts about the ENVIRONMENT you operate in — "
     "tool quirks, project conventions, config gotchas, paths and endpoints that matter.\n\n"
-    "One fact goes to ONE store; never write the same fact to both. Mixing user-profile data into "
-    "MEMORY.md (or vice versa) fills both files with duplicates until they hit their size limits "
-    "and crowd out the facts that matter.\n\n"
+    "One fact goes to ONE store, never both — writing it to both bloats both files until they hit "
+    "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
+    "session won't look. If the tool schema lists only one "
+    "target, that store is the only one enabled — use it and skip the other.\n\n"
+)
+
+_MEMORY_REVIEW_PROMPT = (
+    "Review the conversation above and consider saving to memory if appropriate.\n\n"
+    "Memory has " + _MEMORY_ROUTING_BLOCK +
     "If something stands out, save it once, in the right store, using the memory tool with the "
     "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
@@ -475,11 +483,7 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory**: two stores, one target each. USER.md (memory tool, target='user') holds who the "
-    "user is — persona, preferences, communication and work style, expectations about how you "
-    "should behave. MEMORY.md (memory tool, target='memory') holds facts about the environment — "
-    "tool quirks, project conventions, config gotchas, paths and endpoints. One fact goes to ONE "
-    "store; never write the same fact to both.\n\n"
+    "**Memory**: " + _MEMORY_ROUTING_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"
@@ -517,12 +521,12 @@ _COMBINED_REVIEW_PROMPT = (
     "skill_view just returned. New skills and NEW supporting files need no prior read. On a "
     "read-before-write refusal: view the named target once, retry the write once, do not loop.\n\n"
     "User-preference embedding: when the user complains about how you handled a task, update the "
-    "skill that governs that task — memory alone isn't enough. Memory says 'who the user is and "
+    "skill that governs that task rather than memory. Memory says 'who the user is and "
     "what the current situation and state of your operations are'; skills say 'how to do this "
     "class of task for this user'. A user-preference lesson lives in exactly ONE place: the skill "
     "that governs the task when one exists, USER.md only for cross-cutting preferences no skill "
-    "owns — never both. Duplicating it across stores is how MEMORY.md ends up restating SKILL.md "
-    "until both hit their size limits.\n\n"
+    "owns — never both. Duplicating it is how a memory file ends up restating SKILL.md until both "
+    "hit their size limits.\n\n"
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"

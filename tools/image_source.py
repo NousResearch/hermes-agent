@@ -48,6 +48,8 @@ class ResolvedImage:
 
 # Explicit URL scheme ("ftp://", "s3://"). Bare Windows drive paths lack the "//".
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+#: The leftover of a correctly-formed file:///C:/... once "file://" is removed.
+_WINDOWS_DRIVE_URI_RE = re.compile(r"^/[A-Za-z]:[\\/]")
 
 
 async def resolve_image_source(
@@ -71,6 +73,14 @@ async def resolve_image_source(
     # Everything else is a filesystem path — including bare relative names like "pic.png"
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
+    # RFC-form file:///C:/... strips to /C:/..., which Windows reads as \C:\... and
+    # never finds. A model that writes the correct URI for a Windows path therefore
+    # gets "media file not found" while the identical bare path works. Drop the
+    # leading slash ONLY for the drive-letter form: file://C:/... (no third slash)
+    # already strips correctly, and url2pathname would break it by parsing the drive
+    # as a netloc, while POSIX /home/... must stay exactly as it is.
+    if _WINDOWS_DRIVE_URI_RE.match(candidate):
+        candidate = candidate[1:]
     p = Path(os.path.expanduser(candidate))
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():

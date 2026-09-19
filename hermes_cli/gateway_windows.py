@@ -930,6 +930,28 @@ def _wait_for_gateway_ready(
     return []
 
 
+def run_scheduled_task_and_wait(*, timeout_s: float = 30.0, all_profiles: bool = False) -> list[int]:
+    """Job-Object-free relaunch fallback: run the registered Scheduled Task, then wait for a live gateway.
+
+    The updater's ``_spawn_detached`` / ``launch_detached_*`` children are created inside the updater's
+    own Job Object; when breakaway is denied they are reaped on its teardown (#48820/#91675), so the
+    post-update ``✓`` never holds. ``schtasks /Run`` executes the gateway under the Task Scheduler
+    service — outside any caller Job Object — the one start path that survives (and exactly the manual
+    ``schtasks /Run /TN Hermes_Gateway`` recovery we already print). Returns the live PIDs, or ``[]``
+    when no task is registered, ``schtasks`` refused, or nothing came up (caller reports as before).
+
+    ponytail: targets the current profile's task only (``get_task_name()``); a fully-down multi-profile
+    fleet recovers just the active profile here — plumb per-``home`` task names if that ever matters.
+    """
+    if not is_task_registered():
+        return []
+    code, _out, err = _exec_schtasks(["/Run", "/TN", get_task_name()])
+    if code != 0:
+        logger.warning("Scheduled Task /Run relaunch fallback failed (code %s): %s", code, (err or "").strip())
+        return []
+    return _wait_for_gateway_ready(timeout_s=timeout_s, all_profiles=all_profiles)
+
+
 # ---------------------------------------------------------------------------
 # Start attestation — honest reporting for deaths AFTER the liveness poll
 #

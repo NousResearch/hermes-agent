@@ -126,6 +126,9 @@ def cmd_doctor(args) -> None:
 
     cfg = config_mod.load_config()
     caps = config_mod.detect_capabilities(config_mod.dotenv_env())  # see creds in $HERMES_HOME/.env too
+    # A browser can also come from Hermes itself with NO skill keys: a provider set in config.yaml, or a
+    # Nous Portal subscription (Browserbase is a built-in gateway tool). Fold that in.
+    browser_avail = caps["cloud_browser"] or config_mod.hermes_browser_configured()
     data = paths_mod.data_dir()
     writable = _check_writable(data)
     curated = len(brokers_mod._load_curated())
@@ -142,8 +145,10 @@ def cmd_doctor(args) -> None:
          + ("" if live else ", run `refresh-brokers` to expand to ~50") + ")",
          "", "Opt-in upgrades:"]
     rows = [
-        ("Cloud browser (Browserbase) *RECOMMENDED*", caps["browserbase"],
-         "default backend: clears soft CAPTCHAs (Turnstile/hCaptcha) -> more T1", "set BROWSERBASE_API_KEY"),
+        ("Stealth browser *RECOMMENDED*", browser_avail,
+         "clears soft CAPTCHAs (Turnstile/hCaptcha) -> more T1",
+         "Nous Portal subscription (no keys) / BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID / "
+         "BROWSER_USE_API_KEY / FIRECRAWL_API_KEY / CAMOFOX_URL"),
         ("Email auto (AgentMail)", caps["agentmail"],
          "send + auto-verify, per-broker aliases (Mode B/C)", "install agentmail skill / set AGENTMAIL_API_KEY"),
         ("Email send (CLI SMTP)", caps["smtp_send"],
@@ -175,12 +180,20 @@ def cmd_doctor(args) -> None:
 
     L += ["", "Verdict:", "  Ready now in DRAFT mode (no setup needed): scan brokers, draft opt-out",
           "  emails for you to send, and track everything in the ledger."]
-    if caps["browserbase"]:
-        L.append("  Cloud browser ON (recommended default): soft/managed CAPTCHAs "
-                 "(Turnstile/hCaptcha) clear automatically -> those brokers stay T1.")
+    if browser_avail:
+        L.append("  Stealth browser ON: soft/managed CAPTCHAs (Turnstile/hCaptcha) clear "
+                 "automatically -> those brokers stay T1.")
+        if caps["browserbase"] and not caps["browserbase_ready"]:
+            L.append("  WARNING: BROWSERBASE_API_KEY is set but BROWSERBASE_PROJECT_ID is NOT - the "
+                     "Browserbase plugin needs BOTH (or use a Nous Portal subscription, which provides "
+                     "Browserbase via the Tool Gateway with no keys). Add BROWSERBASE_PROJECT_ID to ~/.hermes/.env.")
     else:
-        L.append("  No cloud browser: set BROWSERBASE_API_KEY (the recommended default) so soft "
-                 "CAPTCHAs clear automatically; without it those brokers drop to T2 (human tasks).")
+        L.append("  No stealth browser detected from env/config: soft-CAPTCHA brokers drop to T2. Turn "
+                 "one on (any of): a Nous Portal subscription (no keys - Browserbase via the Tool "
+                 "Gateway); BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID; BROWSER_USE_API_KEY; "
+                 "FIRECRAWL_API_KEY; CAMOFOX_URL (local); or `/browser connect` in the Hermes CLI. "
+                 "(If you already use Portal or `/browser connect`, the browser IS available - this "
+                 "env check just can't see it.) See methods.md 'Browser backends'.")
     if cfg["email_mode"] == "draft_only":
         L.append("  Email is draft-only: you send drafts + click verify links. For hands-off email "
                  "WITHOUT storing a password, run `setup --email-mode browser` (agent sends + opens "
@@ -192,8 +205,10 @@ def cmd_doctor(args) -> None:
                  "--user-data-dir=~/.hermes/chrome-debug, signed into the webmail once); else it falls "
                  "back to drafts. Run `pdd.py cdp` to launch it (or `pdd.py cdp --print` for the command). "
                  "See methods.md 'Browser backends'.")
+        # Cloud backends (not local Camofox) can't hold the operator's webmail session.
         cloud_scan = cfg.get("browser_backend") == "browserbase" or (
-            cfg.get("browser_backend") == "auto" and caps.get("browserbase"))
+            cfg.get("browser_backend") == "auto"
+            and (caps["browserbase"] or caps["browser_use"] or caps["firecrawl"]))
         if cloud_scan:
             L.append("  NOTE: your scan backend is a cloud browser (Browserbase). It is great for "
                      "Phase-1 scanning but CANNOT be the browser that sends webmail (no inbox session) "

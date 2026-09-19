@@ -108,3 +108,40 @@ def test_moa_fold_does_not_inflate_the_parents_prompt_size():
     folded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 190_000}, _last_prompt_size_tokens=50_000)
     unfolded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 50_000})
     assert _parent_summary_char_budget(folded, 1) == _parent_summary_char_budget(unfolded, 1)
+
+
+def test_path_delivery_spills_small_structured_result_without_inline_copy(monkeypatch, tmp_path):
+    """``result_delivery: "path"`` returns the pointer, never the bytes.
+
+    A structured result consumed by another tool must survive the summary budget
+    intact, and must not cost parent context when nothing reads it inline."""
+    from tools.delegate_tool_results import _deliver_summaries_by_path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    exact = '{"messages":[{"message_id":"one"}]}'
+    results = [{"task_index": 0, "summary": exact, "status": "completed"}]
+
+    _deliver_summaries_by_path(
+        results, [{"goal": "Analyse a structured group", "result_delivery": "path"}]
+    )
+
+    path = results[0]["summary_full_path"]
+    assert results[0]["summary_delivery"] == "path"
+    assert results[0]["summary"] == f"Full subagent output saved to: {path}"
+    assert exact not in results[0]["summary"]
+    with open(path, encoding="utf-8") as handle:
+        assert handle.read() == exact
+
+
+def test_inline_delivery_leaves_small_result_unchanged():
+    """The default takes none of the new code paths."""
+    from tools.delegate_tool_results import _deliver_summaries_by_path
+
+    results = [{"task_index": 0, "summary": "small", "status": "completed"}]
+
+    _deliver_summaries_by_path(
+        results, [{"goal": "Return a short summary", "result_delivery": "inline"}]
+    )
+
+    assert results[0]["summary"] == "small"
+    assert "summary_full_path" not in results[0]

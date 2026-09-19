@@ -652,6 +652,13 @@ DELEGATE_TASK_SCHEMA = {
                             "files do NOT belong here — put paths in 'context' instead.",
                             items={"type": "string"},
                         ),
+                        "result_delivery": _p(
+                            "string",
+                            "How the exact final answer returns. 'inline' is the default. 'path' stores it in "
+                            "the delegation cache and returns only that path; use it when another tool will "
+                            "consume a large structured result.",
+                            enum=["inline", "path"],
+                        ),
                         "group": _p(
                             "string",
                             "Optional result-delivery bucket within this call (only when delegation.independent_completions "

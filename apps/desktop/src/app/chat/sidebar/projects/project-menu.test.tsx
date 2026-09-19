@@ -57,6 +57,12 @@ vi.mock('@/store/layout', () => ({
   dismissAutoProject: vi.fn()
 }))
 
+const fsMode = vi.hoisted(() => ({ remote: false }))
+
+vi.mock('@/lib/desktop-fs', () => ({
+  isDesktopFsRemoteMode: () => fsMode.remote
+}))
+
 vi.mock('@/store/projects', () => ({
   copyPath: vi.fn(),
   deleteProject: vi.fn(),
@@ -88,6 +94,22 @@ const openTriggerMenu = (trigger: HTMLElement) => {
 }
 
 describe('ProjectMenu', () => {
+  it.each([
+    [false, true],
+    [true, false]
+  ])('offers "Reveal in file manager" only when the workspace is on this computer (remote: %s)', async (remote, offered) => {
+    // The OS file manager can only show what is on this computer; a remote gateway's project
+    // paths are on that machine, and the item was offered anyway — a click that did nothing.
+    fsMode.remote = remote
+    render(<ProjectMenu isActive={false} project={project} />)
+
+    openTriggerMenu(screen.getByRole('button', { name: 'Actions' }))
+    await screen.findByRole('menuitem', { name: 'Copy path' })
+
+    expect(screen.queryByRole('menuitem', { name: 'Reveal in file manager' }) !== null).toBe(offered)
+    fsMode.remote = false
+  })
+
   it('does not wrap the kebab trigger in a Tip', () => {
     render(<ProjectMenu isActive={false} project={project} />)
 

@@ -133,7 +133,8 @@ export const ja = defineLocale({
     renameLabel: '新しい名前',
     deleteTitle: name => `${name} を削除しますか？`,
     deleteBody: 'ゴミ箱に移動します。そこから復元できます。',
-    pathCopied: 'パスをコピーしました'
+    pathCopied: 'パスをコピーしました',
+    revealUnavailable: 'このパスはこのコンピュータ上にありません。ファイルはバックエンドのマシンにあります。「ファイルツリーに表示」を使ってください。'
   },
 
   boot: {

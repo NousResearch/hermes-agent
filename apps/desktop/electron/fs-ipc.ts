@@ -38,7 +38,10 @@ export function registerFsIpc({
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
-  // Reveal a path in the OS file manager (Finder / Explorer / Files).
+  // Reveal a path in the OS file manager (Finder / Explorer / Files). `showItemInFolder`
+  // selects an existing item and silently no-ops on a missing one, and a remote backend's
+  // paths — every session on a Connections gateway — are missing here by construction, so
+  // the door reports what it actually did: `false` means nothing on this computer was shown.
   ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
     const target = String(targetPath || '').trim()
 
@@ -47,7 +50,13 @@ export function registerFsIpc({
     }
 
     try {
-      shell.showItemInFolder(target)
+      const local = expandUserPath(target)
+
+      if (!fs.existsSync(local)) {
+        return false
+      }
+
+      shell.showItemInFolder(local)
 
       return true
     } catch {

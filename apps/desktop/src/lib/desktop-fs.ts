@@ -5,6 +5,7 @@ import type {
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { translateNow } from '@/i18n'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -158,9 +159,15 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
   return remoteFsApi<{ branch: string; cwd: string }>('/api/fs/default-cwd')
 }
 
-// Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.
+// Reveal a path in the OS file manager (Finder / Explorer / Files). Local only: the door
+// answers `false` when nothing at that path exists on this computer — a remote backend's
+// paths never do — and silence there left the user with a click that did nothing.
 export async function revealDesktopPath(path: string): Promise<void> {
-  await bridge().revealPath?.(path)
+  const shown = await bridge().revealPath?.(path)
+
+  if (shown === false) {
+    throw new Error(translateNow('fileMenu.revealUnavailable'))
+  }
 }
 
 // Rename a file/folder in place; returns the new absolute path. Local only.

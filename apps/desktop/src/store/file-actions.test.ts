@@ -9,7 +9,7 @@ vi.mock('@/lib/media', () => ({
 const media = await import('@/lib/media')
 const downloadGatewayMediaFile = vi.mocked(media.downloadGatewayMediaFile)
 
-const { downloadRemoteFile, shouldOfferRemoteFileDownload } = await import('./file-actions')
+const { downloadRemoteFile, shouldOfferLocalReveal, shouldOfferRemoteFileDownload } = await import('./file-actions')
 
 describe('shouldOfferRemoteFileDownload', () => {
   it('is only for files on a remote backend', () => {
@@ -17,6 +17,21 @@ describe('shouldOfferRemoteFileDownload', () => {
     expect(shouldOfferRemoteFileDownload(true, true)).toBe(false)
     expect(shouldOfferRemoteFileDownload(false, false)).toBe(false)
     expect(shouldOfferRemoteFileDownload(true, false)).toBe(false)
+  })
+})
+
+describe('shouldOfferLocalReveal', () => {
+  it.each([
+    ['', false, true],        // the window's primary, local
+    ['', true, false],        // the window's primary, remote — the sidebar's existing rule
+    ['local', true, true],    // a row tagged with THIS machine, even under a remote primary
+    ['mini', false, false],   // a row tagged with another gateway, even under a local primary
+    [undefined, true, false]
+  ])('connection %s with primaryRemote=%s -> %s', (connectionId, primaryRemote, expected) => {
+    // The OS file manager can only show what is on this computer. The statusbar's workspace
+    // menu offered "Open containing folder" for a remote bot's workspace and the click did
+    // nothing; the focused row's backend decides, the primary's mode only when it is untagged.
+    expect(shouldOfferLocalReveal(connectionId, primaryRemote)).toBe(expected)
   })
 })
 

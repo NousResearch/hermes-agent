@@ -311,6 +311,26 @@ def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
     assert result.stderr == "boom before \ufffd after\n"
 
 
+@pytest.mark.skipif(
+    getattr(sys.flags, "utf8_mode", 0),
+    reason="parent already in UTF-8 mode; the ANSI-codepage mismatch is not exercisable",
+)
+def test_bot_chat_turn_roundtrips_accented_utf8_reply(tmp_path):
+    """The delivery child writes UTF-8 unconditionally — hermes_cli reconfigures its
+    own streams via hermes_bootstrap on Windows even under PYTHONIOENCODING=cp1252 —
+    while the gateway parent there is NOT started in UTF-8 mode, so text=True alone
+    decoded the pipes with the ANSI code page: the reply came back mojibake'd, or the
+    reader thread died on bytes undefined in cp1252 and the reply was silently lost
+    while the delivery still booked as delivered (#115894)."""
+    text = "AÇÃO ÍNDICE: relatório nº 3\n"
+    child = "import sys; sys.stdout.write({!r})".format(text)
+    result = sched_delivery._run_bot_chat_turn(
+        [sys.executable, "-c", child], _child_env(), str(tmp_path / "turn.json"), timeout=15)
+
+    assert result.returncode == 0
+    assert result.stdout == text
+
+
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────
 
 def test_delivery_targets_include_local_profiles():

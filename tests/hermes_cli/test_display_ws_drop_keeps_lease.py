@@ -158,3 +158,92 @@ def test_no_bridge_task_or_socket_outlives_the_bridge():
     with tempfile.TemporaryDirectory() as home:
         leftover = asyncio.run(_run(home))
     assert leftover == set(), [t.get_coro() for t in leftover]
+
+
+_HANDSHAKE = b"RFB 003.008\n" + b"\x01" + b"\x01"  # Security None, shared ClientInit
+_KEY_A = b"\x04\x01\x00\x00\x00\x00\x00\x61"  # KeyEvent 'a' down
+_FBUR = b"\x03\x00" + b"\x00" * 8
+
+
+class _SeqWs(_Ws):
+    """Deliver each message, then report an abnormal disconnect without a timing delay."""
+
+    def __init__(self, messages):
+        super().__init__(1006)
+        self._messages = iter(messages)
+
+    async def receive(self):
+        message = next(self._messages, None)
+        if message is None:
+            return {"type": "websocket.disconnect", "code": self._code}
+        return {"type": "websocket.receive", "bytes": message}
+
+
+async def _bridge_with_capture(home: str, viewer_id: str, messages) -> bytes:
+    """Capture the complete client stream through EOF, and join the fake server handler."""
+    sock_dir = os.path.join(home, "bot-desktop")
+    os.makedirs(sock_dir, exist_ok=True)
+    sock = os.path.join(sock_dir, "rfb.sock")
+    before = asyncio.all_tasks()
+    connected = asyncio.get_running_loop().create_future()
+
+    async def _capture(reader, writer):
+        try:
+            return await reader.read()  # EOF proves all bytes were captured, including forbidden input.
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def _accept(reader, writer):
+        connected.set_result(asyncio.create_task(_capture(reader, writer)))
+
+    ws = _SeqWs(messages)
+    server = await asyncio.start_unix_server(_accept, path=sock)
+    try:
+        # Bounds only diagnose a hung bridge/handler; elapsed time never decides success.
+        await asyncio.wait_for(
+            display._bridge(ws, {"hermes_home": home, "viewer_id": viewer_id}), 5
+        )
+        capture = await asyncio.wait_for(asyncio.shield(connected), 5)
+        received = await asyncio.wait_for(asyncio.shield(capture), 5)
+        assert ws.closed
+        assert not (asyncio.all_tasks() - before), "bridge or capture task survived cleanup"
+        return received
+    finally:
+        server.close()
+        await server.wait_closed()
+        # Also clean up on an assertion, timeout or unexpected bridge exception.
+        pending = asyncio.all_tasks() - before
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        os.unlink(sock)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_after_abnormal_drop_restores_same_viewer_rfb_input():
+    """Sequential bridges reuse the retained lease after 1006, without another acquire.
+
+    The holder sends keys again; a later foreign viewer remains view-only. This exercises the
+    real bridge, lease and RFB filter with a WebSocket double and a Unix-socket byte sink.
+    """
+    async def _run(home):
+        original = lease.acquire("desk-1", profile_key=home)
+        first = await _bridge_with_capture(home, "desk-1", [_HANDSHAKE, _KEY_A])
+        assert first == _HANDSHAKE + _KEY_A, "initial holder input was denied"
+        assert lease.get(profile_key=home) == original
+
+        again = await _bridge_with_capture(home, "desk-1", [_HANDSHAKE, _KEY_A, _FBUR])
+        assert again == _HANDSHAKE + _KEY_A + _FBUR, "reconnected holder input was denied"
+        assert lease.get(profile_key=home) == original
+
+        foreign = await _bridge_with_capture(home, "desk-2", [_HANDSHAKE, _KEY_A, _FBUR])
+        assert foreign == _HANDSHAKE + _FBUR, "foreign viewer input passed or viewing was blocked"
+        assert lease.get(profile_key=home) == original
+
+    lease._reset_for_tests()
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            await _run(home)
+    finally:
+        lease._reset_for_tests()

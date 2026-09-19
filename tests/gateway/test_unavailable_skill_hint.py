@@ -100,3 +100,50 @@ def test_unknown_command_still_returns_none(
         assert gateway_run._check_unavailable_skill("no-such-skill") is None
 
 
+def test_disabled_leading_underscore_skill_matches_telegram_form(
+    tmp_skills: Path,
+) -> None:
+    """Disabled skills keep intentional leading underscores in gateway hints."""
+    from gateway import run as gateway_run
+
+    _write_skill(tmp_skills, "spec-driven", "__spec-driven")
+
+    # The command arrives in Telegram's underscore form. The pre-fix slug
+    # normalizer stripped the leading underscores, so this fell through to the
+    # generic unknown-command response instead of the actionable disabled hint.
+    with patch(
+        "tools.skills_tool._get_disabled_skill_names",
+        return_value={"__spec-driven"},
+    ), patch(
+        "agent.skill_utils.get_all_skills_dirs",
+        return_value=[tmp_skills],
+    ):
+        msg = gateway_run._check_unavailable_skill("__spec-driven")
+
+    assert msg is not None
+    assert "disabled" in msg.lower()
+    assert "hermes skills config" in msg
+
+
+def test_optional_leading_underscore_skill_matches_telegram_form(
+    tmp_skills: Path, tmp_path: Path
+) -> None:
+    """Optional skills with leading underscores produce the install hint."""
+    from gateway import run as gateway_run
+
+    optional_root = tmp_path / "optional-skills"
+    _write_skill(optional_root, "research/__spec-driven", "__spec-driven")
+
+    with patch(
+        "tools.skills_tool._get_disabled_skill_names", return_value=set()
+    ), patch(
+        "agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
+    ), patch(
+        "hermes_constants.get_optional_skills_dir", return_value=optional_root
+    ):
+        msg = gateway_run._check_unavailable_skill("__spec-driven")
+
+    assert msg is not None
+    assert "available but not installed" in msg
+    assert "hermes skills install official/research/__spec-driven" in msg
+

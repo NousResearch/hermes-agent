@@ -597,3 +597,84 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
 
     assert chat_id is None
     assert error is not None
+
+
+def test_google_chat_thread_target_is_explicit() -> None:
+    # The full resource name (what inbound events carry in thread.name) addresses that
+    # thread: it splits into (space, complete thread name) for the adapter's thread.name.
+    assert _parse_target_ref("google_chat", "spaces/AAAA1234/threads/BBBB5678") == (
+        "spaces/AAAA1234", "spaces/AAAA1234/threads/BBBB5678", True)
+
+
+def test_google_chat_space_target_is_explicit() -> None:
+    assert _parse_target_ref("google_chat", "spaces/AAAA1234") == ("spaces/AAAA1234", None, True)
+    assert _parse_target_ref("google_chat", "users/AAAA1234") == ("users/AAAA1234", None, True)
+
+
+def test_google_chat_target_mirrors_adapter_charset() -> None:
+    # Fail closed on ids outside the adapter's strict resource-name charset, and a
+    # "users/..." DM cannot carry a thread (the adapter's thread RE only accepts spaces/).
+    assert _parse_target_ref("google_chat", "spaces/AAAA/threads/B..B") == (None, None, False)
+    assert _parse_target_ref("google_chat", "users/AAAA/threads/BBBB") == (None, None, False)
+
+
+def test_google_chat_thread_target_tolerates_surrounding_whitespace() -> None:
+    assert _parse_target_ref("google_chat", "  spaces/AAAA/threads/BBBB  ") == (
+        "spaces/AAAA", "spaces/AAAA/threads/BBBB", True)
+
+
+def test_send_message_routes_google_chat_thread_without_home_fallback() -> None:
+    """End-to-end: the thread form reaches the adapter split into (space, thread
+    resource name) instead of erroring on directory lookup or falling to home."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    # Only register a stub when the real google_chat entry is absent (bare test
+    # process). register() writes this caller into the process-global map while a
+    # discovered bundled entry lives in a scope map, so an unconditional
+    # unregister would drop the real entry and leave the stub behind.
+    stub_needed = platform_registry.get("google_chat") is None
+    if stub_needed:
+        platform_registry.register(
+            PlatformEntry(
+                name="google_chat",
+                label="Google Chat",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+            )
+        )
+    platform = Platform("google_chat")
+    pconfig = SimpleNamespace(enabled=True, token=None, extra={})
+    config = SimpleNamespace(
+        platforms={platform: pconfig},
+        get_home_channel=lambda _platform: None,
+    )
+    try:
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("explicit thread target should not resolve via directory")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "google_chat:spaces/AAAA1234/threads/BBBB5678",
+                        "message": "job update",
+                    }
+                )
+            )
+    finally:
+        if stub_needed:
+            platform_registry.unregister("google_chat")
+
+    assert result["success"] is True
+    send_mock.assert_awaited_once_with(
+        platform,
+        pconfig,
+        "spaces/AAAA1234",
+        "job update",
+        thread_id="spaces/AAAA1234/threads/BBBB5678",
+        media_files=[],
+        force_document=False,
+    )

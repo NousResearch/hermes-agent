@@ -36,7 +36,7 @@ def test_nearest_root_finds_first_marker(tmp_path: Path):
     root = tmp_path / "p"
     deep = root / "src" / "pkg"
     deep.mkdir(parents=True)
-    (root / "pyproject.toml").write_text("")
+    (root / "pyproject.toml").write_text("", encoding="utf-8")
     found = nearest_root(str(deep / "mod.py"), ["pyproject.toml"])
     assert found == str(root)
 
@@ -47,9 +47,9 @@ def test_nearest_root_skips_package_dirs(tmp_path: Path):
     root = tmp_path / "p"
     pkg = root / "hermes_cli"
     pkg.mkdir(parents=True)
-    (root / "pyproject.toml").write_text("")
-    (pkg / "__init__.py").write_text("")
-    (pkg / "setup.py").write_text("")
+    (root / "pyproject.toml").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "setup.py").write_text("", encoding="utf-8")
     found = nearest_root(str(pkg / "main.py"), ["pyproject.toml", "setup.py"])
     assert found == str(root)
 
@@ -58,7 +58,7 @@ def test_resolve_workspace_for_file_uses_cwd_first(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     file_path = repo / "x.py"
-    file_path.write_text("")
+    file_path.write_text("", encoding="utf-8")
     # cwd is inside the repo
     monkeypatch.chdir(str(repo))
     root, gated = resolve_workspace_for_file(str(file_path))
@@ -96,3 +96,15 @@ def test_normalize_path_expands_tilde(monkeypatch):
     monkeypatch.setenv("HOME", "/home/user")
     p = normalize_path("~/x.py")
     assert p == os.path.abspath("/home/user/x.py")
+
+
+def test_find_git_worktree_cache_is_capped(tmp_path: Path, monkeypatch):
+    """The start-dir cache resets past _WORKSPACE_CACHE_CAP instead of growing per distinct dir touched."""
+    import agent.lsp.workspace as ws
+
+    monkeypatch.setattr(ws, "_WORKSPACE_CACHE_CAP", 4)
+    for i in range(6):
+        d = tmp_path / f"d{i}"
+        d.mkdir()
+        assert find_git_worktree(str(d)) is None
+    assert len(ws._workspace_cache) <= 4

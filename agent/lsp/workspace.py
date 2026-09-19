@@ -15,8 +15,10 @@ from typing import Iterable, Iterator, Optional, Tuple
 
 logger = logging.getLogger("agent.lsp.workspace")
 
-# Cache: start dir → (worktree_root, is_git) so repeated calls don't re-stat.  Cleared on shutdown.
+# Cache: start dir → (worktree_root, is_git) so repeated calls don't re-stat.  Cleared on shutdown; capped
+# because every distinct file dir a long gateway session touches lands here (#62950).
 _workspace_cache: dict = {}
+_WORKSPACE_CACHE_CAP = 512
 
 # Walk cap: the deepest reasonable monorepo is well under 64 levels; bounds a
 # pathological cwd or symlink cycle even though parent-equality normally stops us.
@@ -60,16 +62,18 @@ def find_git_worktree(start: str) -> Optional[str]:
     cached = _workspace_cache.get(str(start_path))
     if cached is not None:
         return cached[0]
+    resolved = None
     for cur in _walk_up(start_path):
         try:
             if (cur / ".git").exists():
                 resolved = str(cur)
-                _workspace_cache[str(start_path)] = (resolved, True)
-                return resolved
+                break
         except OSError:
             break  # permission error on a parent dir — bail out cleanly
-    _workspace_cache[str(start_path)] = (None, False)
-    return None
+    _workspace_cache[str(start_path)] = (resolved, resolved is not None)
+    if len(_workspace_cache) > _WORKSPACE_CACHE_CAP:
+        _workspace_cache.clear()  # a stat cache: resetting is a few re-stats, and one atomic op is thread-safe
+    return resolved
 
 
 def is_inside_workspace(path: str, workspace_root: str) -> bool:

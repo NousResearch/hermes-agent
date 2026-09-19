@@ -6,7 +6,9 @@ skipped, repeat "no project root" / "server unavailable"); INFO for once-per-ses
 transitions (first ``active for <root>``, first ``no project root`` per file) and every
 diagnostic event; WARNING for action-required failures (first ``server unavailable`` per
 (server_id, binary), every timeout / unexpected error).  Dedup uses module-level sets bounded
-by the distinct pairs touched in one process — a bounded LRU would re-fire suppressed lines.
+by the distinct pairs touched in one process, each capped at ``_ANNOUNCE_CAP`` keys: past it the
+bucket resets and the first-seen line re-fires once, so per-file keys can't grow for the life of
+a gateway process (#62950).
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from typing import List, Tuple
 event_log = logging.getLogger("hermes.lint.lsp")
 
 _announce_lock = threading.Lock()
+_ANNOUNCE_CAP = 512
 _announced_active: set = set()        # keys: (server_id, workspace_root)
 _announced_unavailable: set = set()   # keys: (server_id, binary_path_or_name)
 _announced_no_root: set = set()       # keys: (server_id, file_path)
@@ -47,6 +50,8 @@ def _emit_once(bucket: set, key: Tuple, server_id: str, level: int, first: str, 
     """Log *first* at *level* the first time *key* is seen, *repeat* at DEBUG thereafter."""
     with _announce_lock:
         is_first = key not in bucket
+        if is_first and len(bucket) >= _ANNOUNCE_CAP:
+            bucket.clear()
         bucket.add(key)
     _emit(server_id, level if is_first else logging.DEBUG, first if is_first else repeat)
 

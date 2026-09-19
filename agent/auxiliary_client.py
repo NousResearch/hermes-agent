@@ -2640,6 +2640,20 @@ def _runtime_main_value(field: str) -> Any:
     return (runtime.get(field) or "") if isinstance(runtime, dict) else ""
 
 
+def current_main_runtime() -> Optional[Dict[str, Any]]:
+    """Snapshot of the LLM runtime bound to this context (``set_runtime_main``), or ``None``.
+
+    This is the invocation the current turn is routed to, published by the turn prologue; a
+    plugin asking for "the turn-bound invocation" reads it here instead of resolving from
+    ambient config (see ``agent.plugin_llm.PluginInvocation``). A copy — callers must not be
+    able to mutate the live binding.
+    """
+    runtime = _RUNTIME_MAIN_CONTEXT.get()
+    if runtime is None:
+        runtime = _compat_runtime_main()
+    return dict(runtime) if isinstance(runtime, dict) else None
+
+
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
@@ -7687,6 +7701,141 @@ def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.Bound
                 close()
         finally:
             semaphore.release()
+
+
+# ── Route-locked calls ────────────────────────────────────────────────────────
+# ``call_llm``'s value is its recovery ladder: same-provider retries, parameter stripping,
+# provider fallback. Every rung of it can move a call somewhere the caller did not choose.
+# A caller that must reach exactly the invocation a turn is bound to — ``ctx.llm(...,
+# inherit_turn_invocation=True)``, #109499 — needs the opposite guarantee: this provider,
+# this model, this route, exactly once, or an honest failure. A "do not recover" flag
+# threaded through the ladder would leave that guarantee one refactor away from silently
+# lapsing, so the locked path is its own entry point.
+
+
+class RouteLockedCallError(RuntimeError):
+    """A route-locked call failed. ``code`` is short and provider-message free."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"route-locked call failed: {code}")
+        self.code = code
+
+
+def classify_route_locked_error(exc: Exception) -> str:
+    """Map a provider exception to a stable, non-leaking code.
+
+    Deliberately coarse. The caller journals this string, and a provider message can carry a
+    base URL, a key fragment or an echo of the request body — none of which belongs in a
+    durable log.
+    """
+    if _is_auth_error(exc):
+        return "auth_error"
+    if _is_payment_error(exc):
+        return "payment_error"
+    if _is_rate_limit_error(exc):
+        return "rate_limited"
+    if _is_model_incompatible_error(exc):
+        return "model_incompatible"
+    if _is_invalid_aux_response_error(exc):
+        return "invalid_response"
+    if _is_connection_error(exc) or _is_transient_transport_error(exc):
+        return "transport_error"
+    return "call_failed"
+
+
+# Transport modes a locked route may use. Anything else fails closed rather than being
+# coerced: a locked route's whole point is that the request goes exactly where it was
+# captured from, and a silent transport substitution is the failure it exists to avoid.
+_ROUTE_LOCKED_API_MODES = frozenset({
+    "", "chat_completions", "openai", "openai_chat", "anthropic_messages", "codex_responses",
+})
+
+
+def call_llm_route_locked(
+    *, provider: Optional[str] = None, model: Optional[str] = None, base_url: Optional[str] = None,
+    api_key: Any = None, api_mode: Optional[str] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: Optional[int] = None,
+    timeout: Optional[float] = None, extra_body: Optional[dict] = None,
+) -> Any:
+    """One request on exactly the given route. No retry, no fallback, no reroute.
+
+    Unset fields resolve from the live turn binding (``set_runtime_main``), so a caller can
+    simply ask for "the invocation this turn is on". An under-specified route raises
+    :class:`RouteLockedCallError` instead of resolving from ambient config: quietly landing
+    on a different provider is the failure this path exists to make impossible.
+
+    ``api_key`` is resolved host-side and never returned to the caller; the request goes out
+    on the credentials the live invocation already holds.
+    """
+    runtime = current_main_runtime() or {}
+    provider = (provider or runtime.get("provider") or "").strip()
+    model = (model or runtime.get("model") or "").strip()
+    base_url = (base_url or runtime.get("base_url") or "").strip()
+    resolved_api_key = api_key if api_key not in (None, "") else (runtime.get("api_key") or "")
+    mode = (api_mode or runtime.get("api_mode") or "").strip().lower()
+    try:
+        if not provider:
+            raise RouteLockedCallError("no_turn_invocation")
+        if provider == "auto" or not model:
+            raise RouteLockedCallError("incomplete_route")
+        if mode not in _ROUTE_LOCKED_API_MODES:
+            raise RouteLockedCallError("unsupported_api_mode")
+        # ``custom`` has no built-in endpoint: without one from the binding the resolver
+        # would reach for OPENAI_BASE_URL in the environment — a different route.
+        if provider.split(":", 1)[0] == "custom" and not base_url:
+            raise RouteLockedCallError("incomplete_route")
+        if not messages:
+            raise RouteLockedCallError("empty_request")
+        client, final_model = resolve_provider_client(
+            provider, model, explicit_base_url=base_url or None,
+            explicit_api_key=resolved_api_key or None, api_mode=mode or None,
+            main_runtime=runtime,
+        )
+        if client is None:
+            raise RouteLockedCallError("incomplete_route")
+        kwargs = _build_call_kwargs(
+            provider, final_model or model, messages, temperature=temperature, max_tokens=max_tokens,
+            tools=None, timeout=_effective_aux_timeout(None, timeout),
+            extra_body=dict(extra_body or {}), reasoning_config=None, base_url=base_url or None,
+            task=None,
+        )
+        _set_relay_auxiliary_route(provider, final_model or model, mode)
+        # Own ``create``: the relay seam's default is ``_create_with_progress``, which sends
+        # ``stream=True`` whenever a progress hook is installed and retries a credit-limited
+        # 402 once with a clamped cap. Both are a second request on a path whose whole
+        # contract is exactly one.
+        return _validate_llm_response(
+            _relay_sync_completion(
+                client, kwargs, provider=provider, api_mode=mode or None,
+                create=lambda request: client.chat.completions.create(**request),
+            ),
+            None, provider=provider, base_url=base_url or None,
+        )
+    except RouteLockedCallError:
+        raise
+    except Exception as exc:
+        raise RouteLockedCallError(classify_route_locked_error(exc)) from exc
+
+
+async def async_call_llm_route_locked(
+    *, provider: Optional[str] = None, model: Optional[str] = None, base_url: Optional[str] = None,
+    api_key: Any = None, api_mode: Optional[str] = None, messages: list,
+    temperature: Optional[float] = None, max_tokens: Optional[int] = None,
+    timeout: Optional[float] = None, extra_body: Optional[dict] = None,
+) -> Any:
+    """Async sibling of :func:`call_llm_route_locked`, with the same guarantees.
+
+    Runs the sync path in a worker thread: one implementation of the locked contract rather
+    than a second async transport that could drift from it.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        functools.partial(
+            call_llm_route_locked, provider=provider, model=model, base_url=base_url,
+            api_key=api_key, api_mode=api_mode, messages=messages, temperature=temperature,
+            max_tokens=max_tokens, timeout=timeout, extra_body=extra_body,
+        )
+    )
 
 
 def _plan_aux_call(

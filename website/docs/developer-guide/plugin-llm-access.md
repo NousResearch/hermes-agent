@@ -93,6 +93,51 @@ model couldn't produce valid JSON, `result.parsed` is `None` and
   pick its own provider, model, agent, or stored credential. The
   default posture is "use what the user is using." Operators opt in
   to specific overrides, per plugin, in `config.yaml`.
+* **Optionally pinned to the turn.** `inherit_turn_invocation=True`
+  runs the call on the invocation the current turn already has —
+  same provider, same model, same route — as one request with no
+  retry and no provider fallback. `ctx.llm.current_invocation()`
+  tells the plugin what that is before it asks.
+
+## Inheriting the turn's invocation
+
+The calls above resolve their own route: the active provider and model,
+the auxiliary fallback chain, the host's usual recovery when a provider
+fails. That is the right default for a job nobody is waiting on.
+
+It is the wrong behaviour when the call must land on the invocation the
+current turn is already on — the user's own provider, model and endpoint,
+reached exactly once, with a refusal instead of a quiet reroute:
+
+```python
+invocation = ctx.llm.current_invocation()   # None outside a turn
+if invocation is None:
+    return "no active invocation to borrow"
+
+result = ctx.llm.complete(
+    messages=[{"role": "user", "content": transcript}],
+    inherit_turn_invocation=True,
+    purpose="refine.lesson",
+)
+```
+
+* `ctx.llm.current_invocation()` returns a frozen
+  `PluginInvocation` — `provider`, `model`, `base_url`, `api_mode`,
+  `session_id` — or `None` when nothing is bound. It carries no
+  credentials; auth is resolved host-side, at call time.
+* `inherit_turn_invocation=True` works on all four call shapes and
+  pins the request to that route: one request, no retry, no provider
+  fallback.
+* It conflicts with `provider=`, `model=`, `agent_id=`, `profile=`
+  and `task=`: those would steer the call off the route being
+  inherited, so they raise rather than being silently ignored.
+* With no live invocation — a slash command outside a turn, a worker
+  thread that did not inherit the turn's context — it raises
+  `PluginLlmInvocationError` with code `no_turn_invocation` instead of
+  falling back to the configured route.
+* Failures arrive as `PluginLlmInvocationError` with a short `code`
+  (`incomplete_route`, `transport_error`, `rate_limited`, …) and never
+  the provider's own message, which can carry a URL or a key fragment.
 
 ## Quick start
 
@@ -224,6 +269,7 @@ result = ctx.llm.complete(
     profile=None,          # optional, gated — explicit auth-profile name
     purpose="optional-audit-string",
     task=None,             # optional — a plugin-registered auxiliary slot
+    inherit_turn_invocation=False,  # optional — pin to the current turn's invocation
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -262,6 +308,7 @@ result = ctx.llm.complete_structured(
     profile=None,
     purpose=None,
     task=None,             # optional — a plugin-registered auxiliary slot
+    inherit_turn_invocation=False,  # optional — pin to the current turn's invocation
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -290,6 +337,19 @@ result = await ctx.llm.acomplete_structured(
 Same arguments and result types as their sync counterparts. Use
 these from gateway adapters, async hooks, or any plugin code
 already running on an asyncio loop.
+
+### `current_invocation()`
+
+```python
+invocation = ctx.llm.current_invocation()
+# → PluginInvocation(provider, model, base_url, api_mode, session_id) or None
+```
+
+The invocation the current turn is bound to — the same value
+`inherit_turn_invocation=True` pins a call to. `None` outside a turn,
+and inside any thread or task that did not inherit the turn's context.
+Frozen, credential-free: capture it for journaling, then decide whether
+the out-of-band call can be made at all.
 
 ### Task-routed auxiliary calls
 
@@ -334,7 +394,7 @@ class PluginLlmCompleteResult:
     model: str                   # whatever the provider returned for this call
     agent_id: str                # whose model/auth was used
     usage: PluginLlmUsage        # tokens + cache + cost estimate
-    audit: Dict[str, Any]        # plugin_id, purpose, profile
+    audit: Dict[str, Any]        # plugin_id, purpose, profile, inherited_turn_invocation
 
 @dataclass
 class PluginLlmStructuredResult:
@@ -451,6 +511,8 @@ don't have to:
 * **Fallback chain.** If the user's primary provider 5xxs or 429s,
   the request goes through Hermes' usual aggregator-aware fallback
   before it returns an error to the plugin.
+  `inherit_turn_invocation=True` opts out of that: the request reaches
+  the bound route exactly once, or raises.
 * **Timeout.** Honours your `timeout=` argument, falling back to
   `auxiliary.<task>.timeout` config or the global aux default.
 * **JSON shaping.** Sends `response_format` to the provider when

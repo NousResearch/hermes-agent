@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import secrets
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,13 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(
+    task_id: str,
+    origin: str,
+    kind: str,
+    *,
+    url_accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
@@ -199,8 +205,20 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    kwargs: Dict[str, Any] = {"accept": _TAB_PROBES.get(kind)}
+    if url_accept is not None:
+        kwargs["url_accept"] = url_accept
+    focused = supervisor.focus_page(origin, **kwargs)
+    if not focused.get("ok"):
+        return None
+    if origin:
+        return origin
+    try:
+        from agent.vault_store import normalize_origin
+
+        return normalize_origin(str(focused.get("url") or ""))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -449,10 +467,18 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # registrable-domain scope; manager items retain their exact saved-origin set.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
+    if meta.origin_match == "registrable_domain":
+        page_origin = _focus_bound_origin(
+            effective_task_id,
+            "",
+            meta.kind,
+            url_accept=lambda url: any(origin_matches(candidate, url, meta.origin_match) for candidate in allowed),
+        )
+    else:
+        for candidate in allowed:
+            page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
+            if page_origin:
+                break
     page_origin = page_origin or _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(

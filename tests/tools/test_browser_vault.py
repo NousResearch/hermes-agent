@@ -323,6 +323,15 @@ class TestBrowserVaultTools:
                      "label": "", "name": "pw", "type": "password"}]
         secret_exprs = []
 
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None, url_accept=None):
+                assert origin == ""
+                assert accept == browser_vault_tool._TAB_PROBES["login"]
+                for url in ("https://evil.example/login", "https://nid.naver.com/nidlogin.login"):
+                    if url_accept is None or url_accept(url):
+                        return {"ok": True, "url": url}
+                return {"ok": False}
+
         def fake_eval(_task_id, expression):
             if "location.href" in expression:
                 return {"success": True, "result": "https://nid.naver.com/nidlogin.login"}
@@ -333,7 +342,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
-             patch.object(browser_vault_tool, "_focus_bound_origin", return_value=None), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
             listed = json.loads(browser_vault_tool.browser_vault_list())

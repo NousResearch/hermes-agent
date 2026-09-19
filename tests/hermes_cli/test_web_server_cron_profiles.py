@@ -1195,9 +1195,126 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
 
 
+@pytest.mark.asyncio
+async def test_update_cron_job_falls_back_when_explicit_profile_is_not_owner(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="owned by worker", schedule="every 1h", name="cross-profile-save",
+    )
+    updated = await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates={"prompt": "saved from default"}),
+        profile="default",  # real profile, not the owner
+    )
+    assert updated["prompt"] == "saved from default"
+    assert updated["profile"] == "worker_alpha"
+    # job must still live only in worker_alpha store, not copied to default
+    default_jobs = await _rt_cron.list_cron_jobs(profile="default")
+    worker_jobs = await _rt_cron.list_cron_jobs(profile="worker_alpha")
+    assert job["id"] not in [item["id"] for item in default_jobs]
+    assert any(item["id"] == job["id"] and item["prompt"] == "saved from default" for item in worker_jobs)
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_owner_profile_still_updates(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="owned by worker", schedule="every 1h", name="owner-save",
+    )
+    updated = await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates={"prompt": "saved by owner"}),
+        profile="worker_alpha",
+    )
+    assert updated["prompt"] == "saved by owner"
+    assert updated["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_unknown_id_still_404(isolated_profiles):
+    from hermes_cli import web_server
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            "does-not-exist-anywhere",
+            _web_models.CronJobUpdate(updates={"prompt": "nope"}),
+            profile="default",
+        )
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Job not found"
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_omitted_profile_discovers_owner(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="owned by worker", schedule="every 1h", name="omitted-profile-save",
+    )
+    updated = await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates={"prompt": "saved without profile"}),
+    )
+    assert updated["prompt"] == "saved without profile"
+    assert updated["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_unknown_profile_still_404_profile_missing(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="owned by worker", schedule="every 1h", name="unknown-profile-save",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            job["id"],
+            _web_models.CronJobUpdate(updates={"prompt": "nope"}),
+            profile="missing_profile",
+        )
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Profile 'missing_profile' does not exist."
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_all_profile_scope_discovers_owner(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="owned by worker", schedule="every 1h", name="all-scope-save",
+    )
+    updated = await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates={"prompt": "saved via all scope"}),
+        profile="all",
+    )
+    assert updated["prompt"] == "saved via all scope"
+    assert updated["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_get_cron_job_falls_back_when_explicit_profile_is_not_owner(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="owned by worker", schedule="every 1h", name="cross-profile-get",
+    )
+    fetched = await _rt_cron.get_cron_job(job["id"], profile="default")
+    assert fetched["id"] == job["id"]
+    assert fetched["profile"] == "worker_alpha"
+    assert fetched["prompt"] == "owned by worker"
+
+
 def test_list_cron_jobs_carries_each_profiles_ticker_heartbeat_age(isolated_profiles):
-    """#114309 — the dashboard must be able to say "scheduler last ticked X hours ago":
-    every listed job carries its own profile's ticker heartbeat age (None = never/unknown)."""
+    """Every listed job carries its owning profile's ticker heartbeat age."""
     import time
 
     for name, home in isolated_profiles.items():
@@ -1208,6 +1325,5 @@ def test_list_cron_jobs_carries_each_profiles_ticker_heartbeat_age(isolated_prof
     )
 
     ages = {job["profile"]: job["scheduler_heartbeat_age_s"] for job in _rt_cron._list_cron_jobs_sync("all")}
-
-    assert ages["default"] is None  # no heartbeat file: cannot date the last tick
+    assert ages["default"] is None
     assert 25 * 3600 <= ages["worker_alpha"] < 25 * 3600 + 60

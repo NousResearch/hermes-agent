@@ -1603,6 +1603,24 @@ def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bo
     return bool(agent._try_activate_fallback(reason=classified.reason))
 
 
+def log_credit_exhaustion_fallback(agent: Any, classified: Any) -> None:
+    """ERROR naming a 404 credit-exhaustion fallback switch and its target.
+
+    Narrow (#115702): only fires when the classifier marked the verdict with
+    ``credit_exhaustion_code`` -- every other fallback keeps its existing copy.
+    """
+    code = (getattr(classified, "error_context", None) or {}).get("credit_exhaustion_code")
+    if not code:
+        return
+    logger.error(
+        "%sInsufficient credits for paid model (404 %s on %s via %s) -- "
+        "using fallback %s via %s. Top up credits or pick a free model.",
+        getattr(agent, "log_prefix", ""),
+        code, getattr(classified, "model", None), getattr(classified, "provider", None),
+        getattr(agent, "model", None), getattr(agent, "provider", None),
+    )
+
+
 def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any, classified: Any = None) -> bool:
     """Record a genuine account-level Nous 429 to the cross-session breaker; upstream
     capacity 429s (no exhausted bucket in headers or last-known state) are left alone.
@@ -1779,6 +1797,7 @@ def route_classified_error(
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             if agent._try_activate_fallback(reason=classified.reason):
+                log_credit_exhaustion_fallback(agent, classified)
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:

@@ -136,6 +136,9 @@ _BILLING_ERROR_CODES = frozenset({
     # terminal for this credential until limits are raised.
     "credit_balance_exhausted", "organization_spend_limit_exceeded",
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
+    # Paid-model credit wall arriving as a 404 (the paid model "vanishes"
+    # without credits): also matched explicitly by _status_404. (#115702)
+    "insufficient_credits_for_paid_model",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -585,6 +588,10 @@ _OVERFLOW_AS_5XX_RULES = (
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
 
+# 404 credit-exhaustion code (paid model without credits): matched as a
+# structured code AND in flattened SDK error text by _status_404. (#115702)
+_CREDIT_EXHAUSTION_404_CODES = frozenset({"insufficient_credits_for_paid_model"})
+
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
 # Free Tier (billing, not missing model); policy block before model_not_found.
 _404_RULES = (
@@ -996,6 +1003,17 @@ def _status_403(c: _Ctx) -> Verdict:
 
 
 def _status_404(c: _Ctx) -> Verdict:
+    # Paid-model credit wall: route like 429-exhaustion (billing with the
+    # fallback chain armed). A structured billing code is decisive here, mirroring
+    # _status_429 — the status handler always returns, so _by_error_code never
+    # sees it. The marker lets the fallback switch log an actionable ERROR
+    # naming the credits and the fallback target.
+    credit_code = c.code if c.code in _CREDIT_EXHAUSTION_404_CODES else next(
+        (code for code in _CREDIT_EXHAUSTION_404_CODES if code in c.msg), None,
+    )
+    if credit_code is not None:
+        return _v(_R.billing, retryable=False, **_ROTATE_FALLBACK,
+                  error_context={"credit_exhaustion_code": credit_code})
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict

@@ -308,6 +308,55 @@ class TestCronDenyModeAllGuards:
         assert result["approved"] is False
         assert "Independent threat" in result["message"]
 
+    def test_permanent_tirith_key_allows_matching_verdict_in_cron_deny(self, monkeypatch):
+        """A Tirith rule key in command_allowlist applies unattended, as it does interactively."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.load_permanent({"tirith:homograph_url"})
+
+        from unittest.mock import patch as mock_patch
+        verdict = {
+            "action": "block",
+            "findings": [{"rule_id": "homograph_url", "severity": "HIGH",
+                          "title": "Homograph URL", "description": "lookalike host"}],
+            "summary": "homograph",
+        }
+        with (
+            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.tirith_security.check_command_security", return_value=verdict),
+        ):
+            result = check_all_command_guards("echo hello", "local")
+
+        assert result["approved"] is True
+
+    def test_unapproved_tirith_rule_still_blocks_in_cron_deny(self, monkeypatch):
+        """Approving one Tirith key must not admit a finding under a different rule."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.load_permanent({"tirith:homograph_url"})
+
+        from unittest.mock import patch as mock_patch
+        verdict = {
+            "action": "block",
+            "findings": [{"rule_id": "curl_pipe_shell", "severity": "HIGH",
+                          "title": "Pipe to interpreter", "description": "curl | sh"}],
+            "summary": "pipe to interpreter",
+        }
+        with (
+            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.tirith_security.check_command_security", return_value=verdict),
+        ):
+            result = check_all_command_guards("echo hello", "local")
+
+        assert result["approved"] is False
+        assert "Pipe to interpreter" in result["message"]
+
     def test_combined_guard_approve_mode(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

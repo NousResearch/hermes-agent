@@ -1360,6 +1360,13 @@ class TestIonetProvider:
         from agent.model_metadata import _URL_TO_PROVIDER
         assert _URL_TO_PROVIDER.get("api.intelligence.io.solutions") == "io-net"
 
+    def test_ionet_not_mapped_to_models_dev(self):
+        """io-net model/pricing data comes from the live io.net /models probe and the curated
+        offline list, never from the models.dev registry. Pin that io-net stays absent from the
+        models.dev provider map so a future edit cannot silently switch the data source."""
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        assert "io-net" not in PROVIDER_TO_MODELS_DEV
+
     def test_ionet_aux_model_from_profile(self):
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert _get_aux_model_for_provider("io-net") == "zai-org/GLM-5.3-Flash"

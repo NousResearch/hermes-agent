@@ -4058,15 +4058,26 @@ class TelegramAdapter(BasePlatformAdapter):
         """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
         def build():
-            text = f"❓ {_html.escape(question)}"
+            header = "❓ "
+            body = str(question)
             keyboard = None
             if choices:
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
-                text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
+                body += "\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
                 rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
+            # Budget the HTML-escaped rendering (escaping expands text), same as the exec-approval
+            # and slash-confirm cards — an unbudgeted question/choice set can exceed the 4096 cap
+            # and Telegram answers "Message is too long" instead of sending the prompt at all.
+            # ``_ea_fit``'s "..." suffix rides outside the budget it's given (by design, like
+            # ``_truncate_preview``), so the header AND that suffix are both reserved up front —
+            # same margin ``send_slash_confirm`` reserves for its own "..." above.
+            budget = (
+                self.MAX_MESSAGE_LENGTH - utf16_len(self._ea_escape(header))
+                - utf16_len(self._ea_escape("...")))
+            text = header + self._ea_escape(self._ea_fit(body, budget, escape=self._ea_escape))
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))

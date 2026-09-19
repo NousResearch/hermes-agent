@@ -21,7 +21,10 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { capabilityScoped } from '@/api/client'
+import { capabilityScoped, type ProfileScope } from '@/api/client'
+import { getProfiles } from '@/api/profiles'
+import { getSkills, setSkillEnabled } from '@/api/skills'
+import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -44,6 +47,7 @@ import {
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
+import { $pluginDecisions, setPluginEnabled } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
@@ -903,6 +907,45 @@ export const host = {
    *  against older behavior unchanged. */
   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
+
+  /** Capability management — the SAME endpoints the Capabilities page uses,
+   *  wrapped with the app's profile scoping, so a plugin configuring skills or
+   *  toolsets behaves exactly like the page (and stops calling
+   *  `window.hermesDesktop.api` raw). Every call takes an optional
+   *  `ProfileScope` to configure ANY profile without swapping the app-wide
+   *  active profile; omit it for the active one. */
+  skills: {
+    /** Every skill the backend reports for the scope. */
+    list: (profile?: ProfileScope) => getSkills(profile),
+    /** Enable/disable a skill (the Capabilities toggle). */
+    setEnabled: (name: string, enabled: boolean, profile?: ProfileScope) => setSkillEnabled(name, enabled, profile)
+  },
+
+  toolsets: {
+    /** Every toolset with its enabled state for the scope. */
+    list: (profile?: ProfileScope) => getToolsets(profile),
+    /** Enable/disable a toolset (the Capabilities toggle). */
+    setEnabled: (name: string, enabled: boolean, profile?: ProfileScope) => setToolsetEnabled(name, enabled, profile)
+  },
+
+  profiles: {
+    /** The profile list as the app's own surfaces read it (same endpoint and
+     *  startup timeout as the profile rail). */
+    list: (scope?: ProfileScope) => getProfiles(scope)
+  },
+
+  /** This window's plugin enable/disable decisions — the persisted map the
+   *  Capabilities → Plugins page writes. Read it to respect a user's choice;
+   *  `set` goes through the SAME live toggle the page uses (deactivate and
+   *  activate included), never a raw storage write. */
+  pluginDecisions: {
+    /** Every recorded decision, id → enabled. */
+    all: (): Readonly<Record<string, boolean>> => $pluginDecisions.get(),
+    /** One decision, or undefined when the user never made one. */
+    get: (id: string): boolean | undefined => $pluginDecisions.get()[id],
+    /** Flip one decision (persists + applies immediately). */
+    set: (id: string, enabled: boolean): Promise<void> => setPluginEnabled(id, enabled)
+  },
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —

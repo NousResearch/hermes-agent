@@ -293,3 +293,57 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+// The typed capabilities bridge: plugins configure skills/toolsets/profiles
+// through the SAME endpoints the Capabilities page uses, and read the plugin
+// decision map through one accessor instead of raw storage writes.
+describe('host capability namespaces', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const originalDesktop = desktopWindow.hermesDesktop
+  const api = vi.fn(async (request: { path: string }) => ({ ok: true, path: request.path }))
+
+  beforeEach(() => {
+    api.mockClear()
+    desktopWindow.hermesDesktop = { ...originalDesktop, api } as unknown as Window['hermesDesktop']
+  })
+
+  afterEach(() => {
+    desktopWindow.hermesDesktop = originalDesktop
+  })
+
+  it('skills.setEnabled routes through the Capabilities toggle endpoint with the profile scope', async () => {
+    await host.skills.setEnabled('docx', false, { profile: 'writer' })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { enabled: false, name: 'docx' },
+        method: 'PUT',
+        path: '/api/skills/toggle',
+        profile: 'writer'
+      })
+    )
+  })
+
+  it('toolsets.setEnabled routes through the toolset endpoint', async () => {
+    await host.toolsets.setEnabled('browser', true)
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ body: { enabled: true }, method: 'PUT', path: '/api/tools/toolsets/browser' })
+    )
+  })
+
+  it('profiles.list reads the same endpoint the profile rail does', async () => {
+    await host.profiles.list()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/profiles' }))
+  })
+
+  it('pluginDecisions reads the live decisions store', async () => {
+    const { $pluginDecisions } = await import('@/contrib/plugins-store')
+
+    $pluginDecisions.set({ demo: false })
+
+    expect(host.pluginDecisions.get('demo')).toBe(false)
+    expect(host.pluginDecisions.all()).toEqual({ demo: false })
+  })
+})

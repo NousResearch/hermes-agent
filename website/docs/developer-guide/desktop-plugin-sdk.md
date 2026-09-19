@@ -536,6 +536,13 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
+host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
+host.toolsets.list(profile?)               // toolsets + enabled state
+host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
+host.profiles.list(scope?)                 // the profile list the profile rail reads
+host.pluginDecisions.all() / .get(id)      // this window's plugin enable/disable decisions
+host.pluginDecisions.set(id, enabled)      // flip one through the live toggle (persists + applies)
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,

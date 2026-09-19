@@ -70,6 +70,7 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
+| `prefetch_join_timeout` | `5.0` | Max seconds to wait for prefetch thread. Increase for slow Hindsight backends (typical recall latency: 1.5–4.4s). |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |

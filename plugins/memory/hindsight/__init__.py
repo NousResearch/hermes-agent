@@ -335,6 +335,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission, self._bank_retain_mission = "", None
         self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._prefetch_method = "recall"  # "recall" or "reflect"
+        self._prefetch_join_timeout = 5.0
         for name in _SESSION_KWARGS:
             setattr(self, f"_{name}", "")
         self._session_id = self._parent_session_id = self._document_id = ""
@@ -433,6 +434,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {"key": "prefetch_join_timeout", "description": "Max seconds to wait for prefetch thread to complete (higher = more recall hits on slow backends)", "default": 5.0},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories (identifies the client that stored them)", "default": _DEFAULT_RETAIN_SOURCE},
@@ -788,6 +790,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_tags_match = cfg.get("recall_tags_match", "any")
         self._auto_recall = cfg.get("auto_recall", True)
         self._recall_sync = bool(cfg.get("recall_sync", False))
+        self._prefetch_join_timeout = float(cfg.get("prefetch_join_timeout", 5.0))
         self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
         self._recall_max_input_chars = int(cfg.get("recall_max_input_chars", 800))
         # None -> observation-only (Hindsight's consolidated, deduplicated layer; raw
@@ -946,7 +949,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_sync:
             return self._finish_prefetch(*(("", 0) if self._recall_disabled() else self._do_recall(query)))
         # Default: the background worker's result for the previous turn (capped join).
-        self._join_prefetch(3.0, log=True)
+        self._join_prefetch(self._prefetch_join_timeout, log=True)
         with self._prefetch_lock:
             result, count = self._prefetch_result, self._prefetch_count
             self._prefetch_result, self._prefetch_count = "", 0
@@ -1191,7 +1194,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._enqueue_retain(_flush)
 
         # 2. Drain the old session's in-flight prefetch and drop its result.
-        self._join_prefetch(3.0)
+        self._join_prefetch(self._prefetch_join_timeout)
         with self._prefetch_lock:
             self._prefetch_result = ""
 

@@ -929,8 +929,6 @@ class TestSkillTextDescription:
         assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
 
 
-
-
 class TestBrowserExec:
     def test_missing_cli_returns_install_hint(self, monkeypatch):
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)

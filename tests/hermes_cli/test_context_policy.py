@@ -347,11 +347,18 @@ def test_launch_args_contract():
     assert a[:2] == ["-c", str(FLOOR)]           # explicit window, always
     assert "q8_0" in a                            # q8 KV under flash attn
     assert "-ot" in a                             # spill placement
+    assert "-ngl" not in a, "spilled: fit owns the layer cut"
     assert "--spec-type" in a                     # MTP on spilled
 
     # MTP is not gated on spill: resident decode measured +16% at depth 2.
     b = launch_args(p, resident, mtp_capable=True, mtp_draft_depth=2)
     assert "-ot" not in b, "placement is spill-only"
+    # Resident means the weights fit beside the held window, so the flags have to commit to it:
+    # with only -c set, fit's own preference is spill-weights-and-hold-ctx and the model settles
+    # half on the host even when the card has room (measured on the pinned build: a 9B at
+    # c=65536 ran 15.2 tok/s that way, 50.9 tok/s with every layer offloaded).
+    assert "-ngl" in b, "a resident decision offloads every layer"
+    assert b[b.index("-ngl") + 1] == str(len(p.layers) + 1)
     assert "--spec-type" in b, "MTP must run on resident configs too"
     assert b[b.index("--spec-draft-n-max") + 1] == "2"
     assert "--backend-sampling" in b

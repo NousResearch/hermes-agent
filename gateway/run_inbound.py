@@ -1468,6 +1468,8 @@ class GatewayInboundMixin:
             "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
             _img_mode, len(image_paths),
         )
+        from agent.image_routing import begin_image_feedback
+        begin_image_feedback(session_key, len(image_paths))
         # Vision enrichment runs before AIAgent.run_conversation(), so bind this session's resolved
         # runtime explicitly rather than consulting process-global compatibility mirrors.
         vision_runtime = None
@@ -1482,7 +1484,7 @@ class GatewayInboundMixin:
         from agent.auxiliary_client import scoped_runtime_main
 
         with scoped_runtime_main(vision_runtime):
-            return await self._enrich_message_with_vision(message_text, image_paths)
+            return await self._enrich_message_with_vision(message_text, image_paths, session_key=session_key)
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
@@ -1946,12 +1948,15 @@ class GatewayInboundMixin:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
 
-    async def _enrich_message_with_vision(self, user_text: str, image_paths: List[str]) -> str:
+    async def _enrich_message_with_vision(
+        self, user_text: str, image_paths: List[str], *, session_key: Optional[str] = None,
+    ) -> str:
         """Auto-analyze user-attached images with the vision tool and prepend the descriptions.
         Description *and* local cache path are injected so the model understands the image without
-        a tool call and can re-examine it with vision_analyze."""
+        a tool call and can re-examine it with vision_analyze (``session_key``: feedback accounting)."""
         from tools.vision_tools import vision_analyze_tool
         from agent.memory_manager import sanitize_context
+        from agent.image_routing import record_image_described
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "
@@ -1966,6 +1971,7 @@ class GatewayInboundMixin:
                 logger.debug("Auto-analyzing user image: %s", path)
                 result = json.loads(await vision_analyze_tool(image_url=path, user_prompt=analysis_prompt))
                 if result.get("success"):
+                    record_image_described(session_key)
                     description = sanitize_context(result.get("analysis", ""))
                     note = (
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"

@@ -12,6 +12,7 @@ main models (``native`` is the absolute override); else ``supports_vision``
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import logging
 import mimetypes
 import os
@@ -543,4 +544,57 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["decide_image_input_mode", "build_native_content_parts", "extract_image_refs"]
+# Image-handling feedback line accounting (``text`` route): ``begin`` overwrites, ``pop`` is
+# idempotent, a falsy key is a no-op everywhere — no-image/``native`` turns never ``begin``.
+
+
+@dataclass(frozen=True)
+class ImageFeedbackStatus:
+    total_images: int
+    described_images: int
+
+
+_image_feedback_registry: Dict[str, List[int]] = {}  # session_key -> [total, described]
+
+
+def begin_image_feedback(session_key: Optional[str], total_images: int) -> None:
+    """(Over)register ``total_images`` pending descriptions; no-op without key/images."""
+    if not session_key or total_images <= 0:
+        return
+    _image_feedback_registry[str(session_key)] = [total_images, 0]
+
+
+def record_image_described(session_key: Optional[str]) -> None:
+    """Count one vision description as successful; no-op when nothing is registered."""
+    record = _image_feedback_registry.get(str(session_key)) if session_key else None
+    if record is not None:
+        record[1] += 1
+
+
+def pop_image_feedback(session_key: Optional[str]) -> Optional[ImageFeedbackStatus]:
+    """Take and delete the session's record (idempotent); None when absent."""
+    record = _image_feedback_registry.pop(str(session_key), None) if session_key else None
+    return ImageFeedbackStatus(record[0], record[1]) if record else None
+
+
+def build_image_feedback_line(status: Optional[ImageFeedbackStatus], main_model: str) -> str:
+    """Render the one-line image-handling notice; "" when nothing was text-routed."""
+    if status is None or status.total_images <= 0:
+        return ""
+    who = main_model.strip() or "the main model"
+    if status.described_images >= 1:
+        return (
+            f"🖼️ Image handling: {status.described_images}/{status.total_images} attached image(s) were described "
+            f"by an auxiliary vision model — {who} received the text description(s), not the original image(s)."
+        )
+    return (
+        f"🖼️ Image handling: {status.total_images} attached image(s) could not be described this turn "
+        f"— {who} received no image content."
+    )
+
+
+__all__ = [
+    "decide_image_input_mode", "build_native_content_parts", "extract_image_refs",
+    "ImageFeedbackStatus", "begin_image_feedback", "record_image_described", "pop_image_feedback",
+    "build_image_feedback_line",
+]

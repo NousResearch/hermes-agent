@@ -1581,6 +1581,17 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
+    def _hmwa_prepend_image_feedback(self, response: str, main_model: str, session_key: Optional[str]) -> str:
+        """Lead the final reply with the image-handling status line; never raises."""
+        try:
+            from agent.image_routing import build_image_feedback_line, pop_image_feedback
+            line = build_image_feedback_line(pop_image_feedback(session_key), main_model)
+            if line and response:
+                return f"{line}\n\n{response}"
+        except Exception as exc:
+            logger.debug("image feedback line skipped: %s", exc)
+        return response
+
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
@@ -2149,6 +2160,8 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            if not agent_result.get("already_sent") and not _intentional_silence:
+                response = self._hmwa_prepend_image_feedback(response, agent_result.get("model") or "", session_key)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
@@ -2180,6 +2193,11 @@ class GatewayTurnMixin:
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+            # Drop any unclaimed image-feedback record: a guard-skipped/failed turn must not
+            # leak its line into a later reply.
+            with suppress(Exception):
+                from agent.image_routing import pop_image_feedback
+                pop_image_feedback(session_key)
 
     def _profile_scope_for_source(self, source: SessionSource):
         """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.
@@ -2311,8 +2329,10 @@ class GatewayTurnMixin:
             _platform_config_key,
         )
         from run_agent import AIAgent
+        from agent.image_routing import begin_image_feedback, pop_image_feedback
         media_urls = media_urls or []
         media_types = media_types or []
+        bg_session_key = ""  # image-feedback key; "" keeps the registry ops as no-ops
         adapter = self._adapter_for_source(source)
         if not adapter:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
@@ -2347,8 +2367,13 @@ class GatewayTurnMixin:
                 if (media_types[i] if i < len(media_types) else "").startswith("image/")
             ]
             if image_paths:
+                with suppress(Exception):
+                    bg_session_key = self._session_key_for_source(source)
+                begin_image_feedback(bg_session_key, len(image_paths))
                 try:
-                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                    enriched_prompt = await self._enrich_message_with_vision(
+                        prompt, image_paths, session_key=bg_session_key,
+                    )
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
@@ -2403,6 +2428,9 @@ class GatewayTurnMixin:
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
             if text_content:
+                text_content = self._hmwa_prepend_image_feedback(
+                    text_content, (result or {}).get("model") or model, bg_session_key,
+                )
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
             elif not images and not media_files:
                 await adapter.send(
@@ -2443,6 +2471,9 @@ class GatewayTurnMixin:
                      "Send /bg again to retry, or /agents to see what is still running."),
                     metadata=_thread_metadata, logical_platform=source.platform,
                 )
+        finally:
+            with suppress(Exception):
+                pop_image_feedback(bg_session_key)
 
     def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:
         """Refresh cached agents so existing sessions see new MCP tools on their next turn without
@@ -3641,6 +3672,9 @@ class GatewayTurnMixin:
                 )
                 first_response = _UNEXPECTED_SILENCE_REPLY
                 _already_streamed = False
+        first_response = self._hmwa_prepend_image_feedback(
+            first_response, _delivery_result.get("model") or "", session_key,
+        )
         if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
@@ -3705,6 +3739,11 @@ class GatewayTurnMixin:
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+        else:
+            # Turn 1's response is discarded: drop its record so no stale line reaches the follow-up.
+            with suppress(Exception):
+                from agent.image_routing import pop_image_feedback
+                pop_image_feedback(session_key)
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key

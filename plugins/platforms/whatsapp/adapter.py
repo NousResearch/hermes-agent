@@ -588,9 +588,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
+        sent_message_ids: list[str] = []
+        delivered_chunks = 0
+        total_chunks = 0
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
-            sent_message_ids: list[str] = []
+            total_chunks = len(chunks)
             last_message_id = None
             for idx, chunk in enumerate(chunks):
                 payload: Dict[str, Any] = {"chatId": chat_id, "message": chunk}
@@ -598,7 +601,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
                 result = await self._post_bridge_message("send", payload, timeout=30)
                 if not result.success:
-                    return SendResult(success=False, error=result.error)
+                    if delivered_chunks:
+                        result.partial_delivery = True
+                        result.raw_response = {"delivered_chunks": delivered_chunks,
+                                               "total_chunks": total_chunks, "message_ids": sent_message_ids}
+                    return result
+                delivered_chunks += 1
                 last_message_id = result.message_id
                 if last_message_id:
                     sent_message_ids.append(str(last_message_id))
@@ -607,7 +615,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
                               raw_response={"message_ids": sent_message_ids})
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=str(e), partial_delivery=delivered_chunks > 0,
+                              raw_response={"delivered_chunks": delivered_chunks, "total_chunks": total_chunks,
+                                            "message_ids": sent_message_ids} if delivered_chunks else None)
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:

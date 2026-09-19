@@ -538,3 +538,46 @@ def test_empty_list_hint_names_default_root_directory_under_profile_home(tmp_pat
     assert f"channel discovery can populate {profile / 'channel_directory.json'}." in out
     assert f"A gateway running from {root} already has {root / 'channel_directory.json'}" in out
     assert f"scoped to profile home {profile}" in out
+
+
+def test_load_hermes_env_skips_merge_on_secret_scope_home_mismatch(tmp_path, monkeypatch):
+    """Regression for the #114297 review finding: under multiplex, when the resolved HERMES_HOME
+    (profile B) does not match the profile whose secrets are installed in the live multiplex scope
+    (profile A — set via ``set_secret_scope(..., home=profile_a)``), ``_load_hermes_env`` must NOT
+    merge profile B's secret into profile A's live scope dict. Direct repro of the forced-mismatch
+    cross-profile leak the independent review confirmed (zero identity check previously existed)."""
+    import os
+
+    profile_a = tmp_path / "profile_a"
+    profile_b = tmp_path / "profile_b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+    # profile_b's .env holds the secret that must NOT leak into profile_a's live scope.
+    (profile_b / ".env").write_text("PROFILE_B_ONLY_TOKEN=should-not-leak\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+
+    from importlib import reload
+    import hermes_cli.config as _hc_config
+    reload(_hc_config)
+
+    import agent.secret_scope as secret_scope_module
+
+    # Install the live multiplex scope as profile A's — the scope a dashboard console `send` for
+    # profile A would have installed via _config_profile_scope(profile="A").
+    secret_scope_module.set_multiplex_active(True)
+    profile_a_scope: dict = {"PROFILE_A_TOKEN": "profile-a-value"}
+    token = secret_scope_module.set_secret_scope(profile_a_scope, home=profile_a)
+    try:
+        # HERMES_HOME resolves to profile_b (the forced mismatch): _load_hermes_env builds
+        # profile_b's secrets but must refuse to merge them into profile_a's installed scope.
+        send_cmd._load_hermes_env()
+
+        assert "PROFILE_B_ONLY_TOKEN" not in profile_a_scope
+        assert profile_a_scope == {"PROFILE_A_TOKEN": "profile-a-value"}
+        # os.environ must stay untouched too — the merge target under multiplex is the scope dict,
+        # never the shared process environment.
+        assert "PROFILE_B_ONLY_TOKEN" not in os.environ
+    finally:
+        secret_scope_module.reset_secret_scope(token)
+        secret_scope_module.set_multiplex_active(False)

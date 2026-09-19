@@ -590,6 +590,24 @@ class TestPlayAudioFile:
         mock_sd_obj.play.assert_called_once()
         mock_sd_obj.stop.assert_called_once()
 
+    def test_aplay_supports_only_native_containers(self):
+        from tools.voice_mode import _aplay_supports_file
+
+        for suffix in (".wav", ".WAVE", ".au", ".VOC"):
+            assert _aplay_supports_file(f"speech{suffix}") is True
+        for suffix in (".mp3", ".ogg", ".flac", ".aac"):
+            assert _aplay_supports_file(f"speech{suffix}") is False
+
+    @pytest.mark.linux_only
+    def test_system_player_candidates_never_send_compressed_audio_to_aplay(self):
+        from tools.voice_mode import _system_player_candidates
+
+        for suffix in (".mp3", ".ogg", ".flac", ".aac"):
+            assert all(command[0] != "aplay" for command in _system_player_candidates(f"speech{suffix}"))
+        for suffix in (".wav", ".wave", ".au", ".voc"):
+            assert any(command[0] == "aplay" for command in _system_player_candidates(f"speech{suffix}"))
+
+
 # ============================================================================
 # macOS output policy (no sounddevice for OUTPUT -> avoids TCC prompt)
 # ============================================================================

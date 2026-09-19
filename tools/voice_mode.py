@@ -1050,6 +1050,11 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
         return None  # WSL path resolution failed; fall through to ffplay/aplay
 
 
+def _aplay_supports_file(file_path: str) -> bool:
+    """Return whether bare ``aplay <file>`` can decode this container."""
+    return Path(file_path).suffix.lower() in {".au", ".voc", ".wav", ".wave"}
+
+
 def _system_player_candidates(file_path: str) -> List[List[str]]:
     """Ordered system-player commands for this platform."""
     system = platform.system()
@@ -1058,7 +1063,7 @@ def _system_player_candidates(file_path: str) -> List[List[str]]:
     if ps_cmd:
         players.append(ps_cmd)
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
-    if system == "Linux":
+    if system == "Linux" and _aplay_supports_file(file_path):
         players.append(["aplay", "-q", file_path])
     return players
 

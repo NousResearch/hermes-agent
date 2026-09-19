@@ -122,6 +122,12 @@ SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_LEAST_USED,
 }
 
+# Strategies whose ``priority`` is a stable preference order. ``round_robin`` renumbers every entry
+# on each selection (pushing the one it picked to the back) and ``random`` ignores priority
+# outright, so under those two a priority comparison says nothing about which credential a session
+# would rather be on.
+ORDERED_POOL_STRATEGIES = {STRATEGY_FILL_FIRST, STRATEGY_LEAST_USED}
+
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
 # Provider-supplied reset_at timestamps override these defaults.
@@ -1849,6 +1855,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id
         return entry, pending_refresh
+
+    @property
+    def strategy(self) -> str:
+        """The configured selection strategy (one of ``SUPPORTED_POOL_STRATEGIES``)."""
+        return self._strategy
 
     def peek(self) -> Optional[PooledCredential]:
         with self._lock:

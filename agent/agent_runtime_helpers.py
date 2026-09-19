@@ -856,10 +856,12 @@ def recover_with_credential_pool(
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
         swapped = agent._swap_credential(next_entry) is not False
+        from agent.credential_pool import ORDERED_POOL_STRATEGIES, STRATEGY_FILL_FIRST
         benched = next((e for e in pool.entries() if e.id == credential_id), None) if credential_id else None
         if (
             swapped
             and benched is not None
+            and getattr(pool, "strategy", STRATEGY_FILL_FIRST) in ORDERED_POOL_STRATEGIES
             and benched.priority < getattr(next_entry, "priority", benched.priority)
             and not getattr(agent, "_credential_pool_revert_id", None)
             and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
@@ -871,6 +873,11 @@ def recover_with_credential_pool(
             # rotates UP once the preferred window reopened must not be pulled back down when
             # the fallback's cooldown lifts. Keep the FIRST benched entry across chained
             # rotations — it is the preferred one. Auth benches are not windows; they stay.
+            # Only under a strategy whose ``priority`` IS a preference order: ``round_robin``
+            # renumbers every entry inside select() and pushes the one it picked to the back, so
+            # the comparison would read the entry we just left as outranking the one we rotated
+            # to and arm a revert DOWN — and a pool asked to spread load evenly has no preferred
+            # entry to return to in the first place.
             agent._credential_pool_revert_id = credential_id
         return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:

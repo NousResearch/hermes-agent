@@ -495,14 +495,14 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     the in-memory messages (``sync_flushed_message_markers``; a local compaction re-stamps them too) and
     this turn's own user row, which ``_persist_submit_user_row`` already wrote (#111868). When a foreign
     row is a compaction summary the other surface rewrote the transcript under us, so the in-memory history
-    is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Nothing stamped
-    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped."""
+    is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Marker-free live
+    history is reconciled only when it matches a proven prefix of the durable transcript."""
     with session["history_lock"]:
         history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
     seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
                default=None)
-    if seen is None:
-        return
+    if seen is None and not history:
+        return  # no live prefix exists to prove which durable transcript should be adopted
     ceiling = _message_row_id(session.get("_submit_user_row") or {})
 
     def _below_ceiling(rid) -> bool:
@@ -510,26 +510,95 @@ def _adopt_out_of_band_turns(session: dict) -> None:
 
     def _foreign(rid) -> bool:
         return _below_ceiling(rid) and rid > seen
-    # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
-    with _session_db(session) as db:
-        try:
-            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
-        except Exception:
-            logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
+    if seen is not None:
+        # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+        rewritten = False
+        with _session_db(session) as db:
+            try:
+                newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+                newer = [row for row in newer if _foreign(row.get("id"))]
+                if not newer:
+                    get_role = getattr(db, "get_message_role", None) if db is not None else None
+                    if not callable(get_role) or get_role(session["session_key"], seen) is not None:
+                        return
+                    rewritten = True
+            except Exception:
+                logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
+                return
+        rewritten = rewritten or any(row.get("_compressed_summary") for row in newer)
+        rows = _load_durable_truncation_history(session, repair_alternation=rewritten)
+        if rows is None:
             return
-    newer = [row for row in newer if _foreign(row.get("id"))]
-    if not newer:
+        # Rewind and replacement also reinsert active rows. They need not add a
+        # summary, so the missing prior boundary is the authoritative rewrite signal.
+        if not rewritten and seen not in {_message_row_id(row) for row in rows}:
+            rewritten = True
+            rows = _load_durable_truncation_history(session, repair_alternation=True)
+            if rows is None:
+                return
+    else:
+        rows = _load_durable_truncation_history(session, repair_alternation=False)
+        if rows is None:
+            return
+        durable = [row for row in rows if _below_ceiling(_message_row_id(row))]
+
+        def _prefix_row_agrees(mem, row) -> bool:
+            if not _mem_db_pair_agrees(mem, row):
+                return False
+            role = mem.get("role")
+            if role == "user":
+                from agent.context_compressor import user_originated_turn_view
+                mem_view = user_originated_turn_view(mem)
+                row_view = user_originated_turn_view(row)
+                if mem_view is None or row_view is None:
+                    return mem.get("content") == row.get("content")
+                mem_content, row_content = mem_view.get("content"), row_view.get("content")
+                if not isinstance(mem_content, str) or not isinstance(row_content, str):
+                    return mem_content == row_content
+                return True  # _mem_db_pair_agrees already compared sanitized text.
+            if role == "assistant":
+                from agent.memory_manager import sanitize_context
+                mem_content, row_content = mem.get("content"), row.get("content")
+                if isinstance(mem_content, str) and isinstance(row_content, str):
+                    if sanitize_context(mem_content).strip() != sanitize_context(row_content).strip():
+                        return False
+                elif mem_content != row_content:
+                    return False
+                return (mem.get("tool_calls") or None) == (row.get("tool_calls") or None)
+            if role == "tool":
+                return all(mem.get(key) == row.get(key) for key in ("content", "tool_call_id", "tool_name"))
+            return True
+
+        # Marker-free live history is a supported gateway state. Adopt only when
+        # every live row is a proven prefix of the durable transcript.
+        if len(durable) < len(history) or not all(
+                _prefix_row_agrees(mem, row) for mem, row in zip(history, durable)):
+            return
+        raw_tail = durable[len(history):]
+        if not raw_tail:
+            return
+        stamped_history = []
+        for mem, row in zip(history, durable):
+            stamped = dict(mem)
+            if (rid := _message_row_id(row)) is not None:
+                stamped["_row_id"] = rid
+            stamped_history.append(stamped)
+        adopted = canonicalize_replay_history(stamped_history + raw_tail)
+        with session["history_lock"]:
+            if int(session.get("history_version", 0)) != version:
+                return
+            session["history"] = adopted
+            session["history_version"] = version + 1
         return
-    rewritten = any(row.get("_compressed_summary") for row in newer)
-    rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
     keep = _below_ceiling if rewritten else _foreign
-    tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
-    if not tail:
+    selected = [m for m in rows if keep(_message_row_id(m))]
+    adopted = canonicalize_replay_history(selected if rewritten else history + selected)
+    if adopted == history and not rewritten:
         return
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != version:
             return  # /compress, a rewind or a pivot marker landed meanwhile; the next turn re-derives
-        session["history"] = tail if rewritten else history + tail
+        session["history"] = adopted
         session["history_version"] = version + 1
 
 

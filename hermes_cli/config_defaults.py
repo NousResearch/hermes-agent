@@ -175,6 +175,10 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Opt-in: consult `pre_verify` hooks on turns that edited NO files too, so a policy
+        # hook can demand verification for an answer-only turn (stated numbers, versions,
+        # paths). False keeps the gate edit-only — zero hook calls, zero added cost (#109815).
+        "pre_verify_without_edits": False,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

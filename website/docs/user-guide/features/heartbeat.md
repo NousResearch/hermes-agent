@@ -27,6 +27,19 @@ They look similar but serve different jobs:
 
 Rule of thumb: if the recurring prompt needs the conversation's context, use `/heartbeat`. If it's a self-contained job, use cron.
 
+## Scheduled messages: deferring one message
+
+In the Desktop app, **Schedule** (beside Send in the composer) defers the message you have already written: pick a date and time, and the exact text arrives later as a normal user turn in that same chat. It is the messenger gesture, not a job — no provider, model, delivery target or recurrence to configure; advanced scheduling stays in the scheduled-jobs UI.
+
+| | Schedule (composer) | `/heartbeat` | [`hermes cron`](./cron) |
+|---|---|---|---|
+| Runs in | **That conversation**, once | **This conversation**, recurring | A fresh isolated session per tick |
+| Survives process restart | Yes — durable, bound to the session | State survives (SessionDB) | Yes — fully durable scheduler |
+| How many | Up to 20 pending per session | One per session | Unlimited jobs |
+| Fires | Anchored to the time you picked | Anchored to its interval | Anchored to its schedule |
+
+It fires only once, only into the conversation it was scheduled from, and only when that session is idle — if the agent is busy at the due time, the message waits and goes in at the next idle moment rather than opening a second turn. Pending messages show above the composer with their scheduled time and a Cancel; a message missed while the app was closed fires the next time that chat is open in a running backend.
+
 ## Commands
 
 | Command | What it does |

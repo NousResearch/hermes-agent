@@ -110,7 +110,11 @@ const MARKDOWN_COMPONENTS = {
  *  field — Streamdown renders to React elements, never to raw HTML. */
 export function Markdown({ className, text }: { className?: string; text: string }) {
   return (
-    <div className={cn('text-[0.8125rem] text-(--ui-text-secondary)', className)} data-selectable-text="true">
+    <div
+      className={cn('text-[0.8125rem] text-(--ui-text-secondary)', className)}
+      data-markdown="true"
+      data-selectable-text="true"
+    >
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
         {text}
       </Streamdown>

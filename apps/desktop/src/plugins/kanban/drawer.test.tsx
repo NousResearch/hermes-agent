@@ -79,6 +79,30 @@ function openDrawer() {
   )
 }
 
+describe('markdown surfaces', () => {
+  // The same four fields the dashboard renders as markdown: description,
+  // result, latest run summary, comments. Run-history previews stay clamped
+  // plain text on both surfaces.
+  it('renders the description, result, summary and comments as markdown', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      comments: [{ id: 1, author: 'test', body: '1. comment step', created_at: 0 }],
+      task: { ...legacyDetail.task, body: '# heading', latest_summary: '- summary bullet', result: '**done**' }
+    }
+    const { container } = openDrawer()
+
+    expect(await screen.findByRole('heading', { name: 'heading', level: 1 })).toBeTruthy()
+    expect(container.querySelector('[data-streamdown="strong"]')?.textContent).toBe('done')
+    // Scoped to rendered markdown — the comment thread is itself a plain <ul>.
+    const items = container.querySelectorAll('[data-markdown] li')
+    expect([...items].map(li => li.textContent)).toEqual(['summary bullet', 'comment step'])
+    // No field still printing its own source.
+    expect(container.textContent).not.toContain('# heading')
+    expect(container.textContent).not.toContain('1. comment step')
+  })
+})
+
 describe('task attachment compatibility', () => {
   it.each([{}, { attachments: null }])(
     'keeps older task details usable without attachment controls (%j)',

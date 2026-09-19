@@ -105,6 +105,64 @@ def test_resolve_ambiguous_handle_across_connections(root):
     assert "hermes" in forms  # unique handle stays bare
 
 
+DESKTOP_A = "a" * 32
+DESKTOP_B = "b" * 32
+
+
+def _local_row(title):
+    """What every Desktop publishes for its OWN machine: the id is the registry constant `local`."""
+    return {"profile": "default", "handle": "hermes", "connection_id": "local",
+            "connection_label": "This device", "title": title}
+
+
+def test_two_desktops_on_one_gateway_keep_their_own_rosters_and_envelopes(root):
+    """A shared gateway with two Desktops attached. Each publishes the agents on ITS other
+    connections under ITS registry ids, and every Desktop calls its own machine `local`, so a
+    whole-file roster let the second erase the first's fleet, and an envelope addressed through one
+    Desktop was claimed by whichever drained first — which then resolved `local` to its OWN machine
+    and ran the turn there. Rosters are per publisher, and an envelope is claimable only by the
+    Desktop that addressed it."""
+    bot_relay.write_remote_roster(root, [_local_row("A's Mac"), _rows()[0]], DESKTOP_A)
+    bot_relay.write_remote_roster(root, [_local_row("B's Mac")], DESKTOP_B)
+    roster = bot_relay.read_remote_roster(root)
+
+    assert sorted(r["title"] for r in roster if r["handle"] == "hermes" and r["connection_id"] == "local") == [
+        "A's Mac", "B's Mac"], "one Desktop's sync erased the other's"
+
+    for desktop, title in ((DESKTOP_A, "A's Mac"), (DESKTOP_B, "B's Mac")):
+        target = next(r for r in roster if r["title"] == title)
+        bot_relay.enqueue_envelope(root, target=target, message=f"for {title}",
+                                   sender_profile="reviewer", sender_handle="reviewer")
+    # A Desktop that predates the field publishes unowned rows; its envelopes carry no identity
+    # and stay claimable by anyone, which is the single-Desktop behaviour.
+    bot_relay.write_remote_roster(root, [{"profile": "legacy", "handle": "legacy",
+                                          "connection_id": "old-box", "connection_label": "Old box"}])
+    legacy_target = next(r for r in bot_relay.read_remote_roster(root) if r["handle"] == "legacy")
+    bot_relay.enqueue_envelope(root, target=legacy_target, message="legacy",
+                               sender_profile="reviewer", sender_handle="reviewer")
+
+    claimed_a = bot_relay.claim_pending_envelopes(root, DESKTOP_A)
+
+    assert sorted(e["message"] for e in claimed_a) == ["for A's Mac", "legacy"]
+    assert [e["message"] for e in bot_relay.claim_pending_envelopes(root, DESKTOP_B)] == ["for B's Mac"]
+    assert bot_relay.claim_pending_envelopes(root, DESKTOP_B) == []
+
+
+def test_one_name_published_by_two_desktops_is_ambiguous_not_a_guess(root):
+    """`local` names a different machine in each Desktop's registry, so the same target string can
+    name two agents. Refuse, as a handle on two connections is refused: a message delivered to the
+    wrong person's machine is strictly worse than an error."""
+    bot_relay.write_remote_roster(root, [_local_row("A's Mac")], DESKTOP_A)
+    bot_relay.write_remote_roster(root, [_local_row("B's Mac")], DESKTOP_B)
+    roster = bot_relay.read_remote_roster(root)
+
+    assert bot_relay.resolve_remote_target("hermes", roster) == "ambiguous"
+    assert bot_relay.resolve_remote_target("hermes@local", roster) == "ambiguous"
+    # One Desktop alone still resolves, exactly as before.
+    only_a = [r for r in roster if r["desktop"] == DESKTOP_A]
+    assert bot_relay.resolve_remote_target("hermes", only_a)["title"] == "A's Mac"
+
+
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 

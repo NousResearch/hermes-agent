@@ -15341,6 +15341,11 @@ ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
+// The bot relay's identity for THIS installation. Several Desktops can hold a line to one
+// gateway, and each names its own machine `local`, so the gateway needs to know which Desktop
+// published a roster row and addressed an envelope. Scoped hash, never the raw installation id.
+ipcMain.handle('hermes:relay-owner-id', () => sshOwnershipId(desktopInstallationId, 'bot_relay'))
+
 ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
   const fallbackProfileNames = Array.isArray(rawProfileNames)
     ? rawProfileNames

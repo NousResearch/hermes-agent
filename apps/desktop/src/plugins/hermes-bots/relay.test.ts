@@ -434,6 +434,39 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it.each([
+    [true, 'f'.repeat(32)],
+    [false, undefined]
+  ])('tells each gateway which Desktop is publishing (registry door: %s)', async (hasDoor, expected) => {
+    // Several Desktops can hold a line to one gateway, and each names its own machine `local`, so
+    // a roster row and an envelope mean nothing without the Desktop they belong to: the gateway
+    // keeps a roster per publisher and hands a Desktop only the envelopes it addressed. A shell
+    // without the door sends nothing and keeps the single-Desktop behaviour.
+    if (hasDoor) {
+      hostMock.relayOwnerId = vi.fn(async () => 'f'.repeat(32))
+    } else {
+      delete hostMock.relayOwnerId
+    }
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : { envelopes: [] }
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    const sync = calls.find(call => call.method === 'bot_relay.roster.sync')!
+    const drain = calls.find(call => call.method === 'bot_relay.outbox.drain')!
+
+    expect(sync.params.desktop).toBe(expected)
+    expect(drain.params.desktop).toBe(expected)
+
+    stopBotRelay()
+  })
+
   it('drops the cached rows of a connection that genuinely disconnected', async () => {
     const calls = respondWith(call =>
       call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}

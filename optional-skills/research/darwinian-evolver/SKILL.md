@@ -121,7 +121,9 @@ Three things you must define:
 
 1. **`Organism`** — a Pydantic `BaseModel` subclass holding the artifact being
    evolved (`prompt_template: str`, `regex_pattern: str`, `sql_query: str`,
-   `code_block: str`, etc.). Add a `run(*args)` method that exercises it.
+   `code_block: str`, etc.) and recorded evaluation evidence. Put model and
+   network calls in the proposer/mutator boundary, then attach their outputs
+   before the organism reaches the evaluator.
 
 2. **`Evaluator`** — `.evaluate(organism) -> EvaluationResult(score=..., trainable_failure_cases=[...], holdout_failure_cases=[...], is_viable=True)`.
    - **`score`** is in `[0, 1]`. Higher is better.
@@ -137,6 +139,14 @@ Three things you must define:
    Typically: build an LLM prompt that includes the current organism + a
    failure case + an ask to propose a fix; parse the LLM's response; return
    a new `Organism`. Return `[]` on parse failure — the loop handles it.
+
+### Evaluator Trust Boundary
+
+Treat an evaluator as a pure offline credit gate. It must not import or call a
+model client, make network requests, or invoke an organism method that can do
+either. The proposer/mutator materializes response evidence on the organism;
+the evaluator only reads that evidence, computes the score, and emits failure
+cases. Missing evidence is a normal failure, never a fallback model call.
 
 Then write a driver script that wires `Problem(initial_organism, evaluator, [mutators])`
 into `EvolveProblemLoop` and iterates over `loop.run(num_iterations=N)` — the

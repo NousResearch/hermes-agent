@@ -75,6 +75,20 @@ def test_parrot_script_uses_openrouter() -> None:
     assert "EVOLVER_MODEL" in src, "model should be overridable via EVOLVER_MODEL"
 
 
+def test_parrot_evaluator_is_offline_and_scores_recorded_evidence() -> None:
+    """The evaluator is the trust boundary, not an LLM or network caller."""
+    src = (SKILL_DIR / "scripts" / "parrot_openrouter.py").read_text()
+    tree = ast.parse(src)
+    evaluator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ParrotEvaluator"
+    )
+    evaluator_src = ast.get_source_segment(src, evaluator) or ""
+
+    assert "organism.responses.get(" in evaluator_src
+    assert "organism.run(" not in evaluator_src
+    assert "_prompt_llm(" not in evaluator_src
+    assert "_client(" not in evaluator_src
 
 
 

@@ -2925,6 +2925,10 @@ def _run_summary_dispatch(
         _install_compression_cancelled_check(
             agent.context_compressor, lambda: commit_fence.is_cancelled, attempt_generation
         )
+    # From here this attempt is doing real summary work: publish it as the working
+    # attempt so later no-op entry claims (lock sit-outs on other paths) cannot
+    # supersede the candidate this run produces.
+    _mark_compressor_working_attempt(agent.context_compressor, attempt_generation)
 
     def _compression_cancel_requested() -> bool:
         return bool(

@@ -756,6 +756,28 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     return True, has_retried_429
 
 
+def _another_credential_is_usable(pool, current_entry) -> bool:
+    """Is there a sibling credential that could serve this call right now?
+
+    A pool entry is usable when it is not the one that just failed and is not
+    itself inside a cooldown window. ``_exhausted_until`` returns the moment an
+    exhausted entry becomes available again, and ``None`` for an entry that was
+    never marked exhausted — so an entry is free when that is ``None`` or has
+    already passed.
+    """
+    from agent.credential_pool import _exhausted_until
+
+    current_id = getattr(current_entry, "id", None)
+    now = time.time()
+    for entry in pool.entries():
+        if current_id is not None and entry.id == current_id:
+            continue
+        until = _exhausted_until(entry)
+        if until is None or until <= now:
+            return True
+    return False
+
+
 def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
     # Already-exhausted credential: rotate immediately. Avoids the "cancel-between-429s" trap where
     # the local has_retried_429 resets per prompt and retries forever.
@@ -783,6 +805,24 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
     if not has_retried_429 and not usage_limit_reached:
+        # Waiting is right for a pool of one, and wrong the moment a second
+        # credential could answer now. The tokens above only recognise a quota
+        # that is spent; a per-account or per-minute 429 carries none of them
+        # (Anthropic: "This request would exceed your account's rate limit"),
+        # so this path used to sleep out the provider's Retry-After — up to the
+        # 600s cap — with a healthy credential sitting beside it, unused.
+        #
+        # Rotation is cheap and self-correcting: the pool skips entries already
+        # in cooldown, and if none is free this falls through to the same wait
+        # it would have taken anyway.
+        if _another_credential_is_usable(pool, current_entry):
+            _ra().logger.info(
+                "Rate limited on pool entry %s — another credential is usable, "
+                "rotating instead of waiting out the provider's cooldown",
+                getattr(current_entry, "id", None),
+            )
+            if rotate_and_swap(429, "rate limit, sibling credential available"):
+                return True, False
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 

@@ -3485,6 +3485,35 @@ class TelegramAdapter(BasePlatformAdapter):
         async with self._chat_send_lock(chat_id):
             return await self._send_text_locked(chat_id, content, reply_to, metadata)
 
+    async def send_screen_handoff_prompt(
+        self, chat_id: str, user_id: str, url: str, code: str, reason: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the bearer URL only to the Telegram user's private chat.
+
+        The short code is a second factor shown in this DM and entered on the page. No callback
+        handler is needed, so a repeated button tap cannot authorize twice.
+        """
+        if not self._bot or not str(user_id).strip() or not url or not code:
+            return SendResult(success=False, error="Telegram private delivery unavailable")
+        text = (
+            "🔐 Hermes needs you to take over the browser briefly.\n\n"
+            f"Reason: {str(reason or 'browser sign-in')[:500]}\n\n"
+            "Open the secure screen below, then enter this code on the page:\n"
+            f"<code>{_html.escape(str(code))}</code>\n\n"
+            "The link expires in 10 minutes and the code in 2 minutes. Never send a password in chat."
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open secure screen", url=url)]])
+        try:
+            msg = await self._send_control_message(
+                str(user_id), text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
+                thread_id=None, metadata=None, reply_to_mode="off",
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception:
+            logger.warning("[%s] Telegram private screen handoff delivery failed", self.name, exc_info=True)
+            return SendResult(success=False, error="Telegram private delivery failed", retryable=True)
+
     async def _send_text_locked(
         self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> SendResult:
         """``send()`` body under the per-chat lock: rich fast-path, else MarkdownV2 chunks."""

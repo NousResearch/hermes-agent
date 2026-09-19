@@ -16,6 +16,7 @@ not 8 GB.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -79,6 +80,16 @@ def memory_info() -> MemoryInfo:
 
 
 def min_free_mb() -> int:
+    # A deployment may qualify a bounded screen service without changing the
+    # customer's persistent config.  The fleet candidate sets this explicitly;
+    # ordinary installations retain the conservative config default.
+    override = os.environ.get("HERMES_BOT_DESKTOP_MIN_FREE_MEMORY_MB")
+    auto_start = os.environ.get("HERMES_BOT_DESKTOP_AUTO_START", "").lower() in {"1", "true", "yes"}
+    if override is not None and auto_start:
+        try:
+            return max(0, int(override))
+        except ValueError:
+            pass
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
     try:

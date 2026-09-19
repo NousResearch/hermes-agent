@@ -1539,6 +1539,59 @@ class TurnRunner:
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
 
+    def _screen_handoff_notify_sync(self, handoff: dict) -> None:
+        """Deliver a screen invitation privately, then leave the turn to the user."""
+        ctx = self._ctx
+        adapter = ctx._status_adapter
+        source = ctx.source
+        if adapter is None or not getattr(source, "user_id", None):
+            raise RuntimeError("screen handoff needs a private user identity")
+        metadata = ctx._status_thread_metadata
+        fut = self._schedule(
+            adapter.send_screen_handoff_prompt(
+                chat_id=ctx._status_chat_id,
+                user_id=str(source.user_id),
+                url=str(handoff.get("invite_url") or ""),
+                code=str(handoff.get("confirmation_code") or ""),
+                reason=str(handoff.get("reason") or ""),
+                metadata=metadata,
+            ),
+            "screen handoff private delivery failed to schedule",
+        )
+        if fut is None:
+            raise RuntimeError("screen handoff private delivery loop unavailable")
+        result = fut.result(timeout=15)
+        if not getattr(result, "success", False):
+            # The group may be told that a private offer exists, but it never receives the link or
+            # confirmation code. The request is revoked by the tool when this raises.
+            if getattr(source, "chat_type", "dm") != "dm":
+                notice = self._schedule(
+                    adapter.send(
+                        ctx._status_chat_id,
+                        "🔐 Hermes proposed a private screen handoff. Open your private conversation "
+                        "with this bot to continue; no link was posted here.",
+                        metadata=metadata,
+                    ),
+                    "screen handoff group notice failed to schedule",
+                )
+                if notice is not None:
+                    with suppress(Exception):
+                        notice.result(timeout=10)
+            raise RuntimeError("the bot could not open a private conversation")
+        if getattr(source, "chat_type", "dm") != "dm":
+            notice = self._schedule(
+                adapter.send(
+                    ctx._status_chat_id,
+                    "🔐 Hermes proposed a private screen handoff. Check your private conversation "
+                    "with this bot; no credentials or link are shared in this conversation.",
+                    metadata=metadata,
+                ),
+                "screen handoff group notice failed to schedule",
+            )
+            if notice is not None:
+                with suppress(Exception):
+                    notice.result(timeout=10)
+
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
     def _load_turn_history(self, agent, reused_cached_agent):
@@ -1677,11 +1730,13 @@ class TurnRunner:
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
         from tools.approval import register_gateway_notify, unregister_gateway_notify
+        from gateway.screen_handoff import register_screen_handoff_notify, unregister_screen_handoff_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
+        register_screen_handoff_notify(session_key, self._screen_handoff_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
@@ -1712,6 +1767,7 @@ class TurnRunner:
                 return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
+            unregister_screen_handoff_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

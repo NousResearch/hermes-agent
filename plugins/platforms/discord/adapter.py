@@ -3038,6 +3038,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 raw_response={"message_ids": message_ids}
             )
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
+
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             if _is_discord_transport_error(e):
@@ -3046,6 +3047,30 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             else:
                 result = SendResult(success=False, error=str(e))
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
+
+    async def send_screen_handoff_prompt(
+        self, chat_id: str, user_id: str, url: str, code: str, reason: str,
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Create a Discord DM and put the URL behind a link button."""
+        if not self._client or not DISCORD_AVAILABLE or not str(user_id).isdigit() or not url or not code:
+            return SendResult(success=False, error="Discord private delivery unavailable")
+        try:
+            user = self._client.get_user(int(user_id)) or await self._client.fetch_user(int(user_id))
+            dm = user.dm_channel or await user.create_dm()
+            view = discord.ui.View(timeout=120)
+            view.add_item(discord.ui.Button(label="Open secure screen", style=discord.ButtonStyle.link, url=url))
+            content = (
+                "🔐 **Hermes needs a brief browser takeover.**\n\n"
+                f"Reason: {str(reason or 'browser sign-in')[:500]}\n\n"
+                f"Open the secure screen and enter code `{str(code)}` on the page.\n"
+                "The link expires in 10 minutes and the code in 2 minutes. Never send a password in chat."
+            )
+            msg = await dm.send(content=content, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception:
+            logger.warning("[%s] Discord private screen handoff delivery failed", self.name, exc_info=True)
+            return SendResult(success=False, error="Discord private delivery failed", retryable=True)
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:

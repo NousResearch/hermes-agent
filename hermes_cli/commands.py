@@ -282,6 +282,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("upgrade",)),
     CommandDef("login", "Sign in with a Nous account (keeps your connectors)", "Info",
                busy_policy="dispatch", desktop="settings"),
+    CommandDef("screen", "Reopen or recover the private browser screen handoff", "Session",
+               gateway_only=True, busy_policy="dispatch", desktop="messaging"),
     CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]", desktop="advanced"),

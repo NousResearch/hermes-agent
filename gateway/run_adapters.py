@@ -547,6 +547,56 @@ class GatewayAdapterLifecycleMixin:
                     if not task.done():
                         task.cancel()
 
+    async def _screen_handoff_watcher(self, interval: float = 2.0) -> None:
+        """Resume the exact Telegram/Discord session after an explicit return."""
+        from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes
+        from gateway.screen_handoff import ScreenHandoffStore
+        from gateway.wake import deliver_wake
+        from hermes_constants import get_hermes_home
+
+        async def _tick(profile_home):
+            store = ScreenHandoffStore(profile_home or get_hermes_home())
+            for handoff in store.claim_returned():
+                try:
+                    source = store.source(handoff)
+                    current_id = self.session_store.peek_session_id(self._session_key_for_source(source))
+                    if str(current_id or "") != str(handoff.session_id):
+                        raise RuntimeError("the original session was deleted or replaced")
+                    adapter = self._adapter_for_source(source)
+                    if adapter is None:
+                        raise RuntimeError("the original messaging adapter is not connected")
+                    await deliver_wake(
+                        adapter,
+                        text=(
+                            "The human has returned control of the Bot Desktop. Re-observe the existing "
+                            "browser before doing anything else; the return does not prove that sign-in "
+                            "succeeded. Continue the original task only after observing the page."
+                        ),
+                        session_id=handoff.session_id,
+                        source=source,
+                        profile=getattr(source, "profile", None),
+                    )
+                    store.finish_resume(handoff.request_id)
+                except Exception as exc:
+                    logger.debug("screen handoff resume failed for %s: %s", handoff.request_id, exc, exc_info=True)
+                    if "deleted or replaced" in str(exc):
+                        store.abandon_resume(handoff.request_id, str(exc))
+                    else:
+                        store.finish_resume(handoff.request_id, error=str(exc))
+
+        while self._running:
+            try:
+                for _profile_name, profile_home in _handoff_watch_scopes(self):
+                    async with GatewayAdapterLifecycleMixin._scope_or_null(
+                        _async_profile_runtime_scope, profile_home
+                    ):
+                        await _tick(profile_home)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("screen handoff watcher tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
     def _on_reconnect_watcher_gave_up(self, name: str = "") -> None:
         """Own the reconnect invariant once supervision gives up: while running with queued
         platforms, a watcher is live or a bounded respawn is scheduled (no later event can notice

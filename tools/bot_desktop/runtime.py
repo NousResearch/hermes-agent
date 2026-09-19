@@ -354,6 +354,12 @@ def _should_auto_start(env: Dict[str, str]) -> bool:
         return False
     if missing_binaries():
         return False
+    # A deployment may explicitly qualify Bot Desktop as its screen-handoff
+    # service without rewriting the user's persistent config.  The image
+    # candidate uses this opt-in; ordinary installs remain governed by the
+    # bot_desktop.auto_start setting below.
+    if env.get("HERMES_BOT_DESKTOP_AUTO_START", "").lower() in {"1", "true", "yes"}:
+        return True
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
     return bool(cfg.get("auto_start", False))

@@ -314,6 +314,51 @@ class GatewaySlashCommandsMixin(
         return "\n".join([t("gateway.profile.header", profile=reply.data["profile"]),
                           t("gateway.profile.home", home=reply.data["home"])])
 
+    async def _handle_screen_command(self, event: MessageEvent) -> str:
+        """Reissue the current session's private screen invitation without exposing its URL here."""
+        source = event.source
+        platform = getattr(getattr(source, "platform", None), "value", "") if source is not None else ""
+        if source is None or platform not in {"telegram", "discord"} or not source.user_id:
+            return "Private screen takeover is available only from an authenticated Telegram or Discord identity."
+        session_key = self._session_key_for_source(source)
+        session_id = self.session_store.peek_session_id(session_key)
+        if not session_id:
+            return "There is no active browser session to recover."
+        from gateway.screen_handoff import ScreenHandoffStore
+        from hermes_constants import get_hermes_home
+        from tools.bot_desktop.runtime import status
+        if not status().running:
+            return "The Bot Desktop is not running, so there is no browser screen to reopen."
+        origin = json.dumps(source.to_dict(), separators=(",", ":"))
+        home = (self._resolve_profile_home_for_source(source)
+                if hasattr(self, "_resolve_profile_home_for_source") else get_hermes_home()) or get_hermes_home()
+        store = ScreenHandoffStore(home)
+        handoff = store.reissue(
+            session_id=session_id, source_json=origin, reason="User requested /screen recovery",
+        )
+        if handoff is None:
+            return "There is no active screen handoff for this session. Ask Hermes to request screen access again."
+        public_url = ""
+        try:
+            from hermes_cli.dashboard_auth.prefix import resolve_public_url
+            public_url = resolve_public_url().rstrip("/")
+        except Exception:
+            pass
+        adapter = self._adapter_for_source(source)
+        if adapter is None or not public_url:
+            store.revoke(handoff.request_id)
+            return "The private screen service is unavailable right now."
+        result = await adapter.send_screen_handoff_prompt(
+            chat_id=str(source.chat_id), user_id=str(source.user_id),
+            url=f"{public_url}/screen-handoff/{handoff.invite_token}",
+            code=handoff.confirmation_code, reason=handoff.reason,
+            metadata=self._thread_metadata_for_source(source),
+        )
+        if not getattr(result, "success", False):
+            store.revoke(handoff.request_id)
+            return "I could not open a private conversation. Open a DM with this bot, then run /screen again."
+        return "I sent a new private screen invitation. No link or credential is shown here."
+
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
         from gateway.slash_access import policy_for_source

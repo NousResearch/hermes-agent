@@ -66,7 +66,7 @@ def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
         info = consume_ticket(ticket)
     except TicketInvalid:
         return None
-    if info.get("provider") != "bot-desktop" or not info.get("hermes_home"):
+    if info.get("provider") not in {"bot-desktop", "bot-desktop-handoff"} or not info.get("hermes_home"):
         return None
     return info
 
@@ -210,7 +210,8 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)
         # keeps the human's exclusion: they may be mid-login on that screen and the agent must not
         # resume into it. The Desktop reconnects into the same lease, or the human hands back.
-        if viewer_closed.is_set() and _lease.viewer_may_send_input(viewer_id, profile_key=profile_home):
+        if (viewer_closed.is_set() and not info.get("retain_on_disconnect")
+                and _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)):
             _lease.release(viewer_id, profile_key=profile_home)
         try:
             await ws.close()

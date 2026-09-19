@@ -2734,6 +2734,17 @@ class BasePlatformAdapter(ABC):
         """Send a notice privately when the platform supports it; default is a normal send."""
         return await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
 
+    async def send_screen_handoff_prompt(
+        self, chat_id: str, user_id: str, url: str, code: str, reason: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Deliver a screen handoff invitation in a verified private conversation.
+
+        The base implementation deliberately refuses: falling back to ``send(chat_id=...)`` could
+        publish a bearer link in a group. Telegram and Discord implement their native DM APIs.
+        """
+        return SendResult(success=False, error="private screen handoff is not supported by this adapter")
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
 

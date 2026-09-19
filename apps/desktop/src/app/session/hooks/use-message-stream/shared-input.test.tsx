@@ -1,6 +1,7 @@
-import { act, cleanup } from '@testing-library/react'
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { useSubmitPrompt } from '@/app/session/hooks/use-prompt-actions/submit'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -72,5 +73,194 @@ describe('shared correction observation', () => {
     })
     expect(h.state().messages).toHaveLength(2)
     expect(h.state('background').messages.map(chatMessageText)).toEqual(['Same words'])
+  })
+})
+
+const start = (execution: string, id: string, ref?: string, session = 's'): RpcEvent => ({
+  type: 'message.start',
+  session_id: session,
+  turn: { id: execution },
+  payload: {
+    input: { role: 'user', text: 'Same words' },
+    inputs: [{ id, ref }]
+  }
+})
+
+describe('shared starting input observation', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it('paints peer starts once before output while rejecting stale, interrupted and unscoped observations', async () => {
+    vi.useFakeTimers()
+    const h = renderMessageStream('s')
+    act(() => {
+      h.handleEvent(start('run', 'first'))
+    })
+    expect(h.state().messages.map(m => [m.role, chatMessageText(m)])).toEqual([['user', 'Same words']])
+    expect(h.state().messages[0]?.inputIds).toEqual(['first'])
+    act(() => {
+      h.handleEvent({ type: 'message.delta', session_id: 's', payload: { text: 'Before' } })
+      h.handleEvent(input('correction'))
+      h.handleEvent({ type: 'message.delta', session_id: 's', payload: { text: 'After' } })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
+    })
+    const streaming = h.state()
+    act(() => {
+      h.handleEvent(start('run', 'first')) // replay must not reset the live stream or correction ids
+      h.handleEvent({ ...input('foreign'), turn: { id: 'foreign-run' } })
+      h.handleEvent({ ...start('unscoped-run', 'unscoped'), session_id: undefined })
+      h.handleEvent(input('correction'))
+    })
+    expect(h.state()).toBe(streaming)
+    expect(h.state().messages.map(m => [m.role, chatMessageText(m)])).toEqual([
+      ['user', 'Same words'],
+      ['assistant', 'Before'],
+      ['user', 'Same words'],
+      ['assistant', 'After']
+    ])
+    act(() => {
+      h.handleEvent({ type: 'message.complete', session_id: 's', turn: { id: 'run' }, payload: { text: 'After' } })
+      h.handleEvent({ type: 'session.info', session_id: 's', payload: { running: true } })
+      h.handleEvent(start('second-run', 'second')) // same words, fresh execution and occurrence
+      h.handleEvent(start('run', 'first')) // replay of a retired execution
+      h.handleEvent({ ...input('late-correction'), turn: { id: 'run' } })
+    })
+    expect(h.state().observedExecutionId).toBe('second-run')
+    expect(
+      h
+        .state()
+        .messages.filter(m => m.role === 'user')
+        .map(m => m.inputIds)
+    ).toEqual([['first'], ['correction'], ['second']])
+    h.states.set('s', { ...h.state(), interrupted: true })
+    const stopped = h.state()
+    act(() => {
+      h.handleEvent(start('interrupted-run', 'interrupted'))
+      h.handleEvent({ ...input('interrupted'), turn: { id: 'second-run' } })
+      h.handleEvent(start('background-run', 'background', undefined, 'background'))
+    })
+    expect(h.state()).toBe(stopped)
+    expect(h.state('background').messages.map(chatMessageText)).toEqual(['Same words'])
+
+    for (const projection of [null, { role: 'user', text: 'internal', display_kind: 'hidden' }]) {
+      const sid = projection ? 'hidden' : 'null'
+      act(() => {
+        h.handleEvent({
+          ...start(sid, sid, undefined, sid),
+          payload: { input: projection, inputs: [{ id: sid }] }
+        })
+      })
+      expect(h.state(sid).messages).toEqual([])
+      expect(h.state(sid).observedInputIds).toEqual([sid])
+    }
+
+    act(() => {
+      h.handleEvent({ type: 'message.start', session_id: 'legacy' })
+    })
+    expect(h.state('legacy')).toMatchObject({ busy: true, awaitingResponse: true, messages: [] })
+    // A fresh execution must still be visible when this observer missed the prior terminal.
+    act(() => {
+      h.handleEvent(start('missed-terminal', 'old-input', undefined, 'missed'))
+      h.handleEvent({ type: 'session.info', session_id: 'missed', payload: { running: true } })
+      h.handleEvent(start('fresh-execution', 'new-input', undefined, 'missed'))
+      h.handleEvent(start('missed-terminal', 'old-input', undefined, 'missed'))
+    })
+    expect(h.state('missed').observedExecutionId).toBe('fresh-execution')
+    expect(h.state('missed').messages.map(m => m.inputIds)).toEqual([['old-input'], ['new-input']])
+  })
+
+  it('binds the real optimistic submit by reference in either ACK order and never reuses it for a later occurrence', async () => {
+    for (const ackFirst of [false, true]) {
+      const h = renderMessageStream('s')
+      let acknowledge!: () => void
+      let submittedRef = ''
+
+      const ack = new Promise<void>(resolve => {
+        acknowledge = resolve
+      })
+
+      const requestGateway = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
+        expect(method).toBe('prompt.submit')
+        submittedRef = params?.submission_ref as string
+        await ack
+
+        return { status: 'accepted' } as T
+      }
+
+      const { result } = renderHook(() =>
+        useSubmitPrompt({
+          activeSessionIdRef: { current: 's' },
+          busyRef: { current: false },
+          copy: {} as Parameters<typeof useSubmitPrompt>[0]['copy'],
+          createBackendSessionForSend: async () => 's',
+          getRoutedStoredSessionId: () => null,
+          getRuntimeIdForStoredSession: () => null,
+          getRouteToken: () => 'stable',
+          requestGateway,
+          runtimeIdByStoredSessionIdRef: { current: new Map() },
+          resumeStoredSession: async () => undefined,
+          selectedStoredSessionIdRef: { current: null },
+          syncAttachmentsForSubmit: async sessionId => ({ sessionId, attachments: [] }),
+          updateSessionState: (sid, update) => {
+            const next = update(h.state(sid))
+            h.states.set(sid, next)
+
+            return next
+          },
+          scope: {
+            removeAttachments: () => undefined,
+            readAttachments: () => [],
+            setAwaitingResponse: () => undefined,
+            setBusy: () => undefined,
+            setMessages: () => undefined
+          }
+        })
+      )
+
+      let pending!: Promise<boolean>
+      await act(async () => {
+        pending = result.current('Same words')
+      })
+      expect(submittedRef).not.toBe('')
+      expect(h.state().messages.map(m => m.id)).toEqual([submittedRef])
+
+      if (ackFirst) {
+        await act(async () => {
+          acknowledge()
+          expect(await pending).toBe(true)
+        })
+      }
+
+      act(() => {
+        h.handleEvent(start('own-run', 'own-input', submittedRef))
+        h.handleEvent(start('own-run', 'own-input', submittedRef))
+      })
+
+      if (!ackFirst) {
+        await act(async () => {
+          acknowledge()
+          expect(await pending).toBe(true)
+        })
+      }
+
+      expect(h.state().messages.map(m => [m.id, m.inputIds, chatMessageText(m)])).toEqual([
+        [submittedRef, ['own-input'], 'Same words']
+      ])
+      act(() => {
+        h.handleEvent({ type: 'message.complete', session_id: 's', turn: { id: 'own-run' }, payload: { text: 'Done' } })
+        h.handleEvent(start('retry-run', 'retry-input', submittedRef))
+      })
+      expect(
+        h
+          .state()
+          .messages.filter(m => m.role === 'user')
+          .map(m => m.inputIds)
+      ).toEqual([['own-input'], ['retry-input']])
+      cleanup()
+    }
   })
 })

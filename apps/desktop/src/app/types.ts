@@ -147,6 +147,8 @@ export interface PersistedDisplayTranscriptProvenance {
 }
 
 export interface ClientSessionState {
+  /** Bounded volatile start replay protection, scoped to this runtime cache. */
+  observedStartExecutionIds?: string[]
   observedExecutionId?: string
   observedInputIds?: string[]
   storedSessionId: string | null

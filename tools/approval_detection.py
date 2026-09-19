@@ -547,7 +547,8 @@ _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
-                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
+                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot",
+                          "doas", "xargs", "watch", "flock", "systemd-run"}
 _SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
@@ -560,12 +561,53 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "timeout": {"-k", "--kill-after", "-s", "--signal"},
     "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
     "ionice": {"-c", "--class", "-n", "--classdata"},
+    "doas": {"-C", "-u"},
+    "xargs": {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"},
+    "watch": {"-n", "--interval", "-q", "--equexit", "-s", "--shotsdir"},
+    "flock": {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"},
+    "systemd-run": {
+        "-u", "--unit", "-p", "--property", "-E", "--setenv", "-M", "-H",
+        "-C", "--capsule", "--uid", "--gid", "--nice", "--slice",
+        "--description", "--service-type", "-d", "--working-directory",
+        "--root-directory", "--output", "--job-mode", "--background",
+        "--path-property", "--socket-property", "--timer-property", "--json",
+        "--on-active", "--on-boot", "--on-startup", "--on-unit-active",
+        "--on-unit-inactive", "--on-calendar",
+    },
+}
+# Optional arguments attach to the option itself. The walker already treats an
+# unmatched option as one token, so these entries intentionally never consume
+# the following word.
+_COMMAND_WRAPPER_OPTIONS_WITH_OPTIONAL_ARG = {
+    "xargs": {"-e", "-i", "-l"},
+    "watch": {"-d", "--differences"},
+    "script": {"-E", "--echo", "-t", "--timing"},
 }
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    "doas": {"-C"},
+    "flock": {"-c", "--command"},
+    "systemd-run": {"-S", "--shell"},
 }
-_COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
+_COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1, "flock": 1}
+_WRAPPER_CARRIER_COMMAND_OPTIONS = {
+    "su": {"-c", "--command", "--session-command"},
+    "runuser": {"-c", "--command"},
+    "script": {"-c", "--command"},
+    "flock": {"-c", "--command"},
+}
+_WRAPPER_CARRIER_OPTIONS_WITH_ARG = {
+    "su": _WRAPPER_CARRIER_COMMAND_OPTIONS["su"] | {"-s", "--shell", "-g", "-G", "-w"},
+    "runuser": _WRAPPER_CARRIER_COMMAND_OPTIONS["runuser"] | {"-g", "-G", "-s", "-u", "-w"},
+    "script": _WRAPPER_CARRIER_COMMAND_OPTIONS["script"] | {
+        "-o", "--output-limit", "-B", "--log-io", "-I", "--log-in",
+        "-O", "--log-out", "-T", "--log-timing", "-m", "--logging-format",
+    },
+    "flock": _WRAPPER_CARRIER_COMMAND_OPTIONS["flock"] | {
+        "-w", "--wait", "--timeout", "-E", "--conflict-exit-code",
+    },
+}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
 
@@ -919,6 +961,94 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _match_wrapper_option(token: str, options: set[str]) -> tuple[str | None, str | None]:
+    """Return a matched option and any value attached to the same token."""
+    if token in options:
+        return token, None
+    if token.startswith("--"):
+        option, equals, value = token.partition("=")
+        return (option, value) if equals and option in options else (None, None)
+    return next(
+        (
+            (option, token[len(option):])
+            for option in options
+            if option.startswith("-")
+            and not option.startswith("--")
+            and token.startswith(option)
+            and len(token) > len(option)
+        ),
+        (None, None),
+    )
+
+
+def _wrapper_carried_payloads(command: str):
+    """Yield command strings owned by su/runuser/script/flock options.
+
+    These utilities use permuting getopt: option parsing continues past
+    positionals, required option operands remain data, and ``--`` stops option
+    recognition. In runuser's ``-u`` form the remaining argv is itself the
+    command, so its original quoted token spans are retained.
+    """
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            executable = _deobfuscate_shell_word_for_detection(word)
+            executable_name = os.path.basename(executable).lower()
+            if executable_name not in _WRAPPER_CARRIER_COMMAND_OPTIONS:
+                continue
+            tokens = _shell_tokens_with_spans(segment, start)
+            if not tokens:
+                continue
+
+            args = tokens[1:]
+            runuser_user_form = False
+            index = 0
+            while index < len(args):
+                token = args[index][0]
+                if token == "--":
+                    if executable_name == "runuser" and runuser_user_form and index + 1 < len(args):
+                        yield " ".join(
+                            segment[arg_start:arg_end]
+                            for _, arg_start, arg_end, _ in args[index + 1:]
+                        )
+                    break
+
+                option, attached = _match_wrapper_option(
+                    token, _WRAPPER_CARRIER_COMMAND_OPTIONS[executable_name]
+                )
+                if option:
+                    if attached is None:
+                        index += 1
+                        attached = args[index][0] if index < len(args) else None
+                    if attached:
+                        yield attached
+                    break
+
+                option, attached = _match_wrapper_option(
+                    token, _WRAPPER_CARRIER_OPTIONS_WITH_ARG[executable_name]
+                )
+                if option:
+                    runuser_user_form = runuser_user_form or (
+                        executable_name == "runuser" and option == "-u"
+                    )
+                    index += 1 + (attached is None)
+                    continue
+
+                optional, _ = _match_wrapper_option(
+                    token, _COMMAND_WRAPPER_OPTIONS_WITH_OPTIONAL_ARG.get(executable_name, set())
+                )
+                if optional:
+                    index += 1
+                    continue
+
+                if executable_name == "runuser" and runuser_user_form and not token.startswith("-"):
+                    yield " ".join(
+                        segment[arg_start:arg_end]
+                        for _, arg_start, arg_end, _ in args[index:]
+                    )
+                    break
+                index += 1
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
@@ -1206,8 +1336,16 @@ def _iter_shell_command_word_spans(command: str):
                     # by _env_split_payload; the suffix is not a new executable.
                     break
                 queries = _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
-                if option in queries or (wrapper == "command" and not option.startswith("--")
-                                         and set(option[1:]) & {"v", "V"}):
+                attached_non_executing = any(
+                    query in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                    and not query.startswith("--")
+                    and deobfuscated.startswith(query)
+                    and len(deobfuscated) > len(query)
+                    for query in queries
+                )
+                if option in queries or attached_non_executing or (
+                    wrapper == "command" and not option.startswith("--") and set(option[1:]) & {"v", "V"}
+                ):
                     break
                 skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
                 continue
@@ -1312,6 +1450,44 @@ def _env_split_payload(tokens: list[str]) -> str | None:
     return None
 
 
+def _wrapped_command_projections(command: str):
+    """Yield only commands carried beneath a wrapper or command-bearing option.
+
+    Unlike deny-rule projection, this deliberately preserves executable paths.
+    In particular, ``/sbin/reboot`` must not become bare ``reboot`` here; that
+    absolute-path hardline projection belongs to #82830.
+    """
+    pending, scheduled, emitted = [command], {command}, set()
+    while pending:
+        source = pending.pop()
+        for segment in _iter_top_level_shell_segments(source):
+            spans = list(_iter_shell_command_word_spans(segment))
+            for start, end, word in spans[1:]:
+                executable = _deobfuscate_shell_word_for_detection(word)
+                tail = _shell_command_segment(segment, start)[end - start:]
+                parts = []
+                for kind, i, j, quote in _scan_shell(tail):
+                    if kind == "char" and quote is None and tail[i].isspace():
+                        if not parts or parts[-1] != " ":
+                            parts.append(" ")
+                    else:
+                        parts.append(tail[i:j])
+                projection = executable + "".join(parts)
+                if projection and projection not in emitted:
+                    emitted.add(projection)
+                    yield projection
+
+        payloads = [payload for _, payload in _execution_flag_findings(source) if payload]
+        payloads.extend(_wrapper_carried_payloads(source))
+        for payload in payloads:
+            if payload not in emitted:
+                emitted.add(payload)
+                yield payload
+            if payload not in scheduled:
+                scheduled.add(payload)
+                pending.append(payload)
+
+
 def _deny_command_variants(command: str):
     """Add executable projections without reparsing normalized argument data.
 
@@ -1354,6 +1530,9 @@ def _deny_command_variants(command: str):
         for _, payload in _execution_flag_findings(source):
             if payload:
                 pending.append(payload)
+        for payload in _wrapper_carried_payloads(source):
+            if payload:
+                pending.append(payload)
 
 
 def _command_detection_variants(command: str):
@@ -1386,7 +1565,10 @@ def _command_detection_variants(command: str):
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source = pending.pop()
+        payloads = [payload for _, payload in _execution_flag_findings(source) if payload]
+        payloads.extend(_wrapper_carried_payloads(source))
+        for payload in payloads:
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command
@@ -1463,7 +1645,7 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _deny_command_variants(command):
         command_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:

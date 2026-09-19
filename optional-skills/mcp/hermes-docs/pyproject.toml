@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-docs-mcp-server"
+version = "1.0.0"
+description = "MCP server for searching/navigating Hermes Agent documentation"
+authors = [
+    {name = "Joerg Peetz", email = "joerg@peetz.dev"},
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.25.0",
+    "ruff",
+    "pytest",
+]
+index = [
+    "httpx>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/JPeetz/hermes-docs-mcp-server"
+BugTracker = "https://github.com/JPeetz/hermes-docs-mcp-server/issues"
+
+[project.scripts]
+hermes-docs = "server.hermes_docs_server:run_server"
+hermes-docs-rebuild = "server.hermes_docs_server:rebuild_index"
+
+[tool.setuptools.packages.find]
+include = ["server*", "scripts*"]

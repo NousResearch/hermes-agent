@@ -8,6 +8,7 @@ import contextvars
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import suppress
 from types import SimpleNamespace
@@ -22,6 +23,27 @@ logger = logging.getLogger(__name__)
 _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "codex_watchdog_state", default=None
 )
+
+_DEFAULT_STREAM_DRAIN_TIMEOUT = 2.0
+
+
+def _stream_drain_timeout() -> float:
+    """``agent.stream_drain_timeout`` (seconds) — how long the post-terminal SSE drain may block.
+
+    The drain is a courtesy to Relay's finalizer, never a correctness requirement: ``final`` is fully
+    assembled before it starts. A relay that never closes the socket after ``response.completed`` would
+    otherwise wedge the turn until the idle watchdog discards the already-billed response (#103864).
+    ``0`` skips the drain entirely.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        agent_cfg = load_config_readonly().get("agent")
+        value = agent_cfg.get("stream_drain_timeout") if isinstance(agent_cfg, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return max(0.0, float(value))
+    except Exception:
+        pass
+    return _DEFAULT_STREAM_DRAIN_TIMEOUT
 
 
 def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None):
@@ -919,6 +941,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _codex_stream_created(_raw_stream: Any) -> None:
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
+        writer_token["raw_stream"] = _raw_stream
 
     def _accept_codex_chunk(_chunk: Any) -> bool:
         token = writer_token["value"]
@@ -931,15 +954,40 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _drain_for_finalizer(event_stream: Any) -> None:
         # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error
         # here must NOT discard the completed, already-billed response.
-        try:
-            for _ignored in event_stream:
-                pass
-        except (*transport_errors, _APIConnectionError) as exc:
-            if not isinstance(exc, transport_errors):
-                _log_failure(exc)
-            logger.warning("Codex Responses stream transport finalization failed after a terminal response was already "
-                           "received; returning the completed response instead of retrying. %s error=%s",
-                           agent._client_log_context(), exc)
+        budget = _stream_drain_timeout()
+        if budget <= 0:
+            return  # the ``finally`` below closes the stream
+        drained = threading.Event()
+
+        def _drain() -> None:
+            try:
+                for _ignored in event_stream:
+                    pass
+            except (*transport_errors, _APIConnectionError) as exc:
+                if not isinstance(exc, transport_errors):
+                    _log_failure(exc)
+                logger.warning("Codex Responses stream transport finalization failed after a terminal response was already "
+                               "received; returning the completed response instead of retrying. %s error=%s",
+                               agent._client_log_context(), exc)
+            except Exception:
+                logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
+            finally:
+                drained.set()
+
+        threading.Thread(target=_drain, name="codex-post-terminal-drain", daemon=True).start()
+        if drained.wait(budget):
+            return
+        logger.warning(
+            "Codex Responses stream remained open %.1fs after a terminal response (agent.stream_drain_timeout); "
+            "closing it and returning the completed response instead of retrying. %s",
+            budget, agent._client_log_context(),
+        )
+        # Under a live Relay loop the managed wrapper's close() cannot reach the provider response
+        # (the loop is still running the drain); close the raw stream captured at stream creation too.
+        raw_stream = writer_token.get("raw_stream")
+        if raw_stream is not None and raw_stream is not event_stream:
+            _close_event_stream(raw_stream)
+        _close_event_stream(event_stream)
 
     def _close_event_stream(event_stream: Any) -> None:
         close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
@@ -968,7 +1016,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             with watchdog_state.lock:
                 watchdog_state.retry_started_ts = time.time()
         intercepted_events: list = []
-        writer_token["value"] = event_stream = None
+        writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         try:
             try:
                 event_stream = relay_llm.stream(

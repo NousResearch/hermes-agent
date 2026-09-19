@@ -1080,6 +1080,130 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
 
 
+def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
+    """A relay that keeps SSE open after completion cannot discard the billed response."""
+    import threading
+    import time
+
+    import agent.codex_runtime as codex_runtime
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    closed = threading.Event()
+
+    class _HeldOpenAfterTerminalStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        status="completed", usage=usage, id="resp_held_open",
+                    ),
+                ),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                closed.wait(3.0)
+                raise
+
+        def close(self):
+            closed.set()
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _HeldOpenAfterTerminalStream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    started = time.monotonic()
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert calls["count"] == 1
+    assert response.status == "completed"
+    assert response.usage is usage
+    assert response.id == "resp_held_open"
+    assert closed.wait(1.0)
+
+
+def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_raises(monkeypatch):
+    """A Relay-managed wrapper whose close() raises (running loop) must not leak the provider stream."""
+    import threading
+
+    import agent.codex_runtime as codex_runtime
+    from agent import relay_llm
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message", status="completed", content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    raw_closed = threading.Event()
+
+    class _HeldOpenRawStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(type="response.completed",
+                                response=SimpleNamespace(status="completed", usage=usage, id="resp_managed")),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raw_closed.wait(3.0)
+                raise
+
+        def close(self):
+            raw_closed.set()
+
+    class _ManagedWrapper:
+        final_response = None
+
+        def __init__(self, request, stream_factory, *, on_stream_created=None, **_kwargs):
+            raw = stream_factory(request)
+            on_stream_created(raw)
+            self._iter = iter(raw)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iter)
+
+        def close(self):
+            raise RuntimeError("Cannot close a running event loop")
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: _HeldOpenRawStream()))
+    monkeypatch.setattr(relay_llm, "stream", _ManagedWrapper)
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_managed"
+    assert raw_closed.wait(1.0)
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

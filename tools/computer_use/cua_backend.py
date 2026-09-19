@@ -352,7 +352,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         payload.setdefault("session", self._session_id)
         return self._session.call_tool(name, payload, timeout=timeout)
 
-    def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
+    def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True,
+                schema_guard: Optional[tuple[tuple[str, ...], str, str]] = None) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
         # 'stale' error. Two ways to establish support, the live input schema first: cua-driver 0.21+ stopped
         # publishing per-tool `capabilities[]` while still accepting `element_token` in its schema, and it REFUSES a
@@ -367,7 +368,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:
-            out = self._session.call_tool(name, args)
+            out = (self._session.call_tool(name, args, schema_guard=schema_guard) if schema_guard is not None
+                   else self._session.call_tool(name, args))
         except Exception as e:
             logger.exception("cua-driver %s call failed", name)
             return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")

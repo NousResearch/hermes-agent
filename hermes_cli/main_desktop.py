@@ -568,10 +568,10 @@ def _purge_electron_build_cache(desktop_dir: Path, release_dir: Optional[Path] =
     return removed
 
 
-# Last-resort Electron mirror after GitHub download fails. Only used when the
-# user hasn't pinned ELECTRON_MIRROR.
-# See #47266.
-_ELECTRON_FALLBACK_MIRROR = "https://npmmirror.com/mirrors/electron/"
+# Electron binary mirrors are the user's call: @electron/get reads
+# ELECTRON_MIRROR from the environment, and Hermes never overrides one the user
+# set. The canonical GitHub release is the only source this module selects; it
+# never embeds a third-party mirror (#47266).
 
 
 def _electron_dir(project_root: Path) -> Path:
@@ -615,8 +615,12 @@ def _electron_pkg_staged_missing_dist(project_root: Path) -> bool:
         and not _electron_dist_ok(project_root))
 
 
-def _redownload_electron_dist(project_root: Path, env: dict, *, mirror: Optional[str] = None) -> bool:
-    """Best-effort: run electron's install.js to populate dist/ (optional mirror)."""
+def _redownload_electron_dist(project_root: Path, env: dict) -> bool:
+    """Best-effort: run electron's install.js to populate dist/ (canonical source).
+
+    ``@electron/get`` honors an ``ELECTRON_MIRROR`` the user exported, so a
+    user-pinned mirror needs no special-casing here.
+    """
     if _electron_dist_ok(project_root):
         return True
 
@@ -634,22 +638,11 @@ def _redownload_electron_dist(project_root: Path, env: dict, *, mirror: Optional
         (electron_dir / "path.txt").unlink()
 
     dl_env = with_hermes_node_path(env)
-    if mirror:
-        dl_env["ELECTRON_MIRROR"] = mirror
     try:
         subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
     except OSError:
         return False
     return _electron_dist_ok(project_root)
-
-
-def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
-    """Canonical download, then fallback mirror unless the user pinned one."""
-    if _redownload_electron_dist(project_root, env):
-        return True
-    if env.get("ELECTRON_MIRROR"):
-        return False
-    return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
@@ -1418,7 +1411,7 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
         print(f"✗ Desktop dependency install failed\n  Run manually:  cd {PROJECT_ROOT} && npm ci")
         sys.exit(install_result.returncode or 1)
-    if _try_redownload_electron_dist(PROJECT_ROOT, env):
+    if _redownload_electron_dist(PROJECT_ROOT, env):
         print("  ⚠ Dependency install failed with a missing Electron dist; "
               "repopulated it and continuing.")
     else:
@@ -1430,7 +1423,7 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
 def _run_desktop_pack_with_recovery(
     desktop_dir: Path, build_cmd: list[str], npm_build_env: dict, env: dict, staging_dir: Optional[Path]
 ) -> subprocess.CompletedProcess:
-    """Run the desktop build; a packaged build with NO staged exe retries after an Electron re-download, then via mirror.
+    """Run the desktop build; a packaged build with NO staged exe retries after an Electron re-download.
 
     A MISSING exe is the signature of the corrupt-download class; a late failure
     (e.g. macOS signing) leaves it in place and a redownload retry would only
@@ -1469,14 +1462,13 @@ def _run_desktop_pack_with_recovery(
         and staging_dir is not None
         and not env.get("ELECTRON_MIRROR")
         and _staged_exe() is None):
+        # Canonical-first (#47266): this used to retry through a hardcoded
+        # third-party mirror. A widely-used installer must not redirect every
+        # user's download through someone else's host; the opt-in is the user's
+        # own ELECTRON_MIRROR (read by @electron/get), spelled out below.
         print("  ⚠ Desktop build still failing; the Electron download from "
-              "GitHub looks blocked. Re-downloading via a public mirror "
-              "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
-        mirror_env = {**npm_build_env, "ELECTRON_MIRROR": _ELECTRON_FALLBACK_MIRROR}
-        if not _electron_dist_ok(PROJECT_ROOT):
-            _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
-        _stop_desktop_processes_locking_build(desktop_dir)
-        build_result = _pack(mirror_env)
+              "GitHub looks blocked. Set ELECTRON_MIRROR to a mirror you "
+              "trust and rebuild (see the hint below).")
     return build_result
 
 

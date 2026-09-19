@@ -1702,6 +1702,14 @@ EOF
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
+                # Canonical-first: the only clone source is github.com. When
+                # that host is blocked, the user supplies their own endpoint
+                # through git's standard rewrite (or an outbound proxy) — the
+                # installer never routes the checkout through a third-party
+                # mirror it picked itself.
+                log_info "If github.com is blocked from this network, point git at a mirror you trust and re-run:"
+                log_info "  git config --global url.\"<mirror-base-url>\".insteadOf https://github.com/"
+                log_info "An outbound proxy works too: export HTTPS_PROXY=<proxy-url>"
                 exit 1
             fi
         fi
@@ -1985,7 +1993,17 @@ install_deps() {
             log_success "All dependencies installed"
             return 0
         fi
-        log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
+        # uv.lock records the registry it was resolved against (the canonical
+        # PyPI). uv refuses `--locked` when a *different* index is configured
+        # via UV_INDEX_URL / UV_DEFAULT_INDEX, so name that cause instead of
+        # blaming a stale lockfile. The tiers below still use the user's index;
+        # only the hash verification from uv.lock is skipped.
+        if [ -n "${UV_INDEX_URL:-}${UV_DEFAULT_INDEX:-}" ]; then
+            log_warn "uv.lock is pinned to the canonical PyPI registry, so the hash-verified tier cannot use the index you configured (UV_INDEX_URL/UV_DEFAULT_INDEX)."
+            log_info "Continuing with the index-based tiers below (no uv.lock verification)."
+        else
+            log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
+        fi
     else
         log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
     fi
@@ -2081,6 +2099,12 @@ PY
     if [ "$_installed" = false ]; then
         log_error "Package installation failed even with no extras."
         log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
+        # Canonical-first: the tiers above resolve against the canonical PyPI.
+        # When that host is blocked, the opt-in is the standard index env vars
+        # (honored by `uv pip`), not a mirror table baked into this script.
+        log_info "If pypi.org is blocked from this network, set your own package index and re-run:"
+        log_info "  UV_INDEX_URL=<index-url>/simple/"
+        log_info "The pip fallback tiers also honor PIP_INDEX_URL / PIP_EXTRA_INDEX_URL."
         log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         exit 1
     fi
@@ -3394,20 +3418,17 @@ EOF
 # current OS. Signing auto-discovery is disabled so electron-builder falls back
 # to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
 # keychain (a real signed/notarized .dmg needs Apple credentials — a separate
-# release concern). Optional $2 = an ELECTRON_MIRROR base URL for this attempt,
-# used as a fallback when the default GitHub release download is blocked.
+# release concern). A user-pinned ELECTRON_MIRROR is inherited from the
+# environment; this script never injects a third-party one.
 _desktop_pack() {
     local desktop_dir="$1"
-    local mirror="${2:-}"
-    if [ -n "$mirror" ]; then
-        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
-    else
-        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
-    fi
+    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
 }
 
-# Last-resort Electron mirror after GitHub download fails (#47266).
-DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
+# Electron binary mirrors are the user's call (ELECTRON_MIRROR is read by
+# @electron/get, and a user-set value is never overridden here). The installer
+# itself only ever fetches from the canonical GitHub release; it never selects
+# or hardcodes a third-party mirror (#47266).
 
 # Per-attempt wall-clock cap for the desktop npm install / electron-builder pack
 # (#39219). A stalled (not failed) Electron download on a throttled/blocked link
@@ -3443,10 +3464,9 @@ _electron_dist_ok() {
     fi
 }
 
-# Best-effort: run electron/install.js to populate dist/ (optional mirror).
+# Best-effort: run electron/install.js to populate dist/ (canonical source).
 _restore_electron_dist() {
     local install_dir="$1"
-    local mirror="${2:-}"
     local electron_dir
     electron_dir="$(_electron_dir "$install_dir")"
     _electron_dist_ok "$install_dir" && return 0
@@ -3457,11 +3477,9 @@ _restore_electron_dist() {
     rm -rf "$electron_dir/dist" 2>/dev/null || true
     rm -f "$electron_dir/path.txt" 2>/dev/null || true
 
-    if [ -n "$mirror" ]; then
-        ( cd "$electron_dir" && ELECTRON_MIRROR="$mirror" node install.js ) || true
-    else
-        ( cd "$electron_dir" && node install.js ) || true
-    fi
+    # @electron/get honors the ambient ELECTRON_MIRROR, so a user-pinned mirror
+    # needs no special-casing here.
+    ( cd "$electron_dir" && node install.js ) || true
     _electron_dist_ok "$install_dir"
 }
 
@@ -3470,12 +3488,6 @@ _electron_pkg_staged_missing_dist() {
     local electron_dir
     electron_dir="$(_electron_dir "$install_dir")"
     [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$install_dir"
-}
-
-_restore_electron_dist_with_fallback() {
-    local install_dir="$1"
-    _restore_electron_dist "$install_dir" \
-        || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
 }
 
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
@@ -3574,7 +3586,7 @@ install_desktop() {
         log_success "Desktop workspace dependencies installed"
     elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
         log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
-        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+        _restore_electron_dist "$INSTALL_DIR" || true
     else
         log_error "Desktop workspace npm install failed"
         # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
@@ -3616,23 +3628,22 @@ install_desktop() {
         fi
     fi
 
-    # (c) GitHub blocked → mirror fallback (#47266).
+    # (c) GitHub blocked -> tell the user to point the Electron fetch at a
+    # mirror THEY choose (#47266). Canonical-first: this script used to fall
+    # back on a hardcoded third-party mirror; a widely-installed installer must
+    # not redirect every user's download through someone else's host. The
+    # failure path below prints the ELECTRON_MIRROR rebuild command instead.
     if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ] && ! _electron_dist_ok "$INSTALL_DIR"; then
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
-        log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
-        log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-        _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
-        if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-            pack_ok=true
-        fi
+        log_warn "Set ELECTRON_MIRROR to a mirror you trust (see the hint below) and rebuild."
     fi
 
     if [ "$pack_ok" = false ]; then
         log_error "Desktop app build failed"
         # If the log shows repeated "retrying" lines fetching the Electron zip,
-        # the binary download is blocked/throttled (firewall, proxy, region) and
-        # the mirror fallback above also couldn't reach a host. Try a mirror you
-        # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
+        # the binary download is blocked/throttled (firewall, proxy, region).
+        # Try a mirror you trust and rebuild (@electron/get honors
+        # ELECTRON_MIRROR):
         if ! _electron_dist_ok "$INSTALL_DIR"; then
             log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
             log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"

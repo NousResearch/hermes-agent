@@ -2526,6 +2526,14 @@ function Install-Repository {
         }
 
         if (-not $cloneSuccess) {
+            # Canonical-first: the only clone source is github.com. When that
+            # host is blocked, the user supplies their own endpoint through
+            # git's standard rewrite (or an outbound proxy) -- the installer
+            # never routes the checkout through a third-party mirror it picked
+            # itself.
+            Write-Info "If github.com is blocked from this network, point git at a mirror you trust and re-run:"
+            Write-Info '  git config --global url."<mirror-base-url>".insteadOf https://github.com/'
+            Write-Info "An outbound proxy works too: `$env:HTTPS_PROXY = '<proxy-url>'"
             throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
         }
     }
@@ -2949,7 +2957,18 @@ function Install-Dependencies {
             # complete, hash-verified install.
             $skipPipFallback = $true
         } else {
-            Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+            # uv.lock records the registry it was resolved against (the canonical
+            # PyPI). uv refuses `--locked` when a *different* index is configured
+            # via UV_INDEX_URL / UV_DEFAULT_INDEX, so name that cause instead of
+            # blaming a stale lockfile. The tiers below still use the user's
+            # index; only the hash verification from uv.lock is skipped.
+            $configuredIndex = if ($env:UV_INDEX_URL) { $env:UV_INDEX_URL } else { $env:UV_DEFAULT_INDEX }
+            if ($configuredIndex) {
+                Write-Warn "uv.lock is pinned to the canonical PyPI registry, so the hash-verified tier cannot use the index you configured (UV_INDEX_URL/UV_DEFAULT_INDEX)."
+                Write-Info "Continuing with the index-based tiers below (no uv.lock verification)."
+            } else {
+                Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+            }
             $skipPipFallback = $false
         }
     } else {
@@ -3027,6 +3046,12 @@ except Exception:
         }
     }
     if (-not $installed) {
+        # Canonical-first: the tiers above resolve against the canonical PyPI.
+        # When that host is blocked, the opt-in is the standard index env vars
+        # (honored by `uv pip`), not a mirror table baked into this script.
+        Write-Info "If pypi.org is blocked from this network, set your own package index and re-run:"
+        Write-Info "  `$env:UV_INDEX_URL = '<index-url>/simple/'"
+        Write-Info "The pip fallback tiers also honor PIP_INDEX_URL / PIP_EXTRA_INDEX_URL."
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
     }
 
@@ -3948,8 +3973,10 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# Last-resort Electron mirror after GitHub download fails (#47266).
-$script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
+# Electron binary mirrors are the user's call (ELECTRON_MIRROR is read by
+# @electron/get, and a user-set value is never overridden here). The installer
+# itself only ever fetches from the canonical GitHub release; it never selects
+# or hardcodes a third-party mirror (#47266).
 
 # Electron package dir -- workspace-local nest first, then root hoist.
 function Get-ElectronDir {
@@ -3967,9 +3994,9 @@ function Test-ElectronDist {
     return (Test-Path -LiteralPath $distExe)
 }
 
-# Best-effort: run electron/install.js to populate dist/ (optional mirror).
+# Best-effort: run electron/install.js to populate dist/.
 function Restore-ElectronDist {
-    param([string]$InstallDir, [string]$Mirror)
+    param([string]$InstallDir)
     if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
 
     $electronDir = Get-ElectronDir -InstallDir $InstallDir
@@ -3985,8 +4012,8 @@ function Restore-ElectronDist {
     }
     Remove-Item -LiteralPath (Join-Path $electronDir 'path.txt') -Force -ErrorAction SilentlyContinue
 
-    $prevMirror = $env:ELECTRON_MIRROR
-    if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
+    # @electron/get honors the ambient ELECTRON_MIRROR, so a user-pinned mirror
+    # needs no special-casing here.
     try {
         # Out-Host so the downloader's progress shows on the console WITHOUT
         # leaking into this function's return value (PowerShell returns every
@@ -3994,8 +4021,6 @@ function Restore-ElectronDist {
         # boolean below ambiguous).
         & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
     } catch {
-    } finally {
-        $env:ELECTRON_MIRROR = $prevMirror
     }
     return (Test-Path -LiteralPath $distExe)
 }
@@ -4012,9 +4037,9 @@ function Test-ElectronPkgStagedMissingDist {
 
 function Try-RestoreElectronDist {
     param([string]$InstallDir)
-    if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
-    if ($env:ELECTRON_MIRROR) { return $false }
-    return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
+    # Canonical download only: @electron/get fetches from the canonical GitHub
+    # release, or from the mirror the user pinned in ELECTRON_MIRROR.
+    return (Restore-ElectronDist -InstallDir $InstallDir)
 }
 
 function Install-DesktopVoiceDeps {
@@ -4249,21 +4274,15 @@ function Install-Desktop {
             }
         }
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR -and -not (Test-ElectronDist -InstallDir $InstallDir)) {
-            $mirror = $script:DesktopElectronFallbackMirror
+            # Canonical-first (#47266): this used to re-download through a
+            # hardcoded third-party mirror. A widely-installed installer must
+            # not redirect every user's download through someone else's host;
+            # the opt-in is the user's own ELECTRON_MIRROR (read by
+            # @electron/get), which the failure path below spells out.
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
-            Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
-            Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
-            }
-            $prevMirror = $env:ELECTRON_MIRROR
-            $env:ELECTRON_MIRROR = $mirror
-            try {
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
-            } finally {
-                $env:ELECTRON_MIRROR = $prevMirror
-            }
+            Write-Warn "Set ELECTRON_MIRROR to a mirror you trust and rebuild:"
+            Write-Warn "  `$env:ELECTRON_MIRROR='<mirror-base-url>'"
+            Write-Warn "  cd apps/desktop; npm run pack"
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {

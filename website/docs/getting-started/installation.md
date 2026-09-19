@@ -175,6 +175,23 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
 
+### Package and source mirrors (opt-in)
+
+Hermes installs from the canonical endpoints only: `pypi.org` for Python packages and `github.com` for the source checkout. **No third-party mirror is built in**, and the installer never routes your install through one — a widely-installed installer that silently redirected everyone's downloads would be a supply-chain risk and an unbounded load on whoever runs that mirror. If your network blocks the canonical hosts, point the installer at infrastructure **you** trust, before running it:
+
+| What | Opt-in |
+|---|---|
+| `uv` (default install path) | `UV_INDEX_URL=https://<index>/simple/` before running the installer |
+| pip fallback tiers | `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` |
+| git clone | `git config --global url."https://<mirror>/".insteadOf https://github.com/` |
+| Electron binary (desktop build) | `ELECTRON_MIRROR=https://<mirror>/` |
+| any HTTPS download | `HTTPS_PROXY` / `ALL_PROXY` |
+
+Two things worth knowing:
+
+- Configure the index through **environment variables**, not `uv.toml`. The installer runs its bootstrap uv calls with `UV_NO_CONFIG=1` and redirects the user config directory for the hash-verified sync, so a mirror configured in `~/.config/uv/uv.toml` is deliberately not picked up. Exported `UV_*` / `PIP_*` variables are always passed through untouched.
+- The hash-verified tier (`uv sync --extra all --locked`) verifies against the registry recorded in the checked-in `uv.lock`, which is the canonical PyPI. Any *other* `UV_INDEX_URL` makes uv refuse that tier ("the lockfile needs to be updated"), so the installer reports that and continues with the index-based tiers — they install from your index, without `uv.lock` verification.
+
 ### Symlinked home directories and external storage
 
 Hermes supports a symlinked `HERMES_HOME` and symlinked home subdirectories,

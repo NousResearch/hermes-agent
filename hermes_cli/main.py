@@ -1411,7 +1411,14 @@ def _create_titled_session(title: str) -> Optional[str]:
         # The CLI acquires the registry handle for this same path moments later; share it
         # instead of minting a second writer for one INSERT (close() releases the refcount).
         db = acquire()
-        db.create_session(new_session_id, source="cli")
+        # Stamp the effective launch cwd so the session binds to a workspace like a normal
+        # `hermes -c`/`--resume` new session does (run_agent._launch_cwd_for_session). Without
+        # it, `--in DIR -c <name> --create-if-missing` persisted a cwd-less, workspace-unbound
+        # row: the flow sets args.resume to the new id and the resume path skips the lazy
+        # create_session that would otherwise record cwd, so it stayed NULL (#106016). The
+        # helper returns None for non-local backends (gateway/cron), so those stay unstamped.
+        from run_agent import _launch_cwd_for_session
+        db.create_session(new_session_id, source="cli", cwd=_launch_cwd_for_session("cli"))
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:

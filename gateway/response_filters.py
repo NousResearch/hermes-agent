@@ -89,9 +89,10 @@ def is_autonomous_silence_response(response: Any) -> bool:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
-    # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
-    # be suppressed in chat yet delivered by cron.
-    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
+    # Edge punctuation is stripped first — models emphasise the sentinel (``**[SILENT]**``), and
+    # delivering it verbatim sends a marker-only message to the user's chat.  The CJK forms come
+    # from _BRACKETED_SILENCE_MARKERS so the interactive and autonomous lanes cannot drift.
+    return _strip_edge_silence_punctuation(stripped).upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
         is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
     )
 

@@ -41,3 +41,19 @@ def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variant
     for variant in ("【静默】", "静默。", "【沉默】", "沉默。", "**[静默]**", "NO_REPLY."):
         assert is_intentional_silence_response(variant)
         assert is_autonomous_silence_response(variant) == is_intentional_silence_response(variant), variant
+
+
+def test_autonomous_silence_accepts_emphasis_wrapped_marker():
+    """Emphasis-wrapped markers still suppress; prose mentioning a marker still delivers.
+
+    A model that bolds its sentinel (``**[SILENT]**``) means the same thing as the bare
+    token; delivering it verbatim sends a marker-only message to the user's chat.
+    """
+    assert is_autonomous_silence_response("**[SILENT]**")
+    assert is_autonomous_silence_response("**[SILENT]**\n")
+    assert is_autonomous_silence_response("*[SILENT]*")
+    assert is_autonomous_silence_response("**[SILENT]** No changes detected")
+    for prose in ("The reply was [SILENT], intentionally.", "we should send [SILENT] at the end"):
+        assert not is_autonomous_silence_response(prose)
+    assert not is_autonomous_silence_response("")
+    assert not is_autonomous_silence_response("   ")

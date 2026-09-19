@@ -329,7 +329,7 @@ def _get_current_model() -> tuple:
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, "https://openrouter.ai/api/v1"
-        model_name = model_cfg.get("name", "")
+        model_name = model_cfg.get("default") or model_cfg.get("name", "")
         base_url = model_cfg.get("base_url", "https://openrouter.ai/api/v1")
         return model_name, base_url
     except Exception:
@@ -337,14 +337,31 @@ def _get_current_model() -> tuple:
 
 
 def _get_api_key(base_url: str = None) -> str:
-    """Get the appropriate API key."""
-    if base_url and "openrouter" in base_url:
-        return os.getenv("OPENROUTER_API_KEY", "")
-    if base_url and "anthropic" in base_url:
-        return os.getenv("ANTHROPIC_API_KEY", "")
-    if base_url and "openai" in base_url:
-        return os.getenv("OPENAI_API_KEY", "")
-    # Default to OpenRouter
+    """Get the API key for the endpoint we are about to call.
+
+    Keys live in ``$HERMES_HOME/.env`` named after the provider, so match the host and read that
+    provider's key. Falling through to the OpenRouter key made every non-OpenAI-shaped provider
+    (DeepSeek, xAI, Gemini, …) fail with a confusing 401 against a perfectly good model.
+    """
+    hosts = (
+        ("openrouter.ai", "OPENROUTER_API_KEY"),
+        ("anthropic.com", "ANTHROPIC_API_KEY"),
+        ("openai.com", "OPENAI_API_KEY"),
+        ("deepseek.com", "DEEPSEEK_API_KEY"),
+        ("x.ai", "XAI_API_KEY"),
+        ("googleapis.com", "GEMINI_API_KEY"),
+        ("moonshot.cn", "MOONSHOT_API_KEY"),
+        ("mistral.ai", "MISTRAL_API_KEY"),
+        ("groq.com", "GROQ_API_KEY"),
+        ("z.ai", "ZAI_API_KEY"),
+    )
+    target = (base_url or "").lower()
+    for host, env_var in hosts:
+        if host in target:
+            value = os.getenv(env_var, "")
+            if value:
+                return value
+            break
     return os.getenv("OPENROUTER_API_KEY", "")
 
 

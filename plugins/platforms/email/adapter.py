@@ -102,6 +102,27 @@ def _close_imap(imap: "imaplib.IMAP4") -> None:
             imap.shutdown()
 
 
+def _uidnext_watermark(imap: "imaplib.IMAP4") -> Optional[int]:
+    """Highest UID that already existed when INBOX was selected, from the SELECT response's UIDNEXT.
+
+    First-connect baseline: everything at or below this UID predates the adapter, so the poll loop
+    can skip it without enumerating the mailbox. `SEARCH ALL` used to provide that baseline, but its
+    single response line overflows imaplib's 1 MB limit on large mailboxes and the connect then failed
+    permanently (a 150k-message INBOX returns ~1.2 MB). `None` when the server omits UIDNEXT — RFC 3501
+    requires it, but non-compliant servers exist — and callers fall back to a UID search.
+    """
+    try:
+        status, data = imap.response("UIDNEXT")
+    except Exception:
+        return None
+    if status != "UIDNEXT" or not data or not data[0]:
+        return None
+    try:
+        return max(0, int(data[0]) - 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _create_ipv4_connection(host: str, port: int, timeout: float, source_address: Any = None) -> socket.socket:
     """``socket.create_connection`` constrained to ``AF_INET`` (no process-global socket mutation — sends run in executor threads)."""
     last_error: OSError | None = None
@@ -332,7 +353,7 @@ class EmailAdapter(BasePlatformAdapter):
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
-    _seen_uids_snapshot: Dict[str, set] = {}
+    _seen_uids_snapshot: Dict[str, Tuple[Optional[int], set]] = {}
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -363,6 +384,9 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        # UID watermark captured at connect: messages at or below it predate this adapter. Keeps the
+        # baseline O(1) instead of materializing every existing UID (see _uidnext_watermark).
+        self._seen_up_to: Optional[int] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
         # chat_id (sender email) -> last subject + message-id for threading
@@ -438,15 +462,21 @@ class EmailAdapter(BasePlatformAdapter):
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
                     # arrived during the outage stays eligible for the next poll.
-                    self._seen_uids = set(snapshot)
-                    passed = "[Email] IMAP reconnect test passed. Restored %d seen UIDs; messages received during the outage will be processed."
-                else:  # first connect (or no snapshot): mark all existing messages seen
-                    status, data = imap.uid("search", None, "ALL")
-                    self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
-                    passed = "[Email] IMAP connection test passed. %d existing messages skipped."
-                self._trim_seen_uids()
-                logger.info(passed, len(self._seen_uids))
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+                    self._seen_up_to, self._seen_uids = snapshot[0], set(snapshot[1])
+                    logger.info("[Email] IMAP reconnect test passed. Baseline UID %s restored; messages received during the outage will be processed.", self._seen_up_to)
+                else:  # first connect (or no snapshot): everything already in the mailbox predates us
+                    watermark = _uidnext_watermark(imap)
+                    if watermark is None:
+                        # Non-compliant server: fall back to enumerating UIDs. This is the path that
+                        # overflows imaplib on a huge mailbox, so it stays the fallback, not the norm.
+                        status, data = imap.uid("search", None, "ALL")
+                        self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
+                        self._trim_seen_uids()
+                        logger.info("[Email] IMAP connection test passed. %d existing messages skipped (UIDNEXT unavailable).", len(self._seen_uids))
+                    else:
+                        self._seen_up_to = watermark
+                        logger.info("[Email] IMAP connection test passed. Existing messages up to UID %d skipped.", self._seen_up_to)
+            self._seen_uids_snapshot[self._address] = (self._seen_up_to, set(self._seen_uids))
             return True
         except Exception as e:
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
@@ -532,6 +562,11 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
+                    if self._seen_up_to is not None and int(uid) <= self._seen_up_to:
+                        # Present before this adapter connected, and never marked \Seen on the server, so
+                        # it comes back in every UNSEEN search. The watermark is what keeps the seen-set
+                        # trim from making old unread mail eligible again (#baseline-trim).
+                        continue
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
@@ -564,7 +599,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] IMAP fetch error: %s", e)
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
-        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+        self._seen_uids_snapshot[self._address] = (self._seen_up_to, set(self._seen_uids))
         return results
 
     def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:

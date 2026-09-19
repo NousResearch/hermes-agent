@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="920" viewBox="0 0 1400 920" role="img" aria-labelledby="title desc">
+  <title id="title">MoA Swarm Approach workflow</title>
+  <desc id="desc">A flow diagram showing how a task moves through context gathering, MoA planning, approval, execution substrate selection, worker fan-out, liaison synthesis, MoA result review, parent verification, and final delivery.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fb; }
+      .panel { fill: #ffffff; stroke: #d6dde6; stroke-width: 2; }
+      .start { fill: #e8f3ff; stroke: #4d8fd7; }
+      .moa { fill: #f0ecff; stroke: #7b61d1; }
+      .worker { fill: #ecfbf4; stroke: #36a36f; }
+      .gate { fill: #fff6df; stroke: #cf8b18; }
+      .verify { fill: #fcecee; stroke: #d75a70; }
+      .done { fill: #eef7e8; stroke: #6ca84f; }
+      .line { stroke: #5a6776; stroke-width: 3; fill: none; }
+      .thin { stroke: #8b98a8; stroke-width: 2; fill: none; }
+      .dash { stroke: #8b98a8; stroke-width: 2; stroke-dasharray: 7 7; fill: none; }
+      .arrow { fill: #5a6776; }
+      .label { font: 700 22px Arial, Helvetica, sans-serif; fill: #182230; }
+      .sub { font: 15px Arial, Helvetica, sans-serif; fill: #405066; }
+      .tiny { font: 13px Arial, Helvetica, sans-serif; fill: #526175; }
+      .chip { font: 700 13px Arial, Helvetica, sans-serif; fill: #ffffff; }
+      .lane { font: 700 16px Arial, Helvetica, sans-serif; fill: #2c3a4c; letter-spacing: 0; }
+      .note { font: 14px Arial, Helvetica, sans-serif; fill: #344256; }
+      .mono { font: 13px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #344256; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path class="arrow" d="M 0 0 L 12 6 L 0 12 Z" />
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#1b2533" flood-opacity="0.12" />
+    </filter>
+  </defs>
+
+  <rect class="bg" width="1400" height="920" />
+
+  <text x="64" y="66" class="label" style="font-size:34px">MoA Swarm Approach</text>
+  <text x="64" y="96" class="sub">Plan with Mixture of Agents, execute with scoped workers, verify with objective evidence.</text>
+
+  <rect x="64" y="125" width="1272" height="642" rx="16" class="panel" filter="url(#shadow)" />
+  <text x="88" y="162" class="lane">Primary task flow</text>
+
+  <!-- Row 1 -->
+  <rect x="104" y="196" width="170" height="92" rx="14" class="start" stroke-width="2" />
+  <text x="130" y="232" class="label">1. Task</text>
+  <text x="130" y="258" class="sub">User asks for</text>
+  <text x="130" y="278" class="sub">complex work</text>
+
+  <path d="M 274 242 H 334" class="line" marker-end="url(#arrow)" />
+
+  <rect x="344" y="196" width="190" height="92" rx="14" class="start" stroke-width="2" />
+  <text x="370" y="226" class="label">2. Context</text>
+  <text x="370" y="252" class="sub">Facts, constraints,</text>
+  <text x="370" y="272" class="sub">risks, checks</text>
+
+  <path d="M 534 242 H 594" class="line" marker-end="url(#arrow)" />
+
+  <rect x="604" y="180" width="238" height="124" rx="16" class="moa" stroke-width="2" />
+  <rect x="628" y="202" width="60" height="22" rx="11" fill="#7b61d1" />
+  <text x="641" y="218" class="chip">MoA</text>
+  <text x="628" y="250" class="label">3. Planning</text>
+  <text x="628" y="276" class="sub">Advisors critique,</text>
+  <text x="628" y="296" class="sub">aggregator returns plan</text>
+
+  <path d="M 842 242 H 902" class="line" marker-end="url(#arrow)" />
+
+  <rect x="912" y="196" width="186" height="92" rx="14" class="gate" stroke-width="2" />
+  <text x="938" y="232" class="label">4. Gate</text>
+  <text x="938" y="258" class="sub">Approve, narrow,</text>
+  <text x="938" y="278" class="sub">or fall back</text>
+
+  <path d="M 1098 242 H 1158" class="line" marker-end="url(#arrow)" />
+
+  <rect x="1168" y="196" width="128" height="92" rx="14" class="gate" stroke-width="2" />
+  <text x="1192" y="232" class="label">5. Pick</text>
+  <text x="1192" y="258" class="sub">Smallest safe</text>
+  <text x="1192" y="278" class="sub">substrate</text>
+
+  <!-- Down connector -->
+  <path d="M 1232 288 V 350 H 1128" class="line" marker-end="url(#arrow)" />
+
+  <!-- Substrate selector -->
+  <rect x="786" y="348" width="342" height="142" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" />
+  <text x="812" y="382" class="label">Execution substrate</text>
+  <text x="812" y="410" class="tiny">Use only what the task requires.</text>
+  <g>
+    <rect x="812" y="430" width="88" height="28" rx="14" fill="#ecfbf4" stroke="#36a36f" />
+    <text x="829" y="449" class="tiny">direct</text>
+    <rect x="908" y="430" width="110" height="28" rx="14" fill="#ecfbf4" stroke="#36a36f" />
+    <text x="925" y="449" class="tiny">delegation</text>
+    <rect x="1026" y="430" width="78" height="28" rx="14" fill="#ecfbf4" stroke="#36a36f" />
+    <text x="1044" y="449" class="tiny">board</text>
+    <rect x="812" y="464" width="106" height="28" rx="14" fill="#ecfbf4" stroke="#36a36f" />
+    <text x="829" y="483" class="tiny">worktree</text>
+    <rect x="926" y="464" width="86" height="28" rx="14" fill="#ecfbf4" stroke="#36a36f" />
+    <text x="944" y="483" class="tiny">cron</text>
+    <rect x="1020" y="464" width="84" height="28" rx="14" fill="#ecfbf4" stroke="#36a36f" />
+    <text x="1038" y="483" class="tiny">mixed</text>
+  </g>
+
+  <path d="M 786 420 H 720 V 512" class="line" marker-end="url(#arrow)" />
+
+  <!-- Worker fanout -->
+  <rect x="326" y="356" width="394" height="222" rx="18" class="worker" stroke-width="2" />
+  <text x="354" y="392" class="label">6. Worker fan-out</text>
+  <text x="354" y="420" class="sub">Independent scoped workers gather evidence,</text>
+  <text x="354" y="440" class="sub">implement in isolation, or inspect one angle.</text>
+
+  <rect x="354" y="470" width="92" height="56" rx="10" fill="#ffffff" stroke="#85caa4" />
+  <text x="376" y="495" class="tiny">worker A</text>
+  <text x="374" y="515" class="mono">security</text>
+  <rect x="464" y="470" width="92" height="56" rx="10" fill="#ffffff" stroke="#85caa4" />
+  <text x="486" y="495" class="tiny">worker B</text>
+  <text x="489" y="515" class="mono">tests</text>
+  <rect x="574" y="470" width="92" height="56" rx="10" fill="#ffffff" stroke="#85caa4" />
+  <text x="596" y="495" class="tiny">worker C</text>
+  <text x="589" y="515" class="mono">edge cases</text>
+
+  <path d="M 326 468 H 250 V 612 H 326" class="thin" marker-end="url(#arrow)" />
+  <text x="124" y="586" class="tiny">guardrails:</text>
+  <text x="124" y="606" class="tiny">scope, tools,</text>
+  <text x="124" y="626" class="tiny">no side effects</text>
+
+  <path d="M 720 467 H 784" class="line" marker-end="url(#arrow)" />
+
+  <!-- Liaison -->
+  <rect x="794" y="356" width="244" height="112" rx="16" class="worker" stroke-width="2" />
+  <text x="824" y="392" class="label">7. Synthesis</text>
+  <text x="824" y="420" class="sub">Liaisons compress reports</text>
+  <text x="824" y="440" class="sub">and preserve evidence.</text>
+
+  <path d="M 916 468 V 550 H 842" class="line" marker-end="url(#arrow)" />
+
+  <!-- MoA review -->
+  <rect x="604" y="550" width="238" height="124" rx="16" class="moa" stroke-width="2" />
+  <rect x="628" y="572" width="60" height="22" rx="11" fill="#7b61d1" />
+  <text x="641" y="588" class="chip">MoA</text>
+  <text x="628" y="620" class="label">8. Result Review</text>
+  <text x="628" y="646" class="sub">PASS, BLOCK, or</text>
+  <text x="628" y="666" class="sub">REQUEST_CHANGES</text>
+
+  <path d="M 604 612 H 526" class="line" marker-end="url(#arrow)" />
+
+  <!-- Parent verify -->
+  <rect x="286" y="550" width="240" height="124" rx="16" class="verify" stroke-width="2" />
+  <text x="314" y="586" class="label">9. Verify</text>
+  <text x="314" y="612" class="sub">Parent checks files, tests,</text>
+  <text x="314" y="632" class="sub">artifacts, services, diffs.</text>
+  <text x="314" y="656" class="tiny">No self-report-only success.</text>
+
+  <path d="M 526 612 H 604" class="dash" marker-end="url(#arrow)" />
+  <text x="532" y="602" class="tiny">more evidence</text>
+
+  <path d="M 406 674 V 716 H 528" class="line" marker-end="url(#arrow)" />
+
+  <!-- Done -->
+  <rect x="538" y="704" width="324" height="92" rx="16" class="done" stroke-width="2" />
+  <text x="568" y="740" class="label">10. Deliver + Handoff</text>
+  <text x="568" y="766" class="sub">Return result, verification, blockers,</text>
+  <text x="568" y="786" class="sub">and durable state when needed.</text>
+
+  <!-- Side notes -->
+  <rect x="910" y="584" width="300" height="128" rx="14" fill="#ffffff" stroke="#d6dde6" stroke-width="2" />
+  <text x="936" y="618" class="label" style="font-size:19px">Approval boundaries</text>
+  <text x="936" y="646" class="note">Get explicit approval before live</text>
+  <text x="936" y="668" class="note">side effects, durable jobs, commits,</text>
+  <text x="936" y="690" class="note">pushes, deployments, or migrations.</text>
+
+  <!-- Footer legend -->
+  <rect x="64" y="800" width="1272" height="76" rx="14" fill="#ffffff" stroke="#d6dde6" stroke-width="2" />
+  <text x="90" y="834" class="lane">Legend</text>
+  <rect x="176" y="816" width="28" height="18" rx="5" class="moa" />
+  <text x="214" y="831" class="tiny">MoA checkpoint</text>
+  <rect x="348" y="816" width="28" height="18" rx="5" class="worker" />
+  <text x="386" y="831" class="tiny">Tool-using workers / synthesis</text>
+  <rect x="602" y="816" width="28" height="18" rx="5" class="gate" />
+  <text x="640" y="831" class="tiny">Human or policy gate</text>
+  <rect x="822" y="816" width="28" height="18" rx="5" class="verify" />
+  <text x="860" y="831" class="tiny">Parent verification</text>
+  <path d="M 1050 825 H 1110" class="dash" marker-end="url(#arrow)" />
+  <text x="1124" y="831" class="tiny">Loop back for missing evidence</text>
+  <text x="90" y="858" class="tiny">Principle: plan broadly, execute narrowly, verify directly, preserve handoff state only when it earns its keep.</text>
+</svg>

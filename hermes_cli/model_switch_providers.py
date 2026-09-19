@@ -94,7 +94,6 @@ def _fetch_picker_live_models(
     """Fetch picker models with native Ollama and cached generic discovery."""
     from hermes_cli.models import _get_ollama_native_headers, cached_fetch_api_models, fetch_api_models
     from hermes_cli.models_local import (
-        _OLLAMA_LOCAL_MODELS_CACHE_TTL,
         _normalize_openai_base_url,
         fetch_ollama_local_models,
         should_use_ollama_native_catalog,
@@ -130,27 +129,9 @@ def _fetch_picker_live_models(
     if use_native:
         if preserve_native_models:
             return None
-
-        def _probe_native_catalog() -> _NativePickerModelList | None:
-            models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
-            return None if models is None else _NativePickerModelList(models)
-
-        # Admit the native catalog to the SHARED disk cache: a no-probe picker open (every endpoint
-        # that is not the current one) reads ``provider_models_cache.json`` only, so a native probe
-        # that answered here but was never stored came back empty on the next open — the provider's
-        # whole group vanished from the picker until the user hit Refresh Models. Key the entry on
-        # the caller's ``headers`` (what that cache_only read hashes), not ``resolved_headers``: the
-        # native probe's synthesized Authorization would otherwise land under a fingerprint the
-        # read side never computes, and a keyed endpoint kept flickering. Clamp the fresh window
-        # to the native TTL (300s, as cached_provider_model_ids does for the built-in slug): a
-        # locally pulled model must not stay invisible for the generic 1h TTL.
-        native_models = (
-            cached_fetch_api_models(
-                api_key, api_url, timeout=timeout, headers=headers, api_mode=api_mode,
-                fetch_models=_probe_native_catalog, ttl_seconds=_OLLAMA_LOCAL_MODELS_CACHE_TTL)
-            if cache else _probe_native_catalog())
+        native_models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
         if native_models is not None:
-            return native_models
+            return _NativePickerModelList(native_models)
         # A failed native probe is not authoritative: retry the cached generic catalog.
         api_url = _normalize_openai_base_url(api_url)
     generic_models = (cached_fetch_api_models if cache else fetch_api_models)(
@@ -763,29 +744,6 @@ class _PickerBuild:
         return discovered, native_catalog_empty, probe_live
 
 
-def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
-    """Section 0: the active / ``providers:``-configured LM Studio row from the live catalog.
-
-    LM Studio has no models.dev mapping and its overlay row (section 2) needs a credential, so a
-    hand-written ``model.provider: lmstudio`` left the slug unclaimed until section 3, where a bare
-    ``providers.lmstudio: {request_timeout_seconds: ...}`` block (no ``base_url``/``models``) cannot
-    discover anything and rendered a one-model ``user-config`` row — discarding the catalog
-    ``_build_curated_lists`` had already live-probed into ``b.curated["lmstudio"]``. A block that
-    points the slug at an endpoint of its own stays with section 3's custom-endpoint handling."""
-    if "lmstudio" in b.excluded or "lmstudio" in b.seen_slugs:
-        return
-    configured = user_providers.get("lmstudio")
-    if isinstance(configured, dict) and _entry_base_url(configured, ("base_url", "api", "url")):
-        return
-    is_current = b.current_provider_norm == "lmstudio"
-    if not (is_current or isinstance(configured, dict)):
-        return
-    from hermes_cli.model_switch import _declared_model_ids
-    configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
-    model_ids = list(dict.fromkeys([*configured_models, *b.curated.get("lmstudio", [])]))
-    b.add_builtin_row("lmstudio", get_label("lmstudio"), is_current, model_ids, "hermes")
-
-
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
     from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
@@ -988,6 +946,35 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         b.record_section3_pair(display_name, ep_url_norm)
 
 
+def _bare_custom_model_api_key(current_base_url: str) -> str:
+    """Inline key for a direct ``model.provider: custom`` endpoint.
+
+    Resolves ``model.api_key`` / legacy ``model.api`` exactly as the runtime's
+    bare-custom candidates loop does — but only when the persisted model config
+    is bare ``custom`` AND its ``base_url`` owns the endpoint being probed.
+    Session/runtime URL overrides therefore never receive a persisted key, and
+    URL path case is preserved (comparison only strips whitespace and a single
+    trailing slash)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model", {})
+        if not isinstance(model_cfg, dict):
+            return ""
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        current_url = str(current_base_url or "").strip().rstrip("/")
+        if configured_provider != "custom" or not configured_url or configured_url != current_url:
+            return ""
+        for key in ("api_key", "api"):
+            value = model_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except (OSError, TypeError, KeyError, AttributeError):
+        pass
+    return ""
+
+
 def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None:
     """Section 3b: ``model.provider: custom`` + ``model.base_url`` with no named
     providers:/custom_providers row — surface it so /model does not look like it ignored
@@ -1003,7 +990,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     native_catalog_empty = False
     try:
         discovered, native_catalog_empty = _discover_endpoint_models(
-            "", api_url, "custom", False, headers=None, api_mode=None,
+            _bare_custom_model_api_key(api_url), api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or b.probe_current_custom_provider), discovery_allowed=True,
             for_picker=b.for_picker)
         if discovered is not None:
@@ -1201,7 +1188,6 @@ def list_authenticated_providers(
         except Exception:
             pass  # best-effort; serial path still works
 
-    _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
     _lap_canonical_rows(b)

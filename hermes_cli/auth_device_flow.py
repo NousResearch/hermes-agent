@@ -322,12 +322,29 @@ def _poll_device_token_generic(
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
     Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
-    via the supplied factories so each caller keeps its exact error contract.
+    via the supplied factories so each caller keeps its exact error contract. A transient transport
+    blip (dropped connection, SSL EOF) on a single poll is retried a few times with a small linear
+    backoff before giving up: losing the token exchange to one network hiccup would waste a
+    device-code approval the user may have already completed in the browser — same rationale as
+    the Codex device-login retry in ``auth_codex._codex_login_post`` (#114610), whose transient-error
+    classifier this reuses so both flows draw the same line between a network blip and a real
+    failure.
     """
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
     deadline = time.monotonic() + max(1, expires_in)
     current_interval = poll_interval
     while time.monotonic() < deadline:
-        response = post()
+        attempt, attempts = 1, 3
+        while True:
+            try:
+                response = post()
+                break
+            except Exception as exc:
+                if attempt == attempts or not _is_transient_transport_error(exc):
+                    raise
+                time.sleep(attempt)
+                attempt += 1
         if response.status_code == 200:
             payload = response.json()
             validate_success(payload)

@@ -36,6 +36,29 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     return value
 
 
+# Private repos on the free GitHub plan cannot inspect branch rulesets: the REST
+# endpoint answers HTTP 403 "Upgrade to GitHub Pro or make this repository public".
+# That is a plan limitation, not missing evidence: GraphQL branch protection and
+# check-runs/statuses stay readable, so acceptance must degrade honestly instead
+# of misclassifying the whole receipt as infra (which blocks terminal writes).
+_PRO_GATE_MARKERS = ("upgrade to github pro", "make this repository public")
+
+
+class _RulesetPlanGate(Exception):
+    """Raised when the branch-rulesets endpoint is blocked by the GitHub plan."""
+
+
+def _ruleset_pages(repo: str, branch: str):
+    try:
+        return _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                    paginate=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").lower()
+        if "403" in stderr and any(marker in stderr for marker in _PRO_GATE_MARKERS):
+            raise _RulesetPlanGate from None
+        raise
+
+
 def collect_acceptance(contract: str, published_pr: str | None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
@@ -61,7 +84,12 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        ruleset_plan_gated = False
+        try:
+            rules = _ruleset_pages(repo, branch)
+        except _RulesetPlanGate:
+            rules = []
+            ruleset_plan_gated = True
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -69,7 +97,12 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            receipt["detail"] = (
+                "Branch rulesets are not inspectable on this GitHub plan (private repo without "
+                "GitHub Pro) and no GraphQL branch-protection checks are configured; explicitly use "
+                "a local-only contract for non-CI tasks."
+                if ruleset_plan_gated else
+                "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks.")
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
         runs = [run for page in pages for run in page["check_runs"]]

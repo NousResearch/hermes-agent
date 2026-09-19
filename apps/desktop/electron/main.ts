@@ -428,7 +428,8 @@ import {
   describeUpdateCheckFailure,
   githubRepoSlug,
   parseCompare,
-  rateLimitFromHeaders
+  rateLimitFromHeaders,
+  resolveApiBehindCount
 } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -3302,7 +3303,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const slug = githubRepoSlug(originUrl)
 
   const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    ? await checkUpdatesViaApi({ slug, branch, currentSha, updateRoot })
     : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
 
   const result = {
@@ -3344,7 +3345,7 @@ function writeUpdateCheckCache(entry) {
 // then the compare endpoint only when the tips differ — it yields the exact
 // behind count plus the commit list the overlay renders, replacing both
 // `rev-list --count` and `git log HEAD..origin/<branch>`.
-async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   let targetSha
 
   try {
@@ -3374,9 +3375,16 @@ async function checkUpdatesViaApi({ slug, branch, currentSha }) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
   }
 
+  // The API cannot see a commit that exists only here, so a carried local commit
+  // makes compare 404 — indistinguishable from "behind" without asking git.
+  // Only probe when the compare came back empty; the answer is otherwise known.
+  const targetIsAncestorOfHead =
+    !compared &&
+    (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0 &&
+    (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
+
   return {
-    behind: compared ? compared.behind : null,
-    updateAvailable: true,
+    ...resolveApiBehindCount({ compared, targetIsAncestorOfHead }),
     targetSha,
     commits: compared?.commits ?? []
   }

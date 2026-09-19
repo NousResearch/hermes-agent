@@ -11,6 +11,12 @@ source: https://developers.gamma.app/docs/gamma-mcp-server
 # (verified live: RFC 9728 protected-resource metadata -> AS metadata with
 # registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
 # discovery, PKCE, token exchange, and refresh.
+#
+# Gamma's registration_endpoint rejects any loopback redirect_uri
+# ("redirect_uri not allowed: http://127.0.0.1:<port>/callback") — it only
+# accepts a public HTTPS callback that Gamma allowlists out of band via
+# their custom MCP access form. A bare `auth: oauth` block cannot complete
+# DCR here; see post_install for the required oauth.redirect_uri override.
 
 transport:
   type: http
@@ -36,6 +42,17 @@ suggest:
     - gamma.app
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Gamma (or run `hermes mcp login gamma`). Approve access,
-  then restart the session so tools load.
+  Gamma rejects Hermes's default loopback callback during registration —
+  you must supply a public HTTPS redirect URI that Gamma has allowlisted
+  for you (request one via their custom MCP access form) before login
+  will work:
+
+    mcp_servers:
+      gamma:
+        url: https://mcp.gamma.app/mcp
+        auth: oauth
+        oauth:
+          redirect_uri: "https://<your-allowlisted-host>/callback"
+
+  Then run `hermes mcp login gamma`, approve access, and restart the
+  session so tools load.

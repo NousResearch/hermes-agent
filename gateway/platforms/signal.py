@@ -194,7 +194,36 @@ class SignalAdapter(BasePlatformAdapter):
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
-        self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
+        _gateway_allow_raw = str(_sig_secret("SIGNAL_ALLOWED_USERS", "*") or "*")
+        gateway_allow_from = set(_parse_comma_list(_gateway_allow_raw))
+        # Reaction allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py. Kept separate from the
+        # DM gate so group reactions keep honoring the gateway auth list even when DMs are narrowed.
+        self.reaction_allow_from = set(gateway_allow_from)
+
+        # DM policy — mirrors the dm_policy surface other adapters expose (WhatsApp/Weixin/Yuanbao/...):
+        #   "open"      (default) delegates DM auth to the gateway allowlist (SIGNAL_ALLOWED_USERS in run.py)
+        #   "allowlist" restricts DMs at intake to SIGNAL_DM_ALLOW_FROM (falls back to SIGNAL_ALLOWED_USERS)
+        #   "disabled"  drops ALL direct messages at intake so the bot only ever responds in allowlisted groups
+        # Read from config extra first, then the scoped SIGNAL_DM_POLICY env var.
+        _dm_cfg = extra.get("dm_policy")
+        _dm_policy = (str(_dm_cfg).strip().lower() if _dm_cfg is not None
+                      else str(_sig_secret("SIGNAL_DM_POLICY", "open") or "open").strip().lower())
+        if _dm_policy not in ("open", "allowlist", "disabled"):
+            logger.warning("Signal: unknown dm_policy %r — falling back to 'open'", _dm_policy)
+            _dm_policy = "open"
+        self.dm_policy = _dm_policy
+        # DM sender allowlist enforced at intake when dm_policy=allowlist. Defaults to
+        # SIGNAL_ALLOWED_USERS so allowlist mode with no explicit list matches the gateway's own DM
+        # auth. Distinct from reaction_allow_from (see above).
+        _dm_allow_cfg = extra.get("dm_allow_from")
+        if isinstance(_dm_allow_cfg, (list, tuple, set)):
+            self.dm_allow_from = {str(_x).strip() for _x in _dm_allow_cfg if str(_x).strip()}
+        elif _dm_allow_cfg is not None:
+            self.dm_allow_from = set(_parse_comma_list(str(_dm_allow_cfg)))
+        else:
+            _dm_allow_raw = str(_sig_secret("SIGNAL_DM_ALLOW_FROM", "") or "").strip()
+            self.dm_allow_from = set(_parse_comma_list(_dm_allow_raw or _gateway_allow_raw))
+
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -438,6 +467,18 @@ class SignalAdapter(BasePlatformAdapter):
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
+
+        # DM policy — when "disabled" or "allowlist", direct messages are gated at intake so the bot
+        # only responds to approved senders (or, for "disabled", nowhere at all). Note-to-Self is
+        # handled earlier and is unaffected. Group filtering below.
+        if not is_group:
+            if self.dm_policy == "disabled":
+                logger.debug("Signal: ignoring DM (SIGNAL_DM_POLICY=disabled)")
+                return
+            if self.dm_policy == "allowlist" and not self._is_dm_allowed(sender):
+                logger.debug("Signal: ignoring DM from non-allowlisted sender (dm_policy=allowlist)")
+                return
+
         if is_group and not self._group_allowed(group_id):
             return
         chat_id = f"group:{group_id}" if is_group else sender
@@ -948,13 +989,34 @@ class SignalAdapter(BasePlatformAdapter):
         ok = isinstance(raw, dict) and raw.get("sender") and raw.get("timestamp_ms")
         return (raw["sender"], raw["timestamp_ms"]) if ok else None
 
+    def _is_dm_allowed(self, sender_id: str) -> bool:
+        """Whether a DM sender passes the dm_policy=allowlist intake gate.
+
+        Matches on the same identifier run.py's SIGNAL_ALLOWED_USERS check sees (the event's
+        user_id = sourceNumber-or-sourceUuid). "*" in the allowlist opens DMs to everyone.
+        """
+        if not sender_id:
+            return False
+        if "*" in self.dm_allow_from:
+            return True
+        return sender_id in self.dm_allow_from
+
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
-        """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
-        so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
+        """SIGNAL_REACTIONS env gate, then the DM policy / reaction allowlist: reactions fire before
+        run.py's auth gate, so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
         if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
             return False
-        sender = getattr(getattr(event, "source", None), "user_id", None) if event is not None else None
-        return not (sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from)
+        if event is None:
+            return True
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        sender = getattr(getattr(event, "source", None), "user_id", None)
+        if chat_id and not str(chat_id).startswith("group:"):
+            # Direct message: same intake policy as dispatch — never signal presence to a blocked sender.
+            if self.dm_policy == "disabled":
+                return False
+            if self.dm_policy == "allowlist" and not self._is_dm_allowed(sender):
+                return False
+        return not (sender and "*" not in self.reaction_allow_from and sender not in self.reaction_allow_from)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 when processing begins."""

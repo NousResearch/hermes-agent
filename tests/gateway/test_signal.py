@@ -1459,3 +1459,148 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# DM policy (SIGNAL_DM_POLICY=disabled) — bot must never respond in DMs
+# ---------------------------------------------------------------------------
+
+class TestSignalDmPolicy:
+    """SIGNAL_DM_POLICY=disabled drops ALL direct messages at intake so the
+    bot only ever responds in allowlisted groups. Groups are unaffected."""
+
+    async def _dispatch(self, monkeypatch, envelope, **adapter_kwargs):
+        adapter = _make_signal_adapter(monkeypatch, **adapter_kwargs)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        await adapter._handle_envelope(envelope)
+        return adapter, dispatched
+
+    @pytest.mark.asyncio
+    async def test_dm_dropped_when_env_policy_disabled(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "disabled")
+        adapter, dispatched = await self._dispatch(
+            monkeypatch, _make_dm_envelope("+155****6543", [], "hello")
+        )
+        assert adapter.dm_policy == "disabled"
+        assert dispatched == [], "DM must be dropped before handle_message"
+
+    @pytest.mark.asyncio
+    async def test_dm_dropped_when_extra_policy_disabled(self, monkeypatch):
+        # config.yaml extra (dm_policy) path, no env var set
+        adapter, dispatched = await self._dispatch(
+            monkeypatch, _make_dm_envelope("+155****6543", [], "hello"),
+            dm_policy="disabled",
+        )
+        assert adapter.dm_policy == "disabled"
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_dm_still_processed_when_policy_open(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "open")
+        adapter, dispatched = await self._dispatch(
+            monkeypatch, _make_dm_envelope("+155****6543", [], "hello")
+        )
+        assert adapter.dm_policy == "open"
+        assert len(dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_still_processed_when_policy_disabled(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "disabled")
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****6543",
+                "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "timestamp": 1700000000000,
+                    "message": "hello group",
+                    "groupInfo": {"groupId": "abc123==", "type": "DELIVER"},
+                },
+            }
+        }
+        _, dispatched = await self._dispatch(
+            monkeypatch, envelope, group_allowed="abc123=="
+        )
+        assert len(dispatched) == 1, "Group messages must pass when DMs are disabled"
+
+    def test_unknown_policy_falls_back_to_open(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "banana")
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.dm_policy == "open"
+
+    def test_reactions_disabled_in_dms_but_not_groups(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "disabled")
+        adapter = _make_signal_adapter(monkeypatch)
+        dm_event = SimpleNamespace(
+            source=SimpleNamespace(chat_id="+155****6543", user_id="+155****6543")
+        )
+        group_event = SimpleNamespace(
+            source=SimpleNamespace(chat_id="group:abc123==", user_id="+155****6543")
+        )
+        assert adapter._reactions_enabled(dm_event) is False
+        assert adapter._reactions_enabled(group_event) is True
+
+    @pytest.mark.asyncio
+    async def test_dm_allowed_sender_passes_when_policy_allowlist(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "allowlist")
+        monkeypatch.setenv("SIGNAL_DM_ALLOW_FROM", "+15559876543")
+        _, dispatched = await self._dispatch(
+            monkeypatch, _make_dm_envelope("+15559876543", [], "hello")
+        )
+        assert len(dispatched) == 1, "Allowlisted DM sender must pass intake"
+
+    @pytest.mark.asyncio
+    async def test_dm_dropped_for_sender_not_in_dm_allowlist(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "allowlist")
+        monkeypatch.setenv("SIGNAL_DM_ALLOW_FROM", "+15559999999")
+        _, dispatched = await self._dispatch(
+            monkeypatch, _make_dm_envelope("+15559876543", [], "hello")
+        )
+        assert dispatched == [], "DM from non-allowlisted sender must be dropped"
+
+    @pytest.mark.asyncio
+    async def test_dm_allowlist_defaults_to_allowed_users(self, monkeypatch):
+        # No SIGNAL_DM_ALLOW_FROM → falls back to SIGNAL_ALLOWED_USERS
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "allowlist")
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15559876543")
+        _, dispatched = await self._dispatch(
+            monkeypatch, _make_dm_envelope("+15559876543", [], "hello")
+        )
+        assert len(dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_passes_when_policy_allowlist(self, monkeypatch):
+        # Group senders are NOT filtered by the DM allowlist
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "allowlist")
+        monkeypatch.setenv("SIGNAL_DM_ALLOW_FROM", "+15559999999")
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15559876543",
+                "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "timestamp": 1700000000000,
+                    "message": "hello group",
+                    "groupInfo": {"groupId": "abc123==", "type": "DELIVER"},
+                },
+            }
+        }
+        _, dispatched = await self._dispatch(
+            monkeypatch, envelope, group_allowed="abc123=="
+        )
+        assert len(dispatched) == 1, "Group messages must ignore the DM allowlist"
+
+    def test_allowlist_wildcard_opens_dms_to_everyone(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_DM_POLICY", "allowlist")
+        monkeypatch.setenv("SIGNAL_DM_ALLOW_FROM", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter._is_dm_allowed("+15559876543") is True
+        assert adapter._is_dm_allowed("") is False

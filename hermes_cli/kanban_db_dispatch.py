@@ -1368,7 +1368,8 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
+    ``"rate_limit_exhausted"`` (two consecutive quota failures; requires
+    explicit unblock), then ``"rate_limit_cooldown"`` (latest run within cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
@@ -1394,10 +1395,13 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
+        from hermes_cli.kanban_quota import quota_attempts_exhausted
+        if quota_attempts_exhausted(conn, task_id):
+            return "rate_limit_exhausted"
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
@@ -1405,9 +1409,8 @@ def check_respawn_guard(
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # Cooldown cumprido permite somente a repeticao dentro do orcamento.
+        # Esgotamento acima exige desbloqueio explicito, nao passagem do tempo.
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
@@ -1823,6 +1826,10 @@ def _dispatch_lane_task(
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
+            if guard_reason == "rate_limit_exhausted":
+                from hermes_cli.kanban_quota import park_exhausted_quota
+                if park_exhausted_quota(conn, task_id, lane):
+                    result.auto_blocked.append(task_id)
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False

@@ -1,0 +1,156 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /usr/local/bin/python
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 1 test files (~2 tests) under ['tests/hermes_cli/test_kanban_quota_budget.py']; running with -j 1
+[100.0% |     2/~2 | ✓1 | ✗4] ✗ tests/hermes_cli/test_kanban_quota_budget.py (1✓ 4✗, 1.8s)
+
+  ╔╍ Failed: tests/hermes_cli/test_kanban_quota_budget.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ E        +    where <function check_respawn_guard at 0xffffafd0a340> = kbd.check_respawn_guard
+  ║ 
+  ║ tests/hermes_cli/test_kanban_quota_budget.py:50: AssertionError
+  ║ _ test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-review] _
+  ║ 
+  ║ board = <hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffafe77050>
+  ║ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xffffafe60a50>
+  ║ lane = 'review', cooldown = '300'
+  ║ 
+  ║     @pytest.mark.parametrize('lane', ['ready', 'review'])
+  ║     @pytest.mark.parametrize('cooldown', ['0', '300'])
+  ║     def test_quota_budget_parks_without_losing_history_or_blocking_other_tasks(board, monkeypatch, lane, cooldown):
+  ║         monkeypatch.setenv('HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS', cooldown)
+  ║         tid = kb.create_task(board, title='quota esgotada', assignee='default')
+  ║         other = kb.create_task(board, title='outro trabalho', assignee='default')
+  ║         quota_exit(board, tid, lane)
+  ║         assert kbd.check_respawn_guard(board, tid, lane=lane) is None
+  ║         quota_exit(board, tid, lane)
+  ║ >       assert kbd.check_respawn_guard(board, tid, lane=lane) == 'rate_limit_exhausted'
+  ║ E       AssertionError: assert None == 'rate_limit_exhausted'
+  ║ E        +  where None = <function check_respawn_guard at 0xffffafd0a340>(<hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffafe77050>, 't_3dcd33e2', lane='review')
+  ║ E        +    where <function check_respawn_guard at 0xffffafd0a340> = kbd.check_respawn_guard
+  ║ 
+  ║ tests/hermes_cli/test_kanban_quota_budget.py:50: AssertionError
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[0-ready]
+  ║ FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[0-review]
+  ║ FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-ready]
+  ║ FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-review]
+  ║ 4 failed, 1 passed in 1.34s
+  ║
+  ║  Repro: python -m pytest tests/hermes_cli/test_kanban_quota_budget.py -q
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 1 files, 1 tests passed, 4 failed (100% complete) in 1.8s (1 workers) ===
+
+=== Per-file subprocess time distribution ===
+  Files:   1
+  Total subprocess CPU-wall: 1.8s  (runner wall: 1.8s, parallelism: 1x)
+  P50: 1.84s  P90: 1.84s  P95: 1.84s  P99: 1.84s  Max: 1.84s
+  <1s: 0 files (0%)  <2s: 1 files (100%)
+  Top 10 slowest:
+      1.84s  tests/hermes_cli/test_kanban_quota_budget.py
+
+=== Failure output ===
+
+--- tests/hermes_cli/test_kanban_quota_budget.py ---
+FFFF.                                                                    [100%]
+=================================== FAILURES ===================================
+_ test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[0-ready] _
+
+board = <hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffaeda9650>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xffffafe8d090>
+lane = 'ready', cooldown = '0'
+
+    @pytest.mark.parametrize('lane', ['ready', 'review'])
+    @pytest.mark.parametrize('cooldown', ['0', '300'])
+    def test_quota_budget_parks_without_losing_history_or_blocking_other_tasks(board, monkeypatch, lane, cooldown):
+        monkeypatch.setenv('HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS', cooldown)
+        tid = kb.create_task(board, title='quota esgotada', assignee='default')
+        other = kb.create_task(board, title='outro trabalho', assignee='default')
+        quota_exit(board, tid, lane)
+        assert kbd.check_respawn_guard(board, tid, lane=lane) is None
+        quota_exit(board, tid, lane)
+>       assert kbd.check_respawn_guard(board, tid, lane=lane) == 'rate_limit_exhausted'
+E       AssertionError: assert None == 'rate_limit_exhausted'
+E        +  where None = <function check_respawn_guard at 0xffffafd0a340>(<hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffaeda9650>, 't_a608a4c5', lane='ready')
+E        +    where <function check_respawn_guard at 0xffffafd0a340> = kbd.check_respawn_guard
+
+tests/hermes_cli/test_kanban_quota_budget.py:50: AssertionError
+------------------------------ Captured log setup ------------------------------
+WARNING  hermes_state:hermes_state_wal.py:559 kanban.db (kanban.db): linked SQLite 3.46.1 (interpreter /usr/local/bin/python) is vulnerable to the WAL-reset corruption bug (https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); Hermes-managed installs can repair the embedded runtime with `hermes update`. See `hermes doctor`. This warning fires once per process per database.
+_ test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[0-review] _
+
+board = <hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffaddff550>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xffffafe611d0>
+lane = 'review', cooldown = '0'
+
+    @pytest.mark.parametrize('lane', ['ready', 'review'])
+    @pytest.mark.parametrize('cooldown', ['0', '300'])
+    def test_quota_budget_parks_without_losing_history_or_blocking_other_tasks(board, monkeypatch, lane, cooldown):
+        monkeypatch.setenv('HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS', cooldown)
+        tid = kb.create_task(board, title='quota esgotada', assignee='default')
+        other = kb.create_task(board, title='outro trabalho', assignee='default')
+        quota_exit(board, tid, lane)
+        assert kbd.check_respawn_guard(board, tid, lane=lane) is None
+        quota_exit(board, tid, lane)
+>       assert kbd.check_respawn_guard(board, tid, lane=lane) == 'rate_limit_exhausted'
+E       AssertionError: assert None == 'rate_limit_exhausted'
+E        +  where None = <function check_respawn_guard at 0xffffafd0a340>(<hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffaddff550>, 't_7bdc90de', lane='review')
+E        +    where <function check_respawn_guard at 0xffffafd0a340> = kbd.check_respawn_guard
+
+tests/hermes_cli/test_kanban_quota_budget.py:50: AssertionError
+_ test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-ready] _
+
+board = <hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffb0578550>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xffffafe63bd0>
+lane = 'ready', cooldown = '300'
+
+    @pytest.mark.parametrize('lane', ['ready', 'review'])
+    @pytest.mark.parametrize('cooldown', ['0', '300'])
+    def test_quota_budget_parks_without_losing_history_or_blocking_other_tasks(board, monkeypatch, lane, cooldown):
+        monkeypatch.setenv('HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS', cooldown)
+        tid = kb.create_task(board, title='quota esgotada', assignee='default')
+        other = kb.create_task(board, title='outro trabalho', assignee='default')
+        quota_exit(board, tid, lane)
+        assert kbd.check_respawn_guard(board, tid, lane=lane) is None
+        quota_exit(board, tid, lane)
+>       assert kbd.check_respawn_guard(board, tid, lane=lane) == 'rate_limit_exhausted'
+E       AssertionError: assert None == 'rate_limit_exhausted'
+E        +  where None = <function check_respawn_guard at 0xffffafd0a340>(<hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffb0578550>, 't_bdf9aabe', lane='ready')
+E        +    where <function check_respawn_guard at 0xffffafd0a340> = kbd.check_respawn_guard
+
+tests/hermes_cli/test_kanban_quota_budget.py:50: AssertionError
+_ test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-review] _
+
+board = <hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffafe77050>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xffffafe60a50>
+lane = 'review', cooldown = '300'
+
+    @pytest.mark.parametrize('lane', ['ready', 'review'])
+    @pytest.mark.parametrize('cooldown', ['0', '300'])
+    def test_quota_budget_parks_without_losing_history_or_blocking_other_tasks(board, monkeypatch, lane, cooldown):
+        monkeypatch.setenv('HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS', cooldown)
+        tid = kb.create_task(board, title='quota esgotada', assignee='default')
+        other = kb.create_task(board, title='outro trabalho', assignee='default')
+        quota_exit(board, tid, lane)
+        assert kbd.check_respawn_guard(board, tid, lane=lane) is None
+        quota_exit(board, tid, lane)
+>       assert kbd.check_respawn_guard(board, tid, lane=lane) == 'rate_limit_exhausted'
+E       AssertionError: assert None == 'rate_limit_exhausted'
+E        +  where None = <function check_respawn_guard at 0xffffafd0a340>(<hermes_cli.sqlite_safe_read.TrackedConnection object at 0xffffafe77050>, 't_3dcd33e2', lane='review')
+E        +    where <function check_respawn_guard at 0xffffafd0a340> = kbd.check_respawn_guard
+
+tests/hermes_cli/test_kanban_quota_budget.py:50: AssertionError
+=========================== short test summary info ============================
+FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[0-ready]
+FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[0-review]
+FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-ready]
+FAILED tests/hermes_cli/test_kanban_quota_budget.py::test_quota_budget_parks_without_losing_history_or_blocking_other_tasks[300-review]
+4 failed, 1 passed in 1.34s
+
+=== 1 file with test failures (4 tests failed) ===
+  tests/hermes_cli/test_kanban_quota_budget.py  (4 tests failed)
+
+exit_code=1

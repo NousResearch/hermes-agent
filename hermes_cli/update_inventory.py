@@ -322,10 +322,15 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
     return any(_gateway_service_matches_profile(r.profile, name) for name in names)
 
 
+def _root_launchd_gateway_in(names: set) -> bool:
+    """Return whether bookkeeping names the root launchd gateway label exactly."""
+    return any(str(name).rsplit("/", 1)[-1] == "ai.hermes.gateway" for name in names)
+
+
 def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None,
+    stale_serve_pids: "set | None" = None, fleet_snapshot: "list | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
@@ -343,6 +348,10 @@ def match_runtime_outcomes(
     incarnation. The probe itself fails closed (unreadable ledger -> every planned serve is listed as
     surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
 
+    A root launchd service can serve a sticky named profile. Its successful root-label
+    bookkeeping plus a changed, live same-profile PID proves that runtime restarted.
+    ``down`` rows are excluded, and an unchanged PID never receives incarnation credit.
+
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
@@ -354,6 +363,17 @@ def match_runtime_outcomes(
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        live_gateway_pids: dict[str, set[int]] = {}
+        for row in fleet_snapshot or []:
+            if not isinstance(row, dict) or row.get("state") == "down":
+                continue
+            profile = row.get("profile")
+            try:
+                pid = int(row.get("pid"))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(profile, str) and profile and pid > 0:
+                live_gateway_pids.setdefault(profile, set()).add(pid)
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -381,6 +401,21 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
+            named_root_launchd = (
+                r.profile != "default"
+                and (r.supervisor == "launchd" or r.restart_via == "launchd")
+            )
+            if named_root_launchd and _root_launchd_gateway_in(failed_set):
+                return "failed"
+            successors = live_gateway_pids.get(r.profile, set())
+            if (
+                named_root_launchd
+                and _root_launchd_gateway_in(restarted_set)
+                and r.pid is not None
+                and successors
+                and r.pid not in successors
+            ):
+                return "restarted"
             return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
 
         for r in plan.runtimes:

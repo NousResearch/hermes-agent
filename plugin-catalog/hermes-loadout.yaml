@@ -5,6 +5,7 @@ description: >-
   Desktop pane to manage skills and MCP connections across agent apps: save
   named loadouts, review changes, apply them, and undo the latest managed
   operation. Agent half is inert (no tools or hooks).
+  Disclosure — MCP sync copies your Hermes mcp_servers env/header secrets into ~/.codex/config.toml and claude_desktop_config.json (with 0600 backups).
 maintainer: qwertyuiop97
 tier: community
 category: desktop

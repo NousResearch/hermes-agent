@@ -352,6 +352,14 @@ function SidebarSessionRowImpl({
         actions={card ? undefined : actionsNode}
         className={cn(
           'group row-hover relative',
+          // no-drag: session rows sit under / adjacent to the titlebar's
+          // [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves
+          // drag regions at the compositor — z-index and pointer-events don't
+          // help — and at fractional OS scale (Windows 125%) the native region
+          // wins hit-testing, so rows look pinned to the chrome and clicks
+          // never reach resume. Same carve-out as SIDEBAR_NAV /
+          // USER_BUBBLE_BASE_CLASS. Always-on is correct at scale=1.0 too.
+          '[-webkit-app-region:no-drag]',
           card && SIDEBAR_ROW_CARD_MIN_H,
           // Density-aware minimum heights for the inline (non-card) row: the
           // metadata / preview lines below need the extra rows (#68119).

@@ -413,6 +413,8 @@ describe('AppContextMenu', () => {
 
     fireEvent.contextMenu(host.querySelector('p')!)
 
+    expect(await screen.findByText('New session')).toBeTruthy()
+    expect(screen.getByText('Import session')).toBeTruthy()
     expect(await screen.findByText('Settings')).toBeTruthy()
   })
 

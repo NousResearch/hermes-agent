@@ -293,13 +293,18 @@ class GatewayAuthorizationMixin:
         return (adapter, profile) if registered else None
 
     def _authorization_home_for_source(self, source: SessionSource):
-        """HERMES_HOME whose allowlist admits *source*: the ingress-stamped transport home, else the home of
-        the profile owning the adapter that delivers it. ``None`` = authorize in the ambient scope
-        (multiplex off, or no live adapter — the check then fails closed on its own).
+        """HERMES_HOME whose allowlist admits *source*: the identity's transport home (or the
+        ingress-stamped one), else the home of the profile owning the adapter that delivers it.
+        ``None`` = authorize in the ambient scope (multiplex off, or no live adapter — the check then
+        fails closed on its own).
 
         Inside a routed satellite's turn the ambient scope is the satellite's, whose ``.env`` has no
         token/allowlist; every authorization decision made mid-turn (``/topic``, sibling ``/stop``, plugin
         injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.authorization_home if identity.multiplexed else None
         stamped = getattr(source, "_authorization_profile_home", None)
         if stamped is not None:
             return Path(stamped)

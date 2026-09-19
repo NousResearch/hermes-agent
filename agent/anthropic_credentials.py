@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import subprocess
 import threading
@@ -41,6 +42,10 @@ _OAUTH_TOKEN_URLS = [
 _OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+# Claude Code's macOS Keychain entry (generic password). Hermes reads it
+# (_read_claude_code_credentials_from_keychain) and, since #98334, mirrors the
+# refresh write into it so the two stores stop diverging on a single-use rotation.
+_CLAUDE_CODE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -204,27 +209,103 @@ def _claude_oauth_record(data: Any, source: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
-    """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
+_KEYCHAIN_ATTR = r'(?:0x(?P<hex>[0-9A-Fa-f]+)\b.*|"(?P<text>.*)")'
+
+
+def _decode_keychain_attr(match: Optional["re.Match[str]"]) -> str:
+    """``security`` prints an attribute as ``"text"`` when it is plain printable ASCII and as
+    ``0x<HEX>  "<octal-escaped echo>"`` otherwise; the quoted form is NOT escaped (an embedded
+    ``"`` appears raw), so the text group must run to the last quote on the line."""
+    if match is None:
+        return ""
+    if match.group("hex"):
+        try:
+            return bytes.fromhex(match.group("hex")).decode("utf-8")
+        except ValueError:
+            return ""
+    return match.group("text") or ""
+
+
+def _find_claude_code_keychain_item() -> Optional[tuple[str, Dict[str, Any]]]:
+    """``(account, payload)`` of the ``Claude Code-credentials`` login Keychain item, or None.
+
+    One ``find-generic-password -g`` call: attributes on stdout, ``password: …`` on stderr. The
+    account matters because ``add-generic-password -U`` matches on account AND service — writing
+    under another account would create a second item instead of updating the one Claude Code reads.
+    """
     if platform.system() != "Darwin":
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    account = _decode_keychain_attr(re.search(r'^\s*"acct"<blob>=' + _KEYCHAIN_ATTR + r"\s*$", result.stdout, re.M))
+    raw = _decode_keychain_attr(re.search(r"^password: " + _KEYCHAIN_ATTR + r"\s*$", result.stderr, re.M))
+    if not account or not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return (account, payload) if isinstance(payload, dict) else None
+
+
+def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
+    """Raw ``{"claudeAiOauth": {...}, ...}`` payload from the macOS Keychain, or None.
+
+    Returns the full entry (not the normalised credential record) so a refresh
+    write can merge the rotated token triple over the existing metadata
+    (``subscriptionType`` / ``rateLimitTier`` / ``scopes``) instead of clobbering it.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
         return None
     if result.returncode != 0:
-        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        logger.debug("Keychain: no entry found for %r", _CLAUDE_CODE_KEYCHAIN_SERVICE)
         return None
     raw = result.stdout.strip()
+    if not raw:
+        return None
     try:
-        return _claude_oauth_record(json.loads(raw), "macos_keychain") if raw else None
+        payload = json.loads(raw)
     except json.JSONDecodeError:
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[list[str], str]:
+    """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``.
+
+    The command line goes to ``security -i`` on stdin, with the secret hex-encoded (``-X``):
+    a bare ``-w`` prompts twice on /dev/tty when a terminal exists (hangs the CLI) and, with
+    no terminal, reads only the first line and stores an EMPTY password when the confirmation
+    read hits EOF — either way the live token must never sit on argv.
+    """
+    def quoted(value: str) -> str:  # the ``security -i`` tokenizer: double quotes, backslash escapes
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8").hex()
+    line = f"add-generic-password -U -a {quoted(account)} -s {quoted(_CLAUDE_CODE_KEYCHAIN_SERVICE)} -X {encoded}\n"
+    return ["security", "-i"], line
+
+
+def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+    """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
+    payload = _read_claude_code_keychain_payload()
+    return _claude_oauth_record(payload, "macos_keychain") if payload else None
 
 
 def claude_code_credentials_path() -> Path:
@@ -401,7 +482,10 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             # The POST spent ``refresh_token``; this write is the commit step. On failure, fail closed and
             # mark the pre-rotation pair as spent.
             try:
-                _write_claude_code_credentials(refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"])
+                _write_claude_code_credentials(
+                    refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"],
+                    spent_refresh_token=refresh_token,
+                )
             except Exception as e:
                 logger.error(
                     "Anthropic OAuth refresh rotated the single-use token but could not "
@@ -423,7 +507,8 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
 
 def _write_claude_code_credentials(
-    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None
+    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None,
+    spent_refresh_token: str = "",
 ) -> None:
     """Commit refreshed credentials to ~/.claude/.credentials.json; ``CredentialPersistError`` on any failure (a
     corrupt existing file included). *scopes* (or the previously stored scopes) are persisted because Claude Code
@@ -441,6 +526,57 @@ def _write_claude_code_credentials(
         oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
     existing["claudeAiOauth"] = oauth_data
     _commit_private_json(cred_path, existing, "credentials")
+    _mirror_claude_code_credentials_to_keychain(
+        access_token, refresh_token, expires_at_ms, spent_refresh_token=spent_refresh_token)
+
+
+def _merge_keychain_credential_payload(
+    existing_payload: Dict[str, Any], access_token: str, refresh_token: str, expires_at_ms: int
+) -> Dict[str, Any]:
+    """Rotate the ``claudeAiOauth`` token triple over the existing Keychain payload,
+    preserving its metadata (``subscriptionType`` / ``rateLimitTier`` / ``scopes``).
+
+    Pure and host-agnostic so the merge semantics are unit-testable without a Keychain.
+    """
+    merged = dict(existing_payload)
+    oauth = dict(existing_payload.get("claudeAiOauth") or {})
+    oauth.update({"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms})
+    merged["claudeAiOauth"] = oauth
+    return merged
+
+
+def _mirror_claude_code_credentials_to_keychain(
+    access_token: str, refresh_token: str, expires_at_ms: int, *, spent_refresh_token: str
+) -> None:
+    """After a Hermes refresh, write the rotated pair into the Claude Code Keychain item too (#98334).
+
+    Claude Code on macOS reads the login Keychain first. Refresh tokens are single-use, so a refresh
+    that only updates the file leaves the Keychain holding a spent token and Claude Code logs itself
+    out. Only the item that held the pair we just spent is updated — a different pair there means a
+    different login (``CLAUDE_CONFIG_DIR``) or a rotation Claude Code already made, and clobbering it
+    would be the bug in the other direction. Best-effort: never raises, never creates an item.
+    """
+    if platform.system() != "Darwin":
+        return
+    try:
+        item = _find_claude_code_keychain_item()
+        if item is None:
+            return
+        account, existing = item
+        oauth = existing.get("claudeAiOauth")
+        if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
+            logger.debug("Keychain mirror skipped: item does not hold the pair that was just rotated")
+            return
+        argv, line = _keychain_mirror_command(
+            account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
+        result = subprocess.run(
+            argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
+        logger.debug("Keychain mirror skipped (%s)", e)
+        return
+    if result.returncode != 0:
+        logger.debug("Keychain mirror failed (rc=%s): %s", result.returncode, (result.stderr or "").strip()[:200])
 
 
 # ── Resolution ──

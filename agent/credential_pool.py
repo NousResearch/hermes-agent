@@ -1372,7 +1372,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             from agent import anthropic_credentials as ac
             args = (refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"])
             if entry.source == "claude_code":
-                ac._write_claude_code_credentials(*args)
+                ac._write_claude_code_credentials(*args, spent_refresh_token=entry.refresh_token or "")
             else:
                 ac._write_hermes_oauth_credentials(*args)
         except Exception as wexc:

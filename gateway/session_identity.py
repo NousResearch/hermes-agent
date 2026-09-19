@@ -1,0 +1,183 @@
+"""One frozen routing identity per inbound gateway event.
+
+A multiplexed gateway answers three questions about every event, and until now answered them in
+three places that only agreed because they read the same fallback chain: WHICH bot received it
+(``_transport_owner``), WHO may admit it (``_authorization_home_for_source``) and WHERE the turn
+runs (``_resolve_profile_home_for_source`` / ``_session_key_profile``). :func:`resolve_identity`
+answers all three once and pins the result on the source as a wire-invisible dynamic attribute
+(like ``_transport_adapter_ref``); the existing helpers read it when present and keep their
+fallback chain when absent, so a source built outside the runner still resolves as before.
+
+``SessionSource.profile`` stays the serialized runtime profile — ``None`` on the wire means the
+receiving bot's own profile — so nothing here changes the wire format or any historical
+``agent:main`` key.
+"""
+from __future__ import annotations
+
+import dataclasses
+import weakref
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from gateway.session import SessionSource
+
+_IDENTITY_ATTR = "_identity"
+# Wire-invisible provenance copied alongside the identity when a source is duplicated.
+_PROVENANCE_ATTRS = ("_transport_adapter_ref", "_authorization_profile_home", _IDENTITY_ATTR)
+
+
+class IdentityUnresolved(RuntimeError):
+    """Under multiplexing the event's runtime profile could not be established (an explicit
+    ``profile_routes`` entry targets a profile this gateway does not serve). Callers drop the
+    event; it must never fall through to the default profile."""
+
+
+@dataclass(frozen=True)
+class RoutingIdentity:
+    """Everything a turn needs to know about who it is, resolved once at ingress.
+
+    ``transport_profile`` owns the receiving adapter (its credential and allowlist);
+    ``runtime_profile`` is the profile that executes the turn — the same name unless a
+    ``profile_routes`` entry re-homed the event. Both are explicit (``"default"`` is spelled out);
+    ``None`` never means default here. ``multiplexed`` is False for a standalone gateway, whose
+    keys stay in the legacy ``agent:main`` namespace whatever profile it was launched with.
+    """
+
+    transport_profile: str
+    runtime_profile: str
+    authorization_home: Path
+    runtime_home: Path
+    multiplexed: bool = True
+    # Receiving adapter; None for restored/synthetic sources (no live provenance → fail closed).
+    # Provenance, not identity: two events from the same bot share one identity.
+    transport: Optional[weakref.ref] = field(default=None, compare=False, hash=False)
+
+    @property
+    def namespace(self) -> str:
+        """``agent:<ns>`` prefix for this identity's session keys — byte-identical to
+        :func:`gateway.session._session_key_namespace` for every historical key."""
+        from gateway.session import _session_key_namespace
+        return _session_key_namespace(self.session_key_profile)
+
+    @property
+    def store_path(self) -> Path:
+        return self.runtime_home / "state.db"
+
+    @property
+    def session_key_profile(self) -> Optional[str]:
+        """The ``profile=`` argument :func:`gateway.session.build_session_key` expects for this
+        identity: the runtime profile under multiplexing, else ``None`` (legacy namespace)."""
+        return self.runtime_profile if self.multiplexed else None
+
+    def adapter(self) -> Any:
+        """The live receiving adapter, or None when it is gone or was never known."""
+        return self.transport() if self.transport is not None else None
+
+
+def identity_of(source: Any) -> Optional[RoutingIdentity]:
+    """The identity pinned on *source* by :func:`resolve_identity`, if any."""
+    identity = getattr(source, _IDENTITY_ATTR, None)
+    return identity if isinstance(identity, RoutingIdentity) else None
+
+
+def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
+    """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
+    authorization home, identity). A plain ``replace`` silently produces a source the runner
+    can only route through heuristics."""
+    copied = dataclasses.replace(source, **changes)
+    for name in _PROVENANCE_ATTRS:
+        value = getattr(source, name, None)
+        if value is not None:
+            setattr(copied, name, value)
+    return copied
+
+
+def _name(value: Any) -> Optional[str]:
+    text = value.strip() if isinstance(value, str) else ""
+    return text or None
+
+
+def resolve_identity(
+    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
+) -> RoutingIdentity:
+    """Resolve and pin the :class:`RoutingIdentity` of an inbound *source*.
+
+    *adapter* is the receiving adapter when the caller holds it; otherwise the source's own
+    transport provenance is consulted. *transport_profile* names the receiving bot's owning
+    profile when the caller knows it by construction (the runner's per-profile handlers);
+    ``None`` = derive it from the adapter registry, primary when unknown. *primary_home* is the
+    primary bot's home for authorization (default: the process home, never a per-turn override).
+
+    Stamps ``source.profile`` the way the ingress handlers always did (routed name, else a
+    secondary's own name; ``None`` stays ``None`` for the primary so the wire is unchanged) and
+    ``_authorization_profile_home`` for the existing authorization readers.
+
+    Raises :class:`IdentityUnresolved` under multiplexing when the route is rejected.
+    """
+    from gateway.profile_routing import ProfileRouteRejected
+    from hermes_constants import get_hermes_home, get_process_hermes_home
+
+    multiplexed = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+    primary_profile = _name(getattr(runner, "_primary_profile_name", None))
+    if primary_profile is None:
+        active = getattr(runner, "_active_profile_name", None)
+        primary_profile = (_name(active()) if callable(active) else None) or "default"
+    platform = getattr(source, "platform", None)
+
+    owner_profile: Optional[str] = None
+    if adapter is None:
+        owner = runner._transport_owner(source)
+        if owner is not None:
+            adapter, owner_profile = owner
+    else:
+        if getattr(source, "_transport_adapter_ref", None) is None:
+            source._transport_adapter_ref = weakref.ref(adapter)
+        _registered, owner_profile = runner._owning_profile(adapter, platform)
+    transport_name = _name(transport_profile) or _name(owner_profile) or primary_profile
+    transport_ref = weakref.ref(adapter) if adapter is not None else None
+
+    if not multiplexed:
+        home = Path(get_hermes_home())
+        identity = RoutingIdentity(
+            transport_profile=primary_profile, runtime_profile=primary_profile,
+            authorization_home=home, runtime_home=home, multiplexed=False, transport=transport_ref)
+        setattr(source, _IDENTITY_ATTR, identity)
+        return identity
+
+    if transport_name == primary_profile:
+        authorization_home = Path(primary_home) if primary_home is not None else Path(get_process_hermes_home())
+    else:
+        from hermes_cli.profiles import get_profile_dir
+        authorization_home = get_profile_dir(transport_name)
+    source._authorization_profile_home = authorization_home
+
+    where = f"{getattr(platform, 'value', platform)}/{getattr(source, 'chat_id', '')}"
+    if getattr(source, "profile_route_rejected", False) is True:
+        raise IdentityUnresolved(f"{where}: profile route rejected")
+    if _name(getattr(source, "profile", None)) is None:
+        adapter_profile = None if transport_name == primary_profile else transport_name
+        try:
+            # The primary keeps the historical one-argument call (its adapter profile is None).
+            routed = (
+                runner._profile_name_for_source(source) if adapter_profile is None
+                else runner._profile_name_for_source(source, adapter_profile=adapter_profile))
+        except ProfileRouteRejected as exc:
+            source.profile_route_rejected = True
+            raise IdentityUnresolved(f"{where}: {exc}") from exc
+        source.profile = routed or adapter_profile
+
+    runtime_name = _name(source.profile) or primary_profile
+    # A routed runtime goes through the runner's resolver (missing-profile fallback + warning);
+    # a bot serving its own profile runs where it authorizes.
+    runtime_home = (
+        authorization_home if runtime_name == transport_name
+        else Path(runner._resolve_profile_home_for_source(source)))
+    identity = RoutingIdentity(
+        transport_profile=transport_name, runtime_profile=runtime_name,
+        authorization_home=authorization_home, runtime_home=runtime_home,
+        multiplexed=True, transport=transport_ref)
+    setattr(source, _IDENTITY_ATTR, identity)
+    return identity

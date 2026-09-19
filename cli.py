@@ -185,7 +185,7 @@ _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "f
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning blocks (closed, unterminated, orphan-close) and leaked tool-call XML from display text.
 
-    Keep in sync with ``run_agent._strip_think_blocks`` and the stream consumer's think-tag sets.
+    Keep in sync with ``agent.agent_runtime_helpers.strip_think_blocks`` and the stream consumer's think-tag sets.
 
     Also strips tool-call XML blocks some open models leak into visible content (``<tool_call>``,
     ``<function_calls>``, Gemma-style ``<function name="…">…</function>``). Ported from
@@ -197,20 +197,23 @@ def _strip_reasoning_tags(text: str) -> str:
         cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(rf"</{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
     for tc_tag in _TOOL_CALL_TAGS:
-        cleaned = re.sub(rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(
+            rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",
+            "", cleaned, flags=re.DOTALL | re.IGNORECASE,
+        )
     # <function name="..."> — boundary + attribute gated to avoid prose false positives.
     cleaned = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
     cleaned = re.sub(
-        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*', '', cleaned,
+        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
         flags=re.IGNORECASE,
     )
     # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
     # mid tool-call serialization (#101899); strip to end of text.
     cleaned = re.sub(
-        r'(?:^|\n)[ \t]*<(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
+        r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
         r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
         '',
         cleaned,

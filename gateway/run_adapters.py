@@ -1348,12 +1348,18 @@ class GatewayAdapterLifecycleMixin:
         """``scope_factory(profile_home)`` or a nullcontext when the profile home is unknown."""
         return scope_factory(profile_home) if profile_home is not None else contextlib.nullcontext()
 
-    @staticmethod
-    def _stamp_event_profile(event, profile_name: str) -> None:
-        """Best-effort: stamp ``source.profile`` on an inbound event that has none yet."""
+    def _stamp_event_profile(self, event, profile_name: str) -> None:
+        """Best-effort: pin the secondary's identity on an inbound event (stamps ``source.profile``
+        when none yet). A source that cannot resolve keeps today's fallback readers."""
+        source = getattr(event, "source", None)
+        if source is None:
+            return
         with suppress(Exception):
-            if getattr(event, "source", None) is not None and not event.source.profile:
-                event.source.profile = profile_name
+            from gateway.session_identity import resolve_identity
+            resolve_identity(source, runner=self, transport_profile=profile_name)
+        with suppress(Exception):
+            if not source.profile:
+                source.profile = profile_name
 
     def _make_profile_message_handler(self, profile_name: str):
         """Message handler that stamps source.profile, then delegates under the profile scope
@@ -1415,29 +1421,24 @@ class GatewayAdapterLifecycleMixin:
         return _handler
 
     def _admit_primary_source(self, source, default_home: Path) -> Optional[Path]:
-        """Stamp the transport home (authorization) and routed profile on a primary-adapter source and
-        return the runtime home to scope the turn under; ``None`` when the route targets an unserved
-        profile. ``_authorization_profile_home`` is in-process only (serialization ignores dynamic attrs);
-        route ≠ admitting bot."""
-        source._authorization_profile_home = default_home
-        if (
-            not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-            and not self._stamp_routed_profile(source)
-        ):
-            source.profile_route_rejected = True
-        if getattr(source, "profile_route_rejected", False) is True:
+        """Resolve the primary-adapter source's identity (transport home for authorization, routed
+        profile for the runtime) and return the runtime home to scope the turn under; ``None`` when
+        the route targets an unserved profile. Route ≠ admitting bot."""
+        from gateway.session_identity import IdentityUnresolved, resolve_identity
+        try:
+            return resolve_identity(source, runner=self, primary_home=default_home).runtime_home
+        except IdentityUnresolved:
             return None
-        return (
-            self._resolve_profile_home_for_source(source)
-            if getattr(source, "profile", None) else default_home
-        )
 
-    def _stamp_routed_profile(self, source) -> bool:
-        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
+    def _stamp_routed_profile(self, source, adapter_profile: Optional[str] = None) -> bool:
+        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected.
+
+        ``adapter_profile`` owns the receiving bot: routes are scoped to it and it is the
+        fallback when none matches, so re-stamping a source never crosses a bot boundary.
+        """
         from gateway.profile_routing import ProfileRouteRejected
         try:
-            source.profile = self._profile_name_for_source(source)
+            source.profile = self._profile_name_for_source(source, adapter_profile=adapter_profile) or adapter_profile
         except ProfileRouteRejected:
             return False
         return True

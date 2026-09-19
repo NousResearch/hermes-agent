@@ -2307,9 +2307,13 @@ class BasePlatformAdapter(ABC):
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
-        ``agent:main:`` lane. Order: ``source.profile`` → ``_owner_profile`` → session-store
-        resolver; getattr-guarded (object.__new__ in tests), type-checked (no MagicMock in the
-        key)."""
+        ``agent:main:`` lane. Order: pinned ``RoutingIdentity`` → ``source.profile`` →
+        ``_owner_profile`` → session-store resolver; getattr-guarded (object.__new__ in tests),
+        type-checked (no MagicMock in the key)."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.session_key_profile
         for candidate in (
             getattr(source, "profile", None) if source is not None else None,
             getattr(self, "_owner_profile", None)):
@@ -4465,7 +4469,8 @@ class BasePlatformAdapter(ABC):
             return str(value) if value else None
         fields = dict(
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
-            user_id=_opt(user_id), user_name=user_name, thread_id=_opt(thread_id),
+            user_id=None if user_id is None or user_id == "" else str(user_id),
+            user_name=user_name, thread_id=_opt(thread_id),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),

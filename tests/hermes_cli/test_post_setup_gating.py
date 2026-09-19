@@ -57,3 +57,32 @@ class TestPostSetupGate:
         monkeypatch.setitem(tools_config._POST_SETUP_INSTALLED, "cua_driver", _boom)
         assert tools_config._post_setup_already_installed("cua_driver") is True
 
+
+class TestBrowserBackendPrompt:
+    """Regression: `_toolset_needs_configuration_prompt` for the browser toolset
+    only checked `browser.cloud_provider` (set by `browser_provider` rows),
+    ignoring `browser.backend` (set by the `browser_backend` "Browser Use" row).
+    This made the provider picker re-appear every time `hermes tools` was
+    opened, even when Browser Use was already configured.
+    """
+
+    def test_browser_backend_set_skips_provider_picker(self, monkeypatch, tmp_path):
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = {"browser": {"backend": "browser-use"}}
+        assert tools_config._toolset_needs_configuration_prompt("browser", config) is False
+
+    def test_browser_cloud_provider_set_skips_provider_picker(self, monkeypatch, tmp_path):
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = {"browser": {"cloud_provider": "local"}}
+        assert tools_config._toolset_needs_configuration_prompt("browser", config) is False
+
+    def test_browser_unconfigured_still_prompts(self, monkeypatch, tmp_path):
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert tools_config._toolset_needs_configuration_prompt("browser", {}) is True
+

@@ -73,6 +73,7 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # channel topic/description (Discord, Slack)
+    chat_header: Optional[str] = None  # channel header (Mattermost banner text)
     user_id_alt: Optional[str] = None  # platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # message author is a bot/webhook (Discord)
@@ -123,7 +124,7 @@ class SessionSource:
     # Wire layout (order matters for byte-stable JSON): always-present, then truthy-only
     # optionals around the dual-written scope pair.
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
-    _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
+    _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt", "chat_header")
     _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
     _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 
@@ -394,6 +395,9 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
 
     if src.chat_topic:
         lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")
+
+    if src.chat_header:
+        lines.append(f"**Channel Header:** {_format_untrusted_prompt_value(src.chat_header)}")
 
     if src.platform == Platform.MATRIX:
         lines += [

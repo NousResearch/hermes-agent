@@ -40,6 +40,10 @@ MAX_POST_LENGTH = 4000
 # Channel type codes returned by the Mattermost API ("P" private → treat as group).
 _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
 
+# Channel metadata (display name, purpose, header) is quasi-static: cache it for a few
+# minutes instead of a GET /channels/{id} per inbound message. Edits propagate on expiry.
+_CHANNEL_INFO_TTL_SECONDS = 300.0
+
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
 _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2  # exponential backoff
@@ -122,6 +126,8 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        # channel_id -> (monotonic fetch time, channel metadata dict); TTL'd by _get_channel_info_cached.
+        self._channel_info_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
     # --- HTTP helpers ---
 
@@ -281,8 +287,25 @@ class MattermostAdapter(BasePlatformAdapter):
                 break
         return result
 
+    async def _get_channel_info_cached(self, channel_id: str) -> Dict[str, Any]:
+        """Fetch ``GET /channels/{id}`` metadata with a TTL'd in-memory cache.
+
+        The WS ``posted`` event carries only ``channel_id``; purpose/header/display_name
+        need the channel payload, but a per-message fetch is wasteful for quasi-static
+        data. Failures are NOT cached (a transient fetch error must not pin topic/header
+        off for the full TTL).
+        """
+        now = asyncio.get_running_loop().time()
+        cached = self._channel_info_cache.get(channel_id)
+        if cached is not None and now - cached[0] < _CHANNEL_INFO_TTL_SECONDS:
+            return cached[1]
+        data = await self._api_get(f"channels/{channel_id}")
+        if data:
+            self._channel_info_cache[channel_id] = (now, data)
+        return data
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        data = await self._api_get(f"channels/{chat_id}")
+        data = await self._get_channel_info_cached(chat_id)
         if not data:
             return {"name": chat_id, "type": "channel"}
         return {"name": data.get("display_name") or data.get("name") or chat_id,
@@ -579,10 +602,23 @@ class MattermostAdapter(BasePlatformAdapter):
                             MessageType.DOCUMENT)
         else:
             msg_type = MessageType.TEXT
+        # Channel purpose/header feed the session context's Channel Topic/Header labels.
+        # DMs have neither; channels read through the TTL cache (no per-message fetch).
+        # A metadata failure must never block message delivery — degrade to no labels.
+        chat_topic = chat_header = None
+        if not is_dm:
+            try:
+                channel_info = await self._get_channel_info_cached(channel_id)
+            except Exception as exc:
+                logger.warning("Mattermost: channel metadata fetch failed for %s: %s", channel_id, exc)
+                channel_info = {}
+            if channel_info:
+                chat_topic = channel_info.get("purpose") or None
+                chat_header = channel_info.get("header") or None
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id)
+            thread_id=thread_id, chat_topic=chat_topic, chat_header=chat_header, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,

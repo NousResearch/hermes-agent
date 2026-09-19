@@ -21,6 +21,7 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -28,9 +29,11 @@ class FakeTerminal {
     registerOscHandler: vi.fn(),
   };
   unicode = { activeVersion: "" };
+  paste = vi.fn();
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -74,8 +77,6 @@ class FakeTerminal {
   scrollToBottom() {}
 
   open() {}
-
-  paste() {}
 
   refresh() {}
 
@@ -202,6 +203,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
   FakeWebSocket.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -666,5 +668,86 @@ describe("ChatPage PTY ticket connect deadline", () => {
     // force-close a wedged handshake — the two must not both fire.
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+function dispatchHostPaste(clipboardData: {
+  files: File[];
+  items: unknown[];
+  getData: (type: string) => string;
+}) {
+  const host = container.querySelector(".hermes-chat-xterm-host");
+  expect(host).not.toBeNull();
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: clipboardData });
+  host!.dispatchEvent(event);
+  return event;
+}
+
+describe("ChatPage Safari DOM paste", () => {
+  it("pastes clipboardData text/plain into xterm and preventDefaults", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const term = FakeTerminal.instances[0];
+
+    const event = dispatchHostPaste({
+      files: [],
+      items: [],
+      getData: (type) => (type === "text/plain" ? "Safari text" : ""),
+    });
+
+    expect(term.paste).toHaveBeenCalledWith("Safari text");
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("fails open when text/plain is empty and no image files are present", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const term = FakeTerminal.instances[0];
+
+    const event = dispatchHostPaste({
+      files: [],
+      items: [],
+      getData: () => "",
+    });
+
+    expect(term.paste).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("does not paste text when image files are present", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const term = FakeTerminal.instances[0];
+
+    const event = dispatchHostPaste({
+      files: [new File(["png"], "clip.png", { type: "image/png" })],
+      items: [],
+      getData: (type) => (type === "text/plain" ? "should not paste" : ""),
+    });
+
+    expect(term.paste).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
   });
 });

@@ -1323,8 +1323,15 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
     # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
+    # Every other api_mode's builder consumes the one-shot truncation-retry boost
+    # (_ephemeral_max_output_tokens, set by turn_truncation.py's _retry_truncated_tool_call /
+    # continuation escalation) before falling back to agent.max_tokens; this one didn't, so a
+    # Bedrock truncation retry re-sent the SAME max_tokens four times and always re-truncated
+    # identically instead of escalating (#110480).
+    ephemeral_out = _consume_ephemeral_max_output(agent)
     return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
-        max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
+        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
+        region=getattr(agent, "_bedrock_region", None) or "us-east-1",
         guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
 
 

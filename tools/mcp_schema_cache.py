@@ -34,6 +34,17 @@ def config_fingerprint(config: dict) -> str:
         "transport": config.get("transport"),
         "tools_include": sorted(tools_filter.get("include") or []),
         "tools_exclude": sorted(tools_filter.get("exclude") or [])}
+    # Bind the cache to the validated allowed_tools policy (#106983):
+    # whitelist → sorted names; empty list → []; present-but-invalid → null
+    # (refuse-all, distinct from an absent key so a pre-filter all-tools
+    # manifest cannot be reused). Absent key is omitted (compat with pre-key configs).
+    allowed = config.get("allowed_tools")
+    if isinstance(allowed, str):
+        payload["allowed_tools"] = [allowed]
+    elif isinstance(allowed, (list, tuple, set)):
+        payload["allowed_tools"] = sorted(str(item) for item in allowed)
+    elif "allowed_tools" in config:
+        payload["allowed_tools"] = None
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 

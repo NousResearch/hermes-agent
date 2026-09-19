@@ -320,10 +320,35 @@ export function parseOscColor(data: string): string | undefined {
 // terminal.
 const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
 
+// Linux terminals that name themselves in TERM and handle
+// modifyOtherKeys/kitty correctly. Matched as substrings because these ship
+// several TERM variants (foot/foot-extra, xterm-kitty, xterm-ghostty).
+// A bare TERM=xterm* is deliberately NOT here: it is the generic default a
+// terminal falls back to, including over SSH, and says nothing about
+// modifyOtherKeys support. VTE terminals are covered by vteVersion below.
+const EXTENDED_KEYS_SUBSTRINGS = ['alacritty', 'foot', 'ghostty', 'kitty']
+
 /** True if this terminal correctly handles extended key reporting
- *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
-export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+ *  (Kitty keyboard protocol + xterm modifyOtherKeys).
+ *  Accepts an optional terminal name and VTE version for testability; both
+ *  default to the module-level values detected at startup. */
+export function supportsExtendedKeys(
+  terminal: string | null = env.terminal,
+  vteVersion: string | null = env.vteVersion
+): boolean {
+  const term = terminal ?? ''
+  if (EXTENDED_KEYS_TERMINALS.includes(term)) {
+    return true
+  }
+  if (EXTENDED_KEYS_SUBSTRINGS.some(s => term.includes(s))) {
+    return true
+  }
+  // GNOME Terminal and other VTE terminals report TERM=xterm-256color, so
+  // VTE_VERSION is the only thing that identifies them.
+  if (vteVersion) {
+    return true
+  }
+  return false
 }
 
 /** True when the Kitty keyboard protocol push (CSI >1u) must be skipped for

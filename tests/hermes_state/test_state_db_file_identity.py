@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,11 +34,38 @@ def _require_identity(db: SessionDB) -> None:
         pytest.skip("filesystem does not expose st_dev/st_ino for identity checks")
 
 
+def _require_live_file_replace() -> None:
+    """Skip when the OS cannot replace a file under a live open handle.
+
+    Windows SQLite handles are opened without ``FILE_SHARE_DELETE``, so
+    ``os.replace(other, live)`` while a SessionDB still holds ``live``
+    open fails with ``PermissionError`` (WinError 5) — the swap the test
+    is built on never happens, and the failure surfaces as an unrelated
+    OS error instead of the identity guard's loud refusal.
+
+    The swap is the test's *premise*, not its subject; the subject is
+    the store's refusal to keep writing after a successful out-of-band
+    replacement. Where the premise is unperformable the test is skipped,
+    the same way ``_require_identity`` skips filesystems without
+    st_dev/st_ino. Tests that close the live handle before the swap
+    (``test_new_sessiondb_on_replaced_path_records_new_identity``,
+    ``test_identity_probe_still_detects_replacement_after_fd_cache``)
+    stay on every platform.
+    """
+    if sys.platform == "win32":
+        pytest.skip(
+            "Windows cannot os.replace() over a live open SQLite handle "
+            "(WinError 5): the out-of-band inode-swap premise is "
+            "unperformable on this platform"
+        )
+
+
 def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"
     db = _make_db(live, "live-sess", "original")
     _require_identity(db)
+    _require_live_file_replace()
     alt = _make_db(other, "other-sess", "replacement")
     alt.close()
 
@@ -61,6 +89,7 @@ def test_second_write_after_halt_does_not_attempt_repair(tmp_path):
     other = tmp_path / "other.db"
     db = _make_db(live, "s", "a")
     _require_identity(db)
+    _require_live_file_replace()
     alt = _make_db(other, "t", "b")
     alt.close()
     os.replace(other, live)
@@ -133,6 +162,7 @@ def test_fts_scoped_error_on_replaced_file_skips_fts_fail_open(tmp_path):
     other = tmp_path / "other.db"
     db = _make_db(live, "s", "a")
     _require_identity(db)
+    _require_live_file_replace()
     alt = _make_db(other, "t", "b")
     alt.close()
     os.replace(other, live)

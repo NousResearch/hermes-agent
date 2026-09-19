@@ -174,6 +174,32 @@ def _is_gateway_approval_context() -> bool:
     return env_var_enabled("HERMES_GATEWAY_SESSION") or bool(_get_session_platform())
 
 
+def _is_api_run_approval_context() -> bool:
+    """True for a live ``/v1/runs`` run: an api_server session that is neither cron nor a ``-q`` worker.
+
+    The dangerous-command gate treats api_server as unattended (no ``send_exec_approval``, no ``/approve``
+    replies), but a run registers a gateway notify callback and answers through its own lifecycle —
+    ``approval.request`` → ``POST /v1/runs/{run_id}/approval`` (``gateway/platforms/api_server_runs.py``) —
+    so a per-call consent can reach the client. A run whose callback is missing still fails closed at the
+    notify lookup in :func:`tools.approval_prompt.request_elicitation_consent`.
+    """
+    return (_get_session_platform() == "api_server"
+            and not _is_cron_approval_context() and not _is_single_query_approval_context())
+
+
+def _has_approval_channel() -> bool:
+    """True when a prompt raised in this session can reach a human.
+
+    Cron, ``-q`` (single-query) workers — the Kanban dispatcher spawns those as
+    ``hermes -p <profile> --cli chat -q`` subprocesses — and unattended programmatic platforms hold nobody
+    who could answer: a prompt rendered there reads EOF, which reads back as a refusal the user never gave.
+    Mirrors the ``can_prompt_here()`` policy in ``agent/vault_backends/unlock.py``. A live ``/v1/runs`` run
+    is the one api_server exception (:func:`_is_api_run_approval_context`).
+    """
+    return not (_is_cron_approval_context() or _is_single_query_approval_context()
+                or (_is_unattended_platform_approval_context() and not _is_api_run_approval_context()))
+
+
 def _resolve_cli_approval_callback(approval_callback=None):
     """Explicit callback, else the per-thread one from ``terminal_tool.set_approval_callback``."""
     if approval_callback is not None:

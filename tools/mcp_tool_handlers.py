@@ -74,8 +74,22 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
                           f"system was unavailable (fail-closed).")
     if answer == "accept":
         return None
-    logger.info("MCP trust gate: user %s '%s' on untrusted server '%s'",
-                "cancelled" if answer == "cancel" else "denied", tool_name, server_name)
+    if answer == "cancel":
+        # Nobody answered: either this session has no approval channel at all (cron, a ``-q`` worker such as a
+        # Kanban dispatcher subprocess, an unattended platform — nobody is even asked), or a promptable session
+        # never answered it (timeout / withdrawn, #22992). Never report a refusal the user did not give.
+        from tools.approval_context import _has_approval_channel
+        why = ("this session has no approval channel, so nobody could be asked (cron jobs, single-query/-q "
+               "workers such as Kanban dispatcher runs, and unattended platform sessions are never prompted)"
+               ) if not _has_approval_channel() else "the approval prompt was not answered"
+        logger.info("MCP trust gate: '%s' on untrusted server '%s' not approved — %s", tool_name, server_name, why)
+        return tool_error(f"The MCP trust gate did not run write-capable tool '{tool_name}' on untrusted server "
+                          f"'{server_name}': {why}. Nothing was run and nothing was silently allowed. To approve "
+                          f"it, re-issue the call on a surface where a human can answer — an interactive session, "
+                          f"the dashboard/TUI, or POST /v1/runs and answer the approval.request event via POST "
+                          f"/v1/runs/{{run_id}}/approval — or set mcp_servers.{server_name}.trust: full if that "
+                          f"server's writes are trusted. Do not retry this call from here.")
+    logger.info("MCP trust gate: user denied '%s' on untrusted server '%s'", tool_name, server_name)
     return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
                       f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 

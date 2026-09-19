@@ -258,7 +258,8 @@ class TestTrustGateApprovalRouting:
         if single_query:
             monkeypatch.setattr(approval_prompt._ctx, "_is_single_query_approval_context", lambda: True)
         try:
-            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "decline"
+            # "cancel": nobody was asked (no approval channel), which is NOT the same as a user refusal.
+            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "cancel"
         finally:
             approval.unregister_gateway_notify(session_key)
             reset_current_session_key(key_token)
@@ -266,6 +267,87 @@ class TestTrustGateApprovalRouting:
 
         assert notified == []
         assert gateway_waits == []
+
+
+class TestApprovalChannelHonesty:
+    """A surface that cannot ask a human fails closed *and says so*: no refusal is attributed to a user who
+    was never prompted, and no interactive prompt is rendered where nobody can read it (#111526)."""
+
+    def _untrusted_write_handler(self, tool: str = "send_test_notice"):
+        _set_trust("srv", "untrusted")
+        return _mcp_handlers._make_tool_handler("srv", tool, 30.0)
+
+    def test_single_query_worker_denies_without_prompting_and_explains_why(self, fake_session, monkeypatch):
+        """A dispatcher-spawned ``-q`` worker (Kanban) is never prompted: fail closed, with why + what to do."""
+        from tools import approval_context, approval_prompt
+
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")  # cli.py sets this for -q runs
+        assert approval_context._is_single_query_approval_context() is True
+        prompted = []
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval",
+                            lambda *args, **kwargs: prompted.append(args) or "deny")
+
+        raw = json.loads(self._untrusted_write_handler()({"recipient": "x", "text": "y"}))
+
+        assert prompted == []  # no DANGEROUS COMMAND banner into a worker log nobody watches
+        assert "error" in raw
+        fake_session.call_tool.assert_not_awaited()  # still fail-closed
+        err = raw["error"]
+        assert "no approval channel" in err
+        assert "trust: full" in err  # actionable: how to allow it on purpose
+        assert "did not approve" not in err  # never a refusal the user did not give
+
+    def test_gateway_session_without_a_callback_is_unresolved_not_a_refusal(self, monkeypatch):
+        """A gateway session whose notify callback is gone fails closed as unresolved (§ cancelled ≠ denied)."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval, approval_prompt
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        session_key = "tui-mcp-trust-no-callback"
+        assert approval._gateway_notify_cb(session_key) is None
+        session_tokens = set_session_vars(platform="tui", session_key=session_key, async_delivery=False)
+        key_token = set_current_session_key(session_key)
+        try:
+            assert approval_prompt.request_elicitation_consent(
+                "MCP tool 'write' on UNTRUSTED server 'srv' wants to run.", "Approve once or deny."
+            ) == "cancel"
+        finally:
+            reset_current_session_key(key_token)
+            clear_session_vars(session_tokens)
+
+    def test_api_run_callback_runs_the_gated_tool_end_to_end(self, fake_session, monkeypatch):
+        """A live /v1/runs run answers the trust gate through its approval callback; the tool then runs."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval, approval_prompt
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        session_key = "api-run-trust-gate-e2e"
+        seen = []
+
+        def notify(approval_data):
+            seen.append(dict(approval_data))
+            assert approval.resolve_gateway_approval(
+                session_key, "once", request_id=approval_data["request_id"]
+            ) == 1
+
+        # The API run must route through its own callback, never through a CLI prompt (no TTY there).
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval",
+                            lambda *args, **kwargs: pytest.fail("API run fell back to the CLI prompt"))
+        session_tokens = set_session_vars(
+            platform="api_server", session_key=session_key, async_delivery=False
+        )
+        key_token = set_current_session_key(session_key)
+        approval.register_gateway_notify(session_key, notify)
+        try:
+            raw = json.loads(self._untrusted_write_handler()({"recipient": "x", "text": "y"}))
+        finally:
+            approval.unregister_gateway_notify(session_key)
+            reset_current_session_key(key_token)
+            clear_session_vars(session_tokens)
+
+        assert raw == {"result": "ok"}
+        fake_session.call_tool.assert_awaited_once()
+        assert [event["pattern_key"] for event in seen] == ["mcp_elicitation"]
 
 
 class TestTrustNormalization:

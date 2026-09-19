@@ -287,8 +287,10 @@ def request_elicitation_consent(message: str, description: str, *,
     """Route an MCP elicitation request to the surface owning the active session:
     gateway sessions through ``_await_gateway_decision``, CLI/TUI through
     ``prompt_dangerous_approval``. Always fails closed: a missing notify_cb in a
-    gateway session, timeouts, and exceptions map to ``"decline"`` so a server
-    treats them as "user did not approve" rather than retrying or hanging.
+    gateway session, timeouts, and exceptions map to ``"decline"``/``"cancel"`` so a
+    server treats them as "user did not approve" rather than retrying or hanging.
+    A session with no approval channel at all (cron, ``-q`` workers, unattended
+    platforms) is never prompted: it returns ``"cancel"`` — unresolved, not a refusal.
     Returns ``"accept" | "decline" | "cancel"``."""
     from tools import approval as _a
     try:
@@ -301,17 +303,12 @@ def request_elicitation_consent(message: str, description: str, *,
     # registers an approval notify callback and answers via ``POST /v1/runs/{id}/approval``
     # (gateway/platforms/api_server_runs.py), so its per-call MCP consent takes the gateway path too.
     # A run without a callback still fails closed below; cron and ``-q`` workers stay excluded.
-    api_run_context = (
-        _ctx._get_session_platform() == "api_server"
-        and not _ctx._is_cron_approval_context()
-        and not _ctx._is_single_query_approval_context()
-    )
-    if _ctx._is_gateway_approval_context() or api_run_context:
+    if _ctx._is_gateway_approval_context() or _ctx._is_api_run_approval_context():
         notify_cb = _a._gateway_notify_cb(session_key)
         if notify_cb is None:
             logger.warning("Elicitation requested in gateway session %s but no "
                            "notify_cb is registered — failing closed", session_key)
-            return "decline"
+            return "cancel"  # no prompt reached anyone: unresolved, not a user refusal
         try:
             decision = _gw._await_gateway_decision(
                 session_key, notify_cb, {"command": message, "description": description,
@@ -325,6 +322,15 @@ def request_elicitation_consent(message: str, description: str, *,
         if not decision.get("resolved") or decision.get("cancelled"):
             return "cancel"  # nobody answered (timeout / prompt withdrawn) — not a user refusal
         return _consent(decision.get("choice"), "decline")
+
+    # No surface can ask: cron, ``-q`` (single-query) workers — the Kanban dispatcher spawns those — and
+    # unattended programmatic platforms never reach a human. Rendering the interactive prompt there reads EOF
+    # (input() raises immediately with no stdin) and returns "deny", charging a refusal to a user who was never
+    # asked — and it prints a DANGEROUS COMMAND banner into a worker log nobody watches (#111526). Report it as
+    # unresolved instead; the caller says why it could not be approved and what to do.
+    if not _ctx._has_approval_channel():
+        logger.info("Elicitation consent: session %s has no approval channel — not prompting", session_key)
+        return "cancel"
 
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
     try:

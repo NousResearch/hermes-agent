@@ -67,7 +67,7 @@ def profile_home_for_session_db(session_db: Any) -> Path | None:
             return home
         profile_home = named_profile_home(home)
         if profile_home is not None and profile_home.parent.resolve(strict=False) == (root / "profiles").resolve(strict=False):
-            return home
+            return profile_home
     except (OSError, RuntimeError, ValueError):
         pass
     return None

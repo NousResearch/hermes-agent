@@ -508,7 +508,7 @@ class GatewayTopicThreadsMixin:
                 operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
             except Exception:
                 operator_topic = None
-            if isinstance(operator_topic, dict):
+            if isinstance(operator_topic, dict) and operator_topic.get("is_static", True):
                 return
         session_db = getattr(self, "_session_db", None)
         if session_db is not None:

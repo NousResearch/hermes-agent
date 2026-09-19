@@ -6591,8 +6591,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         if str(chat_entry.get("chat_id")) == chat_id:
                             for t in chat_entry.get("topics", []):
                                 if t.get("name") == topic_name:
-                                    return t
-                    return {"name": topic_name}
+                                    return {**dict(t), "is_static": True}
+                    return {"name": topic_name, "is_static": False}
             return None
 
         found = _lookup()

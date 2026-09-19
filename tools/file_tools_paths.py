@@ -14,7 +14,11 @@ from pathlib import Path, PurePosixPath
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+# Backends whose filesystem is NOT the host's: absolute paths must keep their
+# lexical form and never be host-dereferenced (e.g. macOS /home ->
+# /System/Volumes/Data/home). "ssh" is a remote backend, not a container, but
+# shares the same path-resolution requirement, so it belongs in this set.
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox", "ssh"})
 # Backend name inferred from the live environment's class name (first match wins).
 _ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
 
@@ -64,6 +68,10 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 def _uses_container_paths(task_id: str = "default") -> bool:
     env_type = _terminal_env_type_for_task(task_id)
+    if env_type == "ssh":
+        # SSH targets a remote filesystem: like container backends, its
+        # absolute paths must not be resolved through host-side symlinks.
+        return True
     try:
         from tools.terminal_tool import _is_container_backend
 

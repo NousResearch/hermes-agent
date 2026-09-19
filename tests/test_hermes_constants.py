@@ -236,6 +236,50 @@ class TestHermesManagedNode:
         assert find_node_executable("npm") is None
         assert find_node_executable("npm") != str(path_npm)
 
+    def test_named_profile_sees_machine_level_node_tree(self, tmp_path, monkeypatch):
+        """Regression for #75347: machine-level ``~/.hermes/node`` resolves under a named profile.
+
+        Contract: profile dirs come first, machine-level dirs are appended as a fallback.
+        """
+        machine = tmp_path / ".hermes"
+        machine_bin = machine / "node" / "bin"
+        machine_bin.mkdir(parents=True)
+        machine_node = machine_bin / "node"
+        machine_node.write_bytes(b"#!/bin/sh\necho v22.17.0\n")
+        machine_node.chmod(0o755)
+        profile = machine / "profiles" / "alice"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
+        monkeypatch.setattr(hermes_constants, "_managed_node_tree_outdated", lambda home=None: False)
+
+        dirs = iter_hermes_node_dirs()
+        assert dirs[:2] == [profile / "node" / "bin", profile / "node"]
+        assert dirs[2:] == [machine / "node" / "bin", machine / "node"]
+        assert hermes_managed_node_tree_present() is True
+        assert find_hermes_node_executable("node") == str(machine_node)
+
+    def test_profile_local_node_shadows_machine_level(self, tmp_path, monkeypatch):
+        """Profile-local node wins over the machine-level fallback when both exist."""
+        machine = tmp_path / ".hermes"
+        machine_bin = machine / "node" / "bin"
+        machine_bin.mkdir(parents=True)
+        (machine_bin / "node").write_bytes(b"#!/bin/sh\nexit 0\n")
+        (machine_bin / "node").chmod(0o755)
+        profile = machine / "profiles" / "bob"
+        profile_bin = profile / "node" / "bin"
+        profile_bin.mkdir(parents=True)
+        profile_node = profile_bin / "node"
+        profile_node.write_bytes(b"#!/bin/sh\nexit 0\n")
+        profile_node.chmod(0o755)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
+        monkeypatch.setattr(hermes_constants, "_managed_node_tree_outdated", lambda home=None: False)
+
+        assert find_hermes_node_executable("node") == str(profile_node)
+
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")

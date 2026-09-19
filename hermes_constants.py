@@ -364,10 +364,26 @@ def get_hermes_dir(new_subpath: str, old_name: str, *, home: Path | None = None)
 def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
     """Hermes-managed Node dirs in lookup order; both Windows and POSIX shapes so migrated installs work.
 
+    The machine-level ``<root>/node`` tree is appended as a fallback: managed Node is a
+    machine-level runtime (see LOCAL_RUNTIME_ROOT_DIRS), so a named profile still finds the
+    shared install (#75347). The desktop normalizes the same way (normalizeHermesHomeRoot).
+
     Keep in sync with hermesManagedNodePathEntries() in apps/desktop/electron/backend-env.ts.
     """
-    node_dir = (home or get_hermes_home()) / "node"
-    return [node_dir, node_dir / "bin"] if sys.platform == "win32" else [node_dir / "bin", node_dir]
+    home = home or get_hermes_home()
+    node_dir = home / "node"
+    dirs = [node_dir, node_dir / "bin"] if sys.platform == "win32" else [node_dir / "bin", node_dir]
+    machine_root = get_default_hermes_root()
+    if machine_root != home:  # named profile: also consult the shared machine-level tree
+        machine_node = machine_root / "node"
+        for directory in (
+            [machine_node, machine_node / "bin"]
+            if sys.platform == "win32"
+            else [machine_node / "bin", machine_node]
+        ):
+            if directory not in dirs:
+                dirs.append(directory)
+    return dirs
 
 
 _WINDOWS_NODE_SHIMS = {

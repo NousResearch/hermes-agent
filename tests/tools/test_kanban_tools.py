@@ -1053,6 +1053,83 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(monkeypatch, worker_env, tmp_path):
+    """#110068: the inherited HERMES_SESSION_KEY can name a session already superseded
+    by a compaction fork. Auto-subscribe must bind to the live continuation tip resolved
+    from the session store, not the stale key the process was launched with."""
+    import hermes_state
+    from hermes_state import SessionDB
+    from tools import kanban_tools as kt
+
+    stale, live = "20260912_231110_stale", "20260913_000649_live"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(stale, source="tui")
+    db.append_message(stale, role="user", content="pre-fork turn")
+    db.end_session(stale, "compression")
+    db.create_session(live, source="tui", parent_session_id=stale)
+    db.append_message(live, role="assistant", content="post-fork turn")
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", stale)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+
+    out = kt._handle_create({
+        "title": "auto-sub tui post-fork",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "tui"
+    assert subs[0]["chat_id"] == live
+
+
+def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
+    """A named-profile session's lineage lives in profiles/<x>/state.db, not the default
+    store: resolution must open THAT store."""
+    from hermes_cli import profiles as profiles_mod
+    from hermes_state import SessionDB
+    from tools import kanban_tools as kt
+
+    stale, live = "stale-teamx", "live-teamx"
+    store = tmp_path / "profiles" / "teamx"
+    store.mkdir(parents=True)
+    db = SessionDB(store / "state.db")
+    db.create_session(stale, source="tui")
+    db.append_message(stale, role="user", content="pre-fork turn")
+    db.end_session(stale, "compression")
+    db.create_session(live, source="tui", parent_session_id=stale)
+    db.append_message(live, role="user", content="post-fork turn")
+
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: name == "teamx")
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: str(store))
+    assert kt._live_tui_session_key(stale, "teamx") == live
+
+
+def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
+    """Store unavailability must degrade to current behaviour (subscribe to the inherited
+    key), never fail the kanban_create call."""
+    import hermes_state_registry as registry
+    from tools import kanban_tools as kt
+
+    def _boom(db_path=None):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(registry, "acquire", _boom)
+    assert kt._live_tui_session_key("stale-key", "default") == "stale-key"
+    assert kt._live_tui_session_key("stale-key", None) == "stale-key"
+    # An unresolvable profile also falls through to the default store path.
+    import hermes_cli.profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: False)
+    assert kt._live_tui_session_key("stale-key", "ghost-profile") == "stale-key"
+
+
 def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):
     """The config gate kanban.auto_subscribe_on_create=false must
     suppress auto-subscription even when the session has a delivery

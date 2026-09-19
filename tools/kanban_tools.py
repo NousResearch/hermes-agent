@@ -991,6 +991,32 @@ def _handle_create(args: dict, **kw) -> str:
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 
+def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
+    """Re-resolve a TUI session key at subscribe time: the inherited ``HERMES_SESSION_KEY``
+    can name a session already superseded by a compaction fork, and a subscription bound to
+    the dead key silently drops every later completion notification (#110068). Maps the key
+    to its continuation tip via the session store's lineage walk. Best-effort, fail-open:
+    any error (or an unresolvable key) returns *session_key* unchanged."""
+    db_path = None
+    if profile and profile != "default":
+        try:
+            from pathlib import Path
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+            if profile_exists(profile):
+                db_path = Path(get_profile_dir(profile)) / "state.db"
+        except Exception:
+            db_path = None
+    try:
+        from hermes_state_registry import acquire, release_or_close
+        db = acquire(db_path)
+        try:
+            return db.resolve_resume_session_id(session_key) or session_key
+        finally:
+            release_or_close(db)
+    except Exception:
+        return session_key
+
+
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
@@ -1014,6 +1040,10 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
             notifier_profile = get_active_profile_name() or "default"
         except Exception:
             notifier_profile = "default"
+    if platform == "tui":
+        # The inherited key can be stale after a compaction fork (#110068): bind the
+        # subscription to the live continuation tip, not the key the process started with.
+        chat_id = _live_tui_session_key(chat_id, notifier_profile)
     delivery_metadata: dict[str, Any] = {
         k: v for k, v in (
             ("thread_id", thread_id), ("chat_type", chat_type),

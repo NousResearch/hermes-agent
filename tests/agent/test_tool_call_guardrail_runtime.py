@@ -5,8 +5,6 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from run_agent import AIAgent
 
 
@@ -105,9 +103,8 @@ def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     assert decision.code == "repeated_exact_failure_block"
 
 
-@pytest.mark.parametrize("platform", ["desktop", "acp"])
-def test_interactive_platforms_keep_warning_only_default(platform):
-    agent = _make_agent("web_search", platform=platform)
+def test_explicit_hard_stop_opt_out_keeps_interactive_runtime_advisory_only():
+    agent = _make_agent("web_search", config={"tool_loop_guardrails": {"hard_stop_enabled": False}})
     args = {"query": "same"}
 
     _seed_exact_failures(agent, "web_search", args, count=5)

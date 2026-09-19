@@ -71,10 +71,11 @@ See the [Where the logs go](#where-the-logs-go) section below for the full routi
 :::
 
 :::note Tool-loop hard stops for unattended gateways
-Unattended gateway and cron sessions enable tool-loop hard stops by default through `non_interactive_hard_stop_enabled`. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only. To opt an unattended deployment out in the profile's `config.yaml`:
+Tool-loop hard stops are enabled by default on every platform. To opt an unattended deployment out in the profile's `config.yaml`, disable both its global and unattended defaults:
 
 ```yaml
 tool_loop_guardrails:
+  hard_stop_enabled: false
   non_interactive_hard_stop_enabled: false
 ```
 :::

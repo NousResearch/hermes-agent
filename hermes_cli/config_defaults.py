@@ -506,13 +506,11 @@ DEFAULT_CONFIG = {
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.
     # max_line_length: per-line cap in read_file's line-numbered view (chars).
     "tool_output": {"max_bytes": 50000, "max_lines": 2000, "max_line_length": 2000},
-    # Tool loop guardrails nudge models that repeat failed/non-progressing tool calls. Soft warnings
-    # are always on; hard stops are opt-in so interactive sessions keep flowing.
+    # Tool loop guardrails halt repeated failed/non-progressing calls before they exhaust the turn.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
-        "hard_stop_enabled": False,
-        # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
-        # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
+        "hard_stop_enabled": True,
+        # Unattended gateway/cron platforms retain a separate opt-out for deployments that need it.
         "non_interactive_hard_stop_enabled": True,
         "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
         "hard_stop_after": {

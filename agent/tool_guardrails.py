@@ -116,10 +116,10 @@ class LoopCapConfig:
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection. Warnings never prevent execution; hard
-    stops are opt-in on interactive platforms, default on for unattended gateway/cron platforms."""
+    stops default on; users can opt out with ``hard_stop_enabled: false``."""
 
     warnings_enabled: bool = True
-    hard_stop_enabled: bool = False
+    hard_stop_enabled: bool = True
     non_interactive_hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5

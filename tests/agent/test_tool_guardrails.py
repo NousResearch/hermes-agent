@@ -9,6 +9,7 @@ from agent.tool_guardrails import (
     canonical_tool_args,
     classify_tool_failure,
 )
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():
@@ -33,11 +34,11 @@ def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposi
     assert "☤" not in json.dumps(metadata)
 
 
-def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
+def test_default_config_enables_hard_stops():
     cfg = ToolCallGuardrailConfig()
 
     assert cfg.warnings_enabled is True
-    assert cfg.hard_stop_enabled is False
+    assert cfg.hard_stop_enabled is True
     assert cfg.non_interactive_hard_stop_enabled is True
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
@@ -45,6 +46,20 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
+    assert DEFAULT_CONFIG["tool_loop_guardrails"]["hard_stop_enabled"] is True
+
+
+def test_default_config_blocks_identical_no_progress_calls():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}))
+    args = {"query": "same"}
+
+    for _ in range(5):
+        assert controller.before_call("web_search", args).action == "allow"
+        controller.after_call("web_search", args, '{"results":[]}', failed=False)
+
+    blocked = controller.before_call("web_search", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -75,7 +90,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_block_after == 8
 
 
-def test_gateway_platform_defaults_to_hard_stop_without_changing_interactive_defaults():
+def test_platform_defaults_enable_hard_stops():
     interactive_configs = [
         ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         for platform in ("cli", "tui", "desktop", "acp")
@@ -83,22 +98,21 @@ def test_gateway_platform_defaults_to_hard_stop_without_changing_interactive_def
     telegram_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="telegram")
     cron_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cron")
 
-    assert all(cfg.hard_stop_enabled is False for cfg in interactive_configs)
+    assert all(cfg.hard_stop_enabled is True for cfg in interactive_configs)
     assert telegram_cfg.hard_stop_enabled is True
     assert cron_cfg.hard_stop_enabled is True
 
 
-def test_non_interactive_hard_stop_can_be_disabled_explicitly():
+def test_explicit_hard_stop_opt_out_is_preserved_for_interactive_platforms():
     cfg = ToolCallGuardrailConfig.from_mapping(
-        {"non_interactive_hard_stop_enabled": False},
-        platform="telegram",
+        {"hard_stop_enabled": False},
+        platform="cli",
     )
 
     assert cfg.hard_stop_enabled is False
-    assert cfg.non_interactive_hard_stop_enabled is False
 
 
-def test_default_repeated_identical_failed_call_warns_without_blocking():
+def test_default_repeated_identical_failed_call_blocks_before_sixth_execution():
     controller = ToolCallGuardrailController()
     args = {"query": "same"}
 
@@ -112,8 +126,9 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     assert decisions[0].action == "allow"
     assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn", "warn"]
     assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
-    assert controller.before_call("web_search", args).action == "allow"
-    assert controller.halt_decision is None
+    blocked = controller.before_call("web_search", args)
+    assert blocked.action == "block"
+    assert blocked.code == "repeated_exact_failure_block"
 
 
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():
@@ -369,10 +384,10 @@ def test_browser_retry_after_action_is_not_a_replay():
     assert c.halt_decision is None
 
 
-def test_supervised_task_platforms_keep_warning_only_default():
+def test_supervised_task_platforms_enable_hard_stops_by_default():
     for platform in ("subagent", "api_server", "cli"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
-        assert cfg.hard_stop_enabled is False, platform
+        assert cfg.hard_stop_enabled is True, platform
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform

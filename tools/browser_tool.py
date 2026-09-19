@@ -589,7 +589,7 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "expression": {
                     "type": "string",
-                    "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
+                    "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. This is an expression, not a function body: a top-level 'return' is a syntax error. Wrap statements in an IIFE — '(() => { const a = []; return a; })()' — and note that a bare arrow function such as '() => x' is never called, so it yields no result. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
                 }
             },
             "required": []

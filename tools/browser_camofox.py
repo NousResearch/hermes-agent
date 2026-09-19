@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _NO_SESSION_ERROR = "No browser session. Call browser_navigate first."
+# Camofox error strings are one short sentence; the cap is for a proxy or crash handler
+# answering with an HTML page instead.
+_MAX_ERROR_DETAIL_CHARS = 500
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
 # Routed profiles (multiplexed gateway) each point CAMOFOX_URL at their own server, so the one-shot
@@ -309,11 +312,45 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 
 
 # ---- HTTP helpers ----
+def _error_detail(resp: requests.Response) -> str:
+    """Pull camofox's own explanation out of a failed response.
+
+    Camofox answers failures with ``{"error": ..., "code": ..., "retryable": ...}``.
+    ``raise_for_status()`` discards that body, leaving only "500 Server Error: Internal
+    Server Error for url: ...", which cannot distinguish a caller mistake from a dead
+    backend. Prefer the structured fields over raw text so arbitrary page content in an
+    unexpected body is not pulled into the message, and cap whatever is used.
+    """
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        detail = payload.get("error") or payload.get("message") or ""
+        code = payload.get("code")
+        if detail and code:
+            detail = f"{detail} (code: {code})"
+    else:
+        detail = resp.text or ""
+
+    detail = " ".join(str(detail).split())
+    if len(detail) > _MAX_ERROR_DETAIL_CHARS:
+        detail = detail[:_MAX_ERROR_DETAIL_CHARS] + "..."
+    return detail
+
+
 def _request(method: str, path: str, timeout: Optional[int] = None, **kwargs: Any) -> requests.Response:
     """Issue an authenticated request to camofox and return the raised-for-status response."""
     resp = getattr(requests, method)(f"{get_camofox_url()}{path}", headers=_auth_headers(),
                                      timeout=_get_command_timeout() if timeout is None else timeout, **kwargs)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = _error_detail(resp)
+        if not detail:
+            raise
+        raise requests.HTTPError(f"{exc}: {detail}", response=resp) from exc
     return resp
 
 

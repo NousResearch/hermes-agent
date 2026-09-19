@@ -73,6 +73,17 @@ async def resolve_image_source(
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
     host_target = _permitted_host_read_target(p, ctx)
+    # Exact miss on the host: retry once against a sibling that differs only by
+    # Unicode whitespace (macOS' U+202F screenshot names). Local backend only —
+    # under a sandbox the miss must still fall through to the in-container read
+    # so the confinement boundary in this module's docstring holds.
+    if (
+        (host_target is None or not host_target.is_file())
+        and _is_local_terminal_backend()
+    ):
+        alt = _fuzzy_whitespace_match(p)
+        if alt is not None:
+            host_target = _permitted_host_read_target(alt, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
         data = await asyncio.to_thread(host_target.read_bytes)
@@ -141,6 +152,40 @@ async def _download_to_bytes(url: str) -> bytes:
         raise SourceUnsafe(str(exc), src=url, origin="http")
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _flatten_unicode_spaces(name: str) -> str:
+    """NFC-normalize and fold every Unicode space separator to U+0020."""
+    import unicodedata
+
+    return "".join(
+        " " if unicodedata.category(ch) == "Zs" else ch
+        for ch in unicodedata.normalize("NFC", name)
+    )
+
+
+def _fuzzy_whitespace_match(p: Path) -> Optional[Path]:
+    """Find a sibling file whose name differs from ``p`` only by Unicode whitespace.
+
+    macOS names screenshots with U+202F (NARROW NO-BREAK SPACE) before AM/PM.
+    A model that lists the directory and then echoes the name back almost always
+    emits a plain U+0020 instead, so the exact path misses a file the agent can
+    plainly see. Confined to ``p``'s own directory and to a unique match, so this
+    can never redirect a read to an unrelated file; the caller still applies the
+    media-cache confinement and credential-read guard to whatever comes back.
+    """
+    try:
+        parent = p.parent
+        if not parent.is_dir():
+            return None
+        target = _flatten_unicode_spaces(p.name)
+        matches = [
+            c for c in parent.iterdir()
+            if c.is_file() and _flatten_unicode_spaces(c.name) == target
+        ]
+    except OSError:
+        return None
+    return matches[0] if len(matches) == 1 else None
 
 
 def _is_local_terminal_backend() -> bool:

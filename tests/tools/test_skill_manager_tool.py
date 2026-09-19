@@ -120,6 +120,26 @@ class TestValidateFrontmatter:
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
         assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
+    def test_description_over_limit_new_skill_shows_overage_and_examples(self):
+        """Piste 1: the error must state the delta (chars over), not just the
+        raw total, and must not force the caller to compute it — plus a
+        ready-to-paste example (Piste 3)."""
+        long_desc = "x" * (SKILL_PROMPT_DESC_LIMIT + 12)
+        content = f"---\nname: test-skill\ndescription: {long_desc}\n---\n\nBody.\n"
+        err = _validate_frontmatter(content, new_skill=True)
+        assert err is not None
+        assert f"{SKILL_PROMPT_DESC_LIMIT + 12} chars" in err
+        assert "12 over" in err
+        assert str(SKILL_PROMPT_DESC_LIMIT) in err
+        assert "Use when" in err  # a concrete example is present
+
+    def test_description_over_limit_existing_skill_not_blocked(self):
+        """Edit/patch paths (new_skill=False) deliberately skip the budget
+        check so existing over-limit skills stay maintainable."""
+        long_desc = "x" * (SKILL_PROMPT_DESC_LIMIT + 12)
+        content = f"---\nname: test-skill\ndescription: {long_desc}\n---\n\nBody.\n"
+        assert _validate_frontmatter(content, new_skill=False) is None
+
 
 # ---------------------------------------------------------------------------
 # _validate_file_path — path traversal prevention

@@ -177,13 +177,21 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     desc = str(parsed["description"])
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
-    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
-        return (
-            f"Description is {len(desc.strip())} chars — new skills must fit the "
-            f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, trigger first, "
-            f"ends with a period). The skill index truncates longer descriptions to "
-            f"{SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', destroying the routing signal. "
-            f"Move detail into the skill body.")
+    if new_skill:
+        stripped_desc = desc.strip().strip("'\"")
+        desc_len = len(stripped_desc)
+        if desc_len > SKILL_PROMPT_DESC_LIMIT:
+            over_by = desc_len - SKILL_PROMPT_DESC_LIMIT
+            return (
+                f"Description is {desc_len} chars, {over_by} over the "
+                f"{SKILL_PROMPT_DESC_LIMIT}-char limit for new skills (one sentence, "
+                f"trigger first, ends with a period). The skill index truncates "
+                f"longer descriptions to {SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', "
+                f"destroying the routing signal. Move detail into the skill body — "
+                f"cut {over_by} character{'s' if over_by != 1 else ''}. Examples that "
+                f"fit: 'Use when exporting invoices. Turns CSV rows into PDF forms.' "
+                f"(59 chars); 'Use when a price drops below target. Sends an alert.' "
+                f"(52 chars).")
     if not content[end_match.end() + 3:].strip():
         return "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
     return None
@@ -815,7 +823,10 @@ def _skill_manage_description(create_dir: str) -> str:
         "first), write_file/remove_file (supporting files), delete (sole "
         "op only). Existing skills are modified wherever they live. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
-        "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
+        "when <trigger>. <one-line behavior>.' e.g. 'Use when exporting "
+        "invoices. Turns CSV rows into PDF forms.' (59 chars) or 'Use when "
+        "a price drops below target. Sends an alert.' (52 chars). Write "
+        "lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
         "skill_view() shows format conventions."

@@ -316,9 +316,9 @@ replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
 
-## Per-Channel Model & System Prompt Overrides
+## Per-Channel Runtime Overrides
 
-Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:
+Different channels can run different models, personas, and tool surfaces from a **single gateway** — e.g. a restricted shared room and a full-tool private channel. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -329,16 +329,19 @@ platforms:
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
         system_prompt: "You are the #dev channel code-review specialist."
+        enabled_toolsets: [web, file]
       "987654321098765432":
         model: openai/gpt-5-mini
+        enabled_toolsets: []        # explicitly no model tools in this channel
 ```
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- All four keys are optional — set only `model`, `system_prompt`, `enabled_toolsets`, or any combination. Unset fields fall back to the platform defaults.
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+- A non-empty `enabled_toolsets` list replaces `platform_toolsets.<platform>` for that channel. An explicit empty list exposes no model tools; omitting the key inherits platform defaults. Adapter-owned route policy takes precedence, and `agent.disabled_toolsets` remains an unconditional global suppression layer.
 
 ## Security
 

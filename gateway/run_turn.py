@@ -2305,16 +2305,28 @@ class GatewayTurnMixin:
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: "SessionSource", platform_key: str,
     ) -> list:
-        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
+        """Enabled toolsets for an agent run.
+
+        Adapter route policy wins, then ``channel_overrides``, then platform defaults. Every explicit
+        list is validated through the SAME ``_get_platform_tools`` path so global suppressions and
+        platform restrictions still apply.
+        """
+        from gateway.run import _get_channel_override
         from hermes_cli.tools_config import _get_platform_tools
         try:
             adapter = self._delivery_adapter_for(source)
             override = adapter.toolsets_for_source(source) if adapter is not None else None
         except Exception:
             override = None
-        if override and isinstance(override, list):
+        if not isinstance(override, list):
+            config = getattr(self, "config", None)
+            channel = _get_channel_override(
+                config, source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            ) if config is not None else None
+            override = channel.enabled_toolsets if channel is not None else None
+        if isinstance(override, list):
             pts = dict(user_config.get("platform_toolsets") or {})
             pts[platform_key] = [str(x) for x in override]
             user_config = {**user_config, "platform_toolsets": pts}

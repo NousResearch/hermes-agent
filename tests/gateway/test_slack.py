@@ -6105,8 +6105,25 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
+        a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_sessions_uses_lifecycle_statuses_for_typing_and_clear(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.typing_status_text = "Checking the deployment..."
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        assert a._app.client.agents_sessions_setStatus.call_args_list == [
+            call(channel_id="C123", thread_ts="parent_ts", status="processing"),
+            call(channel_id="C123", thread_ts="parent_ts", status="active"),
+        ]
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
@@ -6133,7 +6150,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 

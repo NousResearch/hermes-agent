@@ -280,13 +280,18 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
+def _session_status_method(client: Any) -> tuple[Any, bool]:
+    """Return the status setter and whether it is the Agent Sessions route."""
     if _sdk_supports_agent_sessions():
         method = getattr(client, "agents_sessions_setStatus", None)
         if method is not None:
-            return method
-    return client.assistant_threads_setStatus
+            return method, True
+    return client.assistant_threads_setStatus, False
+
+
+def _agent_sessions_status(status: str) -> str:
+    """Map legacy free-form status text to the Agent Sessions lifecycle values."""
+    return "processing" if status else "active"
 
 
 def _session_title_method(client: Any):
@@ -2617,7 +2622,10 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
         """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            client = self._get_client(chat_id, team_id=team_id)
+            _set_status, is_agent_sessions = _session_status_method(client)
+            if is_agent_sessions:
+                status = _agent_sessions_status(status)
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)

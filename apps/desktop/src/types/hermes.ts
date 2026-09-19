@@ -263,6 +263,8 @@ export interface CustomEndpointValidationResponse {
   models: string[]
   ok: boolean
   reachable: boolean
+  // Base URL that actually served /models (the entered URL or its /v1 variant); persist this one.
+  resolved_base_url?: string
 }
 
 export interface MessagingEnvVarInfo {

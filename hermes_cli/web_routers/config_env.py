@@ -714,23 +714,44 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
-    url = base_url + "/models"
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
 
-    try:
-        async with _endpoint_probe_client(url, 8.0) as client:
-            resp = await client.get(url, headers=headers)
-    except Exception:
-        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
+    resolved, resp = await _probe_openai_compatible_models(base_url, headers)
+    if resp is None:
+        return {"ok": False, "reachable": False, "message": f"Could not reach {base_url}/models.", "models": []}
 
     if resp.status_code in (401, 403):
         return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
     if not resp.is_success:
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
 
-    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp), "resolved_base_url": resolved}
+
+
+async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
+    """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
+    first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
+    model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
+    URL verbatim, so a bare host root that only "detected" via ``/v1/models`` would 404 every chat
+    (#65488). ``response`` is None when no candidate could be reached at all."""
+    base = base_url.rstrip("/")
+    alternate = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
+    resolved, resp = base, None
+    async with _endpoint_probe_client(base, 8.0) as client:
+        for candidate in (base, alternate):
+            try:
+                candidate_resp = await client.get(candidate + "/models", headers=headers)
+            except Exception:
+                continue
+            # Keep the most telling failure: a 401/403 from the /v1 alternate says "server is
+            # there, key rejected", which beats the typed root's 404 (wrong path).
+            if resp is None or candidate_resp.is_success or resp.status_code == 404:
+                resolved, resp = candidate, candidate_resp
+            if candidate_resp.is_success:
+                break
+    return resolved, resp
 
 
 def _endpoint_probe_client(url: str, timeout: float):
@@ -766,20 +787,18 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # default. The optional API key is sent so servers that require auth on
     # ``/v1/models`` still enumerate instead of returning an empty list.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-        try:
-            async with _endpoint_probe_client(url, 8.0) as client:
-                resp = await client.get(url, headers=headers)
-        except Exception:
+        resolved, resp = await _probe_openai_compatible_models(value, headers)
+        url = resolved + "/models"
+        if resp is None:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
         models = _parse_model_ids(resp)
         if not models and not resp.is_success:
             # A proxy/gateway error page parses as "no models"; name the status instead so the
             # GUI does not tell the user to "start a model" on a server that answered.
             return {"ok": False, "reachable": True, "message": f"{url} answered HTTP {resp.status_code}.", "models": []}
-        return {"ok": True, "reachable": True, "message": "", "models": models}
+        return {"ok": True, "reachable": True, "message": "", "models": models, "resolved_base_url": resolved}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:

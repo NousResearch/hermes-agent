@@ -158,6 +158,7 @@ export const en: Translations = {
     revealInSidebar: 'Reveal in filetree',
     copyPath: 'Copy path',
     copyRelativePath: 'Copy relative path',
+    copyContent: 'Copy file content',
     download: 'Download',
     downloadSaved: 'Saved',
     downloadFailed: 'Download failed',
@@ -167,7 +168,8 @@ export const en: Translations = {
     renameLabel: 'New name',
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied'
+    pathCopied: 'Path copied',
+    contentCopied: 'File content copied'
   },
 
   boot: {

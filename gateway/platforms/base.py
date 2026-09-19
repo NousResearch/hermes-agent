@@ -2021,12 +2021,17 @@ class BasePlatformAdapter(ABC):
         cap = preview_max_len if preview_max_len > 0 else 40
         prepared = prepare_tool_preview(
             event.tool_name, event.args, fallback=event.preview, max_len=cap)
-        return f'{head}: "{self.format_tool_preview(prepared)}"'
+        return f'{head}: {self.quote_tool_preview(self.format_tool_preview(prepared))}'
 
     def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Platform-native formatting of a compact tool preview; rich-text adapters may use
         the preview's metadata (e.g. a URL shortened for display)."""
         return preview.text
+
+    def quote_tool_preview(self, text: str) -> str:
+        """Outer display punctuation for a compact tool preview; adapters that supply their
+        own delimiter (e.g. Slack's inline code) override to drop the redundant quotes."""
+        return f'"{text}"'
 
     has_fatal_error = property(lambda self: self._fatal_error_message is not None)
     fatal_error_message = property(lambda self: self._fatal_error_message)

@@ -3009,6 +3009,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Substitute embedded delimiters in the display text only.
         return f"`{preview.text.replace('`', 'ˋ')}`"
 
+    def quote_tool_preview(self, text: str) -> str:
+        """Inline code already delimits the preview; outer quotes would render double."""
+        return text
+
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn.
         Tables are fenced first; code is protected from later passes; broadcast mentions are escaped

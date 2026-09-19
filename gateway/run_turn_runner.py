@@ -296,7 +296,11 @@ class TurnRunner:
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)
         if not verb:
-            return f"{emoji} {tool_name}: \"{preview}\""
+            # A duck-typed adapter may predate the quote hook; keep the historical quoting.
+            quote_tool_preview = getattr(adapter, "quote_tool_preview", None) if adapter is not None else None
+            if quote_tool_preview is None:
+                return f"{emoji} {tool_name}: \"{preview}\""
+            return f"{emoji} {tool_name}: {quote_tool_preview(preview)}"
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
     def _progress_emit(self, msg: str) -> None:

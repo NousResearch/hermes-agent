@@ -199,6 +199,47 @@ describe('LogUpdate.render diff contract', () => {
     expect(hasDecstbm(stdoutOnly(diff))).toBe(true)
   })
 
+  it('repairs fixed cells outside narrow damage after a DECSTBM scroll', () => {
+    const w = 12
+    const h = 6
+    const prev = mkScreen(w, h)
+    const next = mkScreen(w, h)
+    const edge = ['A', 'B', 'C', 'D']
+
+    for (let i = 0; i < edge.length; i++) {
+      const y = i + 1
+      const cell = {
+        char: edge[i]!,
+        styleId: stylePool.none,
+        width: CellWidth.Narrow,
+        hyperlink: undefined
+      }
+
+      setCellAt(prev, w - 1, y, cell)
+      setCellAt(next, w - 1, y, cell)
+    }
+
+    // The ScrollBox dirtied only its narrow inner content. DECSTBM still
+    // shifts every terminal column in the row range, including this fixed
+    // right edge, so LogUpdate must repair outside the original damage.
+    prev.damage = undefined
+    next.damage = { x: 0, y: 1, width: 4, height: 4 }
+
+    const nextFrame: Frame = {
+      ...mkFrame(next, w, h),
+      scrollHint: { top: 1, bottom: 4, delta: 1 }
+    }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const written = stdoutOnly(log.render(mkFrame(prev, w, h), nextFrame, true, true))
+
+    expect(hasDecstbm(written)).toBe(true)
+
+    for (const char of edge) {
+      expect(written).toContain(char)
+    }
+  })
+
   it('skips DECSTBM when scroll region touches the bottom row', () => {
     const w = 12
     const h = 6

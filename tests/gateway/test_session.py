@@ -114,6 +114,59 @@ class TestBuildSessionContextPrompt:
 
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
+        assert f"**Telegram Chat ID:** {json.dumps('111')}" in prompt
+        assert f"**Telegram Chat Type:** {json.dumps('dm')}" in prompt
+        assert "Telegram Thread ID" not in prompt
+
+    def test_telegram_prompt_includes_stable_chat_identity_not_message_id(self):
+        """Telegram routing keys must be in the cached prompt; message_id must not.
+
+        Display names are untrusted labels. Multi-group bots (one bot, several
+        rooms) need the numeric chat id to bind the turn. message_id changes
+        every turn and would bust the prompt cache, same as Discord.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token"),
+            },
+        )
+
+        def _prompt_for(msg_id, thread_id=None):
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="-5388221570",
+                chat_name="O+ Store Bot",
+                chat_type="group",
+                thread_id=thread_id,
+                message_id=msg_id,
+            )
+            ctx = build_session_context(source, config)
+            return build_session_context_prompt(ctx)
+
+        p1 = _prompt_for("1001", thread_id="72364")
+        p2 = _prompt_for("2002", thread_id="72364")
+        assert p1 == p2
+        assert "1001" not in p1 and "2002" not in p2
+        assert f"**Telegram Chat ID:** {json.dumps('-5388221570')}" in p1
+        assert f"**Telegram Chat Type:** {json.dumps('group')}" in p1
+        assert f"**Telegram Thread ID:** {json.dumps('72364')}" in p1
+        assert "O+ Store Bot" in p1
+
+    def test_discord_prompt_omits_telegram_chat_identity(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(enabled=True, token="fake-discord-token"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chan-1",
+            chat_name="Server",
+            chat_type="group",
+        )
+        prompt = build_session_context_prompt(build_session_context(source, config))
+        assert "Telegram Chat ID" not in prompt
+        assert "Telegram Chat Type" not in prompt
 
 
     def test_discord_prompt_stable_across_message_id(self):

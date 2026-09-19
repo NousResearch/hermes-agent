@@ -1919,6 +1919,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    review_assignee: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1942,6 +1943,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            review_assignee=review_assignee,
         )
 
     try:
@@ -2223,21 +2225,14 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    review_assignee: Optional[str] = None,
 ) -> bool:
-    """Mirror review dispatch gates before reserving ready-lane capacity.
-
-    Unavailable profile metadata retains the historic fail-open behavior. A
-    review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
-    """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
     for row in review_rows:
-        assignee = row["assignee"]
+        assignee = _resolve_review_assignee(conn, row, review_assignee)
         if not assignee:
             continue
         if profile_exists is not None and not profile_exists(assignee):
@@ -2249,19 +2244,67 @@ def _any_spawnable_review(
     return False
 
 
-def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
-    """``kanban.default_assignee`` when it names a real profile this home may
-    claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
-    gate). Otherwise ``None`` so an unassigned shared-board card is never
-    written to. When the profiles module isn't importable trust the
-    operator's config: the downstream check still buckets a missing profile
-    as nonspawnable."""
-    name = (default_assignee or "").strip() or None
+def _validated_profile(name: Optional[str]) -> Optional[str]:
+    name = (name or "").strip() or None
     if name:
         profile_exists = _profile_exists_fn()
         if profile_exists is not None and not profile_exists(name):
             return None
     return name
+
+
+def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
+    return _validated_profile(default_assignee)
+
+
+def _handoff_reviewer(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    event = _kb._latest_event(conn, task_id, "review_requested")
+    if event is None:
+        return None
+    payload = _kb._json_dict(_kb._row_get(event, "payload"))
+    reviewer = payload.get("reviewer")
+    if not (isinstance(reviewer, str) and reviewer.strip()):
+        return None
+    implementer = payload.get("implementer")
+    if isinstance(implementer, str) and implementer.strip() == reviewer.strip():
+        return None
+    return reviewer
+
+
+def _resolve_review_assignee(
+    conn: sqlite3.Connection, row: sqlite3.Row, review_assignee: Optional[str],
+) -> Optional[str]:
+    handoff_reviewer = _handoff_reviewer(conn, row["id"])
+    if handoff_reviewer:
+        return handoff_reviewer
+    if review_assignee:
+        return review_assignee
+    return row["assignee"]
+
+
+def _apply_review_assignee(conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool) -> bool:
+    if dry_run:
+        return True
+    try:
+        with _kb.write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ? "
+                "AND status = 'review' AND claim_lock IS NULL",
+                (assignee, task_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            _kb._append_event(
+                conn, task_id, "assigned",
+                {"assignee": assignee, "source": "kanban.review_assignee"},
+            )
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: failed to apply review_assignee=%r to task %s",
+            assignee, task_id, exc_info=True,
+        )
+        return False
+    return True
 
 
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
@@ -2281,6 +2324,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    review_assignee: Optional[str] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2327,9 +2371,11 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
+    review_assignee = _validated_profile(review_assignee)
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        review_assignee=review_assignee,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
@@ -2363,10 +2409,15 @@ def _dispatch_once_locked(
     for row in review_rows:
         if spawn_budget is not None and spawned >= spawn_budget:
             break
-        if not row["assignee"]:
+        resolved_assignee = _resolve_review_assignee(conn, row, review_assignee)
+        if not resolved_assignee:
             result.skipped_unassigned.append(row["id"])
             continue
-        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
+        if resolved_assignee != row["assignee"] and not _apply_review_assignee(
+            conn, row["id"], resolved_assignee, dry_run=dry_run,
+        ):
+            continue
+        if _dispatch_lane_task(conn, row, resolved_assignee, result, lane="review", **lane_kwargs):
             spawned += 1
     return result
 

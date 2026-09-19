@@ -67,6 +67,43 @@ class TestQQAdapterInit:
         assert adapter._markdown_support is True
 
 
+@pytest.mark.asyncio
+async def test_cron_delivery_preserves_all_qq_chunks(tmp_path, monkeypatch):
+    """The delivery router must leave native QQ chunking in charge (#50929)."""
+    import re
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.delivery import DeliveryRouter, DeliveryTarget
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.qqbot import QQAdapter
+
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+    adapter._running = True
+    adapter._ws = SimpleNamespace(closed=False)
+    adapter._http_client = mock.MagicMock()
+    sent = []
+
+    async def send_chunk(chat_id, content, reply_to=None):
+        sent.append(content)
+        return SendResult(success=True)
+
+    monkeypatch.setattr(adapter, "_send_chunk", send_chunk)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.QQBOT: adapter})
+    content = "0123456789" * (QQAdapter.MAX_MESSAGE_LENGTH // 10 * 3)
+    result = await router._deliver_to_platform(
+        DeliveryTarget.parse("qqbot:openid_1"), content, metadata={"job_id": "qq-cron"}
+    )
+
+    assert result.success
+    assert len(sent) > 1
+    assert "".join(re.sub(r" \(\d+/\d+\)$", "", chunk) for chunk in sent) == content
+    assert all(len(chunk) <= QQAdapter.MAX_MESSAGE_LENGTH for chunk in sent)
+    saved = list(tmp_path.glob("cron/output/qq-cron_*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_text() == content
+
+
 # ---------------------------------------------------------------------------
 # _coerce_list
 # ---------------------------------------------------------------------------

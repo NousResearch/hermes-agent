@@ -102,6 +102,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    splits_long_messages = True
     ALLOW_ALL_ENV_PREFIX = "QQ"
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires

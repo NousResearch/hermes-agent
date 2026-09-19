@@ -2719,6 +2719,7 @@ def _make_agent(
             checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
             pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
             skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+            user_id=_session_auth_user_id(session),
             **_agent_cbs(sid))
     finally:
         if cwd_token is not None:

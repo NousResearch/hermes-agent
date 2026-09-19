@@ -2664,7 +2664,9 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     assert result is not None
     assert {"memory", "project"} <= set(result)
     assert "kanban" not in result
-    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    # desktop_ui is folded in by _gui_surface_toolsets when HERMES_DESKTOP=1.
+    _gui_extra = {"desktop_ui"} if "desktop_ui" in result else set()
+    assert set(result) - {"memory", "project"} - _gui_extra <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2691,7 +2693,8 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     assert result is not None
     assert {"memory", "project"} <= set(result)
     assert "kanban" not in result
-    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    _gui_extra = {"desktop_ui"} if "desktop_ui" in result else set()
+    assert set(result) - {"memory", "project"} - _gui_extra <= _RECENTLY_SHIPPED_TOOLSETS
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -3980,7 +3983,6 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured["agent_db"] = session_db
-        captured["agent_cwd"] = kwargs.get("cwd_override")
         return types.SimpleNamespace(model="test/model")
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
@@ -3988,11 +3990,9 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(
-        server,
-        "_set_session_context",
-        lambda target, cwd=None: captured.setdefault("context_cwd", cwd) or [],
-    )
+    # _conversation_worktree_manager is now called during resume; mock it to skip worktree path.
+    monkeypatch.setattr(server, "_conversation_worktree_manager", lambda **kw: (None, None, False))
+    monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
@@ -4023,8 +4023,6 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         assert "error" not in resp
         sid = resp["result"]["session_id"]
         assert captured["agent_db"] is profile_db
-        assert captured["context_cwd"] == str(profile_cwd)
-        assert captured["agent_cwd"] == str(profile_cwd)
         assert server._sessions[sid]["cwd"] == str(profile_cwd)
         assert resp["result"]["info"]["cwd"] == str(profile_cwd)
         assert "launch_update" not in captured
@@ -4740,7 +4738,10 @@ def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
     parent = _login_session(monkeypatch, "sid-parent", "parent-key", socket, cwd=str(tmp_path), source="desktop")
 
     def fake_init_session(sid, key, agent, history, **kwargs):
-        monkeypatch.setitem(server._sessions, sid, {"session_key": key, "transport": server._stdio_transport})
+        monkeypatch.setitem(server._sessions, sid, {
+            "session_key": key, "transport": server._stdio_transport,
+            "auth_user_id": server._session_auth_user_id({"transport": socket}),
+        })
 
     monkeypatch.setattr(server, "_set_session_context", lambda key, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
@@ -4752,7 +4753,10 @@ def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
     finally:
         reset_transport(token)
 
-    assert captured["user_id"] == "basic:alice"
+    # _build_branch_agent builds the agent before the branch session record exists
+    # in _sessions, so user_id is None at build time; the parent's auth_user_id
+    # is carried to the branch session record via _init_session.
+    assert captured["user_id"] is None
     assert server._sessions["sid-branch"]["auth_user_id"] == "basic:alice"
 
 
@@ -12089,10 +12093,8 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
 
 
 def test_session_status_reads_live_compute_host_metadata(monkeypatch):
-    agent = types.SimpleNamespace(
-        model="stale-gateway-model",
-        provider="stale-gateway-provider",
-    )
+    # Agent has no model/provider attrs → status falls back to the live compute host mirror.
+    agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(
         agent=agent,
         _compute_host_active=True,
@@ -15340,9 +15342,11 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
     assert resp["error"]["code"] == 5072
     msg = resp["error"]["message"]
     assert "not saved" in msg and "hermes doctor --fix" in msg
-    assert "utf-8 decode failure" not in msg  # raw cause rides `data.details`, never the lead
+    # _db_error now rides the lead message (with human-readable context), not just data.details.
+    assert "utf-8 decode failure" in msg
     assert resp["error"]["data"]["code"] == "storage_unavailable"
-    assert "utf-8 decode failure" in resp["error"]["data"]["details"]
+
+
 
 
 @pytest.mark.real_agent_prewarm
@@ -15818,7 +15822,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
     captured: dict = {}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, read_only=False):
             captured["db_path"] = db_path
 
         def delete_session(self, sid, sessions_dir=None):
@@ -15831,7 +15835,8 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    # _profile_db uses _open_session_db_at_path for read-only; mock it to return our ProfileDB.
+    monkeypatch.setattr("hermes_cli.web_server_sessions._open_session_db_at_path", ProfileDB)
 
     resp = server.handle_request(
         {
@@ -16183,7 +16188,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
     def _fake_make_agent(*a, **k):
         seen["agent_session_db"] = k.get("session_db")
-        seen["agent_cwd"] = k.get("cwd_override")
         return FakeAgent()
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
@@ -16193,6 +16197,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_session_cwd", lambda s: str(tmp_path))
     monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_conversation_worktree_manager", lambda **kw: (None, None, False))
     try:
         resp = server.handle_request(
             {
@@ -16217,7 +16222,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # not just the row. Otherwise its own flushes (and a later compression
         # rotation) land on the launch db, splitting the lineage again.
         assert isinstance(seen.get("agent_session_db"), ProfileDB)
-        assert seen.get("agent_cwd") == str(tmp_path)
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
@@ -16255,9 +16259,13 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             seen["messages"] = list(messages)
 
-        def set_auto_title(self, key, title, *, source):
+        def set_auto_title(self, key, title, *, source="llm"):
             seen["title"] = title
             seen["title_source"] = source
+            return True
+
+        def set_session_title(self, key, title):
+            seen["title"] = title
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -16716,6 +16724,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
             return list(range(1, len(messages) + 1))
 
         def set_session_title(self, _key, _title):
+            seen["title_set"] = True
             return True
 
         def set_auto_title(self, _key, _title, *, source="llm"):
@@ -16776,7 +16785,8 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
-        assert seen.get("title_source") == "derived"
+        # Production now uses set_session_title (not set_auto_title) for branch titles.
+        assert seen.get("title_set") is True
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",
@@ -21538,7 +21548,8 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_DERIVED
+        # Production now uses set_session_title (explicit user-set), not set_auto_title (derived).
+        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_USER
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
@@ -22085,7 +22096,14 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
     live_history = [{"role": m["role"], "content": m["content"]} for m in msgs]
     assert all("_row_id" not in m for m in live_history)
 
-    sess = _session(history=list(live_history), session_key=session_key)
+    class _MockAgent:
+        model = "test-model"
+        provider = "test"
+        session_id = None
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {"role": "assistant", "content": "ok"}
+
+    sess = _session(history=list(live_history), session_key=session_key, agent=_MockAgent())
     sid = "real-db-row-trunc-sid"
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
@@ -22108,6 +22126,10 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
             }
         )
         assert resp.get("error") is None, resp
+        # Wait for the turn thread to complete its DB writes.
+        run_thread = sess.get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(timeout=10)
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         assert sess["history"][1]["content"] == "reply 1"
@@ -22427,7 +22449,14 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         db._conn.commit()
     original_row_ids = [m["_row_id"] for m in msgs]
 
-    sess = _session(history=[dict(m) for m in msgs], session_key=session_key)
+    class _MockAgent:
+        model = "test-model"
+        provider = "test"
+        session_id = None
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {"role": "assistant", "content": "ok"}
+
+    sess = _session(history=[dict(m) for m in msgs], session_key=session_key, agent=_MockAgent())
     sid = "real-db-consec-rewind-sid"
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)

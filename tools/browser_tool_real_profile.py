@@ -37,16 +37,43 @@ def _cdp_http_ready(http_cdp: str) -> bool:
     return _cdp_ready(http_cdp, timeout=1.0)
 
 
-def _real_profile_daemon_env() -> dict:
+def _real_profile_daemon_env() -> tuple:
     """Reaper-visible socket dir + ``owner_pid`` claim like every other lane (agent-browser's
     default dir is invisible to the reaper — #100855). The daemon-side idle timeout is dropped:
     Chrome is launched by Hermes, not the daemon, so a self-exiting daemon would leave Chrome
-    holding the copy dir under the next snapshot overlay."""
+    holding the copy dir under the next snapshot overlay. Returns ``(env, socket_dir)``."""
     _bt = _origin()
     socket_dir = _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
     env = _session._agent_browser_command_env(socket_dir)
     env.pop("AGENT_BROWSER_IDLE_TIMEOUT_MS", None)
-    return env
+    return env, socket_dir
+
+
+def _capture_agent_browser_cli(argv: list, timeout: float, tag: str) -> subprocess.CompletedProcess:
+    """Run an agent-browser CLI argv once, capturing output through temp files (not pipes).
+
+    The CLI forks a resident daemon that inherits its stdio and outlives the CLI, so with
+    pipe capture the CLI can exit while its output never reaches EOF: POSIX burns the whole
+    timeout draining pipes on every call, and Windows' ``TimeoutExpired`` cleanup re-drains
+    with no timeout, blocking past the outer tool deadline (#96731). Same pattern as
+    ``_popen_agent_browser``: wait for the CLI alone — a grandchild holding the inherited
+    file handles is harmless. Raises ``TimeoutExpired`` after killing the CLI."""
+    env, socket_dir = _real_profile_daemon_env()
+    stdout_path = os.path.join(socket_dir, f"_stdout_{tag}")
+    stderr_path = os.path.join(socket_dir, f"_stderr_{tag}")
+    proc = _session._popen_agent_browser(argv, env, socket_dir, tag)
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        proc.wait()
+    stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+    _session._unlink_command_output_files(stdout_path, stderr_path)
+    if timed_out:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout=stdout, stderr=stderr)
 
 
 def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> Optional[subprocess.CompletedProcess]:
@@ -57,9 +84,10 @@ def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> 
     except FileNotFoundError:
         return None
     try:
-        return subprocess.run([*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-                              env=_real_profile_daemon_env(), stdin=subprocess.DEVNULL)
+        return _capture_agent_browser_cli(
+            [*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
+            timeout=15, tag=f"rp-{log_label.replace(' ', '-')}",
+        )
     except (subprocess.SubprocessError, OSError) as e:
         _bt.logger.debug("real-profile %s failed: %s", log_label, e)
         return None
@@ -202,9 +230,9 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
     argv = [*_session._agent_browser_argv(browser_cmd), "--session", _bt._REAL_PROFILE_SESSION,
             "--cdp", str(port), "open", "about:blank"]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=_bt._get_open_command_timeout(first_open=True), env=_real_profile_daemon_env(),
-                              stdin=subprocess.DEVNULL)
+        proc = _capture_agent_browser_cli(
+            argv, timeout=_bt._get_open_command_timeout(first_open=True), tag="rp-open",
+        )
     except subprocess.TimeoutExpired:
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
     except (subprocess.SubprocessError, OSError) as e:

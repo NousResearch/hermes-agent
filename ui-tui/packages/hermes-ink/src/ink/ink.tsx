@@ -32,6 +32,7 @@ import { nodeCache } from './node-cache.js'
 import { optimize } from './optimizer.js'
 import Output from './output.js'
 import type { ParsedKey } from './parse-keypress.js'
+import { offSignal, onSignal } from './process-signals.js'
 import reconciler, {
   dispatcher,
   getLastCommitMs,
@@ -395,11 +396,11 @@ export default class Ink {
 
     if (options.stdout.isTTY) {
       options.stdout.on('resize', this.handleResize)
-      process.on('SIGCONT', this.handleResume)
+      onSignal('SIGCONT', this.handleResume)
 
       this.unsubscribeTTYHandlers = () => {
         options.stdout.off('resize', this.handleResize)
-        process.off('SIGCONT', this.handleResume)
+        offSignal('SIGCONT', this.handleResume)
       }
     }
 

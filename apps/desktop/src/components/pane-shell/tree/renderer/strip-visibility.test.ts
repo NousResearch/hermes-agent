@@ -85,6 +85,22 @@ describe('a full-page view', () => {
   })
 })
 
+// Dragging a session out of the chat strip into its own zone left main a lone
+// workspace: the tile kept its tab (stranded), main lost its tab and its "+",
+// and the two chats side by side read as "the tabs disappeared". Tiles are a
+// tabbed workflow — a main zone keeps its strip while another main zone exists.
+describe('a lone main tile beside another main zone', () => {
+  it('keeps its strip on auto, and only on auto', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()], siblingMainZone: true })).toBe(true)
+    // The whole-window chat is still chromeless, and standing side chrome
+    // never joins the tabbed workflow.
+    expect(resolveTabStripVisible({ shown: [workspace()], siblingMainZone: false })).toBe(false)
+    expect(resolveTabStripVisible({ shown: [sideChrome()], siblingMainZone: true })).toBe(false)
+    // Hide tabs (menu row / ⌘⌥T) still wins — the workspace strands nothing.
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()], siblingMainZone: true })).toBe(false)
+  })
+})
+
 // The adapter both TreeGroup and the store call. Its job is to read the same
 // chrome flags and fold in the app-wide default on both paths, so the strip on
 // screen and the toggle command can never disagree.
@@ -107,7 +123,8 @@ describe('tabStripVisibleForZone', () => {
       isCollapsePane: id => id === 'terminal',
       mode,
       paneFor: id => contributions[id],
-      shown
+      shown,
+      siblingMainZone: false
     })
 
   afterEach(() => setTabStripDefault('auto'))

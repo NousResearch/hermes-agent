@@ -151,6 +151,18 @@ class TestPerJobToolsetMcpMerge:
             result = _resolve_cron_enabled_toolsets(job, {})
         assert result == ["file", "memory", "web"]
 
+    def test_resolver_failure_fails_closed_instead_of_every_toolset(self):
+        """An unreadable cron-platform restriction must not become ``None`` (= all toolsets,
+        #111380): the resolver raises and run_job records the failure. A malformed
+        ``platform_toolsets`` block is the real-world trigger, so no patching of the resolver."""
+        job = {"enabled_toolsets": None}
+        with pytest.raises(RuntimeError, match="toolset resolution failed"):
+            _resolve_cron_enabled_toolsets(job, {"platform_toolsets": "oops"})
+        # Per-job lists never touch the platform resolver: an unknown name still resolves.
+        assert _resolve_cron_enabled_toolsets(
+            {"enabled_toolsets": ["nonexistent_ts"]}, {"platform_toolsets": "oops", "mcp_servers": {}}
+        ) == ["nonexistent_ts"]
+
 
 class TestResolveOrigin:
     def test_full_origin(self):
@@ -2443,7 +2455,8 @@ class TestCronDeliveryMirror:
         # Session row created for the thread, then brief mirrored into it.
         store.get_or_create_session.assert_called_once()
         seeded_source = store.get_or_create_session.call_args[0][0]
-        assert seeded_source.chat_type == "thread"
+        # Telegram forum-topic replies key on the parent supergroup's ``group`` slot.
+        assert seeded_source.chat_type == "group"
         assert seeded_source.thread_id == "9001"
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"

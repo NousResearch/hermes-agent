@@ -27,10 +27,16 @@ _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
 
 def _cfg_path() -> str:
-    """``~/.hermes/config.yaml`` spelled for the active profile, for help text."""
-    from hermes_constants import display_hermes_home
+    """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
 
-    return f"{display_hermes_home()}/config.yaml"
+    ``main._apply_profile_override`` builds this parser (via ``top_level_value_flag_sets``) BEFORE
+    it re-homes the process to the sticky ``active_profile``; ``get_hermes_home()`` would emit the
+    "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
+    throwaway help string. Read the process home directly: after the override it IS the profile home.
+    """
+    from hermes_constants import display_hermes_home, get_process_hermes_home
+
+    return f"{display_hermes_home(get_process_hermes_home())}/config.yaml"
 
 
 @lru_cache(maxsize=1)
@@ -93,9 +99,14 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes gateway install        Install gateway background service
+    hermes gateway start          Start the installed gateway service
+    hermes gateway stop           Stop the gateway service
+    hermes gateway status         Show gateway status
+    hermes -p <profile> <cmd>     Run any command against a named profile's
+                                  home (also --profile) — e.g. hermes -p coder gateway stop
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install gateway background service
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session

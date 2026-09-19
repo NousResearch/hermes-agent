@@ -253,7 +253,7 @@ def gateway_tts_turn(monkeypatch, tmp_path):
         )
         runner = SimpleNamespace(
             config=SimpleNamespace(streaming=StreamingConfig()),
-            _adapter_for_source=lambda source: adapter,
+            _delivery_adapter_for=lambda source: adapter,
             _build_stream_consumer_config=lambda *args, **kwargs: (StreamConsumerConfig(), None),
         )
         _, delta, interim, _ = TurnRunner(runner, ctx)._setup_stream_consumer("realtime")

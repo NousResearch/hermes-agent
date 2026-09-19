@@ -59,7 +59,7 @@ export function setSettingsScope(name: string): void {
 // An app-wide profile switch re-homes every settings surface to the new
 // backend; a surviving override would silently keep edits pointed at the
 // previous target. Same drop-the-override contract as the Capabilities
-// selector (app/skills useOnProfileSwitch).
+// selector (app/capabilities useOnProfileSwitch).
 let lastActiveProfile = normalizeProfileKey($activeGatewayProfile.get())
 
 $activeGatewayProfile.subscribe(value => {

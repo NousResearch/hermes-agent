@@ -28,6 +28,8 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "q
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
+# Providers whose sibling CLI login Hermes may borrow (``auth.adopt_external_logins``).
+EXTERNAL_LOGIN_PROVIDERS = {"anthropic", "openai-codex"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -491,13 +493,15 @@ def auth_list_command(args) -> None:
             )
             print(row.rstrip())
         print()
-    _print_oauth_heal_notices()
+    if not provider_filter or provider_filter in EXTERNAL_LOGIN_PROVIDERS:
+        _print_external_login_notice()
 
 
-def _print_oauth_heal_notices() -> None:
-    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
-    for note in auth_mod.consume_oauth_heal_notices():
-        print(f"note: {note}")
+def _print_external_login_notice() -> None:
+    """One line telling the user why no Codex CLI / Claude Code login shows up when adoption is off."""
+    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
 def auth_remove_command(args) -> None:
@@ -604,10 +608,7 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
-    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
-        load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
-    _print_oauth_heal_notices()
     if status.get("free_tier"):
         # Free tier: not an account login, so no account fields; point at the upgrade path.
         label, hint = _free_tier_lines()
@@ -617,6 +618,8 @@ def auth_status_command(args) -> None:
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
+        if provider in EXTERNAL_LOGIN_PROVIDERS:
+            _print_external_login_notice()
         return
     print(f"{provider}: logged in")
     for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):

@@ -19,6 +19,7 @@ interface ResolvedPrimaryRemote {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   connectionId?: string
+  headers?: Record<string, string>
   remoteHermesVersion?: string
   remoteHost?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
@@ -56,6 +57,9 @@ export function createPrimaryRemoteConnection<State extends object>(
     remoteHermesVersion: remote.remoteHermesVersion,
     ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
     ...(remote.ssh ? { ssh: remote.ssh } : {}),
+    // fetchJsonForBackend reads descriptor.headers for every REST call; the
+    // WebSocket header store is keyed by exact URL and cannot stand in for it.
+    headers: remote.headers,
     token: remote.token,
     wsUrl: remote.wsUrl,
     logs,

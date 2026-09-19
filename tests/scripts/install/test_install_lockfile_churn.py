@@ -91,6 +91,41 @@ def test_install_sh_discards_runtime_lockfile_churn_before_stash(
     assert (repo / "package-lock.json").read_text() == '{"lock":"old"}\n'
 
 
+@pytest.mark.live_system_guard_bypass
+def test_install_sh_keeps_root_lockfile_for_dirty_workspace_manifest(
+    tmp_path: Path,
+) -> None:
+    """The root lockfile spans the npm workspace graph: a dirty workspace manifest
+    (apps/desktop/package.json) protects it, a manifest outside the graph does not (#112378)."""
+    repo = tmp_path / "hermes-agent"
+    (repo / "apps" / "desktop").mkdir(parents=True)
+    (repo / "vendor" / "foo").mkdir(parents=True)
+    _git(repo, "init")
+    (repo / "package.json").write_text('{"workspaces": ["apps/*"]}\n')
+    (repo / "package-lock.json").write_text('{"lock":"old"}\n')
+    (repo / "apps" / "desktop" / "package.json").write_text("{}\n")
+    (repo / "vendor" / "foo" / "package.json").write_text("{}\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "init")
+    script = (
+        'log_info() { echo "INFO: $*"; }\n'
+        'INSTALL_DIR="$PWD"\n'
+        f"{_extract_install_sh_function('discard_update_lockfile_churn')}\n"
+        'discard_update_lockfile_churn "$PWD"\n'
+    )
+
+    (repo / "apps" / "desktop" / "package.json").write_text('{"dependencies":{"electron":"41"}}\n')
+    (repo / "package-lock.json").write_text('{"lock":"workspace-bump"}\n')
+    subprocess.run(["bash", "-c", script], cwd=repo, check=True, capture_output=True)
+    assert (repo / "package-lock.json").read_text() == '{"lock":"workspace-bump"}\n'
+
+    _git(repo, "checkout", "--", ".")
+    (repo / "vendor" / "foo" / "package.json").write_text('{"dependencies":{"x":"1"}}\n')
+    (repo / "package-lock.json").write_text('{"lock":"churn"}\n')
+    subprocess.run(["bash", "-c", script], cwd=repo, check=True, capture_output=True)
+    assert (repo / "package-lock.json").read_text() == '{"lock":"old"}\n'
+
+
 def test_install_sh_discards_lockfile_churn_before_status_probe() -> None:
     text = INSTALL_SH.read_text()
     idx_cleanup = text.index('discard_update_lockfile_churn "$INSTALL_DIR"')

@@ -6,7 +6,7 @@
 
 import type { ErrorCardCopy, Translations } from '@/i18n/types'
 
-import { errorCardKey, type ErrorSurface } from './error-surface'
+import { errorCardKey, type ErrorSurface, isFreeTierSurface } from './error-surface'
 
 export interface ErrorCardText {
   title: string
@@ -45,7 +45,12 @@ export function errorCardText(
   if ('code' in key) {
     const copy = thread.errorCodes[key.code]
 
-    return { body: render(copy.body, provider), title: render(copy.title, provider) }
+    // A free-tier refusal arrives with the backend's own sentence (the wait, the
+    // model, the way forward); the table body is only the fallback for an older backend.
+    return {
+      body: (isFreeTierSurface(surface) && surface?.message) || render(copy.body, provider),
+      title: render(copy.title, provider)
+    }
   }
 
   return { body: thread.errorLayerBodies[key.layer], title: thread.errorLayers[key.layer] }

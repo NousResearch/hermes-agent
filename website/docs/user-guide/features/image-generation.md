@@ -32,6 +32,8 @@ Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use image generation through the **[Tool Gateway](tool-gateway.md)** without a FAL API key. Your model selection persists across both paths. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** as the image-gen backend via `hermes tools`.
 
+The **Nous Subscription** row is the only managed row. Its model picker spans every gateway the subscription runs — the FAL catalog above, native **Krea 2** (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) and any Nous Portal image models — each model listed once, and the model you pick decides which gateway serves the request. Free tool-pool accounts see the FAL models only; Krea and Portal models are paid-subscription.
+
 If the managed gateway returns `HTTP 4xx` for a specific model, that model isn't yet proxied on the portal side — the agent will tell you so, with remediation steps (switch to FAL.ai in `hermes tools` with your own `FAL_KEY` for direct access, or pick a different model).
 :::
 
@@ -317,6 +319,7 @@ If upscaling fails (network issue, rate limit), the original image is returned a
 3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway, according to the stored `image_gen.provider` selection.
 4. **Upscaling** — runs only when the agent passed `upscale: true`; every model's catalog default is off.
 5. **Delivery** — final image URL returned to the agent, which emits a `MEDIA:<url>` tag that platform adapters convert to native media.
+6. **Usage accounting** — token-billed image models (OpenRouter chat-image and Image API models such as `google/gemini-3.1-flash-lite-image`, OpenAI `gpt-image`) return real token counts, so each call is recorded in `session_model_usage` as task `image_generation` under the billing provider and model, and shows up in `hermes insights` and the dashboard's Usage analytics alongside other model calls. Per-image backends (FAL, xAI, Krea, ...) return no token usage and are not recorded there.
 
 ## Debugging
 

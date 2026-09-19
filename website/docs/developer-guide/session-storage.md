@@ -151,7 +151,8 @@ Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_st
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
-compression-failure fields, `profile_name`, `rewind_count`, `archived`, and
+compression-failure fields, `profile_name`, `transport_profile` (the multiplex
+bot that received the lane, nullable), `rewind_count`, `archived`, and
 `pinned`):
 
 ```sql
@@ -194,6 +195,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
 
+`user_id` is the principal on the other end of the session: messaging adapters
+store the platform sender id, and `desktop` / dashboard sessions opened through
+an authenticated `hermes serve` (OAuth or the basic username/password provider)
+store the login as `<provider>:<user id>` (for example `basic:alice`). Sessions
+with nobody behind them — anonymous loopback use, `subagent`, `cron`, `kanban`
+— keep it empty. The value is set when the row is created and never inferred
+later.
+
 ### Messages Table
 
 Abridged — the full schema also includes `effect_disposition`,
@@ -229,6 +238,7 @@ Notes:
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
+- A reasoning-only clean stop (empty `content`, `finish_reason=stop`, reasoning present) is answered with the reasoning text, but the assistant row is never written with that text as `content`: `content` stays empty, the text lives in `reasoning`/`reasoning_content`, and `api_content` carries it so the next request replays the answer byte-identically. History surfaces therefore show it as reasoning, not as a reply.
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
 

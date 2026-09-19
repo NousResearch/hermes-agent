@@ -270,6 +270,62 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.parametrize("help_flag", ["-h", "--help"])
+def test_help_prints_usage_without_discovering_or_running_tests(
+    tmp_path: Path, help_flag: str
+) -> None:
+    """Runner help stays in argparse instead of becoming a pytest sweep."""
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+
+    proc = subprocess.run(
+        [sys.executable, str(runner), "--paths", str(tmp_path / "no-tests"), help_flag],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "usage:" in proc.stdout
+    assert "Discovered" not in proc.stdout
+
+
+def test_unknown_bare_flag_errors_with_usage_instead_of_sweeping(tmp_path: Path) -> None:
+    """A typo'd flag fails once, up front, and never reaches a per-file pytest.
+
+    Bare tokens are checked against pytest's own option set, so real pytest
+    forms (attached short value ``-rA``, bare ``-x``) still pass through and
+    run, while ``--jbs`` is rejected with this runner's usage before discovery.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+
+    proc = _run_runner(probe_dir, "--jbs")
+    assert proc.returncode == 2, proc.stdout
+    assert "usage:" in proc.stdout and "unrecognized arguments: --jbs" in proc.stdout
+    assert "Discovered" not in proc.stdout
+
+    proc = _run_runner(probe_dir, "-rA", "-x")
+    assert proc.returncode == 0, proc.stdout
+    assert "2✓" in proc.stdout or "2 passed" in proc.stdout, proc.stdout
+
+
+def test_known_flag_missing_value_errors_with_usage_instead_of_sweeping(
+    tmp_path: Path,
+) -> None:
+    """``--tb`` with no value is a pytest UsageError, not a per-file sweep.
+
+    The flag itself is known, so an unknown-token check alone lets it through;
+    pytest's own parser must be allowed to reject it up front.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+
+    proc = _run_runner(probe_dir, "--tb")
+    assert proc.returncode == 2, proc.stdout
+    assert "usage:" in proc.stdout and "--tb: expected one argument" in proc.stdout
+    assert "Discovered" not in proc.stdout
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
@@ -460,3 +516,38 @@ def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
         f"drive letter split off as a phantom root:\n{proc.stdout}"
     )
     assert "Discovered 1 test files" in proc.stdout, proc.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal death; Windows has no SIGSEGV exit")
+def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: Path) -> None:
+    """A file whose interpreter dies by signal is classified as CRASHED (#113186).
+
+    A native fault after some tests passed leaves no pytest summary line, so
+    every count parses to 0. The runner used to file that under "no tests ran
+    (collection/import error)" beneath a summary reading ``0 failed`` — two
+    wrong diagnoses for one real bug. The crash must be named on the summary
+    line and in the failure buckets, and the run must still exit non-zero.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_crash.py").write_text(
+        textwrap.dedent(
+            """
+            import os, signal
+
+            def test_before():
+                assert True
+
+            def test_crash():
+                os.kill(os.getpid(), signal.SIGSEGV)
+            """
+        )
+    )
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode != 0
+    assert "1 file CRASHED" in proc.stdout
+    assert "SIGSEGV" in proc.stdout
+    assert "where no tests ran" not in proc.stdout
+    assert "NO TESTS RAN" not in proc.stdout

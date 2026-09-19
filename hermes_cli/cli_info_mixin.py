@@ -258,12 +258,17 @@ class CLIInfoMixin:
         # /help skills — the full list, kept out of the default view so core commands don't
         # scroll off screen.
         if arg.lower() in ("skills", "skill"):
-            if not skill_commands:
-                _cprint("\n  No skill commands installed.\n")
-                return
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
-            for cmd, info in sorted(skill_commands.items()):
-                _row(cmd, info['description'], 22)
+            from agent.skill_commands import skill_command_collision_note
+            from tools.skills_tool import _find_all_skills
+            if skill_commands:
+                _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+                for cmd, info in sorted(skill_commands.items()):
+                    _row(cmd, info['description'], 22)
+            else:
+                _cprint("\n  No skill commands installed.")
+            # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
+            for note in filter(None, (skill_command_collision_note(s["name"]) for s in _find_all_skills())):
+                _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
             return
 

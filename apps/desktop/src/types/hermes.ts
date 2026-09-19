@@ -130,6 +130,11 @@ export interface OAuthPollResponse {
    *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
    *  `error_message` carries the matching user-facing text. */
   reason?: null | string
+  /** Failed sign-ins over a free-tier identity: the seconds the account service
+   *  asked the client to wait before trying again (0 or absent when none). */
+  retry_after?: null | number
+  /** Failed sign-ins over a free-tier identity: whether a later attempt can succeed. */
+  retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
 }
@@ -149,6 +154,14 @@ export interface FreeTierStatus {
   model: string
   /** True until the one-time introduction has been acknowledged. */
   notice_pending: boolean
+  /** Present only while `enabled` and no identity exists: why the last attempt
+   *  to create one failed. `error_code` is one of the backend's `anon_*` codes
+   *  (`hermes_cli/anon_auth.py`), `error` its sentence, `retryable` whether a
+   *  later attempt can succeed, `retry_after` the seconds still to wait. */
+  error?: string
+  error_code?: string
+  retryable?: boolean
+  retry_after?: number
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -409,6 +422,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    show_reasoning?: boolean | string
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
@@ -651,6 +665,12 @@ export interface SessionResumeResult {
      *  and before the output it redirected (#73793). Omitted by older
      *  gateways. */
     correction_offsets?: number[]
+    /** Display classification of a synthetic starting prompt (`process_complete`,
+     *  `async_delegation_complete`, `hidden`, …) — the same typing the persisted
+     *  row gets, so a reconnect renders the live prompt like history will
+     *  (#112144). Omitted for genuine user input and by older gateways. */
+    display_kind?: SessionMessage['display_kind']
+    display_metadata?: SessionMessage['display_metadata']
     /** Retained failed turn: the error the terminal frame carried (the frame
      *  itself may have been lost to a disconnect). */
     error?: string
@@ -972,6 +992,9 @@ export interface ProfileCreatePayload {
 export interface ProfileInfo {
   /** Presentation-only label override (profile.yaml display_name). */
   display_name?: string
+  /** Bot Mode title (profile.yaml ui_meta['hermes-bots'].title) — the name the
+   *  Bots roster shows for this profile. Presentation-only. */
+  bot_title?: string
   has_env: boolean
   is_default: boolean
   model: null | string
@@ -1254,6 +1277,9 @@ export interface StatusResponse {
   env_path: string
   gateway_exit_reason: string | null
   gateway_health_url: string | null
+  /** Seconds since housekeeping last stamped gateway_state.json; set only when the process is alive
+   *  but the stamp is past the freshness TTL (loop/housekeeping wedged). null when healthy. */
+  gateway_heartbeat_stale_s?: number | null
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
   gateway_running: boolean
@@ -1623,7 +1649,15 @@ export interface McpCatalogEntry {
   /** Composer-suggestion triggers (present when the manifest declares a
    *  `suggest` block; null/absent on entries without one and on older
    *  backends that predate the field). */
-  suggest?: { keywords: string[]; hosts: string[] } | null
+  suggest?: {
+    keywords: string[]
+    hosts: string[]
+    applications?: string[]
+    examples?: string[]
+    requires_app?: boolean
+  } | null
+  /** Observed on this entry's backend host, not proof that its MCP is usable. */
+  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1632,6 +1666,7 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
+  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

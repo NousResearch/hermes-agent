@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,23 +62,38 @@ def _flock(fd, lock: bool) -> None:
     msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
 
 
+_held_locks = threading.local()  # per thread: flock is NOT re-entrant across separate fds
+
+
 @contextmanager
-def _usage_file_lock():
-    """Serialize .usage.json read-modify-write cycles across processes."""
-    lock_path = _usage_file().with_suffix(".json.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if fcntl is None and msvcrt is None:
+def skill_file_lock(lock_path: Path):
+    """Exclusive cross-process lock on ``lock_path`` held across a read-modify-write cycle.
+    Re-entrant within one thread (a nested acquire of the same path just runs); a no-op
+    where neither fcntl nor msvcrt exists."""
+    lock_path = Path(lock_path)
+    held = getattr(_held_locks, "paths", None)
+    if held is None:
+        held = _held_locks.paths = set()
+    if (fcntl is None and msvcrt is None) or lock_path in held:
         yield
         return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")  # msvcrt needs a non-empty byte range to lock
     with open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8") as fd:
         _flock(fd, True)
+        held.add(lock_path)
         try:
             yield
         finally:
+            held.discard(lock_path)
             with suppress(OSError, IOError):
                 _flock(fd, False)
+
+
+def _usage_file_lock():
+    """Serialize .usage.json read-modify-write cycles across processes."""
+    return skill_file_lock(_usage_file().with_suffix(".json.lock"))
 
 
 def _read_lines(path: Path, fail_log: str) -> List[str]:
@@ -165,14 +181,14 @@ def _read_hub_installed_names() -> Set[str]:
 
 
 def _prune_builtins_enabled() -> bool:
-    """``curator.prune_builtins`` (default True); lazy config import keeps this module importable during update/sync."""
+    """``curator.prune_builtins`` (default False); lazy config import keeps this module importable during update/sync."""
     try:
         from hermes_cli.config import load_config
         cur = load_config().get("curator")
-        return bool(cur.get("prune_builtins", True)) if isinstance(cur, dict) else True
+        return bool(cur.get("prune_builtins", False)) if isinstance(cur, dict) else False
     except Exception as e:  # pragma: no cover — best-effort config read
         logger.debug("Failed to read curator.prune_builtins: %s", e)
-        return True
+        return False
 
 
 def read_suppressed_names() -> Set[str]:
@@ -601,7 +617,9 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"skill '{skill_name}' not found"
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
-    dest = _archive_dir() / skill_dir.name
+    # Flatten under the skill NAME, not the directory name: `mlops/training/accelerate` is the skill
+    # `huggingface-accelerate`, and restore/list/purge all key on the name.
+    dest = _archive_dir() / skill_name
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -627,9 +645,12 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     # "<skill>-YYYYMMDDHHMMSS" counts — a bare startswith("<skill>-") would let restoring "git" steal "git-helpers".
     dirs = [p for p in archive_root.rglob("*") if p.is_dir()]
     prefix = f"{skill_name}-"
+    # Older archives were flattened under the DIRECTORY name (`accelerate` for `huggingface-accelerate`),
+    # so fall back to the frontmatter name before giving up.
     candidates = [p for p in dirs if p.name == skill_name] or sorted(
         (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
-         and p.name[len(prefix):].isdigit()), reverse=True)
+         and p.name[len(prefix):].isdigit()), reverse=True) or [
+        p for p in dirs if (p / "SKILL.md").is_file() and _read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
     if (dest := _skills_dir() / skill_name).exists():

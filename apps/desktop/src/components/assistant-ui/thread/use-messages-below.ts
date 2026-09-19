@@ -12,6 +12,7 @@ interface MessagesBelowOptions {
   paneVisible: boolean
   rows: ReactNode
   sessionKey: string | null | undefined
+  sessionId: string | null
 }
 
 /** Only measure inside the viewport's turn; leave skipped off-screen content asleep. */
@@ -52,7 +53,8 @@ export function useMessagesBelow({
   isAtBottom,
   paneVisible,
   rows,
-  sessionKey
+  sessionKey,
+  sessionId
 }: MessagesBelowOptions) {
   useEffect(() => {
     if (!paneVisible) {
@@ -60,7 +62,7 @@ export function useMessagesBelow({
     }
 
     if (isAtBottom) {
-      publishThreadMessagesBelow(0, { paneVisible })
+      publishThreadMessagesBelow(0, { paneVisible, sessionId })
 
       return
     }
@@ -76,7 +78,7 @@ export function useMessagesBelow({
 
     const measure = () => {
       frame = 0
-      publishThreadMessagesBelow(countMessagesBelow(viewport, content), { paneVisible })
+      publishThreadMessagesBelow(countMessagesBelow(viewport, content), { paneVisible, sessionId })
     }
 
     const schedule = () => {
@@ -96,5 +98,5 @@ export function useMessagesBelow({
       viewport.removeEventListener('scroll', schedule)
       observer.disconnect()
     }
-  }, [contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey])
+  }, [contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId])
 }

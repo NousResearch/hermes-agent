@@ -242,6 +242,25 @@ class HttpFailure:
     response: Any = None
 
 
+def record_token_usage(usage: Any, *, model: str, provider: str, base_url: Optional[str] = None) -> None:
+    """Record a token-billed image call against the ambient session as task ``image_generation``.
+
+    Token-metered image models (OpenRouter chat-image and Image API models, OpenAI ``gpt-image``)
+    bill exactly like a chat completion, so they get a ``session_model_usage`` row through the
+    same chokepoint as auxiliary calls. ``usage`` is the response's usage block (dict or SDK
+    object). Per-image backends (FAL, xAI, Krea, ...) return no token usage and never call this;
+    a body without tokens is a no-op inside ``record_aux_usage``, as is running outside a turn.
+    """
+    if not usage:
+        return
+    from types import SimpleNamespace
+
+    from agent.aux_accounting import record_aux_usage
+
+    record_aux_usage(
+        SimpleNamespace(model=model, usage=usage), "image_generation", provider=provider, base_url=base_url)
+
+
 def post_json(
     url: str, *, headers: Dict[str, str], payload: Dict[str, Any], timeout: Any, label: str,
     error_message: Callable[[Any, Exception], str] = requests_error_message,

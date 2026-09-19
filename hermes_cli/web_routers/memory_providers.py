@@ -164,7 +164,8 @@ def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], 
 
 def _write_json_0600(path: Path, data: Dict[str, Any]) -> None:
     from utils import atomic_json_write
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, mode=0o600)
 
 

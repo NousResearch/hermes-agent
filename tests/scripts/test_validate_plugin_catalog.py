@@ -97,6 +97,15 @@ def test_unknown_category_fails(tmp_path):
     assert run_validator(str(path)).returncode == 0
 
 
+def test_version_and_image_are_validated_when_present(tmp_path):
+    """Admission rejects a malformed label or an off-GitHub image so the site and CLI never have to
+    coerce one; a well-formed pair passes."""
+    _expect_error(tmp_path, {"image": "https://cdn.example.com/banner.png"}, "image")
+    _expect_error(tmp_path, {"version": "1.4.0 beta"}, "version")
+    path = write_entry(tmp_path, {**VALID_ENTRY, "version": "1.4.0", "image": "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png"}, "ok.yaml")
+    assert run_validator(str(path)).returncode == 0
+
+
 def test_bad_name_fails(tmp_path):
     _expect_error(tmp_path, {"name": "Bad Name!"}, "name")
 

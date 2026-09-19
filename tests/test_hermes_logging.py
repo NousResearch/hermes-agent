@@ -142,6 +142,48 @@ class TestSetupLogging:
             hermes_home / "logs" / "agent.log"
         ).read_text()
 
+    def test_release_profile_log_handlers_closes_only_deleted_profile(self, hermes_home, tmp_path):
+        """Profile deletion releases its routed log files without disturbing another profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        deleted_home = tmp_path / "profile-deleted"
+        other_home = tmp_path / "profile-other"
+        deleted_home.mkdir()
+        other_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, deleted_home, other_home]
+        ) is True
+
+        logger = logging.getLogger("agent.profile-delete-log-release")
+        token = set_hermes_home_override(deleted_home)
+        try:
+            logger.warning("deleted profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(other_home)
+        try:
+            logger.warning("other profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        routers = [
+            handler for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        ]
+        assert len(routers) == 2  # agent.log and errors.log
+        assert all(deleted_home.resolve() in handler._profile_handlers for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+
+        assert hermes_logging.release_profile_log_handlers(deleted_home) == 2
+
+        assert all(deleted_home.resolve() not in handler._profile_handlers for handler in routers)
+        assert all(deleted_home.resolve() not in handler._profile_homes for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+        assert "other profile log handles" in (other_home / "logs" / "agent.log").read_text()
+        assert "other profile log handles" in (other_home / "logs" / "errors.log").read_text()
+
     def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
         """A dashboard or serve backend builds agents for several profiles in ONE process, and each
         one calls setup_logging for its own home. The second home must get a router — a bare file

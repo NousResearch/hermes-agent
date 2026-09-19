@@ -9,7 +9,7 @@ description: "Browser-based administration panel for managing configuration, API
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
 
 :::tip
-Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](/integrations/nous-portal).
+Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](../../integrations/nous-portal.md).
 :::
 
 ## Quick Start
@@ -63,6 +63,12 @@ worker dashboard
 # → already running: opens the browser at ?profile=worker
 # → not running:     starts the machine dashboard with "worker" preselected
 ```
+
+A dashboard started this way keeps `worker` as its fallback scope for the
+whole server lifetime: a deep link that omits `?profile=` (for example a
+`/chat?resume=<id>` link) still opens under `worker`, so the embedded chat
+sees that profile's MCP servers, model and skills. An explicit `?profile=`
+in the URL always wins.
 
 Pass `--isolated` to opt out and run a dedicated server scoped to that
 profile (the pre-unification behavior — useful if you deliberately expose
@@ -136,6 +142,7 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 - Keystrokes travel to the PTY; ANSI output streams back to the browser
 - xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
 - Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
+- A quiet PTY socket sends a small resize keepalive every 20 seconds, so reverse proxies with idle timeouts (nginx, Caddy) don't drop a chat that is merely waiting; proxies that cap a connection's total lifetime (some tunnels close a socket after ~30 seconds regardless of traffic) still close it, and the chat reattaches to the same session automatically; automatic reconnects pause while the browser tab is hidden or you are on another dashboard page, and resume when you come back
 
 **Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
 
@@ -340,7 +347,7 @@ prompt for them inline; the values go to `.env`. This is the same catalog
 
 ### Webhooks
 
-Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
+Manage dynamic [webhook subscriptions](../messaging/webhooks.md). The
 webhook platform must be enabled in messaging settings first; the page shows a
 hint when it isn't.
 
@@ -1086,7 +1093,7 @@ The dashboard's React StatusPage shows the same fields under "Web server". A sid
 
 ## Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](../desktop.md) page.)
 
 You protect the remote dashboard with one of the bundled auth providers, and the desktop app signs in against whichever one the backend advertises. For a backend reachable beyond your own machine — a VPS, a public host, anything internet-facing — the recommended provider is **OAuth (Nous Portal)** (register it with [`hermes dashboard register`](#registering-a-dashboard) and sign in with *Sign in with Nous Research*). The bundled [username/password provider](#usernamepassword-provider-no-oauth-idp) is the quickest option when the backend is on a trusted LAN or reachable only over a VPN, but is **not suitable for direct public-internet exposure**. Binding the dashboard to a non-loopback address engages its auth gate; once signed in, Desktop reuses the session for the chat WebSocket automatically — there is no token to copy or paste.
 

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    kimi_supported_efforts, requested_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
 )
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -119,11 +119,7 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with
     narrower sets clamp again downstream.
     """
-    if not isinstance(reasoning_config, dict):
-        return reasoning_config
-    effort = str(reasoning_config.get("effort") or "").strip().lower()
-    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS) if effort else effort
-    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+    return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:

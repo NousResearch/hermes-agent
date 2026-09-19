@@ -28,22 +28,11 @@ method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
-
-
-def method(name: str):
-    """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
-    def deco(fn):
-        def scoped(rid, params: dict) -> dict:
-            try:
-                home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-            except FileNotFoundError as e:
-                return _err(rid, 5095, str(e))
-            if home is None:
-                return fn(rid, params)
-            with _session_profile_runtime_scope({"profile_home": str(home)}):
-                return fn(rid, params)
-        return _registry.method(name)(scoped)
-    return deco
+method = _registry.method
+# server.py's ``@_profile_scoped`` (applied at install): the one scoping path every RPC uses, so the
+# launch profile (no ``params.profile``) keeps its secret scope bound once the process multiplexes
+# instead of its manager-token reads raising ``UnscopedSecretError``.
+_profile_scoped = _registry.profile_scoped
 
 # JSON-RPC error code 5095 = vault failure (validation + store errors).
 # Kept as a literal inside handler bodies: handlers are rebound onto
@@ -51,6 +40,7 @@ def method(name: str):
 
 
 @method("vault.list")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Metadata-only listing across every enabled backend (local + unlocked password managers).
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
@@ -68,6 +58,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.sources")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
     from agent.vault_backends import enabled_backends
@@ -85,6 +76,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.source.set")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
     from agent.vault_backends.base import external_backend_classes
@@ -108,6 +100,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.unlock")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
     from agent.vault_backends import enabled_backends
@@ -129,6 +122,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.lock")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Forget a manager's session token (or every one when ``name`` is omitted)."""
     from agent.vault_backends.unlock import lock
@@ -139,6 +133,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.add")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Add a vault item. ``secret`` values go straight into the encrypted store.
 
@@ -171,6 +166,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.remove")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Remove a vault item by id. Result: ``{removed: bool}``."""
     try:

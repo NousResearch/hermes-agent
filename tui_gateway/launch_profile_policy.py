@@ -17,10 +17,11 @@ Two facts anchor this module:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterator, Optional
 
 _lock = threading.Lock()
 _snapshot: Optional[Dict[str, str]] = None
@@ -47,6 +48,14 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
+def _launch_env() -> Dict[str, str]:
+    """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
+    (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
+    miss values the launch process still bridges at startup)."""
+    from agent.secret_scope import is_multiplex_active
+    return capture_launch_env() if is_multiplex_active() else dict(os.environ)
+
+
 def launch_terminal_env() -> Dict[str, str]:
     """The frozen launch ``TERMINAL_*`` overlay for a launch-profile turn's terminal scope.
 
@@ -57,10 +66,33 @@ def launch_terminal_env() -> Dict[str, str]:
 
 
 def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
-    """The launch profile's secret mapping: its ``.env`` + external sources over the frozen
-    launch env (systemd / ``op run`` injection survives the fail-closed flip; a secondary never
-    sees it because its scope is built from its own files only)."""
+    """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
+    (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
+    its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
+    not, so the body's credential source is decided once at entry: a request that entered while
+    single-profile keeps resolving from this mapping after a concurrent first secondary flips
+    ``get_secret`` to fail closed (``_MULTIPLEX_ACTIVE`` is read on every ``get_secret``, the
+    scope decision was made at entry)."""
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    scope = {k: v for k, v in capture_launch_env().items() if not _is_global_env(k)}
+    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
+
+
+@contextlib.contextmanager
+def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
+    """Bind the launch profile's own runtime scope for one body: ``launch_secret_scope`` plus its
+    terminal policy over the frozen launch ``TERMINAL_*`` overlay. No HERMES_HOME override — the
+    launch home IS the process home. For hosts whose launch-profile bodies are not RPC sessions
+    (the standalone messaging gateway after a hosted room activated multiplexing, #112878)."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+
+    home = Path(launch_home)
+    secret_token = set_secret_scope(launch_secret_scope(home))
+    terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+    try:
+        yield
+    finally:
+        reset_terminal_scope(terminal_token)
+        reset_secret_scope(secret_token)

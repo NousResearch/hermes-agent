@@ -1841,6 +1841,28 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     return False
 
 
+_LOOPBACK_FALLBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _fallback_destination_can_authenticate(fb_provider: str, fb_base_url: str) -> bool:
+    """Whether a fallback destination that resolved without a usable API key still has a way
+    to authenticate: a virtual/external-process auth type, a local endpoint, or a credential
+    pool entry (disk or env-seeded). False means committing the switch would swap the current
+    error for an endless 401 loop on a pool with nothing to rotate (#110831)."""
+    from hermes_cli.providers import HERMES_OVERLAYS
+    overlay = HERMES_OVERLAYS.get(fb_provider)
+    if overlay is not None and overlay.auth_type in ("virtual", "external_process"):
+        return True
+    if base_url_hostname(fb_base_url) in _LOOPBACK_FALLBACK_HOSTS:
+        return True
+    try:
+        from agent.credential_pool import load_pool
+        return bool(load_pool(fb_provider).has_credentials())
+    except Exception:
+        # A credential-pool read failure must never block the fallback itself.
+        return True
+
+
 def _update_fallback_context_compressor(agent) -> None:
     """Point compression limits at the fallback model's context window (not the primary's),
     respecting the explicit model.context_length config override."""
@@ -1978,6 +2000,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_api_mode = "chat_completions"
                 elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                     fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+
+            # Destination credential gate (#110831): committing a switch whose destination
+            # resolved without any API key on a paid, remote provider with an empty
+            # credential pool trades the current error for an endless 401 loop with nothing
+            # to rotate — skip the entry and let the chain keep walking so exhaustion
+            # surfaces to the user instead.
+            _fb_client_key = str(getattr(fb_client, "api_key", "") or "").strip()
+            if (not fb_api_key_hint
+                    and not _fb_client_key
+                    and not _fallback_destination_can_authenticate(fb_provider, fb_base_url)):
+                unavailable.add(fb_key)
+                logger.warning(
+                    "Fallback skip: %s/%s has no configured credentials; refusing to switch "
+                    "(an empty credential pool would loop on auth failures)", fb_provider, fb_model)
+                continue
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 

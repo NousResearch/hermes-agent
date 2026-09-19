@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileScope } from '@/hermes'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $connection } from '@/store/session'
+import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
 import type { CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
@@ -11,7 +14,7 @@ const validateCustomEndpoint = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
 const triggerHaptic = vi.fn()
-const scope = { connectionId: 'local', profile: 'default' } satisfies ProfileScope
+let scope: ProfileScope
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -51,8 +54,37 @@ const savedResponse: CustomEndpointsResponse = {
   ok: true
 }
 
+beforeEach(() => {
+  $activeGatewayProfile.set('default')
+  $profiles.set([
+    {
+      has_env: false,
+      is_default: true,
+      model: null,
+      name: 'default',
+      path: '',
+      provider: null,
+      skill_count: 0
+    }
+  ])
+  $settingsScopeOverride.set(null)
+  $connection.set({
+    authMode: 'token',
+    baseUrl: 'http://127.0.0.1:8642',
+    connectionId: 'local',
+    headers: {},
+    mode: 'local',
+    remoteHost: '',
+    token: ''
+  } as never)
+  scope = $settingsOwner.get()!
+})
+
 afterEach(() => {
   cleanup()
+  $settingsScopeOverride.set(null)
+  $profiles.set([])
+  $connection.set(null)
   vi.clearAllMocks()
 })
 

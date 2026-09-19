@@ -34,6 +34,14 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
+### One-click cloud deploy (gateway)
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/ai-agent-persistent-memory)
+
+Want a hosted gateway without managing a VPS? This community-maintained [Railway](https://railway.com) template runs Hermes in **gateway mode** with a persistent volume — memory, skills, and session history survive restarts. Add your model-provider key and a messaging-platform token (Telegram/Discord/Slack), and the bot is live in ~2 minutes. Complements the VPS and serverless options above; no server to maintain.
+
+> Community template, maintained by [@YOUR_HANDLE](https://github.com/sahilrupani). Not affiliated with Nous Research — issues welcome on the template repo.
+
 ### Linux, macOS, WSL2, Termux
 
 ```bash

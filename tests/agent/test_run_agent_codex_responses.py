@@ -1080,6 +1080,130 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
 
 
+def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
+    """A relay that keeps SSE open after completion cannot discard the billed response."""
+    import threading
+    import time
+
+    import agent.codex_runtime as codex_runtime
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    closed = threading.Event()
+
+    class _HeldOpenAfterTerminalStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        status="completed", usage=usage, id="resp_held_open",
+                    ),
+                ),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                closed.wait(3.0)
+                raise
+
+        def close(self):
+            closed.set()
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _HeldOpenAfterTerminalStream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    started = time.monotonic()
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert calls["count"] == 1
+    assert response.status == "completed"
+    assert response.usage is usage
+    assert response.id == "resp_held_open"
+    assert closed.wait(1.0)
+
+
+def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_raises(monkeypatch):
+    """A Relay-managed wrapper whose close() raises (running loop) must not leak the provider stream."""
+    import threading
+
+    import agent.codex_runtime as codex_runtime
+    from agent import relay_llm
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message", status="completed", content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    raw_closed = threading.Event()
+
+    class _HeldOpenRawStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(type="response.completed",
+                                response=SimpleNamespace(status="completed", usage=usage, id="resp_managed")),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raw_closed.wait(3.0)
+                raise
+
+        def close(self):
+            raw_closed.set()
+
+    class _ManagedWrapper:
+        final_response = None
+
+        def __init__(self, request, stream_factory, *, on_stream_created=None, **_kwargs):
+            raw = stream_factory(request)
+            on_stream_created(raw)
+            self._iter = iter(raw)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iter)
+
+        def close(self):
+            raise RuntimeError("Cannot close a running event loop")
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: _HeldOpenRawStream()))
+    monkeypatch.setattr(relay_llm, "stream", _ManagedWrapper)
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_managed"
+    assert raw_closed.wait(1.0)
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -2673,3 +2797,117 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+def _raise_prestream_transport_error(request):
+    """Raise the #103673 shape: APIConnectionError <- ReadError <- ReadError."""
+    import httpx
+
+    from openai import APIConnectionError
+
+    inner = httpx.ReadError("receive failed", request=request)
+    mid = httpx.ReadError("receive failed", request=request)
+    try:
+        raise mid from inner
+    except httpx.ReadError as chained:
+        raise APIConnectionError(request=request) from chained
+
+
+def _completed_create_stream():
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="Recovered.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    return _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    usage=usage,
+                    id="resp_prestream_retry_1",
+                ),
+            ),
+        ]
+    )
+
+
+def test_run_codex_stream_retries_prestream_apiconnectionerror(monkeypatch):
+    """Regression test for issue #103673.
+
+    A pre-stream ``APIConnectionError`` wrapping an httpx transport error
+    (``ReadError`` before the first SSE event, stream never opened) must retry
+    with a fresh physical request like a raw transport error does, instead of
+    failing the turn on a transient connect/receive failure.
+    """
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    request = httpx.Request(
+        "POST",
+        "https://chatgpt.com/backend-api/codex/responses",
+        content=b'{"model":"gpt-5-codex"}',
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            _raise_prestream_transport_error(request)
+        return _completed_create_stream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    assert response.status == "completed"
+    assert response.id == "resp_prestream_retry_1"
+
+
+def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
+    monkeypatch, caplog
+):
+    """Regression test for issue #103673 (observability half).
+
+    When the pre-stream retry is exhausted, the turn still raises, but the
+    single WARNING must carry the byte count, the stream-open state, the
+    exception chain, and the attempt count -- without prompt content.
+    """
+    import logging
+
+    import httpx
+    from openai import APIConnectionError
+
+    agent = _build_agent(monkeypatch)
+    body = b'{"model":"gpt-5-codex"}'
+    request = httpx.Request(
+        "POST", "https://chatgpt.com/backend-api/codex/responses", content=body
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        _raise_prestream_transport_error(request)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        with pytest.raises(APIConnectionError):
+            agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    failures = [
+        record
+        for record in caplog.records
+        if "Codex Responses request failed" in record.message
+    ]
+    assert len(failures) == 1
+    message = failures[0].message
+    assert f"serialized_request_body_bytes={len(body)}" in message
+    assert "stream_opened=false" in message
+    assert "APIConnectionError <- ReadError <- ReadError" in message
+    assert "attempt=2/2" in message

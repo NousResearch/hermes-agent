@@ -312,8 +312,12 @@ def publish_api_tool_event(authority, session_id, generation, event_type, call_i
             _notify_observers(authority, session_id, 'tool_complete_callback', call_id, tool_name, args or {}, result)
 
 
-def prepare_api_runtime(model, runtime_kwargs):
-    current = api_execution.get()
+_CURRENT_API = object()
+
+
+def prepare_api_runtime(model, runtime_kwargs, *, current=_CURRENT_API, pending_models=None):
+    if current is _CURRENT_API:
+        current = api_execution.get()
     if current is None:
         return model, runtime_kwargs
     options = current['settings']
@@ -325,5 +329,6 @@ def prepare_api_runtime(model, runtime_kwargs):
         requested_model=options.get('requested_model'), requested_provider=options.get('requested_provider'),
         route=route, session_model=options.get('session_model'),
         confirmed_runtime_lock=bool(options.get('confirmed_runtime_lock')),
-        gateway_session_key=None, session_id=None)
+        gateway_session_key=None, session_id=None,
+        **({'pending_models': pending_models} if pending_models is not None else {}))
     return model, runtime_kwargs

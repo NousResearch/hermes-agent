@@ -143,7 +143,6 @@ class GatewayAgentCacheMixin:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
         is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
-        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
             return
@@ -154,6 +153,12 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
+        override = self._resolve_persisted_model_override(persisted)
+        self._session_state(session_key).conversation.model_override = override
+
+    def _resolve_persisted_model_override(self, persisted):
+        """Credential preparation only; the caller owns cache publication."""
+        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
         if provider:
@@ -173,17 +178,13 @@ class GatewayAgentCacheMixin:
                     "Credential re-resolution failed for persisted override "
                     "(provider=%s); using credential-less override", provider, exc_info=True,
                 )
-        self._session_state(session_key).conversation.model_override = override
-        logger.info(
-            "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
-        )
+        return override
 
-    def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
+    def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict, *, selection=None) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped
         so partial overrides don't clobber defaults), returning (model, runtime_kwargs)."""
         from gateway.run import _credential_pool_for_provider
-        override = self._session_model_override(session_key)
+        override = (selection.pending_override or selection.override) if selection is not None else self._session_model_override(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)

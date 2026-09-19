@@ -1,6 +1,8 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
 import importlib.util
+import base64
+import io
 import json
 import subprocess
 import sys
@@ -269,3 +271,152 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+# --- multiline body handling in gmail send/reply ---
+#
+# Agents build commands as ``--body "Line one\n\nLine two"``; POSIX shells keep
+# the backslash, so Gmail used to send that literal text as the body. The fix is
+# a non-lossy multiline interface: ``--body`` stays byte-for-byte, multiline
+# bodies come from ``--body-file``/stdin, and escape decoding is opt-in.
+
+
+def _mime_body(raw):
+    """Decode a Gmail ``raw`` payload and return just the message body."""
+    decoded = base64.urlsafe_b64decode(raw + "==").decode("utf-8")
+    return decoded.split("\n\n", 1)[1]
+
+
+def _reply_original():
+    return {
+        "threadId": "t1",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "them@example.com"},
+                {"name": "Subject", "value": "subject"},
+                {"name": "Message-ID", "value": "<abc@example.com>"},
+            ]
+        },
+    }
+
+
+def _capturing_run_gws(captured):
+    """Stub _run_gws: serve the reply's metadata read, capture the outgoing raw."""
+
+    def run(parts, params=None, body=None):
+        if parts[:4] == ["gmail", "users", "messages", "get"]:
+            return _reply_original()
+        captured.update(body or {})
+        return {"id": "m1", "threadId": "t1"}
+
+    return run
+
+
+class _FakeExec:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def execute(self):
+        return self._payload
+
+
+class _FakeService:
+    """Minimal googleapiclient stand-in that records the outgoing raw payload."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self
+
+    def send(self, userId=None, body=None):
+        self._store.update(body or {})
+        return _FakeExec({"id": "py1", "threadId": "t1"})
+
+    def get(self, userId=None, id=None, format=None, metadataHeaders=None):
+        return _FakeExec(_reply_original())
+
+
+def _send_args(**overrides):
+    args = {
+        "to": "me@example.com",
+        "subject": "subject",
+        "body": None,
+        "body_file": None,
+        "decode_escapes": False,
+        "cc": None,
+        "from_header": None,
+        "html": False,
+        "thread_id": None,
+    }
+    args.update(overrides)
+    return types.SimpleNamespace(**args)
+
+
+def _reply_args(**overrides):
+    args = {
+        "message_id": "m0",
+        "body": None,
+        "body_file": None,
+        "decode_escapes": False,
+        "from_header": None,
+    }
+    args.update(overrides)
+    return types.SimpleNamespace(**args)
+
+
+class TestGmailBodyResolution:
+    """``--body`` is byte-for-byte; multiline input is explicit and non-lossy."""
+
+    def test_body_source_resolution(self, api_module, tmp_path, monkeypatch):
+        resolve = api_module._resolve_body
+
+        # A literal backslash-n survives: --body is never rewritten.
+        literal = "code: printf 'a" + "\\" + "n'"
+        assert resolve(_send_args(body=literal)) == literal
+
+        # Real newlines from a file reach the payload unchanged.
+        body_file = tmp_path / "body.txt"
+        body_file.write_text("Line one\n\nLine two\n", encoding="utf-8")
+        assert resolve(_send_args(body_file=str(body_file))) == "Line one\n\nLine two\n"
+
+        # ``-`` reads stdin, which is how a shell pipe supplies a multiline body.
+        monkeypatch.setattr("sys.stdin", io.StringIO("piped\n\nbody\n"))
+        assert resolve(_send_args(body_file="-")) == "piped\n\nbody\n"
+
+        # Escape decoding only happens when explicitly requested.
+        assert resolve(_send_args(body="a\\n\\nb", decode_escapes=True)) == "a\n\nb"
+
+    def test_missing_body_is_rejected(self, api_module, capsys):
+        with pytest.raises(SystemExit):
+            api_module._resolve_body(_send_args())
+        assert "error" in json.loads(capsys.readouterr().err)
+
+    @pytest.mark.parametrize("use_gws_binary", [True, False], ids=["gws-binary", "python-client"])
+    @pytest.mark.parametrize("command", ["send", "reply"])
+    def test_multiline_body_reaches_the_mime_payload(
+        self, api_module, monkeypatch, capsys, tmp_path, command, use_gws_binary
+    ):
+        """Every send/reply client path carries the body-file newlines into MIME."""
+        body_file = tmp_path / "body.txt"
+        body_file.write_text("Line one\n\nLine two\n", encoding="utf-8")
+        captured = {}
+
+        if use_gws_binary:
+            monkeypatch.setattr(api_module, "_run_gws", _capturing_run_gws(captured))
+        else:
+            monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+            monkeypatch.setattr(api_module, "build_service", lambda *a, **k: _FakeService(captured))
+
+        if command == "send":
+            api_module.gmail_send(_send_args(body_file=str(body_file)))
+        else:
+            api_module.gmail_reply(_reply_args(body_file=str(body_file)))
+        capsys.readouterr()
+
+        body = _mime_body(captured["raw"])
+        assert "Line one\n\nLine two" in body
+        assert "\\n" not in body

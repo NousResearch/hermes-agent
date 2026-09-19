@@ -31,6 +31,44 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
+
+
+def _decode_shell_escapes(text: str) -> str:
+    """Decode literal C-style escape sequences; opt-in via ``--decode-escapes``.
+
+    Agents frequently build commands like ``--body "Line one\\n\\nLine two"``.
+    POSIX shells preserve ``\\n`` inside ordinary double quotes, so the script
+    receives a literal backslash-n and Gmail sends visibly broken text. This is
+    lossy, so it never runs unless the caller asks for it.
+    """
+    if "\\" not in text:
+        return text
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n").replace("\\t", "\t")
+
+
+def _resolve_body(args) -> str:
+    """Return the outbound body, preferring an explicit multiline source.
+
+    ``--body`` is passed through byte-for-byte so content that legitimately
+    contains backslash escapes (code snippets, Windows paths) survives intact.
+    Multiline bodies come from ``--body-file`` (``-`` reads stdin) instead of
+    from escape expansion; ``--decode-escapes`` opts in to the lossy
+    interpretation of literal ``\\n``/``\\t`` in ``--body``.
+    """
+    body_file = getattr(args, "body_file", None)
+    if body_file:
+        if body_file == "-":
+            return sys.stdin.read()
+        return Path(body_file).read_text(encoding="utf-8")
+    if args.body is None:
+        print(json.dumps({"error": "provide --body or --body-file"}), file=sys.stderr)
+        sys.exit(1)
+    if getattr(args, "decode_escapes", False):
+        return _decode_shell_escapes(args.body)
+    return args.body
+
+
+
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -380,8 +418,9 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    body_text = _resolve_body(args)
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
+        message = MIMEText(body_text, "html" if args.html else "plain")
         message["To"] = args.to
         message["Subject"] = args.subject
         if args.cc:
@@ -403,7 +442,7 @@ def gmail_send(args):
         return
 
     service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
+    message = MIMEText(body_text, "html" if args.html else "plain")
     message["To"] = args.to
     message["Subject"] = args.subject
     if args.cc:
@@ -423,6 +462,7 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    body_text = _resolve_body(args)
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -439,7 +479,7 @@ def gmail_reply(args):
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
-        message = MIMEText(args.body)
+        message = MIMEText(body_text)
         message["To"] = headers.get("from", "")
         message["Subject"] = subject
         if args.from_header:
@@ -468,7 +508,7 @@ def gmail_reply(args):
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
-    message = MIMEText(args.body)
+    message = MIMEText(body_text)
     message["To"] = headers.get("from", "")
     message["Subject"] = subject
     if args.from_header:
@@ -1167,7 +1207,9 @@ def main():
     p = gmail_sub.add_parser("send")
     p.add_argument("--to", required=True)
     p.add_argument("--subject", required=True)
-    p.add_argument("--body", required=True)
+    p.add_argument("--body", default=None, help="Message body, sent byte-for-byte")
+    p.add_argument("--body-file", dest="body_file", default=None, help="Read the body from a file; '-' reads stdin")
+    p.add_argument("--decode-escapes", dest="decode_escapes", action="store_true", help="Interpret literal \\n and \\t in --body as newlines and tabs")
     p.add_argument("--cc", default="")
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.add_argument("--html", action="store_true", help="Send body as HTML")
@@ -1176,7 +1218,9 @@ def main():
 
     p = gmail_sub.add_parser("reply")
     p.add_argument("message_id", help="Message ID to reply to")
-    p.add_argument("--body", required=True)
+    p.add_argument("--body", default=None, help="Reply body, sent byte-for-byte")
+    p.add_argument("--body-file", dest="body_file", default=None, help="Read the body from a file; '-' reads stdin")
+    p.add_argument("--decode-escapes", dest="decode_escapes", action="store_true", help="Interpret literal \\n and \\t in --body as newlines and tabs")
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.set_defaults(func=gmail_reply)
 

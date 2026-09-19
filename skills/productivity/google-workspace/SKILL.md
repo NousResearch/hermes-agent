@@ -189,9 +189,15 @@ $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
 
+# Multi-paragraph bodies: use --body-file ('-' reads stdin). --body is sent
+# byte-for-byte, so a literal \n inside it arrives as a backslash and an "n".
+$GAPI gmail send --to user@example.com --subject "Hello" --body-file ./body.txt
+printf 'Line one\n\nLine two\n' | $GAPI gmail send --to user@example.com --subject "Hello" --body-file -
+
 # Reply (automatically threads and sets In-Reply-To)
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
+$GAPI gmail reply MESSAGE_ID --body-file ./reply.txt
 
 # Labels
 $GAPI gmail labels

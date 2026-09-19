@@ -430,7 +430,7 @@ def apply_retry_restarts(
             # next user turn (result["pending_steer"]) instead of losing it to clear_interrupt().
             _unapplied = agent._drain_pending_redirect()
             if _unapplied:
-                agent.steer(_unapplied)
+                agent.steer(_unapplied, _notify=False)
             return _verdict("break")
         # Cancelled request produced no valid assistant item: reuse the same logical
         # iteration after the outer loop appends partial context + correction.

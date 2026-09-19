@@ -602,6 +602,16 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
+    def _on_steer_accepted(self, text: str) -> None:
+        """``agent._steer_accepted_callback``: render an accepted steer in the transcript.
+
+        Fires for every accepted ``steer()`` — local busy-enter, ``/steer``, and external
+        steers that never touch the input loop (#112408). Runs on the caller's thread, so it
+        goes through ``_agent_status_print`` (TUI-safe; held while a box streams)."""
+        from cli import _ACCENT, _RST
+        preview = text[:80] + ("..." if len(text) > 80 else "")
+        self._agent_status_print(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
+
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
@@ -695,6 +705,10 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
+            # Render accepted steers — including external ones that bypass the local input
+            # paths — in the transcript (#112408). _agent_status_print is the TUI-safe,
+            # thread-safe path: it holds the line while a response box streams.
+            self.agent._steer_accepted_callback = self._on_steer_accepted
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

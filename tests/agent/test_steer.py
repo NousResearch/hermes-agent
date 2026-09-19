@@ -71,6 +71,32 @@ class TestSteerAcceptance:
         assert agent.steer("go ahead and check the logs") is True
         assert agent._pending_steer == "go ahead and check the logs"
 
+    def test_notifies_observer_after_accepting_steer(self):
+        """Regression for #112408: an accepted steer must notify the wired frontend
+        observer with the cleaned text, so an attached TUI can render it immediately
+        (steer() was previously silent and external steers never reached the transcript)."""
+        agent = _bare_agent()
+        seen = []
+        agent._steer_accepted_callback = seen.append
+        assert agent.steer("  hello from outside  ") is True
+        assert seen == ["hello from outside"]
+
+    def test_rejected_steer_does_not_notify_observer(self):
+        agent = _bare_agent()
+        seen = []
+        agent._steer_accepted_callback = seen.append
+        assert agent.steer("   ") is False
+        assert seen == []
+
+    def test_observer_failure_does_not_reject_steer(self):
+        def _boom(_text):
+            raise RuntimeError("frontend blew up")
+
+        agent = _bare_agent()
+        agent._steer_accepted_callback = _boom
+        assert agent.steer("still queued") is True
+        assert agent._pending_steer == "still queued"
+
 
 
 

@@ -1487,11 +1487,9 @@ class CLITuiMixin:
                 except Exception as exc:
                     _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
                     accepted = False
-                if accepted:
-                    preview = text[:80] + ("..." if len(text) > 80 else "")
-                    _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
-                else:
+                if not accepted:
                     _effective_mode = "queue"
+                # accepted: the agent's steer observer renders the transcript line.
         if _effective_mode == "queue":
             self._pending_input.put(payload)
             preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"

@@ -1,0 +1,20 @@
+name: compartment
+repo: https://github.com/MaxFreedomPollard/Compartment
+sha: b144fc34723911eace9f240ac1044b9280b74bf2
+subdir: integrations/hermes/compartment
+description: Encrypted, fully offline memory provider. AEAD-encrypted local vault (vectors included), bundled
+  embedding model, exact hybrid search, no API key and no network at runtime. One vault shared with Claude,
+  Cursor and any other MCP client on the machine.
+maintainer: MaxFreedomPollard
+tier: community
+category: memory
+requires_hermes: ">=0.20.1"
+docs_url: https://github.com/MaxFreedomPollard/Compartment/blob/b144fc34723911eace9f240ac1044b9280b74bf2/integrations/hermes/README.md
+version: "4.10.0"
+image: https://raw.githubusercontent.com/MaxFreedomPollard/Compartment/b144fc34723911eace9f240ac1044b9280b74bf2/docs/images/social-preview.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

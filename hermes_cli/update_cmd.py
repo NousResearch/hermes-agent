@@ -1076,7 +1076,7 @@ def _begin_update_receipt_and_plan(args):
     pre-update plan (None if the probe failed); ``sys.exit(2)`` when a non-gateway hermes.exe
     holds the venv shim."""
     # Structured receipt: record what this run discovers/does/skips so silent failures are diagnosable.
-    with _best_effort('Update receipt unavailable: %s'):
+    with _best_effort('Update receipt unavailable: %s', logging.WARNING):
         # See #74973, #81193, #85753, #88848, #91277.
         from hermes_cli.update_receipt import begin_update_receipt
         begin_update_receipt()
@@ -1233,8 +1233,11 @@ def _handle_update_called_process_error(
 
 
 def _finalize_receipt(status: str, debug_message: str) -> None:
-    """Best-effort ``finalize_update_receipt(status)``; the receipt must never break an update."""
-    with _best_effort(debug_message):
+    """Best-effort ``finalize_update_receipt(status)``; the receipt must never break an update.
+
+    WARNING, not DEBUG: this wrapper is one of the two layers that used to swallow a failed
+    receipt write invisibly (#112558)."""
+    with _best_effort(debug_message, logging.WARNING):
         from hermes_cli.update_receipt import finalize_update_receipt
         finalize_update_receipt(status)
 

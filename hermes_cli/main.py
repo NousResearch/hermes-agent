@@ -2300,8 +2300,12 @@ def _finalize_update_receipt(code: int, reason: str) -> None:
         from hermes_cli.update_receipt import finalize_pending_update_receipt
 
         finalize_pending_update_receipt(code, reason)
-    except Exception:
-        pass
+    except Exception as exc:
+        # The last chance to record the exit code must not vanish silently (#112558).
+        import logging
+
+        logging.getLogger("hermes_cli.update_cmd").warning(
+            "Could not close the update receipt at the command boundary: %s", exc)
 
 
 def _update_preflight_handled(args) -> bool:

@@ -673,7 +673,7 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans'). A successful status=unchanged response means the skill is already fully loaded and satisfies the read requirement; do not request the same target again unless compression later marks it pruned.",
             },
             "file_path": {
                 "type": "string",

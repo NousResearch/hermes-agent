@@ -41,6 +41,45 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_cron_create_accepts_context_from_and_attach_to_session():
+    parser = _build()
+    ns = parser.parse_args(
+        [
+            "cron",
+            "create",
+            "30m",
+            "prompt",
+            "--context-from",
+            "job-a",
+            "--context-from",
+            "job-b",
+            "--attach-to-session",
+        ]
+    )
+    assert ns.context_from == ["job-a", "job-b"]
+    assert ns.attach_to_session is True
+    # Omitted -> None (no accidental clear on create)
+    ns2 = parser.parse_args(["cron", "create", "30m", "prompt"])
+    assert ns2.context_from is None
+    assert ns2.attach_to_session is None
+
+
+def test_cron_edit_context_from_and_attach_to_session_tristate():
+    parser = _build()
+    ns = parser.parse_args(
+        ["cron", "edit", "j", "--context-from", "job-a", "--attach-to-session"]
+    )
+    assert ns.context_from == ["job-a"]
+    assert ns.attach_to_session is True
+
+    ns2 = parser.parse_args(["cron", "edit", "j", "--no-attach-to-session"])
+    assert ns2.attach_to_session is False
+
+    ns3 = parser.parse_args(["cron", "edit", "j"])
+    assert ns3.context_from is None
+    assert ns3.attach_to_session is None
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

@@ -48,6 +48,55 @@ class TestCronCommandLifecycle:
         assert updated["provider"] == "nous"
         assert "Updated job" in capsys.readouterr().out
 
+    def test_create_and_edit_persist_context_from_and_attach_to_session(
+        self, tmp_cron_dir, capsys
+    ):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        source_job = create_job(prompt="Collect data", schedule="every 1h")
+
+        create_args = parser.parse_args(
+            [
+                "cron",
+                "create",
+                "every 2h",
+                "Process collected data",
+                "--context-from",
+                source_job["id"],
+                "--attach-to-session",
+            ]
+        )
+        cron_command(create_args)
+        capsys.readouterr()
+
+        consumer_jobs = [
+            j for j in list_jobs() if j.get("prompt") == "Process collected data"
+        ]
+        assert len(consumer_jobs) == 1
+        consumer = consumer_jobs[0]
+        assert consumer["context_from"] == [source_job["id"]]
+        assert consumer["attach_to_session"] is True
+
+        # CLI edit: swap the reference and turn attach_to_session back off —
+        # exercises the gap this test closes (hermes cron edit previously had
+        # no flags at all for these two already-supported job fields).
+        edit_args = parser.parse_args(
+            [
+                "cron",
+                "edit",
+                consumer["id"],
+                "--no-attach-to-session",
+            ]
+        )
+        cron_command(edit_args)
+
+        updated = get_job(consumer["id"])
+        assert updated["attach_to_session"] is False
+        # context_from untouched by an edit that didn't mention it
+        assert updated["context_from"] == [source_job["id"]]
+
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
             prompt="Combine skill outputs",

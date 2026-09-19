@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import codecs
 import json
+from contextlib import suppress
 import os
 import runpy
 import signal
@@ -434,6 +435,15 @@ def _complete_selected(request: dict) -> bool:
         followups.append(("completion", reason))
     if not prepared:  # the tail ended before its dependency step
         prepare_gateways()
+    # Operator overlays in site-packages (#115667): the dependency sync wipes
+    # post-install corrections with no trace. Verify after the tail so the verdict
+    # reflects the final venv; the verifier never raises and never fails the update.
+    # A tree that predates the verifier (an update completing an older checkout)
+    # simply has nothing to verify.
+    with suppress(ImportError):
+        from hermes_cli.update_post_hooks import _verify_update_post_hooks
+
+        _verify_update_post_hooks(project_root=root)
     tail_owed = any(step in TAIL_FOLLOWUPS for step, _ in followups)
     record_build_stage(followups)
     if not tail_owed:

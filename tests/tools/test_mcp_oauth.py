@@ -1162,3 +1162,121 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-process refresh serialization (rotating-refresh AS protection)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshLock:
+    def test_lock_serializes_two_processes(self, tmp_path, monkeypatch):
+        """Two contenders for the same server refresh one after another, never together."""
+        import multiprocessing
+        import time
+        from tools.mcp_oauth import hold_refresh_lock
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def _contend(home: str, held: list, out_path: str):
+            import os
+            os.environ["HERMES_HOME"] = home
+            from tools.mcp_oauth import hold_refresh_lock
+            with hold_refresh_lock("race-server"):
+                with open(out_path, "a") as fh:
+                    fh.write("enter\n")
+                time.sleep(0.5)
+                with open(out_path, "a") as fh:
+                    fh.write("exit\n")
+
+        out = str(tmp_path / "order.txt")
+        ctx = multiprocessing.get_context("fork")
+        p1 = ctx.Process(target=_contend, args=(str(tmp_path), [], out))
+        p2 = ctx.Process(target=_contend, args=(str(tmp_path), [], out))
+        p1.start()
+        p2.start()
+        p1.join(30)
+        p2.join(30)
+        assert p1.exitcode == 0 and p2.exitcode == 0
+        lines = open(out).read().split()
+        assert lines == ["enter", "exit", "enter", "exit"]
+
+    def test_lock_yields_post_acquire_mtime(self, tmp_path, monkeypatch):
+        import json
+        from tools.mcp_oauth import hold_refresh_lock
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        toks = tmp_path / "mcp-tokens"
+        toks.mkdir()
+        tp = toks / "mtime-server.json"
+        tp.write_text(json.dumps({"access_token": "a"}))
+        with hold_refresh_lock("mtime-server") as mtime_ns:
+            assert mtime_ns == tp.stat().st_mtime_ns
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_adopts_sibling_tokens(self, tmp_path, monkeypatch):
+        """A replay-rejected refresh adopts the winner's stored tokens, not clear_tokens."""
+        import httpx
+        from tools.mcp_oauth import HermesTokenStorage
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("adopt-server", "https://example.com/mcp")
+        assert provider is not None
+
+        class _Tok:
+            def __init__(self, access, refresh="r"):
+                self.access_token = access
+                self.refresh_token = refresh
+                self.scope = "s"
+                self.expires_in = 3600
+
+            def model_dump(self, **kw):
+                return {"access_token": self.access_token, "refresh_token": self.refresh_token,
+                        "scope": self.scope, "expires_in": self.expires_in}
+
+        old = _Tok("old-access", "old-refresh")
+        new = _Tok("new-access", "new-refresh")
+        await HermesTokenStorage("adopt-server").set_tokens(old)
+        provider.context.current_tokens = old
+
+        # Sibling wins the rotation while our refresh is in flight.
+        await HermesTokenStorage("adopt-server").set_tokens(new)
+
+        response = httpx.Response(400, content=b'{"error":"invalid_grant"}')
+        result = await provider._handle_refresh_response(response)
+
+        assert result is True
+        assert provider.context.current_tokens.access_token == "new-access"
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_without_sibling_change_clears(self, tmp_path, monkeypatch):
+        """A genuine refresh failure (no sibling change) still clears tokens."""
+        import httpx
+        from tools.mcp_oauth import HermesTokenStorage
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("genuine-fail", "https://example.com/mcp")
+        assert provider is not None
+
+        class _Tok:
+            def __init__(self, access):
+                self.access_token = access
+                self.refresh_token = "r"
+                self.scope = "s"
+                self.expires_in = 3600
+
+            def model_dump(self, **kw):
+                return {"access_token": self.access_token, "refresh_token": self.refresh_token,
+                        "scope": self.scope, "expires_in": self.expires_in}
+
+        old = _Tok("old-access")
+        await HermesTokenStorage("genuine-fail").set_tokens(old)
+        provider.context.current_tokens = old
+
+        response = httpx.Response(400, content=b'{"error":"invalid_grant"}')
+        result = await provider._handle_refresh_response(response)
+
+        assert result is False
+        assert provider.context.current_tokens is None

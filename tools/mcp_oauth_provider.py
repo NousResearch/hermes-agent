@@ -79,6 +79,46 @@ class HermesProviderMixin:
         self.context.update_token_expiry(token_response)
         await self.context.storage.set_tokens(token_response)
 
+    def _refresh_lock_info(self):
+        """``(server_name, hermes_home)`` for the cross-process refresh lock, else ``(None, None)``."""
+        storage = getattr(getattr(self, "context", None), "storage", None)
+        name = getattr(storage, "_server_name", None)
+        if not isinstance(name, str):
+            return None, None
+        return name, getattr(storage, "_hermes_home", None)
+
+    async def _adopt_winner_tokens(self) -> bool:
+        """Adopt tokens another process stored while our refresh was in flight.
+
+        True when the on-disk tokens differ from our in-memory ones and validate —
+        the sibling won the rotation race and ours was the replay. False otherwise.
+        """
+        name, home = self._refresh_lock_info()
+        if name is None:
+            return False
+        try:
+            from tools.mcp_oauth import hold_refresh_lock
+            with hold_refresh_lock(name, home):
+                storage = self.context.storage
+                fresh = await storage.get_tokens()
+                current = self.context.current_tokens
+                if fresh is None or (current is not None and getattr(fresh, "access_token", None)
+                                     == getattr(current, "access_token", None)):
+                    return False
+                self.context.current_tokens = fresh
+                try:
+                    self.context.update_token_expiry(fresh)
+                except Exception:
+                    pass
+                if self.context.is_token_valid():
+                    self._hermes_logger.info(
+                        "MCP OAuth '%s': adopted tokens stored by a sibling process after refresh race",
+                        name)
+                    return True
+                return False
+        except Exception:
+            return False
+
     async def _handle_token_response(self, response):
         """Accept any 2xx token response; never echo the body into errors."""
         from mcp.client.auth.oauth2 import OAuthTokenError
@@ -93,8 +133,16 @@ class HermesProviderMixin:
         await self._store_tokens(token_response)
 
     async def _handle_refresh_response(self, response) -> bool:
-        """Accept any 2xx refresh response; never log the body."""
+        """Accept any 2xx refresh response; never log the body.
+
+        A loser-side failure (non-2xx, e.g. a replay-rejected rotation) re-reads the
+        tokens file: when another process won the refresh while this request was in
+        flight, its stored tokens are valid and the failure is not fatal — adopt them
+        instead of clearing tokens and forcing a browser re-auth.
+        """
         if not (200 <= response.status_code < 300):
+            if await self._adopt_winner_tokens():
+                return True
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
             self.context.clear_tokens()
             return False

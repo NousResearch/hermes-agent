@@ -11,6 +11,7 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+import fcntl
 import importlib.util as _importlib_util
 import json
 import logging
@@ -104,6 +105,50 @@ def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
 def _safe_filename(name: str) -> str:
     """Sanitize a server name for use as a filename (no path separators)."""
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
+
+
+# Cross-process refresh serialization: gateway + CLI/cron share one mcp-tokens dir. A
+# single-use-refresh AS (e.g. Emma's rotating refresh family) revokes the whole family when
+# two processes refresh concurrently with the same token — the loser's replay looks like theft
+# and forces a browser re-auth. The in-process asyncio lock cannot span processes; hold an
+# flock(LOCK_EX) on <server>.lock across check-expiry → refresh → store so only one process
+# refreshes at a time and the others re-read the winner's tokens from disk.
+_REFRESH_LOCK_TIMEOUT = 60.0
+
+
+@contextlib.contextmanager
+def hold_refresh_lock(server_name: str, hermes_home: "str | Path | None" = None):
+    """Exclusive cross-process lock for one server's token refresh. Yields the tokens-file
+    mtime (ns, 0 when absent) seen AFTER acquiring the lock — callers compare it with the
+    mtime seen before the lock and skip the refresh when another process already rotated."""
+    from hermes_constants import get_hermes_home
+
+    home = Path(hermes_home if hermes_home is not None else get_hermes_home())
+    lock_path = home / "mcp-tokens" / f"{_safe_filename(server_name)}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + _REFRESH_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"MCP OAuth '{server_name}': refresh lock timed out after "
+                        f"{_REFRESH_LOCK_TIMEOUT:.0f}s")
+                time.sleep(0.05)
+        tokens_path = home / "mcp-tokens" / f"{_safe_filename(server_name)}.json"
+        try:
+            mtime_ns = tokens_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
+        yield mtime_ns
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 # Callback-port reservation: bound-but-not-listening sockets keyed by port, held from selection

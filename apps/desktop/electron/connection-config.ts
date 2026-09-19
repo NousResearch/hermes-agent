@@ -259,8 +259,8 @@ function connectionScopeKey(profile) {
 function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfileKey) {
   const configured = String(configuredRemoteProfile || '').trim()
 
-  if (configured && configured !== 'default') {
-    return configured
+  if (configured) {
+    return configured === 'default' ? '' : configured
   }
 
   const key = String(poolOrProfileKey || '').trim()

@@ -610,17 +610,30 @@ def _resolve_for_skill_ownership(path) -> Path:
         return path_obj.expanduser().absolute()
 
 
+def _lexical_for_skill_ownership(path) -> Path:
+    """``path`` absolute and ``..``-normalised WITHOUT following symlinks: where a skill is
+    installed, as opposed to where its link points."""
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    return Path(os.path.abspath(os.path.expanduser(str(path_obj))))
+
+
 def is_external_skill_path(path) -> bool:
     """True when ``path`` lives under an external or trusted project skills dir.
     Those are externally owned: autonomous lifecycle maintenance treats them as
-    read-only (user-directed tool calls may still edit them)."""
-    candidate = _resolve_for_skill_ownership(path)
+    read-only (user-directed tool calls may still edit them).
+
+    Ownership follows where the skill is INSTALLED: a directory symlink under an external
+    root (``<root>/<skill> -> ../_src/<skill>``) is external even though it resolves
+    elsewhere, so the lexical path is checked before the resolved one (#54195)."""
+    lexical = _lexical_for_skill_ownership(path)
+    resolved = _resolve_for_skill_ownership(path)
     roots: List[Path] = list(get_external_skills_dirs())
     try:
         roots.extend(get_project_skills_dirs())
     except Exception:
         pass
-    return any(candidate.is_relative_to(_resolve_for_skill_ownership(root)) for root in roots)
+    return any(lexical.is_relative_to(_lexical_for_skill_ownership(root))
+               or resolved.is_relative_to(_resolve_for_skill_ownership(root)) for root in roots)
 
 
 def _hermes_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:

@@ -982,6 +982,133 @@ class TestExternalSkillMutations:
             tmp_path / "manual-skill" / "SKILL.md"
         ).read_text(encoding="utf-8")
 
+
+def _link_external_skill(tmp_path: Path, name: str = "linked-skill"):
+    """A shared skill installed into the external root as a directory symlink — the
+    ``<external>/<skill> -> <elsewhere>/_src/<skill>`` layout a shared-skills tree uses.
+    Returns ``(local, external, source)``; skips where directory symlinks are unavailable."""
+    local, external = tmp_path / "local", tmp_path / "external"
+    source = tmp_path / "shared" / "_src" / name
+    local.mkdir(); external.mkdir(); source.mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: A shared skill.\n---\n\n"
+        "# Shared\n\nBody with OLD_MARKER here.\n", encoding="utf-8")
+    try:
+        (external / name).symlink_to(source, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable on this platform")
+    return local, external, source
+
+
+def _batch(ops):
+    return json.loads(skill_manage(action="", name="", operations=ops))
+
+
+class TestSymlinkedExternalSkill:
+    """A skill reached through a directory symlink inside skills.external_dirs (the shared-skills
+    layout ``<root>/<skill> -> ../_src/<skill>``). skill_view already follows such links
+    (``iter_skill_index_files`` walks with followlinks=True); skill_manage must resolve the same
+    skill and mutate it in place, through the public operations[] call. Regression for #54195.
+    """
+
+    def test_batch_patch_follows_directory_symlink_in_place(self, tmp_path):
+        local, external, source = _link_external_skill(tmp_path)
+        with _two_roots(local, external):
+            result = _batch([{"name": "linked-skill", "action": "patch",
+                              "old_string": "OLD_MARKER", "new_string": "NEW_MARKER"}])
+        assert result["success"] is True, result
+        assert (external / "linked-skill").is_symlink()          # alias untouched
+        assert "NEW_MARKER" in (source / "SKILL.md").read_text(encoding="utf-8")
+        assert not (local / "linked-skill").exists()             # no duplicate in local
+
+    def test_failed_single_op_batch_keeps_symlink_and_source(self, tmp_path):
+        """Rollback must land on the link TARGET: restoring onto the alias renames the link
+        aside and copies the snapshot into a real directory, silently detaching the skill
+        from its shared source (and leaving .rollback-broken debris)."""
+        local, external, source = _link_external_skill(tmp_path)
+        with _two_roots(local, external):
+            result = _batch([{"name": "linked-skill", "action": "patch",
+                              "old_string": "NOT_IN_FILE", "new_string": "x"}])
+        assert result["success"] is False
+        alias = external / "linked-skill"
+        assert alias.is_symlink() and alias.resolve() == source.resolve()
+        assert "OLD_MARKER" in (source / "SKILL.md").read_text(encoding="utf-8")
+        assert sorted(p.name for p in external.iterdir()) == ["linked-skill"]
+
+    def test_failed_multi_op_batch_rolls_back_shared_source(self, tmp_path):
+        """The first op lands in the shared source through the link; a later failure must
+        undo it THERE, not in a fresh copy at the alias."""
+        local, external, source = _link_external_skill(tmp_path)
+        with _two_roots(local, external):
+            result = _batch([
+                {"name": "linked-skill", "action": "patch",
+                 "old_string": "OLD_MARKER", "new_string": "NEW_MARKER"},
+                {"name": "linked-skill", "action": "patch",
+                 "old_string": "NOT_IN_FILE", "new_string": "x"}])
+        assert result["success"] is False and result["failed_index"] == 1
+        alias = external / "linked-skill"
+        assert alias.is_symlink() and alias.resolve() == source.resolve()
+        content = (source / "SKILL.md").read_text(encoding="utf-8")
+        assert "OLD_MARKER" in content and "NEW_MARKER" not in content
+        assert sorted(p.name for p in external.iterdir()) == ["linked-skill"]
+
+    def test_background_review_refuses_linked_external_skill(self, tmp_path):
+        """Autonomous curation treats skills.external_dirs as read-only. Ownership follows where
+        the skill is INSTALLED (the alias under the external root), not where the link points:
+        resolving first lets a curator-managed record open the shared source to an autonomous
+        write. Everything else that could refuse is satisfied here, so only ownership stands
+        between the write and the source."""
+        from tools.skill_manager_guards import mark_background_review_skill_read
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        local, external, source = _link_external_skill(tmp_path)
+        curated = {"linked-skill": {"created_by": "agent", "pinned": False}}
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _two_roots(local, external), \
+                 patch("agent.skill_utils.get_external_skills_dirs", return_value=[external]), \
+                 patch("agent.skill_utils.get_project_skills_dirs", return_value=[]), \
+                 patch("tools.skill_usage.load_usage", return_value=curated), \
+                 patch("tools.skill_usage.get_record", side_effect=lambda n: curated.get(n, {})), \
+                 patch("tools.skill_usage.is_protected_builtin", return_value=False), \
+                 patch("tools.skill_usage.is_hub_installed", return_value=False), \
+                 patch("tools.skill_usage.is_bundled", return_value=False):
+                mark_background_review_skill_read(source / "SKILL.md")
+                result = _batch([{"name": "linked-skill", "action": "patch",
+                                  "old_string": "OLD_MARKER", "new_string": "NEW_MARKER"}])
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is False, result
+        assert "external" in result["error"].lower()
+        assert "OLD_MARKER" in (source / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_failed_create_batch_never_deletes_through_a_link(self, tmp_path):
+        """A batch-created skill is removed at its LEXICAL path on rollback. When an alias already
+        sat at that path (no SKILL.md behind it, so 'create' saw no skill and wrote through the
+        link), rollback must refuse the link — as rmtree does on a plain path — rather than
+        resolve it and delete the target's contents."""
+        local = tmp_path / "local"
+        target = tmp_path / "shared" / "_src" / "aliased"
+        local.mkdir(); target.mkdir(parents=True)
+        (target / "notes.txt").write_text("keep me", encoding="utf-8")
+        try:
+            (local / "aliased").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Directory symlinks are unavailable on this platform")
+        with _skill_dir(local):
+            result = _batch([
+                {"name": "aliased", "action": "create", "content": VALID_SKILL_CONTENT},
+                {"name": "aliased", "action": "write_file",
+                 "file_path": "bad/nope.md", "file_content": "x"}])
+        assert result["success"] is False
+        assert (local / "aliased").is_symlink()
+        assert (target / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+
 class TestBackgroundOwnershipPolicyConsistency:
     """The autonomous write policy must not depend on its own side effects.
 

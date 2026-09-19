@@ -8,6 +8,7 @@ import posixpath
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
@@ -128,12 +129,26 @@ def _validate_batch_ops(operations, default_name, tool_error):
     return names, None
 
 
+def _real_skill_dir(found) -> Optional[Path]:
+    """The directory snapshot/restore operate on. Discovery returns the LEXICAL path, which may
+    be (or sit under) a directory symlink — a shared skill installed as an alias. Rolling back on
+    the alias renames the link aside and copies the snapshot into a real directory at the alias,
+    silently detaching the skill from its shared source (which keeps any op that already landed).
+    Resolve so both the copy-aside and the restore happen on the link target."""
+    if not found:
+        return None
+    path = Path(found["path"])
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 def _snapshot_skills(names, snap_root, find_skill):
     """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text)."""
     snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None)
     for nm in dict.fromkeys(names):  # ordered unique
-        pre = find_skill(nm)
-        pre_dir = Path(pre["path"]) if pre else None
+        pre_dir = _real_skill_dir(find_skill(nm))
         snap = snap_root / nm if pre_dir is not None and pre_dir.is_dir() else None
         if snap is not None:
             try:
@@ -174,7 +189,11 @@ def _rollback(snapshots, find_skill):
     for nm, (pre_dir, snap) in snapshots.items():
         try:
             post = find_skill(nm)
-            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None)
+            # A batch-created skill (no snapshot) is removed at its LEXICAL path: if an alias
+            # already sat there, rmtree refuses the link (loud rollback failure, as on a plain
+            # create) instead of following it into a shared tree.
+            post_dir = (Path(post["path"]) if post else None) if snap is None else _real_skill_dir(post)
+            _restore_snapshot(pre_dir, snap, post_dir)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))

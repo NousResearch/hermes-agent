@@ -6,6 +6,81 @@ import sys
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
+def test_injected_loopback_dashboard_capability_wins_after_all_env_layers(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\n"
+        "HERMES_DASHBOARD_PUBLIC_URL=https://persisted.example\n",
+        encoding="utf-8",
+    )
+    injected = ("link-token", "http://127.0.0.1:43123")
+    monkeypatch.setattr(env_loader, "_INJECTED_LOOPBACK_DASHBOARD_CAPABILITY", injected)
+    monkeypatch.setattr(env_loader, "_process_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        env_loader,
+        "_apply_external_secret_sources",
+        lambda _home: os.environ.update(
+            HERMES_DASHBOARD_SESSION_TOKEN="external-token",
+            HERMES_DASHBOARD_PUBLIC_URL="https://external.example",
+        ),
+    )
+    monkeypatch.setattr(
+        env_loader,
+        "_apply_managed_env",
+        lambda **_kwargs: os.environ.update(
+            HERMES_DASHBOARD_SESSION_TOKEN="managed-token",
+            HERMES_DASHBOARD_PUBLIC_URL="https://managed.example",
+        ),
+    )
+    monkeypatch.setattr(
+        env_loader,
+        "_reapply_terminal_config_bridge",
+        lambda _home: os.environ.update(
+            HERMES_DASHBOARD_SESSION_TOKEN="terminal-token",
+            HERMES_DASHBOARD_PUBLIC_URL="https://terminal.example",
+        ),
+    )
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert (
+        os.environ["HERMES_DASHBOARD_SESSION_TOKEN"],
+        os.environ["HERMES_DASHBOARD_PUBLIC_URL"],
+    ) == injected
+
+
+def test_dashboard_capability_preservation_is_loopback_and_process_home_scoped(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "parent-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dashboard.example")
+    assert env_loader._capture_injected_loopback_dashboard_capability() is None
+
+    loopback_pair = ("parent-token", "http://[::1]:43123")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", loopback_pair[1])
+    assert env_loader._capture_injected_loopback_dashboard_capability() == loopback_pair
+
+    process_home = tmp_path / "process-home"
+    other_home = tmp_path / "other-home"
+    monkeypatch.setattr(env_loader, "_process_hermes_home", lambda: process_home)
+    monkeypatch.setattr(env_loader, "_INJECTED_LOOPBACK_DASHBOARD_CAPABILITY", loopback_pair)
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "other-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://other.example")
+
+    env_loader._reapply_injected_loopback_dashboard_capability(other_home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "other-token"
+    assert os.environ["HERMES_DASHBOARD_PUBLIC_URL"] == "https://other.example"
+
+    env_loader._reapply_injected_loopback_dashboard_capability(process_home)
+    assert (
+        os.environ["HERMES_DASHBOARD_SESSION_TOKEN"],
+        os.environ["HERMES_DASHBOARD_PUBLIC_URL"],
+    ) == loopback_pair
+
+
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
     """The post-recovery updater must not remap native vault dependencies."""
     import hermes_cli.env_loader as env_loader

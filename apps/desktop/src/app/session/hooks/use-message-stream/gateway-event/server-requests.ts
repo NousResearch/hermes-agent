@@ -119,7 +119,9 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 // user focuses that chat. The Python side blocks on the response frame; without a
 // handler the channel answers -32601 and the tool fails fast instead of stalling.
 
-const clarify: Handler = ctx => {
+// Exported so the plain-event fallback (input-requests.ts) can re-shape a
+// v0.21.2 `clarify.request` event into this same handler — see that file.
+export const clarify: Handler = ctx => {
   const { deps, request, sessionId } = ctx
   const p = request.params
 

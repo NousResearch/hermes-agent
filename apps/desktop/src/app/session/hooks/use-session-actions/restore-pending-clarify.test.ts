@@ -53,6 +53,31 @@ describe('restorePendingClarifyFromSnapshot', () => {
     expect(clearClarifyRequestMock).not.toHaveBeenCalled()
   })
 
+  it('restores the parked card from a v0.21.2 pending_clarify snapshot (no open_requests)', () => {
+    // Backwards compat: an old backend reports a still-open clarify as
+    // `pending_clarify` instead of listing it in `open_requests`.
+    $clarifyRequests.set({
+      'sess-legacy': {
+        choices: null,
+        multiSelect: false,
+        question: 'Proceed?',
+        receivedAt: resumeStartedAt + 5,
+        requestId: 'rid-legacy',
+        sessionId: 'sess-legacy'
+      }
+    })
+
+    const state = restorePendingClarifyFromSnapshot(
+      { pending_clarify: { choices: [], question: 'Proceed?', request_id: 'rid-legacy' } },
+      'sess-legacy',
+      resumeStartedAt
+    )
+
+    expect(state.authoritativeAbsent).toBe(false)
+    expect(state.request?.requestId).toBe('rid-legacy')
+    expect(clearClarifyRequestMock).not.toHaveBeenCalled()
+  })
+
   it('reports an open request the handler declined (no card parked) without inventing one', () => {
     const state = restorePendingClarifyFromSnapshot(
       { open_requests: [{ id: 'rid4', method: 'clarify', params: {} }] },

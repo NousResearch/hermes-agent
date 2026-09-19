@@ -30,6 +30,7 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    supports_generated_logins: bool = False
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)
@@ -47,6 +48,16 @@ class LoginBackend(ABC):
     @abstractmethod
     def resolve_password(self, handle: str) -> str:
         """Server-side only; raises ``UnlockRequired`` when locked."""
+
+    def create_generated_login(self, origin: str, label: str) -> str:
+        """Optional lifecycle: return a tracked pending handle, never a password."""
+        raise NotImplementedError("Generated logins are unsupported")
+
+    def commit_generated_login(self, handle: str, label: str) -> None:
+        raise NotImplementedError("Generated logins are unsupported")
+
+    def discard_generated_login(self, handle: str) -> None:
+        raise NotImplementedError("Generated logins are unsupported")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         """Current one-time code for a login that stores a TOTP seed, else None (the user is asked).

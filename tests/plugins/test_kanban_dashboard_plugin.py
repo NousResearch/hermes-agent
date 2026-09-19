@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -189,6 +190,71 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
     assert "MARKDOWN_ALLOWED_TAGS" in js
     assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
     assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
+
+
+def _render_markdown(source: str) -> str:
+    """Run the bundle's own markdown pipeline (render + sanitize) under node.
+
+    The renderer is plain JS inside the dashboard bundle, so the honest way to
+    test its OUTPUT — rather than asserting that some source string is present —
+    is to execute it. The slice runs from ``escapeHtml`` to ``MarkdownBlock``,
+    which is the whole pipeline and nothing React.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    start = js.index("  function escapeHtml(s) {")
+    end = js.index("  function MarkdownBlock(props) {")
+    harness = (
+        js[start:end]
+        + "\nconst input = JSON.parse(process.env.KANBAN_MD_INPUT);"
+        + "\nprocess.stdout.write(sanitizeMarkdownHtml(renderMarkdown(input)));"
+    )
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", harness],
+        capture_output=True, text=True, timeout=30, encoding="utf-8",
+        env={**os.environ, "KANBAN_MD_INPUT": json.dumps(source)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+class TestDashboardMarkdown:
+    """Card bodies are markdown — the decomposer writes numbered plans and
+    operators paste fenced commands — so the renderer has to handle the shapes
+    those actually take."""
+
+    def test_ordered_list_is_a_list(self):
+        html = _render_markdown("1. first\n2. second\n3. third")
+        assert html.count("<li>") == 3
+        assert "<ol>" in html and "</ol>" in html
+        assert "<p>1. first</p>" not in html  # the bug this replaced
+
+    def test_lists_nest_by_indent_and_can_mix_flavours(self):
+        html = _render_markdown("1. step\n   - detail\n2. step two")
+        assert html.index("<ol>") < html.index("<ul>") < html.index("</ul>") < html.index("</ol>")
+
+    def test_wrapped_lines_continue_the_item_or_paragraph_above(self):
+        assert "<li>an item that wraps</li>" in _render_markdown("- an item that\n  wraps")
+        assert "<p>a sentence that wraps</p>" in _render_markdown("a sentence that\nwraps")
+
+    def test_blockquote_rule_and_deep_headings_render(self):
+        assert "<blockquote><p>quoted still quoted</p></blockquote>" in _render_markdown("> quoted\n> still quoted")
+        assert "<hr>" in _render_markdown("before\n\n---\n\nafter")
+        assert "<h5>deep</h5>" in _render_markdown("##### deep")
+
+    def test_fenced_code_and_inline_markup_survive(self):
+        html = _render_markdown("text\n\n```\nnot *markdown*\n```")
+        assert "not *markdown*" in html  # verbatim: no inline markup applied inside a fence
+        assert "<pre" in html and "<p><pre" not in html  # a block, not nested in a paragraph
+        inline = _render_markdown("a `c` and **b** and [l](https://example.com)")
+        assert "<code>c</code>" in inline and "<strong>b</strong>" in inline
+        assert '<a href="https://example.com" target="_blank" rel="noopener noreferrer">l</a>' in inline
+
+    def test_html_in_a_card_body_is_never_executed(self):
+        html = _render_markdown('<img src=x onerror=alert(1)> <script>alert(2)</script>\n\n[x](javascript:alert(3))')
+        assert "<img" not in html and "<script" not in html
+        assert "<a" not in html  # only http(s)/mailto become links; the rest stays text
 
 
 # ---------------------------------------------------------------------------

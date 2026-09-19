@@ -364,6 +364,20 @@
           `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`,
       );
   }
+  // Block-level markdown. Lists nest by indent and come in both flavours
+  // (`- item`, `1. item`), because that is how task bodies are actually
+  // written — a numbered plan is the common case, and rendering each of its
+  // lines as its own paragraph was the bug this replaced. A wrapped line
+  // continues the item or paragraph above it rather than starting a new one.
+  // Tables, setext headings and reference links are deliberately unsupported.
+  const LIST_ITEM_RE = /^(\s*)(?:([-*+])|(\d{1,9})[.)])\s+(.*)$/;
+  const HEADING_RE = /^(#{1,6})\s+(.*)$/;
+  // Matched AFTER escaping — a quote marker reaches the parser as `&gt;`,
+  // because escaping the whole source first is what keeps raw HTML from ever
+  // reaching the sanitizer's allowlist.
+  const QUOTE_RE = /^\s{0,3}&gt;\s?(.*)$/;
+  const RULE_RE = /^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
+
   function renderMarkdown(src) {
     if (!src) return "";
     // Split out fenced code blocks first so their contents aren't mangled.
@@ -375,27 +389,112 @@
     const escaped = escapeHtml(working);
     const lines = escaped.split(/\r?\n/);
     const out = [];
-    let inList = false;
-    for (const raw of lines) {
-      const line = raw;
-      const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
-      const heading = /^(#{1,4})\s+(.*)$/.exec(line);
-      if (bullet) {
-        if (!inList) { out.push("<ul>"); inList = true; }
-        out.push(`<li>${renderInline(bullet[1])}</li>`);
+    const lists = [];      // open list elements, innermost last
+    let para = [];         // buffered paragraph lines (soft-wrapped)
+    let quote = [];        // buffered blockquote lines
+    let lastItem = -1;     // index in `out` of the open <li>, for continuations
+    let blank = true;      // did a blank line separate us from the block above?
+
+    const flushPara = function () {
+      if (para.length) {
+        out.push(`<p>${renderInline(para.join(" "))}</p>`);
+        para = [];
+      }
+    };
+    const flushQuote = function () {
+      if (quote.length) {
+        out.push(`<blockquote><p>${renderInline(quote.join(" "))}</p></blockquote>`);
+        quote = [];
+      }
+    };
+    const closeLists = function (toIndent) {
+      while (lists.length && (toIndent === null || lists[lists.length - 1].indent > toIndent)) {
+        out.push(`</${lists.pop().tag}>`);
+      }
+      lastItem = -1;
+    };
+    const flushAll = function () {
+      flushPara();
+      flushQuote();
+      closeLists(null);
+    };
+
+    for (const line of lines) {
+      if (line.trim() === "") {
+        flushPara();
+        flushQuote();
+        blank = true;
         continue;
       }
-      if (inList) { out.push("</ul>"); inList = false; }
-      if (heading) {
-        const level = heading[1].length;
-        out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
-      } else if (line.trim() === "") {
-        out.push("");
-      } else {
-        out.push(`<p>${renderInline(line)}</p>`);
+
+      // A fenced block is its own block: it used to be buffered as paragraph
+      // text, which nested <pre> inside <p>.
+      if (/^\u0000CODE\d+\u0000$/.test(line.trim())) {
+        flushAll();
+        out.push(line.trim());
+        blank = true;
+        continue;
       }
+
+      const item = LIST_ITEM_RE.exec(line);
+      if (item) {
+        flushPara();
+        flushQuote();
+        const indent = item[1].replace(/\t/g, "    ").length;
+        const tag = item[2] ? "ul" : "ol";
+        closeLists(indent);
+        const open = lists.length ? lists[lists.length - 1] : null;
+        if (!open || indent > open.indent) {
+          out.push(`<${tag}>`);
+          lists.push({ tag: tag, indent: indent });
+        } else if (open.tag !== tag) {
+          out.push(`</${lists.pop().tag}>`);
+          out.push(`<${tag}>`);
+          lists.push({ tag: tag, indent: indent });
+        }
+        out.push(`<li>${renderInline(item[4])}</li>`);
+        lastItem = out.length - 1;
+        blank = false;
+        continue;
+      }
+
+      // A wrapped line under an open list item belongs to that item.
+      if (lists.length && lastItem >= 0 && !blank) {
+        out[lastItem] = out[lastItem].replace(/<\/li>$/, ` ${renderInline(line.trim())}</li>`);
+        continue;
+      }
+
+      const quoted = QUOTE_RE.exec(line);
+      if (quoted) {
+        flushPara();
+        closeLists(null);
+        quote.push(quoted[1]);
+        blank = false;
+        continue;
+      }
+      flushQuote();
+
+      if (RULE_RE.test(line)) {
+        flushAll();
+        out.push("<hr>");
+        blank = true;
+        continue;
+      }
+
+      const heading = HEADING_RE.exec(line);
+      if (heading) {
+        flushAll();
+        out.push(`<h${heading[1].length}>${renderInline(heading[2])}</h${heading[1].length}>`);
+        blank = true;
+        continue;
+      }
+
+      closeLists(null);
+      para.push(line.trim());
+      blank = false;
     }
-    if (inList) out.push("</ul>");
+    flushAll();
+
     let html = out.join("\n");
     // Re-insert fenced code blocks.
     html = html.replace(/\u0000CODE(\d+)\u0000/g, (_m, i) =>
@@ -405,13 +504,18 @@
   }
   const MARKDOWN_ALLOWED_TAGS = new Set([
     "a",
+    "blockquote",
     "code",
     "em",
     "h1",
     "h2",
     "h3",
     "h4",
+    "h5",
+    "h6",
+    "hr",
     "li",
+    "ol",
     "p",
     "pre",
     "strong",

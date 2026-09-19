@@ -1321,6 +1321,13 @@ class TestDeleteAndExport:
         assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
         assert db.get_session("too-many-messages") is None
 
+    @pytest.mark.parametrize("bad_id", ["../escape", "a/b", "a\\b", "..", "*", "req?_dump", "C:escape", "name:stream", "bad\x00id"])
+    def test_import_sessions_rejects_unsafe_ids(self, db, bad_id):
+        result = db.import_sessions([{"id": bad_id, "messages": []}])
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == "session id is not a safe filename"
+        assert db.get_session(bad_id) is None
+
 
 # =========================================================================
 # Prune
@@ -1644,6 +1651,23 @@ class TestBulkDeleteSessions:
         assert deleted == 2
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
+
+    @pytest.mark.parametrize("bad_id", ["../keep-me", "*", "req?", "[ab]", "C:keep-me", "name:stream"])
+    def test_unsafe_id_cannot_escape_or_widen_file_cleanup(self, db, tmp_path, bad_id):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        outside = tmp_path / "keep-me.json"
+        other_dump = sessions_dir / "request_dump_aaaa_1.json"
+        outside.write_text("{}")
+        other_dump.write_text("{}")
+        db.create_session(session_id=bad_id, source="cli")
+        db.create_session(session_id="s1", source="cli")
+        (sessions_dir / "s1.json").write_text("{}")
+
+        assert db.delete_sessions([bad_id, "s1"], sessions_dir=sessions_dir) == 2
+        assert db.get_session(bad_id) is None
+        assert outside.exists() and other_dump.exists()
+        assert not (sessions_dir / "s1.json").exists()
 
 
 class TestDeleteEmptySessions:

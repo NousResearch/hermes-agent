@@ -606,6 +606,22 @@ def test_switch_to_bare_custom_ignores_an_openrouter_mirror(monkeypatch, tmp_pat
     assert result.success is True
     assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
 
+    # Two env vars aimed at the SAME proxy: the URL is the endpoint configured for `custom`, so the
+    # OpenRouter rung is not the source and the switch adopts it (#115661's behaviour).
+    monkeypatch.setenv("CUSTOM_BASE_URL", "https://mirror.example.com/v1")
+    configured = switch_model(
+        raw_input="m2",
+        current_provider="anthropic",
+        current_model="m",
+        current_base_url="https://api.anthropic.com",
+        current_api_key="sk-ant",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert configured.base_url == "https://mirror.example.com/v1"
+
 
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True

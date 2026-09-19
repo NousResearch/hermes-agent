@@ -1,15 +1,18 @@
 import type { Icon } from '@tabler/icons-react'
-import type * as React from 'react'
+import { type HTMLAttributes, memo } from 'react'
 
 import { cn } from '@/lib/utils'
 
-export interface CodiconProps extends React.HTMLAttributes<HTMLElement> {
+export interface CodiconProps extends HTMLAttributes<HTMLElement> {
   name: string
   size?: number | string
   spinning?: boolean
 }
 
-export function Codicon({ className, name, size, spinning, style, ...props }: CodiconProps) {
+// Memo: assistant footers / tooltips re-render on stream commits; the glyph
+// props almost never change, so skipping the host element cuts wasted work
+// measured under render-churn (Codicon showed up on the wasted list).
+export const Codicon = memo(function Codicon({ className, name, size, spinning, style, ...props }: CodiconProps) {
   return (
     <i
       aria-hidden="true"
@@ -18,7 +21,7 @@ export function Codicon({ className, name, size, spinning, style, ...props }: Co
       {...props}
     />
   )
-}
+})
 
 /** Wrap a codicon as a Tabler-shaped icon for nav rows that expect `IconComponent`. */
 export function codiconIcon(name: string): Icon {

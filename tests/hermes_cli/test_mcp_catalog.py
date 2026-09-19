@@ -846,12 +846,18 @@ class TestGitInstallShaRef:
 
         calls = []
 
+        PINNED_SHA = "abc1234567890abcdef1234567890abcdef12345"
+
         class _FakeProc:
-            def __init__(self, returncode):
+            def __init__(self, returncode, stdout=""):
                 self.returncode = returncode
+                self.stdout = stdout
 
         def fake_run(argv, *args, **kwargs):
             calls.append(list(argv))
+            # Model the real `git rev-parse HEAD` so the post-checkout pin assertion resolves.
+            if "rev-parse" in argv and "HEAD" in argv:
+                return _FakeProc(returncode=0, stdout=PINNED_SHA + "\n")
             # Make every command succeed
             return _FakeProc(returncode=0)
 
@@ -876,6 +882,52 @@ class TestGitInstallShaRef:
         checkout_calls = [c for c in calls if "checkout" in c]
         assert len(clone_calls) == 1, calls
         assert len(checkout_calls) == 1, calls
+
+    def test_shadowing_ref_checkout_is_refused(self, catalog_dir, monkeypatch, tmp_path):
+        """A repo can name a branch exactly like the pinned 40-hex SHA and make it the
+        default branch: `git checkout <sha>` then resolves to that branch (a ref outranks
+        an object id), so the checkout "succeeds" while the tree is attacker-controlled.
+        The install must therefore verify the resolved HEAD and refuse a mismatch."""
+        body = _basic_manifest(
+            name="demo-shadowed",
+            install={
+                "type": "git",
+                "url": "https://example.com/x.git",
+                "ref": "abc1234567890abcdef1234567890abcdef12345",
+                "bootstrap": [],
+            },
+            transport={
+                "type": "stdio",
+                "command": "${INSTALL_DIR}/run.sh",
+                "args": [],
+            },
+        )
+        _write_manifest(catalog_dir, "demo-shadowed", body)
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import CatalogError, _do_git_install
+
+        class _FakeProc:
+            def __init__(self, returncode, stdout=""):
+                self.returncode = returncode
+                self.stdout = stdout
+
+        def fake_run(argv, *args, **kwargs):
+            # Every git command "succeeds"; only the resolved HEAD reveals the swap.
+            if "rev-parse" in argv and "HEAD" in argv:
+                return _FakeProc(returncode=0, stdout="e0d9d151515b27af50d52a34407fb91be7dc5152\n")
+            return _FakeProc(returncode=0)
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+        monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: "/usr/bin/git")
+        from hermes_cli import git_credentials
+        monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: None)
+
+        from hermes_cli.mcp_catalog import get_entry
+        entry = get_entry("demo-shadowed")
+        assert entry is not None
+        with pytest.raises(CatalogError, match="does not match the pinned ref"):
+            _do_git_install(entry)
 
 
 # ---------------------------------------------------------------------------

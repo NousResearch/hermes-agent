@@ -401,6 +401,42 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
             raise CatalogError(f"bootstrap step failed (exit {rc}): {cmd}")
 
 
+def _assert_checked_out_commit(dest: Path, ref: str, url: str) -> None:
+    """Refuse a checkout that did not land on the pinned commit.
+
+    A repository owner can name a branch exactly like the pinned 40-hex SHA and make it
+    the repo's default branch; ``git checkout <sha>`` then resolves the name to that
+    branch (a ref outranks an object id and only warns about the ambiguity), so
+    attacker-controlled content lands in the working tree while the pin still looks
+    honored. Only the commit actually checked out proves where the tree came from, so
+    compare the resolved ``HEAD`` — never the ref that was requested.
+    """
+    git = shutil.which("git")
+    if not git:
+        raise CatalogError("git is required to install this MCP but was not found on PATH")
+    from hermes_cli.git_credentials import with_git_auth
+    result = subprocess.run(
+        [git, "-C", str(dest), "rev-parse", "HEAD"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        env=with_git_auth(noninteractive_git_env(), url),
+    )
+    actual = (result.stdout or "").strip().lower()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", actual):
+        raise CatalogError(
+            f"Could not resolve the checked-out commit of {url} in {dest}; "
+            "refusing to install a tree whose revision cannot be proven."
+        )
+    expected = ref.strip().lower()
+    # A prefix match is exact for a full 40-hex pin and still correct for a short one:
+    # a shadowing branch points at a different commit, so it fails either way.
+    if not actual.startswith(expected):
+        raise CatalogError(
+            f"Checked-out commit {actual} does not match the pinned ref '{ref}' of {url}. "
+            "Refusing to install: a git ref whose name shadows the commit resolves ahead "
+            "of the commit itself, so the pin cannot be trusted here."
+        )
+
+
 def _do_git_install(entry: CatalogEntry) -> Path:
     """Clone the entry's repo into ``~/.hermes/mcp-installs/<name>`` and run bootstrap. Returns the dir."""
     assert entry.install is not None and entry.install.type == "git"
@@ -440,6 +476,8 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             raise CatalogError(f"git clone failed for {install.url}")
         if _git("-C", str(dest), "checkout", install.ref) != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
+        # A successful checkout is not proof the pin was honored — verify where it landed.
+        _assert_checked_out_commit(dest, install.ref, install.url)
 
     if install.bootstrap:
         _run_bootstrap(dest, install.bootstrap)

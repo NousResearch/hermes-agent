@@ -614,6 +614,25 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
 }
 
+function finishBackendPartialApply(): DesktopUpdateApplyResult {
+  const message = translateNow('updates.backendPartialBody')
+
+  $backendUpdateApply.set({
+    ...IDLE,
+    applying: false,
+    stage: 'guiSkew',
+    message
+  })
+  // The backend leg completed, so refresh its status and reconnect the window
+  // just as for a full success. Do not nudge the client here: the terminal view
+  // already tells the user that the desktop app itself needs a separate repair.
+  setUpdateOverlayOpen(true)
+  void checkBackendUpdates({ force: true })
+  void reconnectGateway().catch(() => undefined)
+
+  return { ok: true, backendUpdated: true, guiUpdated: false, guiSkew: true, message }
+}
+
 function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
   const current = $backendUpdateApply.get()
 
@@ -759,16 +778,22 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
         continue
       }
 
-      if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
-        return finishBackendApply(true)
-      }
-
       // #91277 bullet 3: the backend now attaches the durable update
       // receipt to the status. A receipt whose run STARTED after we kicked
       // this update off is authoritative — read its outcome instead of
-      // inferring from log markers or timing out across the restart gap.
-      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs)) {
+      // inferring from log markers or timing out across the restart gap. The
+      // updater intentionally returns exit code 1 for `partial`, so this must
+      // run before the generic non-zero exit handling below.
+      if (receiptProvesOutcome(last, applyStartedAtMs)) {
+        if (last.receipt!.outcome === 'partial') {
+          return finishBackendPartialApply()
+        }
+
         return finishBackendApply(last.receipt!.outcome === 'success')
+      }
+
+      if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
+        return finishBackendApply(true)
       }
 
       if (!started.action_id && last.exit_code === null) {

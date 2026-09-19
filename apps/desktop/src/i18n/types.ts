@@ -2829,6 +2829,9 @@ export interface Translations {
     manualTitle: string
     manualBody: string
     manualPickedUp: string
+    /** Backend completed, but its Desktop GUI rebuild failed; the previous
+     *  running app remains usable and needs a separate repair. */
+    backendPartialBody: string
     /** GUI/backend skew (#45205): backend updated but the running desktop app
      *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */
     guiSkewTitle: string

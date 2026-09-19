@@ -412,12 +412,15 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
+    name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None,
+    tool_manifest: Optional[list] = None,
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
     Returns ``(tool_name, description)`` tuples; raises on connection failure. ``details`` is an
     out-param filled with ``schema_chars``/``prompts``/``resources`` so the return shape stays stable.
+    ``tool_manifest`` captures complete raw definitions for compatibility snapshots. That mode
+    disables model sampling/elicitation and refuses a truncated listing.
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
@@ -429,6 +432,8 @@ def _probe_single_server(
     from tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
+    if tool_manifest is not None:
+        config = {**config, "sampling": {"enabled": False}, "elicitation": {"enabled": False}}
     if connect_timeout is None:
         try:
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
@@ -448,6 +453,10 @@ def _probe_single_server(
     async def _probe():
         server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
         try:
+            if tool_manifest is not None:
+                if server._list_cache_meta.get("truncated"):
+                    raise ValueError("Tool listing exceeded the pagination limit; no snapshot was saved.")
+                tool_manifest.extend(t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in server._tools)
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""
                 if len(desc) > 80:
@@ -1060,6 +1069,8 @@ _MCP_USAGE = (
     "hermes mcp remove <name>                      Remove a server",
     "hermes mcp list                               List configured servers",
     "hermes mcp test <name>                        Test connection",
+    "hermes mcp snapshot <name> --output <file>    Save live tool definitions",
+    "hermes mcp diff <baseline> <current>          Compare saved tool definitions",
     "hermes mcp configure <name>                   Toggle tools",
     "hermes mcp login <name>                       Re-authenticate OAuth",
     "hermes mcp reauth <name> | --all              Re-auth one or all OAuth servers",
@@ -1069,6 +1080,11 @@ _MCP_USAGE = (
 def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
+    if action in ("snapshot", "diff"):
+        from hermes_cli.mcp_contracts import run_contract_command
+
+        run_contract_command(args)
+        return
     if action == "serve":
         from mcp_serve import run_mcp_server
         run_mcp_server(verbose=getattr(args, "verbose", False))

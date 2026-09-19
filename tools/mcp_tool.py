@@ -297,6 +297,8 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
         if not isinstance(cursor, str) or not cursor:
             break
     else:
+        if cache_meta_out is not None:
+            cache_meta_out["truncated"] = True
         logger.warning("MCP server '%s': %s pagination exceeded %d pages; truncating at %d items",
                        server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items))
     return items

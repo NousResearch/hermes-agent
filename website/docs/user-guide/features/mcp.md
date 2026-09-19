@@ -278,6 +278,87 @@ rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a
 more capable integration. On Desktop, GitHub mentions instead offer the
 `github-auth` skill when `gh` isn't signed in yet.
 
+## Inspect compatibility across server updates
+
+An MCP server update can remove a tool, require a new argument, or narrow the
+values an existing argument accepts. Save its tool definitions before and after
+an update to inspect those changes:
+
+```bash
+hermes mcp snapshot my-server --output before.json
+# Update the server, then capture its new definitions.
+hermes mcp snapshot my-server --output after.json
+hermes mcp diff before.json after.json
+```
+
+`my-server` is a configured server name. Snapshot uses the active profile and
+its existing connection/authentication settings; for example,
+`hermes -p work mcp snapshot my-server --output work-before.json`. It starts a
+temporary connection, discovers the server's tools, and disconnects. It captures
+**all advertised tools**, including those excluded by your tool-selection filters.
+It does not call business tools or enable model sampling or elicitation during
+the probe. A stdio server still runs its configured startup command, and normal
+connection authentication may refresh credentials.
+
+The snapshot contains the server name, capture time, and raw MCP tool definitions
+before Hermes's provider-specific schema conversion. It does not copy your
+connection configuration, environment variables, or token files. Server-supplied
+descriptions, schema defaults, and extensions are retained, so inspect snapshots
+before sharing them: these fields can contain sensitive data supplied by a server.
+
+The output file is replaced atomically **only after complete, successful
+discovery**. Use different filenames to retain both versions. Duplicate tool names,
+incomplete pagination, and connection failures are errors, not empty snapshots.
+An existing output file is preserved on capture failure. Snapshots are limited
+to 8 MiB and 64 levels of nesting.
+
+### Read the report
+
+Example output:
+
+```text
+MCP compatibility for 'my-server': breaking
+  [breaking] 'legacy_search' '': Tool removed.
+  [breaking] 'search' '/inputSchema/required': New required property: 'project_id'.
+```
+
+Paths within a tool are JSON Pointers (`~1` represents `/`, `~0` represents `~`).
+The comparison is directional: it asks whether **old callers** can continue to
+use the **new definitions**. Reversing the files answers a different question.
+
+| Result | Exit code | Meaning |
+| --- | --- | --- |
+| `unchanged` | `0` | No contract changes were found; capture timestamps and tool ordering are ignored. |
+| `compatible` | `0` | Only additions or relaxations were found within the supported input rules. |
+| `breaking` | `1` | A tool was removed or an input rule narrowed; existing callers may break. |
+| `error` | `2` | A snapshot could not be read/captured, is malformed, or identifies a different server. |
+| `review` | `3` | The change cannot be classified automatically, or metadata/output definitions changed. |
+
+For scripts, `hermes mcp diff before.json after.json --json` emits one JSON
+object on stdout, including errors. The report has `version`, `server`, `status`,
+and `changes`; each change has `tool`, `path`, `severity`, and `message`. Error
+reports instead have `version`, `status: "error"`, and `error`. If a report
+contains both breaking and review findings, its overall status is `breaking`.
+Diff is offline: it does not need a configured server and never resolves schema
+references or contacts a model.
+
+Supported input rules are `type`, `enum`, `required`, nested `properties`, and
+`additionalProperties`, including boolean property schemas. Integer-to-number
+widening is accepted. JSON booleans remain distinct from numeric enum values.
+Adding an optional property to an open object can *narrow* its previously
+unconstrained values; removing a property is checked against the new
+`additionalProperties` rule.
+
+This is a conservative change inspector, not a complete JSON Schema validator
+or a proof that a workflow still works. A changed input schema containing
+unsupported rules (`$ref`, composition, array constraints, patterns, numeric
+bounds, or an unrecognized dialect) requires review. The default dialect is
+JSON Schema 2020-12. Changes to descriptions, defaults, annotations, output
+schemas, and other tool metadata also require review. Unchanged schemas are
+not revalidated. Potential breaks can be redundant with other constraints;
+test your actual callers after reviewing the report. Identical definitions
+cannot establish unchanged server behavior or LLM-provider acceptance.
+
 ## Two kinds of MCP servers
 
 ### Stdio servers

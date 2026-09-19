@@ -279,3 +279,107 @@ def test_render_handles_all_none_stats():
     empty["fts_tables"] = None
     lines = _render_state_db_stats(empty, holders=None)
     assert isinstance(lines, list)  # must not raise
+
+
+# ── #83933: large-DB advisory must match the effective sessions config ──
+
+
+def _large_stats(**overrides):
+    big = hermes_cli.doctor_state.STATE_DB_SIZE_WARN_BYTES + 1
+    return _base_stats(logical_size_bytes=big, page_count=big // 4096, page_size=4096, **overrides)
+
+
+def test_render_large_db_auto_prune_enabled_does_not_suggest_enabling():
+    """When pruning is already on, the advisory states that + retention, never 'consider enabling'."""
+    from hermes_cli.doctor_state import _render_state_db_stats
+
+    lines = _render_state_db_stats(_large_stats(), holders=None, auto_prune_enabled=True, retention_days=90)
+    warns = [" ".join(str(p) for p in line) for line in lines if line[0] == "warn"]
+    blob = " ".join(warns)
+    assert "auto_prune is enabled" in blob
+    assert "retention_days=90" in blob
+    assert "consider enabling" not in blob
+
+
+def test_render_large_db_auto_prune_enabled_without_retention_still_safe():
+    """Enabled but retention unknown (config unreadable) — advisory must not invent a retention number."""
+    from hermes_cli.doctor_state import _render_state_db_stats
+
+    lines = _render_state_db_stats(_large_stats(), holders=None, auto_prune_enabled=True, retention_days=None)
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines if line[0] == "warn")
+    assert "auto_prune is enabled" in blob
+    assert "consider enabling" not in blob
+    assert "retention_days=" not in blob
+
+
+def test_render_large_db_auto_prune_disabled_still_suggests_enabling():
+    """Default render path (no config info) is unchanged: suggests enabling."""
+    from hermes_cli.doctor_state import _render_state_db_stats
+
+    lines = _render_state_db_stats(_large_stats(), holders=None, auto_prune_enabled=False)
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines if line[0] == "warn")
+    assert "consider enabling sessions.auto_prune" in blob
+
+
+def test_render_large_db_enabled_keeps_optimize_storage_hint():
+    """The optimize-storage hint rides along whichever branch the advisory takes."""
+    from hermes_cli.doctor_state import _render_state_db_stats
+
+    stats = _large_stats(fts_rebuild_pending=True)
+    lines = _render_state_db_stats(stats, holders=None, auto_prune_enabled=True, retention_days=90)
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines if line[0] == "warn")
+    assert "optimize-storage" in blob
+    assert "auto_prune is enabled" in blob
+
+
+def test_effective_sessions_prune_config_defaults_to_pruning_on():
+    """No sessions key in config.yaml → effective defaults (on, 90d) — pruning is on by default
+    since #101316, so the advisory must never say 'consider enabling' for a default install."""
+    from hermes_constants import get_hermes_home
+    from hermes_cli.doctor_state import _effective_sessions_prune_config
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model: glm-4.7\n", encoding="utf-8")
+    assert _effective_sessions_prune_config() == (True, 90)
+
+
+def test_effective_sessions_prune_config_respects_user_overrides():
+    from hermes_constants import get_hermes_home
+    from hermes_cli.doctor_state import _effective_sessions_prune_config
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "sessions:\n  auto_prune: false\n", encoding="utf-8")
+    assert _effective_sessions_prune_config() == (False, 90)
+    (home / "config.yaml").write_text(
+        "sessions:\n  auto_prune: true\n  retention_days: 30\n", encoding="utf-8")
+    assert _effective_sessions_prune_config() == (True, 30)
+
+
+def test_state_db_stats_issue_summary_matches_effective_config(tmp_path, monkeypatch, capsys):
+    """End-to-end through _state_db_stats: the appended issue line follows the effective config."""
+    import hermes_state_dbfile
+    from hermes_constants import get_hermes_home
+    from hermes_cli.doctor_state import _state_db_stats
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(hermes_state_dbfile, "collect_state_db_stats", lambda p: _large_stats())
+    monkeypatch.setattr(hermes_state_dbfile, "count_db_holders", lambda p: 0)
+
+    (home / "config.yaml").write_text("sessions:\n  auto_prune: true\n  retention_days: 90\n", encoding="utf-8")
+    issues = []
+    _state_db_stats(issues, tmp_path / "state.db")
+    assert len(issues) == 1
+    assert "sessions.auto_prune is enabled" in issues[0]
+    assert "enable sessions.auto_prune" not in issues[0]
+
+    (home / "config.yaml").write_text("sessions:\n  auto_prune: false\n", encoding="utf-8")
+    issues = []
+    _state_db_stats(issues, tmp_path / "state.db")
+    assert len(issues) == 1
+    assert "enable sessions.auto_prune in config.yaml" in issues[0]
+    out = capsys.readouterr().out
+    assert "consider enabling sessions.auto_prune" in out

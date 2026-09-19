@@ -47,10 +47,14 @@ def _bits(*pairs) -> list:
     return [fmt() for value, fmt in pairs if value is not None]
 
 
-def _render_state_db_stats(stats: dict, holders=None) -> list:
+def _render_state_db_stats(stats: dict, holders=None, auto_prune_enabled: bool = False,
+                           retention_days: int | None = None) -> list:
     """Turn a collect_state_db_stats() dict into ``(kind, text, detail)`` rows, kind 'info' / 'warn'.
 
-    Pure formatting — no I/O — so it is unit-testable without the doctor CLI. Tolerates None in every field.
+    Pure formatting — no I/O — so it is unit-testable without the doctor CLI. Tolerates None in every
+    field. ``auto_prune_enabled`` / ``retention_days`` come from the caller's *effective* sessions
+    config (#83933): when pruning is already on, the advisory must say so instead of suggesting the
+    user enable what is already enabled (the default since #101316).
     """
     lines: list = []
     stats = stats or {}
@@ -91,7 +95,18 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
     # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
+        # #83933: match the advisory to the effective sessions config. auto_prune defaulted to true in
+        # #101316, so "consider enabling" is wrong for every default install; when it is on, the honest
+        # size facts stay (this is a size observation, not a verdict) but the advice points at the
+        # retention knob instead of an option the user already has enabled.
+        if auto_prune_enabled:
+            retention_bit = f"retention_days={retention_days}" if retention_days is not None else "auto_prune on"
+            detail = (f"sessions.auto_prune is enabled ({retention_bit}); a large state.db is then retained "
+                      "history, not runaway growth")
+            if retention_days is not None:
+                detail += " — lower retention_days to keep less"
+        else:
+            detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
         stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
                          and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
         if stats.get("fts_rebuild_pending") or stale_trigram:
@@ -275,19 +290,40 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
         _repair_state_db(f, should_fix, state_db_path, "fts")
 
 
+def _effective_sessions_prune_config() -> tuple:
+    """(#83933) Effective ``(auto_prune, retention_days)`` for the size advisory — DEFAULT_CONFIG
+    merged with the user's config.yaml, the same resolution the gateway's startup prune uses.
+    ``load_config_readonly`` is safe here (doctor never mutates the result); any failure degrades
+    to the defaults (pruning on, 90d) rather than killing the stats check."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        sess = load_config_readonly().get("sessions") or {}
+        auto_prune = bool(sess.get("auto_prune", True))
+        retention = sess.get("retention_days")
+        retention_days = int(retention) if isinstance(retention, (int, float)) and not isinstance(retention, bool) else None
+        return auto_prune, retention_days
+    except Exception:
+        return True, None
+
+
 def _state_db_stats(issues: list, state_db_path: Path) -> None:
     """Health/stats snapshot: strictly read-only (mode=ro) so it is safe against a live DB held by
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
         from hermes_state_dbfile import collect_state_db_stats, count_db_holders
-        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path))
+        # #83933: the large-DB advisory must match what the profile's effective config actually does.
+        auto_prune, retention_days = _effective_sessions_prune_config()
+        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
+                                      auto_prune_enabled=auto_prune, retention_days=retention_days)
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
                 continue
             check_warn(_text, _detail)
             if "auto_prune" in _detail:
-                issues.append("state.db is large — enable sessions.auto_prune in config.yaml"
+                issues.append(("state.db is large — sessions.auto_prune is enabled; lower retention_days "
+                                "to keep less history" if auto_prune else
+                                "state.db is large — enable sessions.auto_prune in config.yaml")
                               + (" and run 'hermes sessions optimize-storage' offline (gateway stopped)" if "optimize-storage" in _detail else ""))
 
 

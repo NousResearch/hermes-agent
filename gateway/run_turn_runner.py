@@ -967,6 +967,12 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            pane = getattr(ctx, "matrix_commentary_pane", None)
+            if pane is not None:
+                if already_streamed or not str(text or "").strip():
+                    return
+                self._schedule(pane.append(text), "matrix commentary pane scheduling error")
+                return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():

@@ -25,6 +25,7 @@ class TurnContext:
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
     tool_progress_enabled: bool = False
+    matrix_commentary_pane: Any = None
     progress_queue: Any = None
     log_queue: Any = None
     # mutable single-element containers (shared with the outer body)

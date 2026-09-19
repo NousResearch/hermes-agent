@@ -17,7 +17,7 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from agent.display import (
@@ -253,6 +253,46 @@ def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
 _emit_terminal_post_tool_call = emit_terminal_post_tool_call
 
 
+class _ToolLifecycle:
+    """Order stable-ID callbacks without making the owner wait for a blocked start.
+
+    A UI start can block before publishing (e.g. reading an edit snapshot). If
+    the owner settles meanwhile, that callback must finish before completion
+    cleans up its state. Completion also prevents a not-yet-entered late start.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._starting = False
+        self._completed = False
+        self._pending_complete: Callable[[], None] | None = None
+
+    def start(self, callback: Callable[[], None]) -> None:
+        with self._lock:
+            if self._completed:
+                return
+            self._starting = True
+        try:
+            callback()
+        finally:
+            with self._lock:
+                self._starting = False
+                complete, self._pending_complete = self._pending_complete, None
+            if complete is not None:
+                complete()
+
+    def complete(self, callback: Callable[[], None]) -> None:
+        with self._lock:
+            # One start/completion pair per call: the first completion owns cleanup.
+            if self._completed:
+                return
+            self._completed = True
+            if self._starting:
+                self._pending_complete = callback
+                return
+        callback()
+
+
 @dataclass
 class _ToolCallRef:
     """Identity of one tool call as every hook / result message sees it: the (possibly
@@ -263,12 +303,13 @@ class _ToolCallRef:
     task_id: str
     call_id: str
     trace: list
+    lifecycle: _ToolLifecycle = field(default_factory=_ToolLifecycle)
 
     def middleware_kwargs(self) -> dict[str, Any]:
         """Keyword form ``_run_agent_tool_execution_middleware`` (and tests patching it) expect."""
         return {
             "function_name": self.name, "function_args": self.args, "effective_task_id": self.task_id,
-            "tool_call_id": self.call_id, "middleware_trace": self.trace,
+            "tool_call_id": self.call_id, "middleware_trace": self.trace, "lifecycle": self.lifecycle,
         }
 
     def emit_post(self, agent, result, *, trace=None, **outcome) -> None:
@@ -432,9 +473,10 @@ class _ParsedCall:
     middleware_trace: list
     parse_error: Optional[str]
     scope_block: Optional[str]
+    lifecycle: _ToolLifecycle = field(default_factory=_ToolLifecycle)
 
     def ref(self, task_id: str) -> _ToolCallRef:
-        return _ToolCallRef(self.name, self.args, task_id, _pairing_tool_call_id(self.tool_call), self.middleware_trace)
+        return _ToolCallRef(self.name, self.args, task_id, _pairing_tool_call_id(self.tool_call), self.middleware_trace, self.lifecycle)
 
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
@@ -722,6 +764,7 @@ def _run_agent_tool_execution_middleware(
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
+    lifecycle: _ToolLifecycle | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from agent import relay_tools
@@ -731,6 +774,7 @@ def _run_agent_tool_execution_middleware(
     )
 
     trace = middleware_trace if middleware_trace is not None else []
+    lifecycle = lifecycle if lifecycle is not None else _ToolLifecycle()
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
     dispatch_lock = threading.Lock()
 
@@ -744,7 +788,7 @@ def _run_agent_tool_execution_middleware(
         return _dispatch_authorized_once(
             agent,
             state,
-            _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
+            _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace, lifecycle),
             execute=execute,
             scope_block=scope_block,
             display_index=display_index,
@@ -856,6 +900,7 @@ def _run_sequential_tool_execution_middleware(
     scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
+    lifecycle: _ToolLifecycle | None = None,
 ) -> _ManagedToolResult:
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
@@ -863,8 +908,9 @@ def _run_sequential_tool_execution_middleware(
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
-    ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
-    kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
+    ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace,
+                       lifecycle if lifecycle is not None else _ToolLifecycle())
+    kwargs: dict[str, Any] = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     from agent.terminal_approval_batch import take_prepared_call
     prepared = take_prepared_call(tool_call_id)
     if prepared is not None:
@@ -879,6 +925,10 @@ def _run_sequential_tool_execution_middleware(
 
     from tools.daemon_pool import DaemonThreadPoolExecutor
 
+    # A single slot still needs the same abandonment fence as a concurrent batch:
+    # a timed-out pre-hook or start callback must not later dispatch the tool.
+    start_gate = _StartOrderGate(0.0)
+    begin_execution = _WorkerStartOnce(start_gate, 0, function_name)
     if prepared is None:
         authorization_gate = _ConcurrentToolAuthorizationGate()
         worker_tid: list[int] = []
@@ -886,7 +936,10 @@ def _run_sequential_tool_execution_middleware(
     def _run() -> _ManagedToolResult:
         with _registered_tool_worker(agent) as tid:
             worker_tid.append(tid)
-            return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
+            return _run_agent_tool_execution_middleware(
+                agent, authorization_gate=authorization_gate,
+                begin_execution=begin_execution.advance, **kwargs,
+            )
 
     if ref.trace is None:
         ref.trace = []
@@ -925,6 +978,7 @@ def _run_sequential_tool_execution_middleware(
                 duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
             )
         abandoned = True
+        start_gate.abandon()
         if prepared is not None:
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
@@ -973,7 +1027,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
             _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
-    _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
+    ref.lifecycle.start(lambda: _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args))
 
     if not agent._checkpoint_mgr.enabled:
         return
@@ -992,13 +1046,16 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
     """Fire ``tool_complete_callback`` (unless blocked) then the ``tool.output_risk`` projection."""
-    if not blocked and agent.tool_complete_callback:
+    complete_callback = agent.tool_complete_callback
+    if not blocked and complete_callback:
         try:
             display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
         except Exception as cb_err:
             logging.debug("Tool complete callback error: %s", cb_err)
         else:
-            _safe_callback(agent.tool_complete_callback, "Tool complete", ref.call_id, ref.name, display_args, result)
+            ref.lifecycle.complete(lambda: _safe_callback(
+                complete_callback, "Tool complete", ref.call_id, ref.name, display_args, result,
+            ))
     if risk_metadata is not None and risk_metadata.get("risk") != "low":
         _safe_callback(
             agent.tool_progress_callback, "Tool output risk",
@@ -1172,13 +1229,19 @@ class _StartOrderGate:
                     "start-order gate timed out for %s (order=%d next=%d); proceeding out of order",
                     tool_name or "tool", order, self._next_order,
                 )
-            try:
-                if callback is not None:
-                    callback()
-            finally:
+        # Start callbacks include UI bridges and filesystem checkpoints. They may
+        # block: holding the condition here prevents BOTH bounded gate waits and
+        # abandon() from acquiring it, defeating the executor's deadline.
+        try:
+            if callback is not None:
+                callback()
+        finally:
+            with self._condition:
                 self._next_order = max(self._next_order, order + 1)
                 self._condition.notify_all()
-        return True
+        # Abandonment may have won while preflight was running. Its resumption
+        # must not authorize a tool whose result the owner has already settled.
+        return not self.abandoned.is_set()
 
 
 class _WorkerStartOnce:
@@ -1641,10 +1704,12 @@ def _run_sequential_call(
     KeyboardInterrupt (registry tools only) emits results for THIS and every remaining call
     before re-raising so the tool-call turn keeps matching results (alternation)."""
     _spinner_result = None
+    middleware_kwargs = ref.middleware_kwargs()
+    middleware_kwargs["middleware_trace"] = dispatch.middleware_trace_arg
     try:
         managed = _run_sequential_tool_execution_middleware(
             agent,
-            **dict(ref.middleware_kwargs(), middleware_trace=dispatch.middleware_trace_arg),
+            **middleware_kwargs,
             execute=dispatch.execute,
             scope_block=scope_block,
             display_index=display_index,

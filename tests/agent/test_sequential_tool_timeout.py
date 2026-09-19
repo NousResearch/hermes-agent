@@ -1,5 +1,6 @@
 """Sequential tool calls recover when one dispatch never returns."""
 
+import concurrent.futures
 import json
 import threading
 import time
@@ -12,6 +13,145 @@ import pytest
 from agent.tool_executor import execute_tool_calls_sequential
 from run_agent import AIAgent
 from tools.clarify_gateway import resolve_clarify_timeout
+
+
+@pytest.mark.parametrize("mode", ["sequential", "concurrent"])
+@pytest.mark.parametrize("stage", ["pre_hook", "tool_started", "checkpoint", "snapshot", "progress"])
+@pytest.mark.parametrize("stop", ["timeout", "interrupt"])
+def test_abandoned_preflight_cannot_start_a_tool(tmp_path, monkeypatch, mode, stage, stop):
+    """Both executors must retire blocked preflight before acknowledging abandonment."""
+    import agent.display as display
+    import agent.tool_executor as te
+    import model_tools
+    import tools.daemon_pool as daemon_pool
+    from tools.registry import ToolRegistry
+    from tui_gateway import server
+
+    agent = _make_agent(tmp_path)
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    effects = tmp_path / "effects.txt"
+    messages, errors, futures = [], [], []
+    registry = ToolRegistry()
+    events = []
+    session = {"tool_progress_mode": "all", "tool_started_at": {}, "edit_snapshots": {}}
+    sid = "abandoned-preflight"
+    monkeypatch.setitem(server._sessions, sid, session)
+    monkeypatch.setattr(server, "_emit", lambda event, _sid, payload=None: events.append((event, payload)))
+    callbacks = server._agent_cbs(sid)
+    for name in ("tool_start_callback", "tool_complete_callback", "tool_progress_callback"):
+        setattr(agent, name, callbacks[name])
+
+    def write_effect(args, **kwargs):
+        with effects.open("a", encoding="utf-8") as output:
+            output.write(args["content"] + "\n")
+        return json.dumps({"ok": True})
+
+    registry.register(name="write_file", toolset="file", schema={}, handler=write_effect)
+    monkeypatch.setattr(model_tools, "registry", registry)
+    monkeypatch.setattr(te, "_resolve_concurrent_tool_timeout", lambda: 2.0 if stop == "timeout" else None)
+    monkeypatch.setattr(te, "_resolve_sequential_tool_timeout", lambda: 2.0 if stop == "timeout" else None)
+    monkeypatch.setattr(te, "_SEQUENTIAL_INTERRUPT_POLL_SECONDS", 0.05)
+
+    real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+    class RecordingExecutor(real_executor):
+        def submit(self, *args, **kwargs):
+            future = super().submit(*args, **kwargs)
+            futures.append(future)
+            return future
+
+    monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", RecordingExecutor)
+
+    def block_preflight():
+        entered.set()
+        assert release.wait(20), "test did not release the preflight worker"
+
+    if stage == "pre_hook":
+        def pre_hook(name, args, **kwargs):
+            if kwargs["tool_call_id"] == "abandoned":
+                block_preflight()
+            return None, args
+        monkeypatch.setattr("hermes_cli.plugins._dispatch_pre_tool_call_hooks", pre_hook)
+    elif stage == "tool_started":
+        def on_start(call_id, *args):
+            callbacks["tool_start_callback"](call_id, *args)
+            if call_id == "abandoned":
+                block_preflight()
+        agent.tool_start_callback = on_start
+    elif stage == "checkpoint":
+        agent._checkpoint_mgr.enabled = True
+        monkeypatch.setattr(agent._checkpoint_mgr, "ensure_checkpoint", lambda *args: block_preflight())
+    elif stage == "snapshot":
+        capture_snapshot = display.capture_local_edit_snapshot
+
+        def snapshot(name, args):
+            if args["content"] == "late side effect":
+                block_preflight()
+            return capture_snapshot(name, args)
+        monkeypatch.setattr(display, "capture_local_edit_snapshot", snapshot)
+    else:
+        def on_progress(event, name=None, preview=None, args=None, **kwargs):
+            if event == "tool.started" and args["content"] == "late side effect":
+                block_preflight()
+            callbacks["tool_progress_callback"](event, name, preview, args, **kwargs)
+        agent.tool_progress_callback = on_progress
+
+    execute = getattr(agent, "_execute_tool_calls_" + mode)
+    call = _tool_call("abandoned")
+    call.function.name = "write_file"
+    call.function.arguments = json.dumps({"path": str(effects), "content": "late side effect"})
+
+    def run():
+        try:
+            execute(SimpleNamespace(tool_calls=[call]), messages, "task")
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            returned.set()
+
+    owner = threading.Thread(target=run, daemon=True)
+    owner.start()
+    try:
+        assert entered.wait(10), "tool did not reach preflight"
+        if stop == "interrupt":
+            agent.interrupt("stop during preflight")
+        # Covers the concurrent poll (5s) + interrupt grace (3s), without relying
+        # on a sleep to position the race. Preflight stays blocked until teardown.
+        bounded = returned.wait(12)
+        if bounded and stage == "checkpoint":
+            # Start has returned: cleanup must not wait for checkpoint I/O.
+            assert not session["tool_started_at"] and not session["edit_snapshots"]
+    finally:
+        release.set()
+        owner.join(10)
+        _, pending = concurrent.futures.wait(futures, timeout=10)
+        agent.clear_interrupt()
+
+    assert not pending and not owner.is_alive(), "test leaked a tool worker"
+    assert not errors
+    assert bounded, "preflight blocked the executor's timeout/interrupt path"
+    assert not effects.exists(), "an abandoned call dispatched after preflight resumed"
+    assert [message["tool_call_id"] for message in messages] == ["abandoned"]
+    assert ("timed out" if stop == "timeout" else "cancelled") in messages[0]["content"]
+    lifecycle = [
+        (event, payload["tool_id"]) for event, payload in events
+        if event in {"tool.start", "tool.complete"}
+    ]
+    expected = [] if stage in {"pre_hook", "progress"} else [("tool.start", "abandoned")]
+    assert lifecycle == expected + [("tool.complete", "abandoned")]
+    assert session["tool_started_at"] == {}
+    assert session["edit_snapshots"] == {}
+
+    # The same real dispatcher must still execute the next accepted call.
+    followup = _tool_call("next")
+    followup.function.name = "write_file"
+    followup.function.arguments = json.dumps({"path": str(effects), "content": "accepted"})
+    execute(SimpleNamespace(tool_calls=[followup]), [], "task")
+    assert effects.read_text(encoding="utf-8") == "accepted\n"
+    assert [(event, payload["tool_id"]) for event, payload in events[-2:]] == [
+        ("tool.start", "next"), ("tool.complete", "next"),
+    ]
+    assert not session["tool_started_at"] and not session["edit_snapshots"]
 
 
 @pytest.fixture(autouse=True)

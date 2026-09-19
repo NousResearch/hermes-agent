@@ -3585,18 +3585,34 @@ class GatewayTurnMixin:
             logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
         # Safety net: a pending slash command is never passed to the agent as user input.
+        # 2026-09-18: /queue is a TRANSFER command — run_inbound._hm_cmd_queue queues it
+        # verbatim while busy, with the payload + media being the real user turn. Strip
+        # the prefix and deliver the payload instead of discarding the whole event.
         if pending and pending.strip().startswith("/"):
             _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
             if _pending_cmd_word:
+                _unwrap_queue = False
                 with suppress(Exception):
                     from hermes_cli.commands import resolve_command as _rc_pending
                     if _rc_pending(_pending_cmd_word):
-                        logger.info(
-                            "Discarding command '/%s' from pending queue — "
-                            "commands must not be passed as agent input", _pending_cmd_word,
-                        )
-                        pending_event = None
-                        pending = None
+                        if _pending_cmd_word == "queue" and pending_event is not None:
+                            _stripped = pending.strip()[len("/queue"):].strip()
+                            if _stripped or getattr(pending_event, "media_urls", None):
+                                _unwrap_queue = True
+                                pending = _stripped or _build_media_placeholder(pending_event)
+                                logger.info(
+                                    "Pending '/queue' unwrapped to payload turn for %s "
+                                    "(%d media attachment(s))",
+                                    session_key or "?",
+                                    len(getattr(pending_event, "media_urls", None) or []),
+                                )
+                        if not _unwrap_queue:
+                            logger.info(
+                                "Discarding command '/%s' from pending queue — "
+                                "commands must not be passed as agent input", _pending_cmd_word,
+                            )
+                            pending_event = None
+                            pending = None
 
         if self._draining and (pending_event or pending):
             logger.info(

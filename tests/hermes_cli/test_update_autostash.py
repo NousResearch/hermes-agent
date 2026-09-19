@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -128,6 +129,7 @@ def _make_update_side_effect(
     merge_base_exists=True,
     update_ref_fails=False,
     pre_pull_sha_unavailable=False,
+    behind_count=None,
     existing_rescue_refs=None,
 ):
     """Build a subprocess.run side_effect for cmd_update tests.
@@ -149,6 +151,11 @@ def _make_update_side_effect(
     ``existing_rescue_refs`` simulates the refs already present under
     ``refs/hermes-update-backups/orphan-<branch>-*`` (oldest first) so the
     ``_prune_orphan_rescue_refs`` cleanup pass has something to trim.
+
+    ``behind_count`` models the REMOTE-ahead ``rev-list HEAD..origin/<branch>`` probe separately from
+    ``commit_count`` (the LOCAL-ahead ``origin/<branch>..HEAD`` one). With a single number for both
+    directions a "zero local commits" case also reports zero remote commits, and the update returns on
+    the already-up-to-date path instead of exercising the divergence it claims to test.
     """
     recorded = []
     head_sha_calls = []
@@ -181,6 +188,10 @@ def _make_update_side_effect(
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
+            # Direction matters: ``HEAD..origin/<branch>`` is the REMOTE-ahead probe, everything else
+            # (``origin/<branch>..HEAD``) is the LOCAL-ahead count the backup path keys on.
+            if behind_count is not None and "HEAD..origin/" in joined:
+                return SimpleNamespace(stdout=f"{behind_count}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "merge-base" in joined:
             if merge_base_exists:
@@ -281,9 +292,12 @@ def test_cmd_update_orphan_history_backs_up_before_reset(monkeypatch, tmp_path, 
     assert update_ref_calls[0][update_ref_calls[0].index("update-ref") + 2] == (
         "1111111111111111111111111111111111111beef"
     )
-    # Ref name carries the pre-pull SHA, not just a second-resolution
-    # timestamp, so two updates racing within the same second don't collide.
-    assert ref_name.endswith("-111111111111")
+    # Create-only (empty <oldvalue>): an existing ref is never replaced.
+    assert update_ref_calls[0][update_ref_calls[0].index("update-ref") + 3] == ""
+    # The ref name carries the FULL pre-pull SHA, not just a second-resolution
+    # timestamp, so two updates racing within the same second don't collide and the
+    # safety property never rests on abbreviated-hash uniqueness.
+    assert ref_name.endswith("-1111111111111111111111111111111111111beef")
 
     out = capsys.readouterr().out
     assert "orphan divergence" in out
@@ -292,9 +306,10 @@ def test_cmd_update_orphan_history_backs_up_before_reset(monkeypatch, tmp_path, 
     assert f"expires after {update_cmd._ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days" in out
 
 
-def test_cmd_update_orphan_rescue_ref_write_failure_message_is_honest(monkeypatch, tmp_path, capsys):
-    """When ``git update-ref`` fails, the printed message must not claim a
-    backup exists — it should say the write was attempted and failed."""
+def test_cmd_update_orphan_rescue_ref_write_failure_is_fatal(monkeypatch, tmp_path, capsys):
+    """When ``git update-ref`` fails, the update must refuse to reset --hard
+    (never run the destructive reset without a working backup) and the printed
+    message must not claim a backup exists — it says the write failed."""
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
@@ -302,12 +317,17 @@ def test_cmd_update_orphan_rescue_ref_write_failure_message_is_honest(monkeypatc
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    reset_calls = [c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c]
+    assert reset_calls == []
 
     out = capsys.readouterr().out
     assert "orphan divergence" in out
     assert "backup write failed" in out
     assert "backed up current HEAD" not in out
+    assert "Refusing to reset --hard without a backup" in out
 
 
 def test_cmd_update_orphan_rescue_refs_pruned_beyond_keep_limit(monkeypatch, tmp_path, capsys):
@@ -401,48 +421,124 @@ def test_prune_orphan_rescue_refs_leaves_unparseable_names_alone():
 
 
 def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, capsys):
-    """Common ancestor still exists (e.g. upstream force-push) → no rescue
-    ref, no orphan messaging, behavior identical to before #87694."""
+    """Common ancestor still exists (e.g. upstream force-push) and there are no
+    local-only commits → no rescue ref, no orphan messaging, behavior identical
+    to before #87694.
+
+    ``behind_count``/``commit_count`` are set separately so this really travels the divergence path:
+    with one number for both directions the "remote ahead by 3" update reported zero behind and
+    returned on the already-up-to-date path, asserting nothing. ``reset_fails=True`` keeps the run off
+    the post-reset gateway restart (blocked by the conftest live-system guard on this host) while still
+    proving the reset was attempted from the divergence path.
+    """
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
-        ff_only_fails=True, merge_base_exists=True,
+        ff_only_fails=True, merge_base_exists=True, commit_count="0", behind_count="3",
+        reset_fails=True,
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert update_ref_calls == []
+
+    reset_calls = [c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c]
+    assert len(reset_calls) == 1, "the divergence path must reach the reset"
 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out
     assert "Fast-forward not possible (history diverged), resetting to match remote" in out
 
 
-def test_cmd_update_orphan_rescue_ref_write_failure_is_non_fatal(monkeypatch, tmp_path, capsys):
-    """#87694 stress test: ``git update-ref`` itself fails (disk full,
-    permissions) while parking the orphan rescue ref. The backup attempt is
-    best-effort — so the reset must still proceed and the update succeed."""
+def test_cmd_update_local_commits_backed_up_before_reset(monkeypatch, tmp_path, capsys):
+    """Same branch with local-only commits (common ancestor, HEAD ahead of
+    origin/main) → HEAD is parked behind a ``refs/hermes-update-backups/main-*``
+    ref before reset --hard is attempted, instead of silently discarding the
+    commits. ``reset_fails=True`` keeps the test off the gateway-restart success
+    path (blocked by the conftest live-system guard on a live-gateway box) while
+    still proving the backup is written before the reset."""
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
-        ff_only_fails=True, merge_base_exists=False, update_ref_fails=True,
+        ff_only_fails=True, merge_base_exists=True, commit_count="3", reset_fails=True,
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
+    assert len(update_ref_calls) == 1
+    ref_name = update_ref_calls[0][update_ref_calls[0].index("update-ref") + 1]
+    assert ref_name.startswith("refs/hermes-update-backups/main-")
+    # Backs up the captured pre-reset SHA, so the ref always points at a resolvable commit.
+    assert update_ref_calls[0][update_ref_calls[0].index("update-ref") + 2] == (
+        "1111111111111111111111111111111111111beef"
+    )
+    # Create-only: the empty <oldvalue> makes `update-ref` refuse to replace an existing ref, so a
+    # second update in the same second can never overwrite the only recovery pointer.
+    assert update_ref_calls[0][update_ref_calls[0].index("update-ref") + 3] == ""
+    # The FULL object id is in the name, so two updates inside the same second cannot collide —
+    # abbreviated-hash uniqueness is not load-bearing.
+    assert ref_name.endswith("-1111111111111111111111111111111111111beef"), ref_name
+
+    # The backup is written before the destructive reset, which is the whole point.
+    reset_calls = [c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c]
+    assert len(reset_calls) == 1
+    ref_positions = [i for i, c in enumerate(recorded) if "update-ref" in " ".join(str(x) for x in c)]
+    reset_positions = [i for i, c in enumerate(recorded) if "reset" in " ".join(str(x) for x in c) and "--hard" in c]
+    assert ref_positions[0] < reset_positions[0], "update-ref must precede reset --hard"
+
+    out = capsys.readouterr().out
+    assert "Preserving 3 local commit(s) not on origin/main" in out
+    assert ref_name in out
+    # The recovery lifetime is stated: the refs are pruned, so the user must be told.
+    assert f"kept for {update_cmd._LOCAL_COMMIT_BACKUP_REF_MAX_AGE_DAYS} days" in out
+
+
+def test_cmd_update_local_commits_backup_failure_refuses_reset(monkeypatch, tmp_path, capsys):
+    """When the local-commit backup ``update-ref`` fails, the update must refuse
+    to reset --hard rather than silently discard the commits."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=True, commit_count="3", update_ref_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    reset_calls = [c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c]
+    assert reset_calls == []
+
+    out = capsys.readouterr().out
+    assert "Could not create backup ref" in out
+    assert "refusing to reset --hard" in out
+
+
+def test_cmd_update_local_commits_count_failure_still_backs_up(monkeypatch, tmp_path, capsys):
+    """When the local-commit count itself fails (negative sentinel), the update
+    still backs HEAD up before reset — fail toward taking a backup."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(update_cmd, "_count_commits_between", lambda *a, **kw: -1)
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=True, reset_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert len(update_ref_calls) == 1
 
-    reset_calls = [
-        c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c
-    ]
-    assert len(reset_calls) == 1
-
     out = capsys.readouterr().out
-    assert "orphan divergence" in out
+    assert "Could not count local commits" in out
 
 
 def test_cmd_update_orphan_guard_skips_rescue_ref_when_pre_pull_sha_missing(
@@ -457,6 +553,7 @@ def test_cmd_update_orphan_guard_skips_rescue_ref_when_pre_pull_sha_missing(
 
     side_effect, recorded = _make_update_side_effect(
         ff_only_fails=True, merge_base_exists=False, pre_pull_sha_unavailable=True,
+        commit_count="0",
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
@@ -1231,3 +1328,139 @@ def test_prune_orphan_rescue_refs_with_real_git_unpins_objects(tmp_path):
     # And gc can now reclaim the snapshot's objects.
     git("gc", "-q", "--prune=now")
     assert git("cat-file", "-e", snap_sha, check=False).returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# Create-only backups and real-Git recovery (#109493 review findings)
+#
+# The mocked tests above assert the COMMAND SHAPE. Only real git can prove the
+# safety properties the reviewer asked for: that a create-only write cannot
+# replace an existing recovery pointer, and that the ref a diverged update
+# leaves behind actually resolves to the pre-reset commit.
+# ---------------------------------------------------------------------------
+
+
+def _git(repo, *args):
+    result = subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "-c", "commit.gpgsign=false", *args],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert result.returncode == 0, f"git {' '.join(args)} failed: {result.stderr}"
+    return result.stdout.strip()
+
+
+def _diverged_repo(tmp_path):
+    """Real repo: local HEAD ahead of a diverged ``origin/main`` on a shared ancestor.
+
+    Returns ``(repo, pre_reset_sha, remote_sha)``.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    (repo / "a.txt").write_text("a", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+
+    (repo / "local.txt").write_text("local work", encoding="utf-8")
+    _git(repo, "add", "local.txt")
+    _git(repo, "commit", "-m", "local-only commit")
+    pre_reset = _git(repo, "rev-parse", "HEAD")
+
+    # origin/main moves forward on its own line: diverged, common ancestor = base.
+    _git(repo, "checkout", "-q", "-b", "remote-line", base)
+    (repo / "b.txt").write_text("b", encoding="utf-8")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "remote commit")
+    remote = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", remote)
+    _git(repo, "checkout", "-q", "main")
+    return repo, pre_reset, remote
+
+
+def test_reconcile_diverged_checkout_backs_up_local_commits_for_real(tmp_path, monkeypatch, capsys):
+    """The reset still happens, and the pre-reset commit stays reachable.
+
+    End-to-end against real git: the ref left behind by ``_reconcile_diverged_checkout`` must resolve to
+    the pre-reset HEAD, with that commit's tree recoverable from it.
+    """
+    repo, pre_reset, remote = _diverged_repo(tmp_path)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+
+    update_cmd._reconcile_diverged_checkout(["git"], "main", pre_reset)
+
+    assert _git(repo, "rev-parse", "HEAD") == remote, "the destructive reset must have run"
+
+    refs = _git(repo, "for-each-ref", "--format=%(refname)",
+                "refs/hermes-update-backups/main-*").splitlines()
+    assert len(refs) == 1, refs
+    assert _git(repo, "rev-parse", refs[0]) == pre_reset, "backup ref must point at the pre-reset HEAD"
+    assert _git(repo, "show", f"{refs[0]}:local.txt") == "local work", "commit graph must be recoverable"
+    assert refs[0].endswith(pre_reset), "the full object id belongs in the ref name"
+    assert refs[0] in capsys.readouterr().out
+
+
+def test_create_backup_ref_never_replaces_an_existing_ref(tmp_path):
+    """A name collision must not destroy the existing recovery pointer (real git).
+
+    ``git update-ref`` overwrites silently; the create-only form (empty ``<oldvalue>``) is what makes the
+    safety property independent of name uniqueness.
+    """
+    from hermes_cli.update_cmd_git import _create_backup_ref
+
+    repo, pre_reset, remote = _diverged_repo(tmp_path)
+    ref = "refs/hermes-update-backups/manual-collision"
+
+    ok, used = _create_backup_ref(["git"], repo, ref, pre_reset)
+    assert (ok, used) == (True, ref)
+
+    ok2, used2 = _create_backup_ref(["git"], repo, ref, remote)
+    assert ok2 is True
+    assert used2 != ref, "a collision must fall back to a suffixed ref, not overwrite"
+    assert _git(repo, "rev-parse", ref) == pre_reset, "the first pointer must be intact"
+    assert _git(repo, "rev-parse", used2) == remote
+
+    # Repeating the same backup is idempotent success — the ref already holds that object.
+    ok3, used3 = _create_backup_ref(["git"], repo, ref, pre_reset)
+    assert (ok3, used3) == (True, ref)
+    assert _git(repo, "rev-parse", ref) == pre_reset
+
+
+def test_create_backup_ref_reports_failure_when_the_ref_is_absent(tmp_path):
+    """A refused write with no ref present is a real failure (permissions/disk), not a collision."""
+    from hermes_cli.update_cmd_git import _create_backup_ref
+
+    repo, pre_reset, _ = _diverged_repo(tmp_path)
+    ok, used = _create_backup_ref(["git", "--not-a-real-flag"], repo, "refs/hermes-update-backups/x", pre_reset)
+    assert ok is False
+    assert _git(repo, "for-each-ref", "--format=%(refname)", "refs/hermes-update-backups/x") == ""
+
+
+def test_cmd_update_ordinary_backup_refs_are_pruned(monkeypatch, tmp_path, capsys):
+    """Ordinary local-commit backups get the same bounded lifetime as the orphan rescue refs."""
+    from datetime import datetime, timedelta, timezone
+
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    now = datetime.now(timezone.utc)
+    keep = update_cmd._LOCAL_COMMIT_BACKUP_REFS_TO_KEEP
+    total = keep + 2
+    refs = [
+        "refs/hermes-update-backups/main-"
+        f"{(now - timedelta(hours=total - i)).strftime('%Y%m%d-%H%M%S')}-{(i + 1):040d}"
+        for i in range(total)
+    ]
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=True, commit_count="3", reset_fails=True,
+        existing_rescue_refs=refs,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    delete_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c) and "-d" in c]
+    assert len(delete_calls) == total - keep
+    assert {c[c.index("-d") + 1] for c in delete_calls} == set(refs[: total - keep])

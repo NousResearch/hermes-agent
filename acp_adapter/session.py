@@ -105,6 +105,18 @@ def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     names = [n for n in (toolsets or ["hermes-acp"]) if n]
     names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
+    # Include plugin-provided toolsets (e.g. ``rlm``) so agent sessions see the
+    # tools they register, mirroring how the CLI/dashboard resolution surfaces
+    # plugin toolsets as first-class. Fails closed: discovery errors are ignored.
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()
+        for entry in get_plugin_toolsets():
+            ident = getattr(entry, "id", None) or (entry[0] if isinstance(entry, tuple) and entry else None)
+            if ident:
+                names.append(ident)
+    except Exception:
+        pass
     return list(dict.fromkeys(names))
 
 

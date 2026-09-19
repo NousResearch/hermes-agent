@@ -125,6 +125,15 @@ def _get_session_platform() -> str:
 
 def _is_cron_approval_context() -> bool:
     """True when the current approval decision is running inside cron."""
+    from gateway.session_context import _UNSET, _VAR_MAP
+
+    marker = _VAR_MAP["HERMES_CRON_SESSION"].get()
+    if marker is not _UNSET:
+        return is_truthy_value(marker)
+    # Older in-process tickers left a process-wide cron flag behind. A live
+    # gateway identity must not inherit that flag's unattended approval policy.
+    if _get_session_platform() or env_var_enabled("HERMES_GATEWAY_SESSION"):
+        return False
     return is_truthy_value(_session_env("HERMES_CRON_SESSION"))
 
 

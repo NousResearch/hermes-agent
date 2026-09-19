@@ -9,7 +9,11 @@ from contextlib import suppress
 from typing import Any, Dict, Optional
 
 from agent.tool_dispatch_helpers import (
-    _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
+    _extract_error_preview,
+    _extract_file_mutation_targets,
+    _extract_landed_file_mutation_paths,
+    _extract_reported_landed_paths,
+    _reconciles_to_reported_landed,
 )
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
@@ -233,6 +237,9 @@ class TurnExplainersMixin:
         Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
         spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
         failure time. A later success on the same identity (any spelling) removes the entry.
+        A partial multi-file patch failure (``success: false`` plus a non-empty reported landed
+        subset) keeps the call error-shaped but reconciles the files that DID land, so only the
+        unresolved targets stay in the failure state.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
@@ -244,8 +251,17 @@ class TurnExplainersMixin:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
-        if landed:
-            landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
+        # The explicitly-reported landed subset (files_modified/created/deleted, or
+        # resolved_path) — empty for a complete no-write failure. Kept separate from ``landed``
+        # so an error-shaped partial patch (some files changed, a later operation failed) can
+        # still reconcile the files that DID land.
+        reported_landed = _extract_reported_landed_paths(result)
+        partial_failure = bool(reported_landed) and not landed
+        if landed or partial_failure:
+            landed_paths = (
+                _extract_landed_file_mutation_paths(tool_name, args, result)
+                if landed else reported_landed
+            )
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
                 changed.update(landed_paths)
@@ -261,7 +277,23 @@ class TurnExplainersMixin:
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
+            if reported_landed:
+                # Those files landed, so a failure key recorded earlier — under the resolved
+                # identity OR an equivalent spelling (relative vs absolute) — is stale.
+                cleared_identities = {
+                    _file_mutation_identity(p, task_id) for p in reported_landed
+                }
+                for existing, info in list(state.items()):
+                    identity = info.get("identity", _file_mutation_identity(existing, task_id))
+                    reconciled = _reconciles_to_reported_landed(existing, reported_landed)
+                    if identity in cleared_identities or reconciled:
+                        state.pop(existing, None)
             for path in targets:
+                # A target the result reports as landed is not a failure; only the
+                # unresolved requested targets stay in the failure state.
+                if reported_landed and _reconciles_to_reported_landed(path, reported_landed):
+                    state.pop(path, None)
+                    continue
                 identity = _file_mutation_identity(path, task_id)
                 state.setdefault(path, {
                     "tool": tool_name, "error_preview": preview,

@@ -28,6 +28,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
+    _reconciles_to_reported_landed,
 )
 from run_agent import AIAgent
 
@@ -264,6 +265,150 @@ class TestRecordFileMutationResult:
         os.utime(changed, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
         still_failed = agent._file_mutations_still_failed(agent._turn_failed_file_mutations)
         assert list(still_failed) == [str(untouched)]
+
+
+class TestPartialPatchFailureAccounting:
+    """A V4A patch can modify some files and then fail on a later operation.
+
+    FMV must reconcile the explicitly-reported landed subset so only the unresolved requested
+    targets remain in the failure state — while the call stays error-shaped for CLI display and
+    tool-call guardrails (``file_mutation_result_landed`` still requires ``success`` and no
+    top-level error).
+    """
+
+    def test_partial_patch_only_clears_landed_targets(self):
+        agent = _bare_agent()
+        args = {
+            "mode": "patch",
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Update File: /tmp/changed.md\n"
+                "@@ @@\n-old\n+new\n"
+                "*** Update File: /tmp/failed.md\n"
+                "@@ @@\n-old\n+new\n"
+                "*** End Patch\n"
+            ),
+        }
+        result = json.dumps({
+            "success": False,
+            "error": "Apply phase failed after one file changed",
+            "files_modified": ["/tmp/changed.md"],
+        })
+        agent._record_file_mutation_result("patch", args, result, is_error=True)
+
+        assert agent._turn_file_mutation_paths == {"/tmp/changed.md"}
+        assert "/tmp/changed.md" not in agent._turn_failed_file_mutations
+        assert set(agent._turn_failed_file_mutations) == {"/tmp/failed.md"}
+
+    def test_partial_patch_clears_equivalent_absolute_prior_key(self):
+        agent = _bare_agent()
+        # An earlier attempt failed, recorded under a RELATIVE spelling.
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "src/app.py", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "not found"}), is_error=True,
+        )
+        assert "src/app.py" in agent._turn_failed_file_mutations
+        # A later partial retry reports the same file landed under an ABSOLUTE path.
+        args = {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: /tmp/project/src/app.py\n*** End Patch\n"}
+        result = json.dumps({
+            "success": False,
+            "error": "later op failed",
+            "files_modified": ["/tmp/project/src/app.py"],
+        })
+        agent._record_file_mutation_result("patch", args, result, is_error=True)
+        assert "src/app.py" not in agent._turn_failed_file_mutations
+
+    def test_complete_no_write_failure_stays_failed(self):
+        agent = _bare_agent()
+        args = {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: /tmp/a.md\n*** End Patch\n"}
+        result = json.dumps({
+            "success": False,
+            "error": "failed before any file changed",
+            "files_modified": [],
+            "files_created": [],
+            "files_deleted": [],
+        })
+        agent._record_file_mutation_result("patch", args, result, is_error=True)
+        assert "/tmp/a.md" in agent._turn_failed_file_mutations
+        assert agent._turn_file_mutation_paths == set()
+
+    def test_success_true_with_top_level_error_reconciles_landed_only(self):
+        """success:true AND a top-level error is not a complete success; the call stays
+        error-shaped, but FMV reconciles the explicitly reported landed paths."""
+        agent = _bare_agent()
+        args = {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: /tmp/a.md\n*** End Patch\n"}
+        result = json.dumps({
+            "success": True,
+            "error": "partial apply",
+            "files_modified": ["/tmp/a.md"],
+        })
+        agent._record_file_mutation_result("patch", args, result, is_error=True)
+        assert "/tmp/a.md" not in agent._turn_failed_file_mutations
+        assert "/tmp/a.md" in agent._turn_file_mutation_paths
+
+    def test_detect_tool_failure_stays_true_for_partial_patch(self):
+        from agent.display import _detect_tool_failure
+        result = json.dumps({
+            "success": False,
+            "error": "Apply phase failed after one file changed",
+            "files_modified": ["/tmp/changed.md"],
+        })
+        is_failure, _ = _detect_tool_failure("patch", result)
+        assert is_failure is True
+
+    def test_landed_paths_aggregate_update_add_delete_move(self):
+        result = json.dumps({
+            "success": False,
+            "error": "later operation failed",
+            "files_modified": ["/tmp/old.md -> /tmp/new.md"],
+            "files_created": ["/tmp/created.md"],
+            "files_deleted": ["/tmp/deleted.md"],
+        })
+        paths = _extract_landed_file_mutation_paths(
+            "patch", {"mode": "patch", "patch": "*** Begin Patch\n*** End Patch\n"}, result,
+        )
+        assert set(paths) == {"/tmp/old.md", "/tmp/new.md", "/tmp/created.md", "/tmp/deleted.md"}
+
+    def test_landed_paths_fall_back_to_targets_without_a_reported_subset(self):
+        result = json.dumps({"success": False, "error": "failed before any file changed"})
+        paths = _extract_landed_file_mutation_paths(
+            "patch", {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: /tmp/a.md\n*** End Patch\n"}, result,
+        )
+        assert paths == ["/tmp/a.md"]
+
+    def test_failed_write_file_zero_bytes_not_landed(self):
+        from agent.tool_result_classification import file_mutation_result_landed
+        result = json.dumps({"bytes_written": 0, "error": "write failed"})
+        assert file_mutation_result_landed("write_file", result) is False
+
+    def test_reconcile_refuses_an_ambiguous_suffix(self):
+        """A bare ``app.py`` is a suffix of two landed files — which one is unknowable, so it
+        clears nothing and the target stays failed."""
+        reported = ["/tmp/one/app.py", "/tmp/two/app.py"]
+        assert _reconciles_to_reported_landed("/tmp/one/app.py", reported) is True
+        assert _reconciles_to_reported_landed("app.py", reported) is False
+        assert _reconciles_to_reported_landed("app.py", ["/tmp/one/app.py"]) is True
+
+    def test_ambiguous_target_stays_failed_on_partial_patch(self):
+        agent = _bare_agent()
+        args = {
+            "mode": "patch",
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Update File: /tmp/one/app.py\n"
+                "*** Update File: /tmp/two/app.py\n"
+                "*** Update File: app.py\n"
+                "*** End Patch\n"
+            ),
+        }
+        result = json.dumps({
+            "success": False,
+            "error": "later op failed",
+            "files_modified": ["/tmp/one/app.py", "/tmp/two/app.py"],
+        })
+        agent._record_file_mutation_result("patch", args, result, is_error=True)
+        assert set(agent._turn_failed_file_mutations) == {"app.py"}
+        assert agent._turn_file_mutation_paths == {"/tmp/one/app.py", "/tmp/two/app.py"}
 
 
 

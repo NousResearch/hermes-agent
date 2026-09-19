@@ -74,6 +74,39 @@ async def test_client_receives_published_errors(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_aborted_start_reports_exit_status_and_stderr_tail(tmp_path: Path):
+    """A server that dies mid-initialize must not fail as an opaque protocol error.
+
+    A Node language server that exhausts its heap aborts (SIGABRT) before answering
+    ``initialize``; the failure the caller logs should carry the exit status and the
+    stderr trace instead of a bare JSON-RPC error text.
+    """
+    client = _client(tmp_path, "oom_abort")
+
+    with pytest.raises(LSPProtocolError) as excinfo:
+        await client.start()
+
+    assert client.state == "error"
+    assert client._proc is None
+    message = str(excinfo.value)
+    # negative returncode rendered as a signal, not a bare code
+    assert "signal" in message
+    # stderr tail reached the failure report
+    assert "JavaScript heap out of memory" in message
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failure_details_empty_for_live_server(tmp_path: Path):
+    client = _client(tmp_path, "clean")
+    await client.start()
+    try:
+        assert client.failure_details() == ""
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Path):
     client = _client(tmp_path, "crash")
 

@@ -15,6 +15,9 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   carry one severity-1 entry pointing at line 0:0.
 - ``"crash"`` — exit immediately after responding to ``initialize``
   (simulates a crashing server).
+- ``"oom_abort"`` — prints a V8-style out-of-memory trace to stderr and
+  aborts (SIGABRT) before answering ``initialize`` — models a Node
+  language-server whose heap ceiling is too small for the workspace.
 - ``"slow"`` — same as ``clean`` but sleeps 1s before responding to
   ``initialize`` (lets us test timeout behaviour).
 - ``"stale"`` — pushes one error on ``didOpen``, then goes SILENT on
@@ -72,6 +75,15 @@ def write_message(obj):
 
 def main():
     script = os.environ.get("MOCK_LSP_SCRIPT", "clean")
+    if script == "oom_abort":
+        sys.stderr.write(
+            "<oproject>:28982 ms: Mark-Compact 2041.4 (2055.6) -> 2038.4 (2058.4) MB\n"
+            "  1317.07 ms (average mu = 0.307, current mu = 0.134)\n"
+            "<--- Last few GCs --->\n"
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n"
+        )
+        sys.stderr.flush()
+        os.abort()
 
     while True:
         msg = read_message()

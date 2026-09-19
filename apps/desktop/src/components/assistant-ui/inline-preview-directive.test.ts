@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   directiveFrameHeight,
+  directiveFrameMaxWidth,
   frameSizeFromMessage,
   intentFromMessage,
   themePrelude,
@@ -20,6 +21,26 @@ describe('directiveFrameHeight', () => {
     expect(directiveFrameHeight('50')).toBe(120)
     expect(directiveFrameHeight('480')).toBe(480)
     expect(directiveFrameHeight('99999')).toBe(1200)
+  })
+})
+
+describe('directiveFrameMaxWidth', () => {
+  it('keeps the current 640px cap when max-width is absent', () => {
+    expect(directiveFrameMaxWidth(undefined)).toBe(640)
+  })
+
+  it('accepts a custom max-width for wider inline previews', () => {
+    expect(directiveFrameMaxWidth('960')).toBe(960)
+  })
+
+  it('fails closed to the default for invalid values', () => {
+    expect(directiveFrameMaxWidth('wide')).toBe(640)
+    expect(directiveFrameMaxWidth('640.5')).toBe(640)
+    expect(directiveFrameMaxWidth('0')).toBe(640)
+  })
+
+  it('caps oversized values to the safe maximum', () => {
+    expect(directiveFrameMaxWidth('99999')).toBe(1600)
   })
 })
 

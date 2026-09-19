@@ -47,8 +47,10 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
-/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
-const MAX_COLUMN_WIDTH = 640
+/** The current transcript-column cap, retained when a directive omits max-width. */
+const DEFAULT_MAX_WIDTH = 640
+/** Keep an author-provided cap within a practical inline-preview size. */
+const MAX_MAX_WIDTH = 1600
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
 
@@ -64,6 +66,23 @@ export function directiveFrameHeight(raw: string | undefined): number | null {
   }
 
   return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, parsed))
+}
+
+/** Parse `::preview{max-width="…"}`. Invalid values fail closed to the
+ * established 640px cap, while responsive layout still limits the frame to
+ * its available message-column width. */
+export function directiveFrameMaxWidth(raw: string | undefined): number {
+  if (!raw) {
+    return DEFAULT_MAX_WIDTH
+  }
+
+  const parsed = Number(raw)
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return DEFAULT_MAX_WIDTH
+  }
+
+  return Math.min(MAX_MAX_WIDTH, parsed)
 }
 
 const SIZE_MESSAGE_TYPE = 'hermes-inline-preview-size'
@@ -262,17 +281,27 @@ export function InlinePreviewDirective({
     return file ? <PreviewAttachment source="explicit-link" target={file} /> : null
   }
 
-  return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
+  return (
+    <InlineHtmlFrame
+      file={file}
+      initialHeight={directiveFrameHeight(attrs.height)}
+      maxWidth={directiveFrameMaxWidth(attrs['max-width'])}
+      streaming={streaming}
+    />
+  )
 }
 
 function InlineHtmlFrame({
   file,
   initialHeight,
+  maxWidth,
   streaming
 }: {
   file: string
   /** `height` attribute — the starting height only; measurement overrides. */
   initialHeight: number | null
+  /** Validated directive cap; the message column remains the responsive limit. */
+  maxWidth: number
   streaming: boolean
 }) {
   const cwd = useStore(useSessionView().$cwd)
@@ -387,12 +416,12 @@ function InlineHtmlFrame({
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
   // Left-aligned in the message flow, like an image: the frame is only as
-  // wide as its content (capped at the column). Fluid pages measure the
-  // full viewport and stay full-bleed.
-  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
+  // wide as its content (capped at the directive limit). Fluid pages measure
+  // the full viewport and stay full-bleed within that same responsive cap.
+  const width = contentWidth !== null ? Math.min(contentWidth, maxWidth) : undefined
 
   return (
-    <span className="my-2 block w-full max-w-160">
+    <span className="my-2 block w-full max-w-full" style={{ maxWidth }}>
       {framedDoc === null ? (
         <span
           className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"

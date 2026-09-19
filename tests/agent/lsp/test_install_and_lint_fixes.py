@@ -78,7 +78,7 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
         scripts_dir = install_mod.hermes_lsp_bin_dir().parent / "python-packages" / "Scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         launcher = scripts_dir / "fake-language-server.exe"
-        launcher.write_text("launcher\n")
+        launcher.write_text("launcher\n", encoding="utf-8")
         launcher.chmod(0o755)
         return MagicMock(returncode=0, stderr="")
 
@@ -157,7 +157,7 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     from tools.file_operations import ShellFileOperations
 
     ts_file = tmp_path / "bad.ts"
-    ts_file.write_text("const x: string = 42;\n")
+    ts_file.write_text("const x: string = 42;\n", encoding="utf-8")
 
     env = LocalEnvironment()
     fops = ShellFileOperations(env)

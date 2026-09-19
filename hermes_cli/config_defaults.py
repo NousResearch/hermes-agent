@@ -119,6 +119,8 @@ DEFAULT_CONFIG = {
         # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
         # turn), "cold" (first turn of a session only).
         "service_tier": "",
+        # Model name -> normal/fast/auto/cold. Matching is shared with reasoning_overrides.
+        "service_tier_overrides": {},
         "fast_auto_seconds": 60,
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name

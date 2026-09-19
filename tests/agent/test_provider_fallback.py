@@ -112,6 +112,37 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_fallback_re_resolves_service_tier_for_active_route(self):
+        """A fallback adopts its own tier without sending fast parameters to a proxy."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "premium/model-max"},
+        )
+        agent.model = "gpt-5.4"
+        agent.provider = "openai"
+        agent.service_tier = "priority"
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent.request_overrides = {"service_tier": "priority"}
+        cfg = {
+            "agent": {
+                "reasoning_effort": "low",
+                "service_tier": "normal",
+                "service_tier_overrides": {"premium/model-max": "fast"},
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "premium/model-max"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.service_tier == "priority"
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+        assert "service_tier" not in agent.request_overrides
+
     @patch("time.monotonic", return_value=1000.0)
     def test_records_user_visible_switch_with_reason(self, _clock):
         agent = _make_agent(

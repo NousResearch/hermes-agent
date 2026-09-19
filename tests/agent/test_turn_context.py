@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from agent.status_output import StatusOutputMixin
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
@@ -415,9 +416,13 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
 
 
 def test_recall_indicator_emitted_when_memory_injected():
-    """When prefetch injects memory, the deterministic indicator is emitted."""
+    """The same indicator is printed in CLI and forwarded as a typed GUI status."""
     agent = _FakeAgent()
-    agent._emit_status = MagicMock()
+    agent.log_prefix = ""
+    agent._vprint = MagicMock()
+    agent.status_callback = MagicMock()
+    agent._call_callback = types.MethodType(StatusOutputMixin._call_callback, agent)
+    agent._emit_status_kind = types.MethodType(StatusOutputMixin._emit_status_kind, agent)
     mm = MagicMock()
     mm.prefetch_all.return_value = "- recalled fact"
     mm.describe_recall.return_value = "👁️ Hindsight — recalled 2 memories"
@@ -427,13 +432,16 @@ def test_recall_indicator_emitted_when_memory_injected():
     # entirely, so there'd be nothing to indicate. See is_trivial_prompt.
     _build(agent, user_message="what did we decide about the deploy pipeline?")
 
-    agent._emit_status.assert_any_call("👁️ Hindsight — recalled 2 memories")
+    agent.status_callback.assert_called_once_with(
+        "memory_recall", "👁️ Hindsight — recalled 2 memories",
+    )
+    agent._vprint.assert_called_once_with("👁️ Hindsight — recalled 2 memories", force=True)
 
 
 def test_recall_indicator_skipped_when_nothing_injected():
     """No memory injected → describe_recall isn't consulted, nothing emitted."""
     agent = _FakeAgent()
-    agent._emit_status = MagicMock()
+    agent._emit_status_kind = MagicMock()
     mm = MagicMock()
     mm.prefetch_all.return_value = ""
     agent._memory_manager = mm
@@ -443,8 +451,7 @@ def test_recall_indicator_skipped_when_nothing_injected():
     _build(agent, user_message="what did we decide about the deploy pipeline?")
 
     mm.describe_recall.assert_not_called()
-    for call in agent._emit_status.call_args_list:
-        assert "👁️" not in str(call)
+    agent._emit_status_kind.assert_not_called()
 
 
 def test_ensure_db_session_runs_after_system_prompt_restore():

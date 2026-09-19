@@ -1150,6 +1150,35 @@ export async function deleteProject(id: string): Promise<void> {
   void refreshProjectTree()
 }
 
+// Optimistic: hide the project from the cached tree + list the instant it's
+// clicked (the entered-scope effect exits if you archived the project you were
+// inside), reconciling from the server payload. A failed archive restores
+// both. Unlike delete, archive is reversible (projects.restore).
+export async function archiveProject(id: string): Promise<void> {
+  const snap = snapshotProjects()
+  // Capture membership BEFORE removal — the project's folders (which determine
+  // ownership) are hidden once it's dropped from the cache.
+  const kickToIntro = openSessionBelongsToProject(id, snap.projects)
+
+  $projects.set(snap.projects.filter(project => project.id !== id))
+  $projectTree.set(snap.tree.filter(node => node.id !== id))
+
+  if (snap.active === id) {
+    $activeProjectId.set(null)
+  }
+
+  // The open session's project is hidden — reset to the intro draft (the
+  // session itself survives; it just falls back to Recents).
+  if (kickToIntro) {
+    requestFreshSession()
+  }
+
+  await persistOrRollback(snap, async () => {
+    applyPayload(await gatewayRequest<ProjectsPayload>('projects.archive', projectParams({ id })))
+  })
+  void refreshProjectTree()
+}
+
 export async function setActiveProject(id: null | string): Promise<void> {
   const context = await activeProjectsContext(writableProjectProfile())
 

@@ -23,6 +23,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
 import {
+  archiveProject,
   copyPath,
   deleteProject,
   openProjectAddFolder,
@@ -92,6 +93,12 @@ function useProjectActions({
           key: 'set-active',
           label: p.menuSetActive,
           onSelect: () => void setActiveProject(project.id)
+        },
+        {
+          icon: 'archive',
+          key: 'archive',
+          label: p.menuArchive,
+          onSelect: () => void archiveProject(project.id)
         }
       ]
 

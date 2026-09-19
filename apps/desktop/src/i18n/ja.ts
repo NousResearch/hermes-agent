@@ -2292,6 +2292,7 @@ export const ja = defineLocale({
       noColor: '色なし',
       menuAddFolder: 'フォルダを追加',
       menuSetActive: 'アクティブに設定',
+      menuArchive: 'アーカイブ',
       menuDelete: '削除',
       reveal: 'フォルダで表示',
       copyPath: 'パスをコピー',

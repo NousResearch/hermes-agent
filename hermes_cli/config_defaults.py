@@ -2193,6 +2193,9 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Canonical conversation history backend. sqlite keeps the built-in state.db path;
+        # named external stores load through hermes_agent.conversation_stores and fail closed.
+        "store": "sqlite",
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
         # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a

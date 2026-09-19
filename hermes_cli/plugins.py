@@ -747,6 +747,20 @@ class PluginContext:
         logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
                      getattr(provider, "name", "?"))
 
+    def register_conversation_store(self, store) -> None:
+        """Record an exclusive conversation store (inert).
+
+        Activation is owned by ``plugins/conversation_store`` via ``sessions.store``;
+        this keeps normal PluginManager discovery compatible with providers that use
+        the standard ``register(ctx)`` shape.
+        """
+        from conversation_store import ConversationStore
+        if self._wrong_type(store, ConversationStore, "conversation store"):
+            return
+        self._conversation_store = store
+        logger.debug("Plugin '%s' registered conversation store: %s", self.manifest.name,
+                     getattr(store, "name", "?"))
+
     @_serialized_replacement
     def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a :class:`hermes_cli.dashboard_auth.DashboardAuthProvider` for the dashboard

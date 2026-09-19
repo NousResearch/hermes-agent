@@ -534,10 +534,12 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(self, db_path: Path = None, read_only: bool = False, conversation_store=None):
+        uses_default_path = db_path is None
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
+        self._conversation_store = conversation_store
         # Keep only the opening call site, never a frame (which pins caller locals).
         self._creation_site = "unknown"
         caller = None
@@ -614,6 +616,9 @@ class SessionDB(
                     self._retire_connection = _prepare_connection_retirement()
                 self._open_writer()
             self._record_db_file_identity()
+            if uses_default_path and self._conversation_store is None:
+                from plugins.conversation_store import load_configured_conversation_store
+                self._conversation_store = load_configured_conversation_store()
             initialization_complete = True
         except Exception as exc:
             # Surface WHY via /resume and friends; callers keep their ``_session_db = None`` path.
@@ -630,6 +635,15 @@ class SessionDB(
                 # Test-isolation runs only (gated inside the helper): register
                 # for the suite-level leak sweep in tests/conftest.py.
                 _register_test_instance(self)
+
+    @property
+    def conversation_store(self):
+        """Configured external canonical conversation store, or None for built-in SQLite."""
+        return self._conversation_store
+
+    @property
+    def uses_external_conversation_store(self) -> bool:
+        return self._conversation_store is not None
 
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
@@ -1498,6 +1512,9 @@ class SessionDB(
                     # identity when retiring an unsafe handle.
                     self._db_sidecar_identity = {}
         self._read_budget.unregister(self)  # idempotent: a never-registered (failed-init) handle is a no-op
+        store, self._conversation_store = self._conversation_store, None
+        if store is not None:
+            store.close()
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays

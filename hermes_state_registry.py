@@ -99,10 +99,26 @@ _path_lifecycle_locks: Dict[Path, threading.Lock] = {}
 
 
 def _open_session_db(path: Path) -> "SessionDB":
-    """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
-    from hermes_state import SessionDB
+    """Construct one shared SessionDB generation and bind its canonical store.
 
-    return SessionDB(db_path=path)
+    Only the active profile default state.db loads an external conversation store.
+    Explicit recovery/temp paths stay SQLite-only even when the profile selects one.
+    """
+    from hermes_state import SessionDB, _default_db_path
+
+    db = SessionDB(db_path=path)
+    try:
+        try:
+            is_canonical = path.resolve() == Path(_default_db_path()).resolve()
+        except OSError:
+            is_canonical = path == Path(_default_db_path())
+        if is_canonical:
+            from plugins.conversation_store import load_configured_conversation_store
+            db._conversation_store = load_configured_conversation_store()
+        return db
+    except BaseException:
+        db.close()
+        raise
 
 
 def _teardown(db: "SessionDB") -> None:

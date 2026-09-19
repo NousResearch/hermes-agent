@@ -1,4 +1,22 @@
 ---
+---
+recorded_at: 2026-09-19T05:21:00.000Z
+by: codex-independent
+verdict: pass
+mode: delta
+finding_ids: none
+simulation_verdict: pass
+spec_hash: 9145c40a89a0
+code_patch_id: 58ece4d2ab0e
+code_diff_hash: 88c134b569e2bfaaa2830327a8e9f1d50e549becf9ec828278e4b995d62b72e0
+head_sha: bf26086878dad7feec654b13dd30848f79298107
+confusion: |
+  None.
+assumptions: |
+  Review is relative to origin/main; squash merge removes intermediate ftask snapshots.
+notes: |
+  [rebase-refresh] Independent final review: scoped gateway fix; full-suite/e2e via_ci guards and caller-specific concurrency are closed; focused tests 20/20; no p0/p1.
+---
 recorded_at: 2026-09-19T04:37:43.406Z
 by: claude
 verdict: pass

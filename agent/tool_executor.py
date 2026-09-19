@@ -1728,8 +1728,11 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
     owns turn-end work)."""
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
+    _guarded_skip_until = 0  # 0-based index: calls below it were skipped as a guarded run's tail
 
     for i, tool_call in enumerate(tool_calls, 1):
+        if (i - 1) < _guarded_skip_until:
+            continue
         if getattr(agent, "_incremental_persistence_failed", False):
             return
         # Check interrupt BEFORE each tool so a "stop" during the previous one skips the rest.
@@ -1764,6 +1767,25 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         )
         if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
             return
+
+        # Guarded desktop run (RFC #112639): stop the run when the preceding
+        # action's effect is uncertain, skipping the rest with explicit results.
+        from agent.guarded_desktop_runs import guarded_run_stop
+        _guarded_stop = guarded_run_stop(tool_calls, i - 1, managed)
+        if _guarded_stop is not None:
+            _run_end, _stop_reason = _guarded_stop
+            _remaining_run = tool_calls[i:_run_end]
+            agent._vprint(
+                f"{agent.log_prefix}🛑 Guarded desktop run stopped ({_stop_reason}); "
+                f"skipping {len(_remaining_run)} call(s)", force=True)
+            if not _append_skipped_tool_results(
+                agent, messages, _remaining_run, effective_task_id,
+                content=f"[Guarded desktop run stopped: {_stop_reason}. "
+                        "{name} was not executed — re-observe before retrying.]",
+                flush_stage="guarded-run skipped tool result",
+            ):
+                return
+            _guarded_skip_until = _run_end
 
         if agent._interrupt_requested and i < len(tool_calls):
             if not _skip_remaining_sequential(

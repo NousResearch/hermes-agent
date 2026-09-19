@@ -2168,6 +2168,104 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
+_ITERATION_HANDOFF_MAX_CHARS = 12_000
+
+
+def _iteration_summary_messages(agent, messages: list) -> list:
+    """Return a bounded prior handoff plus the current turn for the terminal summary call."""
+    source = list(messages)
+    try:
+        from agent.context_compressor import (
+            is_compaction_summary_message,
+            user_originated_turn_view,
+        )
+    except Exception:
+        is_compaction_summary_message = None
+        user_originated_turn_view = None
+
+    def live_user_view(message):
+        if user_originated_turn_view is None:
+            return message.copy() if isinstance(message, dict) else None
+        try:
+            view = user_originated_turn_view(message)
+            if view is None:
+                return None
+            if (
+                is_compaction_summary_message is not None
+                and is_compaction_summary_message(message)
+            ):
+                return view
+            # Preserve the api_content sidecar for ordinary user rows; the
+            # summary send path substitutes those exact previously-sent bytes.
+            return message.copy()
+        except Exception:
+            return None
+
+    current_idx = getattr(agent, "_persist_user_message_idx", None)
+    current_view = None
+    if (
+        isinstance(current_idx, int)
+        and not isinstance(current_idx, bool)
+        and 0 <= current_idx < len(source)
+        and isinstance(source[current_idx], dict)
+        and source[current_idx].get("role") == "user"
+    ):
+        current_view = live_user_view(source[current_idx])
+    if current_view is None:
+        current_idx = None
+        for idx in range(len(source) - 1, -1, -1):
+            message = source[idx]
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            current_view = live_user_view(message)
+            if current_view is None:
+                continue
+            current_idx = idx
+            break
+
+    if current_idx is None:
+        # No trustworthy user boundary: never replay an arbitrarily old session.
+        return source[-20:]
+
+    scoped = [current_view, *source[current_idx + 1:]]
+    previous_handoff = None
+    for message in reversed(source[:current_idx]):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user":
+            break
+        if (
+            message.get("role") != "assistant"
+            or message.get("tool_calls")
+            or (
+                is_compaction_summary_message is not None
+                and is_compaction_summary_message(message)
+            )
+        ):
+            continue
+        text = flatten_message_text(message.get("content")).strip()
+        if not text:
+            continue
+        if len(text) > _ITERATION_HANDOFF_MAX_CHARS:
+            head = _ITERATION_HANDOFF_MAX_CHARS * 3 // 4
+            tail = _ITERATION_HANDOFF_MAX_CHARS - head
+            text = (text[:head].rstrip() + "\n...[previous handoff truncated]...\n"
+                    + text[-tail:].lstrip())
+        previous_handoff = [
+            {"role": "user", "content": (
+                "[Continuity context only: the next assistant message is the previous turn's "
+                "handoff. Do not report it as work performed in the current turn.]")},
+            {"role": "assistant", "content": text},
+        ]
+        break
+
+    if previous_handoff is not None:
+        scoped = [*previous_handoff, *scoped]
+    logger.info("Iteration-limit summary scoped to current turn "
+        "(session_messages=%d, summary_messages=%d)", len(source), len(scoped))
+    return scoped
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
@@ -2186,10 +2284,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
     # content after SessionDB projection strips metadata flags.
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    summary_request = {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST}
+    summary_source = _iteration_summary_messages(agent, messages)
+    append_message(messages, summary_request)
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
+        api_messages = _iteration_summary_api_messages(agent, [*summary_source, summary_request])
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 

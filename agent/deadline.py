@@ -1,8 +1,9 @@
 """Unified deadline layer — one bounded-execution primitive, one timeout resolver (#85125).
 
 * :func:`resolve_timeout` — ``timeouts:`` in config.yaml > legacy env var > default.
-* :func:`clamp_timeout` — huge timeouts overflow ``time_t`` in ``Lock.acquire`` /
-  ``Thread.join`` on macOS (#83220), so every timeout is capped.
+* :func:`clamp_timeout` — huge timeouts overflow the platform wait limit in ``Lock.acquire`` /
+  ``Thread.join`` (``time_t`` on macOS #83220, ``threading.TIMEOUT_MAX`` on Windows), so every
+  timeout is capped.
 * :func:`run_bounded_async` / :func:`run_bounded_sync` — wall-clock deadlines driven by
   a daemon ``threading.Timer`` / worker thread, so a blocked event loop cannot disable them.
 * :func:`kill_process_tree` — portable whole-tree termination.
@@ -34,8 +35,15 @@ __all__ = [
     "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
-# One year: semantically "unbounded" yet far below any platform time_t limit (#83220).
-MAX_SAFE_TIMEOUT_S = 31_536_000.0
+# Reserve room below the runtime's thread-wait ceiling for derived waits:
+# ``human_wait_ceiling`` adds 60s and the blocked-loop watchdog adds 5s.
+_PLATFORM_WAIT_HEADROOM_S = 300.0
+
+# Keep the one-year cap from #83220 where the runtime permits it. On Windows,
+# ``threading.TIMEOUT_MAX`` is only ~49.7 days because waits use a DWORD of milliseconds.
+# NOTE: thread-lock waits only. ``socket.settimeout`` has a lower ceiling still (2147483.647 s,
+# "timeout doesn't fit into C timeval"); do not reuse this constant for socket timeouts.
+MAX_SAFE_TIMEOUT_S = min(31_536_000.0, threading.TIMEOUT_MAX - _PLATFORM_WAIT_HEADROOM_S)
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0
@@ -246,7 +254,10 @@ async def run_bounded_async(
 
     timers = [threading.Timer(timeout_s, lambda: loop.call_soon_threadsafe(_mark_expired))]
     if dump_on_blocked_loop:
-        timers.append(threading.Timer(timeout_s + _LOOP_BLOCKED_DUMP_GRACE_S, _watchdog_check))
+        # Timer.run waits on an Event, so keep the derived wait within the runtime ceiling.
+        # The reserved headroom above preserves the full grace at MAX_SAFE_TIMEOUT_S.
+        timers.append(threading.Timer(
+            min(timeout_s + _LOOP_BLOCKED_DUMP_GRACE_S, threading.TIMEOUT_MAX), _watchdog_check))
     for t in timers:
         t.daemon = True
         t.start()

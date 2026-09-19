@@ -4392,6 +4392,7 @@ export const zh = defineLocale({
     restartToSaveImages: '重启 Hermes 桌面版以保存图片',
     imageDownloadFailed: '图片下载失败',
     openImage: '打开图片',
+    openDiagram: '打开图表',
     downloadImage: '下载图片',
     savingImage: '正在保存图片',
     imagePreviewFailed: '图片预览失败',

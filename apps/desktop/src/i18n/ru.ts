@@ -3930,6 +3930,7 @@ export const ru = defineLocale({
     restartToSaveImages: 'Перезапустите Hermes Desktop, чтобы сохранять изображения',
     imageDownloadFailed: 'Загрузка изображения не удалась',
     openImage: 'Открыть изображение',
+    openDiagram: 'Открыть диаграмму',
     downloadImage: 'Скачать изображение',
     savingImage: 'Сохранение изображения',
     imagePreviewFailed: 'Предпросмотр изображения не удался',

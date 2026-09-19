@@ -55,6 +55,17 @@ def _make_adapter():
     return adapter
 
 
+def _make_default_adapter(monkeypatch):
+    """Construct an adapter with the production text-batch defaults."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", raising=False)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
 def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
     return MessageEvent(
         text=text,
@@ -119,6 +130,24 @@ class TestTextBatching:
         assert "chunk 1" in text
         assert "chunk 2" in text
         assert "chunk 3" in text
+
+    @pytest.mark.asyncio
+    async def test_long_burst_survives_observed_delivery_gap(self, monkeypatch):
+        """A jittered client-side split is emitted as one MessageEvent."""
+        adapter = _make_default_adapter(monkeypatch)
+        first = "a" * 2566
+        second = "b" * 3955
+
+        adapter._enqueue_text_event(_make_event(first))
+        await asyncio.sleep(1.177)
+        adapter.handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(_make_event(second))
+        await asyncio.sleep(1.6)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.text == f"{first}\n{second}"
 
 
     @pytest.mark.asyncio

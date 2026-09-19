@@ -22,10 +22,10 @@ import { cn } from "@/lib/utils";
  * inevitably create political mismappings (e.g. Mandarin variants ≠ any single
  * jurisdiction, English ≠ GB, Portuguese ≠ PT). Endonyms are unambiguous.
  *
- * When placed at the bottom of the sidebar (next to ThemeSwitcher), pass
- * `dropUp` so the list opens above the trigger and avoids clipping below the
- * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
- * bottom sheet portaled to `document.body` instead of an anchored dropdown.
+ * When placed at the bottom of the sidebar, pass `dropUp` so the list opens
+ * above the trigger and avoids clipping below the viewport / overflow
+ * ancestors. Below the `sm` breakpoint, `dropUp` uses a bottom sheet portaled
+ * to `document.body` instead of an anchored dropdown.
  */
 export function LanguageSwitcher({ collapsed = false, dropUp = false }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();

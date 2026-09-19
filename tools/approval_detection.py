@@ -286,6 +286,15 @@ DANGEROUS_PATTERNS = [
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
+    # Interpreter analogue of the curl|wget -> sh entry above: piped content is CODE the
+    # interpreter's -c/-e/--eval/--print flag evaluates, not a standalone one-liner, so it must not
+    # fall through to the allowlisted "script execution via -e/-c flag" key (#28, shared by ~60 cron
+    # one-liners) the way a pipe-free `python3 -c '...'` does. Any left-hand command qualifies
+    # (unlike the curl/wget-only shell entry above) since `cat file | python3 -c ...` is equally a
+    # hidden-payload shape. Interpreter-name alternation mirrors _INTERPRETER_NAME_RES.
+    (r'\|\s*(?:[\w./~-]*/)?(?:py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?|node(?:js)?(?:\.exe)?|'
+     r'perl[0-9]*(?:\.\d+)*(?:\.exe)?|ruby[0-9.]*(?:\.exe)?)\b\s+(?:-[A-Za-z0-9]*[ce]\b|--eval\b|--print\b)',
+     "pipe content to script interpreter"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),

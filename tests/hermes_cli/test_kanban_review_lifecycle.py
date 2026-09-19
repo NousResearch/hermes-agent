@@ -574,14 +574,34 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
 
 
 def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
-    kanban_home: Path,
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reviewer CHANGES_REQUESTED routes the card back to ``ready`` for the
-    implementer to fix the SAME PR; ``active_pr`` must not hold it (#111910).
-    ``recent_success`` is untouched by the handoff exemption."""
+    """Reviewer CHANGES_REQUESTED resumes exactly one writer in the same workspace.
+
+    The implementer must continue the SAME PR; the handoff must not create a
+    second workspace or leave the card eligible for another concurrent spawn.
+    ``recent_success`` is untouched by the handoff exemption.
+    """
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    workspace = kanban_home / "existing-worktree"
+    workspace.mkdir()
+    spawned: list[tuple[str, str, str]] = []
+
+    def spawn(task, resolved_workspace):
+        spawned.append((task.id, task.assignee, resolved_workspace))
+        return os.getpid()
+
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="changes requested", assignee="dev")
+        tid = kb.create_task(
+            conn,
+            title="changes requested",
+            assignee="dev",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
         claimed = kb.claim_task(conn, tid)
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
@@ -597,12 +617,23 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         assert kb.get_task(conn, tid).status == "ready"
         assert kbd.check_respawn_guard(conn, tid) is None
 
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+        second = kbd.dispatch_once(conn, spawn_fn=spawn)
+        task = kb.get_task(conn, tid)
+
         done_id = kb.create_task(conn, title="recent success", assignee="dev")
         kb.claim_task(conn, done_id)
         assert kb.complete_task(conn, done_id, summary="done") is True
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (done_id,))
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+    assert result.spawned == [(tid, "dev", str(workspace))]
+    assert spawned == [(tid, "dev", str(workspace))]
+    assert second.spawned == []
+    assert task is not None
+    assert task.status == "running"
+    assert task.workspace_path == str(workspace)
 
 
 def test_dispatch_json_exposes_suppression_reasons(

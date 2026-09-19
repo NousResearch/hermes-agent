@@ -12,6 +12,7 @@ import {
   RUN_START_SNAP_THRESHOLD_PX,
   shouldAnchorBeforePrepend,
   shouldClampTranscriptBudget,
+  shouldReAnchorOnPaneReveal,
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
@@ -394,5 +395,20 @@ describe('shouldRePinOnTranscriptReload', () => {
 
   it('pins on a cold-load arrival (same session, never settled non-empty)', () => {
     expect(shouldRePinOnTranscriptReload({ sessionSwitched: false, settledNonEmpty: false })).toBe(true)
+  })
+})
+
+describe('shouldReAnchorOnPaneReveal', () => {
+  it('re-anchors when a keep-alive pane reopens after settling', () => {
+    expect(shouldReAnchorOnPaneReveal({ becameVisible: true, settled: true })).toBe(true)
+  })
+
+  it('stays out while the settle loop still owns a cold load', () => {
+    expect(shouldReAnchorOnPaneReveal({ becameVisible: true, settled: false })).toBe(false)
+  })
+
+  it('ignores renders that are not a hidden → visible edge', () => {
+    expect(shouldReAnchorOnPaneReveal({ becameVisible: false, settled: true })).toBe(false)
+    expect(shouldReAnchorOnPaneReveal({ becameVisible: false, settled: false })).toBe(false)
   })
 })

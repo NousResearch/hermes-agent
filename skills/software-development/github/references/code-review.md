@@ -125,11 +125,12 @@ gh pr diff 123 --name-only
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 PR_NUMBER=123
 
 # Get PR details
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
   | python -c "
 import sys, json
@@ -142,7 +143,7 @@ print(f\"Body:\n{pr['body']}\")"
 
 # List changed files
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER/files \
   | python -c "
 import sys, json
@@ -182,8 +183,9 @@ gh pr comment 123 --body "Overall looks good, a few suggestions below."
 **General PR comment — with curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/issues/$PR_NUMBER/comments \
   -d '{"body": "Overall looks good, a few suggestions below."}'
 ```
@@ -207,14 +209,15 @@ gh api repos/$OWNER/$REPO/pulls/123/comments \
 **Single inline comment — with curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Get the head commit SHA
 HEAD_SHA=$(curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
   | python -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
 
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments \
   -d "{
     \"body\": \"This could be simplified with a list comprehension.\",
@@ -238,13 +241,14 @@ gh pr review 123 --comment --body "Some suggestions, nothing blocking."
 **With curl — multi-comment review submitted atomically:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 HEAD_SHA=$(curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
   | python -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
 
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews \
   -d "{
     \"commit_id\": \"$HEAD_SHA\",
@@ -339,14 +343,15 @@ gh pr checks 123
 
 **With curl:**
 ```bash
+GH_AUTH="Authorization: token <token>"
 PR_NUMBER=123
 
 # PR details (title, author, description, branch)
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
+curl -s -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/pulls/$PR_NUMBER
 
 # Changed files with line counts
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
+curl -s -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/pulls/$PR_NUMBER/files
 ```
 
@@ -404,13 +409,14 @@ gh pr review $PR_NUMBER --request-changes --body "Found a few issues — see inl
 
 **With curl — atomic review with multiple inline comments:**
 ```bash
-HEAD_SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+GH_AUTH="Authorization: token <token>"
+HEAD_SHA=$(curl -s -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/pulls/$PR_NUMBER \
   | python -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
 
 # Build the review JSON — event is APPROVE, REQUEST_CHANGES, or COMMENT
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/pulls/$PR_NUMBER/reviews \
   -d "{
     \"commit_id\": \"$HEAD_SHA\",

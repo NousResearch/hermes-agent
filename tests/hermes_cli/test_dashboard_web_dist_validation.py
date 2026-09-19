@@ -9,6 +9,7 @@ the dist has no index.html, and proceed when it does.
 Design credit: PR #17845 (@Caelier).
 """
 
+import os
 import sys
 import types
 
@@ -138,6 +139,55 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
 # ---------------------------------------------------------------------------
 # Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
 # ---------------------------------------------------------------------------
+
+
+PACKAGED_DIST = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+CUSTOM_DIST = "/srv/hermes/renderer-build"
+
+
+def test_dashboard_from_desktop_spawned_shell_strips_packaged_dist(main_mod, monkeypatch):
+    """#116107: a desktop-spawned shell inherits HERMES_DESKTOP=1 together
+    with the packaged dist; a `hermes dashboard` launched from it must not
+    keep serving the desktop renderer ("Desktop IPC bridge is unavailable")."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", PACKAGED_DIST)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert "HERMES_WEB_DIST" not in os.environ
+
+
+def test_desktop_headless_backend_keeps_packaged_dist(main_mod, monkeypatch):
+    """The real Electron backend (`serve` entry point + HERMES_DESKTOP=1)
+    still serves the packaged dist it was spawned with."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", PACKAGED_DIST)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=True)
+
+    assert os.environ.get("HERMES_WEB_DIST") == PACKAGED_DIST
+
+
+def test_dashboard_without_desktop_marker_still_strips(main_mod, monkeypatch):
+    """Pre-#116107 behavior unchanged: a packaged dist inherited without
+    HERMES_DESKTOP set is stripped for a standalone dashboard."""
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.setenv("HERMES_WEB_DIST", PACKAGED_DIST)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert "HERMES_WEB_DIST" not in os.environ
+
+
+def test_desktop_spawned_custom_dist_is_kept(main_mod, monkeypatch):
+    """Caller-managed overrides survive: a non-Electron-packaged
+    HERMES_WEB_DIST is never stripped, even under HERMES_DESKTOP=1."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", CUSTOM_DIST)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert os.environ.get("HERMES_WEB_DIST") == CUSTOM_DIST
 
 
 

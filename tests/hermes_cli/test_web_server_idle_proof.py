@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import json
@@ -165,11 +166,25 @@ def _probe(port: int, token: str | None = TOKEN) -> tuple[int, dict]:
         return exc.code, {}
 
 
+def _probe_until_idle(port: int, deadline_s: float = 30.0) -> tuple[int, dict]:
+    """A resident is idle only BETWEEN cron ticks: the Desktop ticker fires its first tick right at
+    startup and ``cron.scheduler_tick.tick`` holds retirement admission for the whole scan, so a
+    probe landing inside that window truthfully answers ``turn_in_flight`` (a busy verdict is never
+    wrong, merely early). Poll until the ledgers drain; the deadline keeps a hung child red."""
+    deadline = time.monotonic() + deadline_s
+    while True:
+        verdict = _probe(port)
+        if verdict[1].get("idle") is True or time.monotonic() >= deadline:
+            return verdict
+        time.sleep(0.2)
+
+
 @pytestmark_live
 def test_live_pooled_children_prove_idle_or_busy_over_the_desktop_probe(tmp_path):
     """Three real children at the Desktop's pool cap; exactly one is busy. The Desktop's probe
     must get ``idle: false`` from the busy one and ``idle: true`` from the two residents that are
-    merely occupied. The probe is token-gated: an unauthenticated caller learns nothing."""
+    merely occupied (once their startup tick has released admission). The probe is token-gated:
+    an unauthenticated caller learns nothing."""
     children = {
         "resident-a": _spawn_desktop_child(tmp_path, "resident-a", busy=False),
         "resident-b": _spawn_desktop_child(tmp_path, "resident-b", busy=False),
@@ -183,7 +198,12 @@ def test_live_pooled_children_prove_idle_or_busy_over_the_desktop_probe(tmp_path
             ready_line = next(l for l in lines if "HERMES_BACKEND_READY" in l)
             ports[name] = int(ready_line.strip().rsplit("port=", 1)[1])
 
-        verdicts = {name: _probe(port) for name, port in ports.items()}
+        verdicts = {
+            "resident-a": _probe_until_idle(ports["resident-a"]),
+            "resident-b": _probe_until_idle(ports["resident-b"]),
+            # The held cron run never releases, so this verdict is stable and needs no wait.
+            "cron-busy": _probe(ports["cron-busy"]),
+        }
         assert verdicts["resident-a"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["resident-b"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["cron-busy"] == (200, {"ok": True, "idle": False, "reason": "turn_in_flight"}), verdicts

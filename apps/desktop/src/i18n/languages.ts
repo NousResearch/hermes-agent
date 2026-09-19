@@ -42,6 +42,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.ru,
     englishName: 'Russian',
     configValue: 'ru'
+  },
+  {
+    id: 'ko',
+    name: LOCALE_ENDONYMS.ko,
+    englishName: 'Korean',
+    configValue: 'ko'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -54,6 +60,11 @@ export const LOCALE_META: Record<Locale, { name: string; englishName: string }> 
 ) as Record<Locale, { name: string; englishName: string }>
 
 const LOCALE_ALIASES: Record<string, Locale> = {
+  ko: 'ko',
+  'ko-kr': 'ko',
+  ko_kr: 'ko',
+  korean: 'ko',
+  한국어: 'ko',
   en: 'en',
   'en-us': 'en',
   en_us: 'en',

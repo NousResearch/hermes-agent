@@ -1105,11 +1105,15 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _tool_retain(self, args: dict) -> str:
         content, context = args["content"], args.get("context")
+        # Deliberate saves coalesce into the session's one document (session-scoped id +
+        # append on capable APIs), mirroring sync_turn — otherwise every call mints a fresh
+        # server-side UUID document and one session litters the bank per turn.
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
         item = self._build_retain_kwargs(content, context=context, tags=args.get("tags"),
-                                         occurred_at=args.get("occurred_at"))
-        logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                     self._bank_id, len(content), context)
-        self._retain_batch(item, bank_id=self._bank_id)
+                                         occurred_at=args.get("occurred_at"), update_mode=update_mode)
+        logger.debug("Tool hindsight_retain: bank=%s, doc=%s, mode=%s, content_len=%d, context=%s",
+                     self._bank_id, document_id, update_mode, len(content), context)
+        self._retain_batch(item, bank_id=self._bank_id, document_id=document_id)
         logger.debug("Tool hindsight_retain: success")
         return "Memory stored successfully."
 

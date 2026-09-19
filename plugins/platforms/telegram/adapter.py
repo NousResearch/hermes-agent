@@ -840,6 +840,28 @@ class TelegramAdapter(BasePlatformAdapter):
             platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
             user_name=user_name, thread_id=thread_id, is_bot=is_bot)
 
+    def _source_from_callback_for_auth(self, query):
+        """Build the authorized source for a Telegram callback query."""
+        from gateway.session import SessionSource
+        user = getattr(query, "from_user", None)
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        raw_chat_type = getattr(chat, "type", "dm")
+        chat_type = self._normalize_chat_type(raw_chat_type, is_forum=bool(getattr(message, "message_thread_id", None)))
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        thread_id = str(thread_id_raw) if thread_id_raw else None
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id or "",
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=str(getattr(user, "username", "") or getattr(user, "first_name", "") or "").strip() or None,
+            thread_id=thread_id,
+            is_bot=bool(getattr(user, "is_bot", False)),
+        )
+
     def _source_from_reaction_for_auth(self, update):
         """SessionSource for a ``message_reaction`` update's actor (``user`` or ``actor_chat``).
 
@@ -4465,6 +4487,59 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         data = query.data
         cb = self._callback_ctx(query)
+
+        # Give plugins the first chance to handle callback_query events. The
+        # envelope contains plain data only; the adapter applies returned
+        # Telegram actions so plugins never receive SDK objects.
+        handler = getattr(self, "_platform_event_handler", None)
+        if handler is not None:
+            try:
+                source = self._source_from_callback_for_auth(query)
+                message = getattr(query, "message", None)
+                event = {
+                    "platform": "telegram",
+                    "event_type": "callback_query",
+                    "payload": {
+                        "data": data,
+                        "chat_id": str(getattr(message, "chat_id", None)) if message else None,
+                        "message_id": getattr(message, "message_id", None) if message else None,
+                        "message_text": getattr(message, "text", "") if message else "",
+                        "user_id": str(getattr(query.from_user, "id", "")),
+                        "user_name": getattr(query.from_user, "first_name", None),
+                    },
+                }
+                results = await handler(event, source)
+                for result in results or []:
+                    if not isinstance(result, dict) or result.get("action") != "handled":
+                        continue
+                    edit = result.get("edit")
+                    answer = result.get("answer")
+                    # Clear Telegram's spinner before building/sending an edit.
+                    try:
+                        await query.answer(text=str(answer) if answer else None)
+                    finally:
+                        if edit:
+                            rows = edit.get("buttons")
+                            markup = None
+                            if rows:
+                                markup = InlineKeyboardMarkup([
+                                    [
+                                        InlineKeyboardButton(
+                                            str(button["label"]),
+                                            callback_data=str(button["data"]),
+                                        )
+                                        for button in row
+                                    ]
+                                    for row in rows
+                                ])
+                            await query.edit_message_text(
+                                text=str(edit.get("text", "")),
+                                reply_markup=markup,
+                            )
+                    return
+            except Exception:
+                logger.debug("[%s] plugin callback dispatch failed", self.name, exc_info=True)
+
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
             (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),

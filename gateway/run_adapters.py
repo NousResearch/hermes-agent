@@ -1464,13 +1464,27 @@ class GatewayAdapterLifecycleMixin:
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
-    async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
+    async def _handle_gateway_platform_event(self, event: dict, source):
+        """Authorize and publish one normalized adapter event to plugin hooks.
+
+        Observer events may ignore hook results; callback-query consumers receive
+        a normalized list of action envelopes to apply at the adapter boundary.
+        """
         # Observer failures must never break the adapter's update loop.
         with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
             from hermes_cli.lifecycle import has_hook, invoke_hook
-            if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
-                invoke_hook("gateway_platform_event", **event)
+            if not has_hook("gateway_platform_event"):
+                return []
+            if not self._is_user_authorized_for_source(source):
+                return []
+            results = invoke_hook("gateway_platform_event", **event)
+            if results is None:
+                return []
+            if isinstance(results, list):
+                return results
+            if isinstance(results, tuple):
+                return list(results)
+            return [results]
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

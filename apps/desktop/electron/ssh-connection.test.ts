@@ -65,20 +65,20 @@ test('redactSecrets handles null/undefined and non-secret text untouched', () =>
 test('redactSecrets masks a credential glued into an ssh target string', () => {
   // Real incident: password typed into the host field surfaced verbatim in
   // desktop.log and a public debug share.
-  const line = 'connecting (no-mux) to root@100.84.204.123:Luisclawy2026:22'
+  const line = 'connecting (no-mux) to root@192.0.2.123:synthetic-test-secret:22'
   const out = redactSecrets(line)
-  assert.ok(!out.includes('Luisclawy2026'), 'credential must be masked')
-  assert.match(out, /root@100\.84\.204\.123:<redacted>:22/)
+  assert.ok(!out.includes('synthetic-test-secret'), 'credential must be masked')
+  assert.match(out, /root@192\.0\.2\.123:<redacted>:22/)
 
   // Comma-mangled IP variant from the same incident.
-  const mangled = redactSecrets('connecting (no-mux) to root@100,84,204,123:Luisclawy2026:22')
-  assert.ok(!mangled.includes('Luisclawy2026'))
+  const mangled = redactSecrets('connecting (no-mux) to root@192,0,2,123:synthetic-test-secret:22')
+  assert.ok(!mangled.includes('synthetic-test-secret'))
 })
 
 test('redactSecrets leaves legitimate ssh target logging untouched', () => {
   assert.equal(
-    redactSecrets('connecting (no-mux) to root@100.84.204.123:22'),
-    'connecting (no-mux) to root@100.84.204.123:22'
+    redactSecrets('connecting (no-mux) to root@192.0.2.123:22'),
+    'connecting (no-mux) to root@192.0.2.123:22'
   )
   assert.equal(
     redactSecrets('opening control master to alice@box.example.com:2222'),
@@ -807,7 +807,7 @@ test('validateSshTarget rejects ports outside 1-65535', () => {
 })
 
 test('validateSshTarget rejects commas in host (mistyped IP)', () => {
-  assert.throws(() => validateSshTarget('100,84,204,123', 'root', 22), /commas/i)
+  assert.throws(() => validateSshTarget('192,0,2,123', 'root', 22), /commas/i)
 })
 
 test('validateSshTarget rejects whitespace in host (pasted ssh command)', () => {
@@ -817,14 +817,14 @@ test('validateSshTarget rejects whitespace in host (pasted ssh command)', () => 
 
 test('validateSshTarget rejects a password glued into the host field', () => {
   // Real incident shape: user typed host:PASSWORD (port parsed off upstream).
-  assert.throws(() => validateSshTarget('100.84.204.123:hunter2', 'root', 22), /password|":" segment/i)
+  assert.throws(() => validateSshTarget('192.0.2.123:synthetic-test-secret', 'root', 22), /password|":" segment/i)
 
   // The thrown message must not echo the credential verbatim.
   try {
-    validateSshTarget('100.84.204.123:hunter2', 'root', 22)
+    validateSshTarget('192.0.2.123:synthetic-test-secret', 'root', 22)
     assert.fail('expected throw')
   } catch (err) {
-    assert.ok(!String(err.message).includes('hunter2'), 'error message must not leak the credential')
+    assert.ok(!String(err.message).includes('synthetic-test-secret'), 'error message must not leak the credential')
   }
 })
 

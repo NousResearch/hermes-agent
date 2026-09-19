@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
-from agent.lsp.servers import ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for
+from agent.lsp.servers import SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for
 from agent.lsp.workspace import clear_cache, resolve_workspace_for_file
 
 logger = logging.getLogger("agent.lsp.manager")
@@ -174,6 +174,10 @@ class LSPService:
         """Config-declared servers first (they may claim an extension ahead of a built-in), then the registry."""
         extra = find_server_for_file(file_path, self._extra_servers) if self._extra_servers else None
         return extra or find_server_for_file(file_path)
+
+    def handles_extension(self, ext: str) -> bool:
+        """True iff a config-declared or built-in server claims ``ext`` (pre-write capture decision)."""
+        return any(ext.lower() in s.extensions for s in (*self._extra_servers, *SERVERS))
 
     # ---- public API ----
 

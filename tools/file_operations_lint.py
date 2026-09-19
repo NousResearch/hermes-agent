@@ -216,12 +216,15 @@ class LintMixin:
             return None
 
     def _lsp_handles_extension(self, ext: str) -> bool:
-        """True iff some registered LSP server claims ``ext`` (static registry
-        only; safe on remote backends). Decides whether pre-write content is
-        worth capturing for the line-shift map."""
+        """True iff the active service (config-declared servers included) or, without one,
+        the static registry claims ``ext``. Decides whether pre-write content is worth
+        capturing for the line-shift map."""
         if not ext:
             return False
         try:
+            svc = self._lsp_service()
+            if svc is not None:
+                return svc.handles_extension(ext)
             from agent.lsp.servers import SERVERS
         except Exception:  # noqa: BLE001
             return False

@@ -122,7 +122,13 @@ export function useComposerQueue({
   // Walk queued entries while editing (ArrowUp = older, ArrowDown = newer),
   // saving the in-progress edit on each step. Stepping newer past the last
   // entry exits edit mode and restores the pre-edit draft.
-  const stepQueuedEdit = (direction: -1 | 1) => {
+  //
+  // `currentText` is the caller's live-DOM read, not `draftRef.current` directly:
+  // the ref is a once-per-frame mirror (coalesced rAF flush), so a keystroke
+  // followed immediately by Arrow navigation could otherwise save the
+  // pre-keystroke text and silently drop what was just typed (mirrors the
+  // recall guard's own `liveComposerDraft` fix for this same staleness).
+  const stepQueuedEdit = (direction: -1 | 1, currentText: string) => {
     if (!queueEdit) {
       return false
     }
@@ -136,7 +142,7 @@ export function useComposerQueue({
 
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
       attachments: cloneAttachments(attachments),
-      text: draftRef.current
+      text: currentText
     })
 
     const next = queuedPrompts[target]

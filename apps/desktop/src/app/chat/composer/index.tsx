@@ -868,7 +868,7 @@ export function ChatBar({
       const currentDraft = liveComposerDraft(editorRef.current, draftRef.current)
 
       // Editing a queued turn → walk to the older entry.
-      if (queueEdit && stepQueuedEdit(-1)) {
+      if (queueEdit && stepQueuedEdit(-1, currentDraft)) {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
 
@@ -910,7 +910,9 @@ export function ChatBar({
       if (queueEdit) {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        stepQueuedEdit(1)
+        // Decide from the live editor, same reasoning as the ArrowUp branch above:
+        // the mirror is a frame behind typing or a paste.
+        stepQueuedEdit(1, liveComposerDraft(editorRef.current, draftRef.current))
 
         return
       }

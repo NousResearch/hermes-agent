@@ -466,8 +466,9 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
     one) resolves — reachability is the credential. Without this rung model-switch rejected the very
     provider the Local Models 'Use' flow writes to config."""
     try:
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint(wait_for_boot_s=0)
+        endpoint = resolve_llamacpp_endpoint(load_config_readonly(), wait_for_boot_s=0)
     except Exception:
         endpoint = None
     if not endpoint:

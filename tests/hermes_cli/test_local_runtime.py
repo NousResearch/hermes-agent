@@ -786,6 +786,61 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     assert runtime["provider"] == "custom"
 
 
+def test_configured_llamacpp_provider_wins_over_managed_alias(tmp_path, monkeypatch):
+    """A providers.llamacpp endpoint is explicit configuration, not a managed-runtime request."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "providers": {
+                "llamacpp": {
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "default_model": "configured-model",
+                }
+            }
+        },
+    )
+
+    def _managed_alias_must_not_run(*args, **kwargs):
+        raise AssertionError("configured providers.llamacpp must resolve before managed detection")
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        _managed_alias_must_not_run,
+    )
+    from hermes_cli.runtime_provider import _resolve_named_custom_runtime
+
+    runtime = _resolve_named_custom_runtime(requested_provider="llamacpp")
+
+    assert runtime is not None
+    assert runtime["base_url"] == "http://127.0.0.1:8081/v1"
+    assert runtime["model"] == "configured-model"
+    assert runtime["source"].startswith("custom_provider:")
+
+
+def test_llamacpp_runtime_forwards_detect_ports_config(monkeypatch):
+    """The managed-alias fallback passes local_runtime.detect_ports to endpoint detection."""
+    config = {"local_runtime": {"enabled": True, "detect_ports": [8081]}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    seen = []
+
+    def _resolve(passed_config, **kwargs):
+        seen.append(passed_config)
+        return {"base_url": "http://127.0.0.1:8081/v1", "api_key": ""}
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        _resolve,
+    )
+    from hermes_cli.runtime_provider import _resolve_named_custom_runtime
+
+    runtime = _resolve_named_custom_runtime(requested_provider="llamacpp")
+
+    assert seen == [config]
+    assert runtime is not None
+    assert runtime["base_url"] == "http://127.0.0.1:8081/v1"
+
+
 def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):
     """A user-specified base_url must never be overridden by the managed
     endpoint — pointing at a specific server means that server."""

@@ -388,7 +388,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     rp = _rp()
     try:
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint()
+        endpoint = resolve_llamacpp_endpoint(rp.load_config())
     except Exception:  # noqa: BLE001 — resolution is best-effort
         endpoint = None
     if endpoint:
@@ -464,13 +464,16 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # treated identically here, so a YAML `provider: ollama` with a LAN/WireGuard `base_url` doesn't
     # silently fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    custom_provider = None
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
-        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
+        custom_provider = rp._get_named_custom_provider(requested_provider)
+        if not custom_provider:
+            return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = rp._get_named_custom_provider(requested_provider)
+    custom_provider = custom_provider or rp._get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")

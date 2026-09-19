@@ -115,10 +115,34 @@ class SessionContextMixin:
             )
         return {"representation": representation, "card": card}
 
+    # --- Representation dedup: collapse exact-duplicate observation lines before prompt injection.
+    # Restated facts arrive as N identical lines (one per retain); recall then injects all of them.
+    # First-wins, order-preserving, fail-open: only byte-identical lines (bullet/case-normalized)
+    # collapse; paraphrases and contradictions are kept. Sibling of the Hindsight recall dedup
+    # (PR #89145) at the equivalent Honcho injection point.
+    @staticmethod
+    def _dedup_representation_lines(representation: str) -> str:
+        if not representation:
+            return representation or ""
+        seen: set[str] = set()
+        kept: list[str] = []
+        trailing_newline = representation.endswith("\n")
+        for line in representation.splitlines():
+            key = line.strip().lower().lstrip("-•* ").strip()
+            if not key:
+                kept.append(line)  # blank lines are structural, never deduped
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(line)
+        result = "\n".join(kept)
+        return result + "\n" if trailing_newline and not result.endswith("\n") else result
+
     def _peer_context_strings(self, peer_id: str, search_query: str | None = None, *, target: str | None = None):
         """``_fetch_peer_context`` flattened to ``(representation, newline-joined card)`` for prompt injection."""
         ctx = self._fetch_peer_context(peer_id, search_query, target=target)
-        return ctx["representation"], "\n".join(ctx["card"])
+        return self._dedup_representation_lines(ctx["representation"]), "\n".join(ctx["card"])
 
     def get_prefetch_context(
         self, session_key: str, user_message: str | None = None, *, current_query_only: bool = False,

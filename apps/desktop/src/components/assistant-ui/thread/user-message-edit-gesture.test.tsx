@@ -103,3 +103,40 @@ describe('edit send arrow — macOS click gesture (blur races cancel)', () => {
     }
   })
 })
+
+// Regression for the same "Composer is not available" throw, reached via
+// Escape instead of the send arrow: unlike the blur cancel and the submit
+// send, the Escape handler called cancel() unguarded. Two Escape presses
+// dispatched before React unmounts the composer after the first race the
+// same torn-down core: the first cancel() tears it down, the second throws.
+describe('edit Escape cancel — repeated keypress races the composer core', () => {
+  it('cancels without an uncaught "Composer is not available" when Escape is pressed twice', async () => {
+    const uncaught: unknown[] = []
+
+    const onUncaught = (err: unknown) => {
+      uncaught.push(err)
+    }
+
+    process.on('uncaughtException', onUncaught)
+
+    try {
+      const onEdit = vi.fn(async () => {})
+      render(<Harness onEdit={onEdit} />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+      const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+      await act(async () => {
+        fireEvent.keyDown(editor, { key: 'Escape' })
+        fireEvent.keyDown(editor, { key: 'Escape' })
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+
+      const composerErrors = uncaught.filter(err => /Composer is not available/.test(String(err)))
+
+      expect(composerErrors).toEqual([])
+    } finally {
+      process.off('uncaughtException', onUncaught)
+    }
+  })
+})

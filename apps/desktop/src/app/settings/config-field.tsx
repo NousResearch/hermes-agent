@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -10,11 +11,131 @@ import { cn } from '@/lib/utils'
 import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ComboboxInput } from './combobox-input'
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
+import {
+  CONTROL_TEXT,
+  EMPTY_SELECT_VALUE,
+  FIELD_DESCRIPTIONS,
+  FIELD_LABELS,
+  FREE_INPUT_KEYS,
+  NUMERIC_FIELD_CONFIG
+} from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+
+export function roundToStepPrecision(n: number, step?: number): number {
+  if (step !== undefined && step > 0) {
+    const stepStr = step.toString()
+
+    if (stepStr.includes('.')) {
+      const decimals = Math.min(10, stepStr.split('.')[1]?.length ?? 2)
+
+      return Number(n.toFixed(decimals))
+    }
+  }
+
+  return n
+}
+
+export function NumberConfigInput({
+  value,
+  min,
+  max,
+  step,
+  placeholder,
+  className,
+  onChange
+}: {
+  value: unknown
+  min?: number
+  max?: number
+  step?: number
+  placeholder?: string
+  className?: string
+  onChange: (value: number) => void
+}) {
+  const [draft, setDraft] = useState<string>(() => (value === undefined || value === null ? '' : String(value)))
+
+  const [isFocused, setIsFocused] = useState(false)
+
+  useEffect(() => {
+    if (!isFocused) {
+      setDraft(value === undefined || value === null ? '' : String(value))
+    }
+  }, [value, isFocused])
+
+  const clampValue = (val: string): number => {
+    const trimmed = val.trim()
+
+    if (trimmed === '') {
+      return min !== undefined && min > 0 ? min : 0
+    }
+
+    let n = Number(trimmed)
+
+    if (Number.isNaN(n)) {
+      return min !== undefined && min > 0 ? min : 0
+    }
+
+    if (min !== undefined && n < min) {
+      n = min
+    } else if (max !== undefined && n > max) {
+      n = max
+    }
+
+    return roundToStepPrecision(n, step)
+  }
+
+  const commit = (rawStr: string) => {
+    const clamped = clampValue(rawStr)
+
+    setDraft(String(clamped))
+    onChange(clamped)
+  }
+
+  return (
+    <Input
+      className={className}
+      max={max}
+      min={min}
+      onBlur={() => {
+        setIsFocused(false)
+        commit(draft)
+      }}
+      onChange={e => {
+        const raw = e.target.value
+
+        setDraft(raw)
+
+        if (raw === '') {
+          return
+        }
+
+        const n = Number(raw)
+
+        if (!Number.isNaN(n)) {
+          if ((min === undefined || n >= min) && (max === undefined || n <= max)) {
+            const rounded = roundToStepPrecision(n, step)
+
+            onChange(rounded)
+          }
+        }
+      }}
+      onFocus={() => setIsFocused(true)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          commit(draft)
+          e.currentTarget.blur()
+        }
+      }}
+      placeholder={placeholder}
+      step={step}
+      type="number"
+      value={draft}
+    />
+  )
+}
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -160,20 +281,24 @@ export function ConfigField({
   }
 
   if (schema.type === 'number') {
-    return row(
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e => {
-          const raw = e.target.value
-          const n = raw === '' ? 0 : Number(raw)
+    const fieldConfig = NUMERIC_FIELD_CONFIG[schemaKey]
+    const min = schema.min ?? fieldConfig?.min
+    const max = schema.max ?? fieldConfig?.max
 
-          if (!Number.isNaN(n)) {
-            onChange(n)
-          }
-        }}
+    const step =
+      schema.step ??
+      fieldConfig?.step ??
+      ((min !== undefined && min % 1 !== 0) || (max !== undefined && max % 1 !== 0) ? 0.05 : 1)
+
+    return row(
+      <NumberConfigInput
+        className={CONTROL_TEXT}
+        max={max}
+        min={min}
+        onChange={onChange}
         placeholder={c.notSet}
-        type="number"
-        value={value === undefined || value === null ? '' : String(value)}
+        step={step}
+        value={value}
       />
     )
   }

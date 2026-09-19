@@ -412,17 +412,19 @@ def _server_enabled(config: dict) -> bool:
 
 
 def _connection_identity(config: dict) -> tuple:
-    """What makes one live connection reusable for another profile: the route fingerprint PLUS
-    everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
-    the schema cache survives a token rotation). Two profiles pointing at the same URL with different
-    headers/env/auth/client certificates are two identities; borrowing across them would call tools
-    as the other user."""
-    from tools.mcp_schema_cache import config_fingerprint
+    """What makes one live connection reusable for another profile.
+
+    Tool filters select a profile's overlay after it adopts a connection; they do not affect the
+    transport or identity used to reach that connection.  Keep them out of this comparison while
+    retaining every transport and authentication field, so a profile can safely apply its own
+    ``tools.include`` / ``tools.exclude`` policy to a shared server.
+    """
 
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
-    return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
+    return (config.get("command"), _frozen(config.get("args")), config.get("url"),
+            config.get("transport"), _frozen(config.get("env")), _frozen(config.get("headers")),
             _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")))
 
 

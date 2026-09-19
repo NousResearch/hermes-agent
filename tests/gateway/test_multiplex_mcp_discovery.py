@@ -335,6 +335,68 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
         reset_hermes_home_override(worker_token)
 
 
+@pytest.mark.parametrize(("worker_filter", "expected"), [
+    ({"include": ["alpha"]}, {"mcp__shared__alpha"}),
+    ({"exclude": ["alpha"]}, {"mcp__shared__beta"}),
+])
+def test_shared_server_applies_each_profile_tool_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worker_filter: dict, expected: set[str]
+) -> None:
+    """Regression for #110722: filters choose overlays, not shared-connection identity."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools import mcp_tool
+    from tools import mcp_tool_registration as registration
+    from tools.registry import registry
+
+    owner_home, worker_home = tmp_path / "owner", tmp_path / "worker"
+    owner_home.mkdir()
+    worker_home.mkdir()
+    owner_token = set_hermes_home_override(owner_home)
+    previous_multiplex = set_multiplex_active(True)
+    owner_scope = hermes_home_key()
+    worker_scope = hermes_home_key(worker_home)
+    key = (owner_scope, "shared")
+    tools = [
+        SimpleNamespace(name="alpha", description="Alpha", inputSchema={}),
+        SimpleNamespace(name="beta", description="Beta", inputSchema={}),
+    ]
+    owner_config = {"url": "https://example.test/mcp"}
+    server = SimpleNamespace(session=object(), _config=owner_config, _tools=tools, tool_timeout=30,
+                             _registered_tool_names=[])
+    saved = {name: dict(getattr(mcp_tool, name)) for name in (
+        "_servers", "_server_scope_keys", "_server_tool_scopes", "_mcp_tool_server_names")}
+    with mcp_tool._lock:
+        mcp_tool._servers.clear()
+        mcp_tool._server_scope_keys.clear()
+        mcp_tool._server_tool_scopes.clear()
+        mcp_tool._mcp_tool_server_names.clear()
+        mcp_tool._servers[key] = server
+        mcp_tool._server_scope_keys[key] = owner_scope
+        mcp_tool._server_tool_scopes[key] = {owner_scope}
+    monkeypatch.setattr(registration, "_write_schema_cache", lambda *_args: None)
+
+    try:
+        worker_token = set_hermes_home_override(worker_home)
+        registered = registration.register_connected_into_current_scope(
+            {"shared": {"url": "https://example.test/mcp", "tools": worker_filter}}
+        )
+        assert registered == 1
+        assert set(registry.get_tool_names_for_toolset("mcp-shared")) == expected
+        assert worker_scope in mcp_tool._server_tool_scopes[key]
+    finally:
+        for name in ("mcp__shared__alpha", "mcp__shared__beta"):
+            registry.deregister(name, scope=worker_scope)
+        with mcp_tool._lock:
+            for name, value in saved.items():
+                target = getattr(mcp_tool, name)
+                target.clear()
+                target.update(value)
+        reset_hermes_home_override(worker_token)
+        set_multiplex_active(previous_multiplex)
+        reset_hermes_home_override(owner_token)
+
+
 def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -> None:
     from tools.registry import ToolRegistry
 

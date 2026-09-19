@@ -113,6 +113,40 @@ def _bots_meta(data: dict | None) -> dict | None:
     return bots if isinstance(bots, dict) else None
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _boolish(value: object) -> bool:
+    """Truth for a hand-edited YAML flag (bool, int 1, or a quoted word); anything unrecognised
+    is False, so a typo never quietly removes an agent from the mesh."""
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return value is True or value == 1
+
+
+def _force_private(root: Path) -> bool:
+    """``bots.force_private`` from the SHARED root config: a per-profile key cannot outrank its
+    own profile, and this switch takes every agent out of the mesh at once."""
+    cfg = _read_yaml_dict(root / "config.yaml", "force_private") or {}
+    bots = cfg.get("bots")
+    return _boolish(bots.get("force_private")) if isinstance(bots, dict) else False
+
+
+def _is_private(profile_dir: Path) -> bool:
+    """True when this agent left the teammate mesh: neither advertised to other agents nor
+    addressable by them, while it keeps running and stays reachable by the human."""
+    meta = _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) or {}
+    return _boolish(meta.get("private"))
+
+
+def _visible_roster(root: Path) -> list[tuple[str, Path]]:
+    """``_roster`` minus agents that left the mesh. Not folded into ``_roster``: that one also
+    feeds ``_any_managed``, and an all-private install must not look unmanaged."""
+    if _force_private(root):
+        return []
+    return [(name, d) for name, d in _roster(root) if not _is_private(d)]
+
+
 def _is_bot_managed(profile_dir: Path) -> bool:
     return _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) is not None
 
@@ -264,7 +298,8 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d))
+                    for name, d in _visible_roster(root) if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (

@@ -85,9 +85,36 @@ def _render_active_theme_bootstrap_css() -> str:
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 _HEADLESS_MSG = (
-    "Headless backend (hermes serve): web UI disabled — use "
-    "`hermes dashboard` for the browser UI."
+    "Headless backend (hermes serve): web UI disabled — open the Hermes Desktop "
+    "app and add this URL as a remote gateway (Settings → Gateways); operators "
+    "use `hermes dashboard` for the browser UI."
 )
+
+
+def _headless_navigation_hint(url: str) -> str:
+    """HTML for a top-level browser navigation to a headless gateway URL.
+
+    Users pasting a ``hermes serve`` URL into a browser used to land on raw JSON with no
+    hint where the UI actually lives; the auth already succeeded at that point, so the
+    message should say so and point at the Desktop app. No token is included — this is
+    only served to requests that carry ``Sec-Fetch-Mode: navigate`` (real navigations);
+    fetch()/API/Desktop clients keep the JSON contract.
+    """
+    from html import escape
+
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<title>Hermes gateway — no web UI</title></head>"
+        "<body style=\"font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
+        "max-width:42rem;margin:4rem auto;padding:0 1rem;line-height:1.6;color:#1f2937\">"
+        "<h2>This is a Hermes gateway endpoint</h2>"
+        "<p>Your connection and sign-in are working — but a <code>hermes serve</code> gateway "
+        "intentionally has no web page. The UI is the <strong>Hermes Desktop</strong> app:</p>"
+        "<p style=\"margin-left:1rem\">Settings &rarr; Gateways &rarr; Gateway URL:<br>"
+        f"<code>{escape(url)}</code></p>"
+        "<p>Operators: the browser dashboard is a separate command, <code>hermes dashboard</code>.</p>"
+        "</body></html>"
+    )
 
 
 def mount_spa(application: FastAPI):
@@ -110,7 +137,7 @@ def mount_spa(application: FastAPI):
     if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
 
         @application.get("/{full_path:path}")
-        async def no_frontend(full_path: str):
+        async def no_frontend(request: Request, full_path: str):
             # Desktop token handshake: the Electron shell boots by fetching `/` and reading
             # ``window.__HERMES_SESSION_TOKEN__`` for /api/ws auth. When headless 404'd every
             # path, a renderer whose spawn token no longer matched (e.g. after `hermes update`)
@@ -125,6 +152,15 @@ def mount_spa(application: FastAPI):
                     "window.__HERMES_AUTH_REQUIRED__=false;"
                     f"</script></head><body>{_HEADLESS_MSG}</body></html>",
                     headers=_NO_STORE,
+                )
+            # Top-level browser navigations (a user pasting the gateway URL) get the
+            # friendly hint instead of raw JSON; fetch()/API/Desktop clients keep the
+            # JSON contract (Sec-Fetch-Mode is cors/no-cors for fetch(), navigate for
+            # real navigations — the Electron token fetch is a fetch(), not a
+            # navigation, so it is unaffected).
+            if request.headers.get("sec-fetch-mode", "").lower() == "navigate":
+                return HTMLResponse(
+                    _headless_navigation_hint(str(request.url)), status_code=404, headers=_NO_STORE
                 )
             return JSONResponse({"error": _HEADLESS_MSG}, status_code=404)
         return

@@ -33,6 +33,7 @@ import autopilot                   # noqa: E402
 import badbool                      # noqa: E402
 import cdp                          # noqa: E402
 import brokers as brokers_mod      # noqa: E402
+import complaint as complaint_mod  # noqa: E402
 import config as config_mod        # noqa: E402
 import crypto                       # noqa: E402
 import dossier as dossier_mod      # noqa: E402
@@ -731,6 +732,30 @@ def cmd_report(args) -> None:
         print(report_mod.render_markdown(args.subject))
 
 
+def cmd_complaints(args) -> None:
+    """Render regulator-complaint DRAFTS for brokers that ignored a request past its
+    statutory deadline (CCPA 45d / GDPR 30d). Draft-only: the operator files each one;
+    unbroker never submits a complaint itself (consequential outward-facing action)."""
+    d = _require_subject(args.subject)
+    dossier_mod.require_authorized(d)
+    rows = complaint_mod.overdue_cases(args.subject, d, ledger_mod.load(args.subject))
+    complaints = []
+    for row in rows:
+        b = brokers_mod.get(row["broker_id"]) or {}
+        ctx = complaint_mod.complaint_context(d, b, row)
+        complaints.append({
+            **row,
+            "agency": ctx["agency_name"],
+            "portal": ctx["agency_portal"],
+            "draft": legal.render_complaint(row["regime"], ctx),
+        })
+    _out({"subject": args.subject, "overdue_count": len(complaints), "complaints": complaints,
+          "note": "DRAFTS ONLY - review each and file it with the named regulator yourself. "
+                  "unbroker never files a complaint automatically (consequential legal action). "
+                  "A draft is not proof of a violation; confirm the broker truly did not act "
+                  "(a re-scan / poll-verification) before filing."})
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pdd", description="unbroker helper CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -899,6 +924,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("subject")
     s.add_argument("--sheets", action="store_true", help="emit Google Sheets rows as JSON")
     s.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("complaints",
+                       help="draft regulator complaints for brokers past the CCPA/GDPR deadline "
+                            "(draft-only; you file them)")
+    s.add_argument("subject")
+    s.set_defaults(func=cmd_complaints)
     return p
 
 

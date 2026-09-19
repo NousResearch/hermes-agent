@@ -133,3 +133,120 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("mobile IME double-send dedup", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("ignores a duplicate compositionend carrying identical data", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("hello");
+  });
+
+  it("still forwards a re-typed word once the echo window has passed", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    vi.advanceTimersByTime(81);
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a compositionend trailing terminal data that already carried the commit", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    // Android: xterm onData fires first with the committed word…
+    forwarder.noteTerminalData("hello");
+    // …and the late compositionend would arm a fresh fallback duplicate.
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("recognizes the commit when onData carries it split across chunks", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("he");
+    forwarder.noteTerminalData("llo");
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("still sends when terminal data differs from the trailing compositionend", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hello");
+    forwarder.onCompositionEnd("world");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("world");
+  });
+
+  it("drops an onData payload that echoes just-committed composition text", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith("hello");
+
+    expect(forwarder.filterTerminalData("hello")).toBe("");
+  });
+
+  it("forwards only the new suffix of a strict extension", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(forwarder.filterTerminalData("hello world")).toBe(" world");
+  });
+
+  it("passes unrelated onData through unchanged", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(forwarder.filterTerminalData("world")).toBe("world");
+  });
+
+  it("passes onData through once the echo window has passed", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    vi.advanceTimersByTime(81);
+
+    expect(forwarder.filterTerminalData("hello")).toBe("hello");
+  });
+});

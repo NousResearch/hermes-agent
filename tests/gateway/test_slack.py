@@ -31,6 +31,7 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -1288,6 +1289,56 @@ class TestSendDocument:
         assert call_kwargs["file"] == str(test_file)
         assert call_kwargs["filename"] == "report.pdf"
         assert call_kwargs["initial_comment"] == "Here's the report"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("thread_id", "message_id", "expected_thread_ts"),
+        [
+            ("171.000", "171.000", None),
+            ("171.000", "171.500", "171.000"),
+        ],
+    )
+    async def test_flat_mode_media_pipeline_routes_only_real_threads(
+        self, adapter, tmp_path, monkeypatch,
+        thread_id, message_id, expected_thread_ts,
+    ):
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path,)
+        )
+        adapter.config.extra["reply_in_thread"] = False
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None, stop_event=None):
+            await (stop_event or asyncio.Event()).wait()
+
+        async def handler(_event):
+            return f"MEDIA:{test_file}"
+
+        adapter._keep_typing = hold_typing
+        adapter.on_processing_start = AsyncMock()
+        adapter.on_processing_complete = AsyncMock()
+        adapter.set_message_handler(handler)
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D123",
+            chat_type="dm",
+            user_id="U123",
+            thread_id=thread_id,
+            scope_id="T1",
+        )
+        event = MessageEvent(
+            text="attach the report",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=message_id,
+        )
+
+        await adapter._process_message_background(event, build_session_key(source))
+
+        call_kwargs = adapter._app.client.files_upload_v2.call_args[1]
+        assert call_kwargs["thread_ts"] == expected_thread_ts
 
     @pytest.mark.asyncio
     async def test_send_document_uses_metadata_workspace_client(self, adapter, tmp_path):

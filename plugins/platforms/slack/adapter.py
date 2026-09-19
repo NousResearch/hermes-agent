@@ -2753,11 +2753,14 @@ class SlackAdapter(BasePlatformAdapter):
         """thread_ts for an API call: metadata thread_id (parent ts) over reply_to (may be a child
         ts). With ``reply_in_thread: false`` top-level messages get flat replies."""
         # Inbound sets metadata.thread_id to the message's own ts for top-level messages
-        # (session keying), so thread_id == reply_to means a synthetic thread → reply flat.
+        # (session keying). Direct sends carry that ts as ``reply_to``; post-stream
+        # MEDIA delivery carries it as ``metadata.message_id``. In either shape,
+        # a matching thread_id is synthetic and must stay flat.
         if not self.config.extra.get("reply_in_thread", True):
             md = metadata or {}
             existing_thread = md.get("thread_id") or md.get("thread_ts")
-            if existing_thread and reply_to and existing_thread == reply_to:
+            message_anchor = reply_to or md.get("message_id")
+            if existing_thread and message_anchor and existing_thread == message_anchor:
                 existing_thread = None
             return existing_thread or None
         if metadata:

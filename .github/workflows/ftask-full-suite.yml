@@ -15,7 +15,7 @@ permissions:
 
 # Cancel in-progress runs for the same ref
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

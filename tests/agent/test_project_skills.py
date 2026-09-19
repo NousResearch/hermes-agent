@@ -1,7 +1,9 @@
 """Tests for project-local skill discovery (skills.trusted_project_dirs)."""
 
+import logging
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -108,6 +110,241 @@ class TestTrustGate:
         monkeypatch.chdir(repo)
         su._external_dirs_cache_clear()
         assert su.get_untrusted_project_skills_root() is None
+
+
+class TestWorktreeTrust:
+    """#115998: linked git worktrees inherit trust from canonical repo."""
+
+    def _setup_git_worktree(self, tmp_path):
+        main = tmp_path / "main-repo"
+        main.mkdir()
+        subprocess.run(["git", "init"], cwd=main, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=t@e.com", "commit", "--allow-empty", "-m", "init"],
+            cwd=main,
+            check=True,
+            capture_output=True,
+        )
+        skill_dir = main / ".hermes" / "skills" / "tree-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: tree-skill\ndescription: from worktree\n---\nbody\n"
+        )
+        subprocess.run(["git", "add", "."], cwd=main, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=t@e.com", "commit", "-m", "add skill"],
+            cwd=main,
+            check=True,
+            capture_output=True,
+        )
+        wt = tmp_path / "worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(wt), "HEAD"],
+            cwd=main,
+            check=True,
+            capture_output=True,
+        )
+        return main, wt
+
+    def test_worktree_inherits_trust_from_main_repo(self, tmp_path, monkeypatch):
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text(
+            f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{main}']\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+
+        assert su.find_project_root() == wt.resolve()
+        assert su.is_project_root_trusted(wt) is True
+        dirs = su.get_project_skills_dirs()
+        assert (wt / ".hermes" / "skills").resolve() in dirs
+        assert su.get_untrusted_project_skills_root() is None
+
+    def test_untrusted_main_repo_leaves_worktree_untrusted(self, tmp_path, monkeypatch):
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text("skills:\n  external_dirs: []\n  trusted_project_dirs: []\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+
+        assert su.find_project_root() == wt.resolve()
+        assert su.is_project_root_trusted(wt) is False
+        assert su.get_project_skills_dirs() == []
+        notice = su.get_untrusted_project_skills_root()
+        assert notice is not None
+        root, count = notice
+        assert root == wt.resolve()
+        assert count == 1
+
+    def test_forged_gitdir_backref_mismatch_rejected(self, tmp_path, monkeypatch):
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text(
+            f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{main}']\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        su._external_dirs_cache_clear()
+
+        forged = tmp_path / "forged-wt"
+        forged.mkdir()
+        # Forged .git file points to main's worktree metadata, but main's
+        # gitdir back-reference points to real wt, not forged.
+        (forged / ".git").write_text(f"gitdir: {main}/.git/worktrees/worktree\n")
+
+        assert su._canonical_git_root(forged) is None
+        assert su.is_project_root_trusted(forged) is False
+
+    def test_malformed_git_metadata_rejected(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text(
+            f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{tmp_path}']\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        su._external_dirs_cache_clear()
+
+        bad_wt = tmp_path / "bad"
+        bad_wt.mkdir()
+
+        # Non-file .git is not a worktree
+        (bad_wt / ".git").mkdir()
+        assert su._canonical_git_root(bad_wt) is None
+
+        # Empty .git file
+        (bad_wt / ".git").rmdir()
+        (bad_wt / ".git").write_text("")
+        assert su._canonical_git_root(bad_wt) is None
+
+        # Does not start with gitdir:
+        (bad_wt / ".git").write_text("ref: refs/heads/main\n")
+        assert su._canonical_git_root(bad_wt) is None
+
+        # Points to non-existent dir
+        (bad_wt / ".git").write_text("gitdir: /nonexistent/dir\n")
+        assert su._canonical_git_root(bad_wt) is None
+
+        # Target dir exists but lacks gitdir backreference
+        target = tmp_path / "fake-gitdir"
+        target.mkdir()
+        (bad_wt / ".git").write_text(f"gitdir: {target}\n")
+        assert su._canonical_git_root(bad_wt) is None
+
+        # Target dir has gitdir backreference but lacks commondir
+        (target / "gitdir").write_text(str(bad_wt / ".git"))
+        assert su._canonical_git_root(bad_wt) is None
+
+        # Target dir has commondir pointing nowhere
+        (target / "commondir").write_text("/nonexistent/commondir\n")
+        assert su._canonical_git_root(bad_wt) is None
+
+    def test_bare_repo_worktree_inherits_trust(self, tmp_path, monkeypatch):
+        bare = tmp_path / "bare.git"
+        subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+
+        temp_src = tmp_path / "temp-src"
+        temp_src.mkdir()
+        subprocess.run(["git", "init"], cwd=temp_src, check=True, capture_output=True)
+        (temp_src / "file.txt").write_text("init")
+        subprocess.run(["git", "add", "."], cwd=temp_src, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=t@e.com", "commit", "-m", "init"],
+            cwd=temp_src,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "push", str(bare), "HEAD:main"], cwd=temp_src, check=True, capture_output=True)
+
+        wt = tmp_path / "bare-wt"
+        subprocess.run(
+            ["git", "worktree", "add", str(wt), "main"],
+            cwd=bare,
+            check=True,
+            capture_output=True,
+        )
+
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text(
+            f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{bare}']\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+
+        assert su._canonical_git_root(wt) == bare.resolve()
+        assert su.is_project_root_trusted(wt) is True
+
+    def test_home_as_canonical_repo_rejected(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fake-home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        # Mock worktree pointing back to fake_home
+        wt = tmp_path / "home-wt"
+        wt.mkdir()
+        gitdir_path = tmp_path / "fake-gitdir-home"
+        gitdir_path.mkdir()
+        (wt / ".git").write_text(f"gitdir: {gitdir_path}\n")
+        (gitdir_path / "gitdir").write_text(str(wt / ".git"))
+        (gitdir_path / "commondir").write_text(str(fake_home / ".git"))
+        (fake_home / ".git").mkdir()
+
+        assert su._canonical_git_root(wt) is None
+        assert su.is_project_root_trusted(wt) is False
+
+    def test_prompt_builder_logs_untrusted_skills_notice(self, tmp_path, monkeypatch, caplog):
+        from agent.prompt_builder import build_skills_system_prompt
+
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text("skills:\n  external_dirs: []\n  trusted_project_dirs: []\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+
+        with caplog.at_level(logging.INFO):
+            build_skills_system_prompt(skills_dir_override=home / "skills")
+
+        assert any("project skill(s) found" in record.message for record in caplog.records)
+
+    def test_cli_trust_untrust_inside_worktree(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        from hermes_cli.config import load_config
+        from hermes_cli.main_agent_cmds import _cmd_skills_trust
+
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text("skills:\n  external_dirs: []\n  trusted_project_dirs: []\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+
+        # Run trust from inside worktree - canonicalizes to main repo
+        _cmd_skills_trust(SimpleNamespace(skills_action="trust", path=None))
+        cfg = load_config()
+        assert str(main.resolve()) in cfg["skills"]["trusted_project_dirs"]
+        assert su.is_project_root_trusted(wt) is True
+
+        # Run untrust from inside worktree - canonicalizes to main repo
+        _cmd_skills_trust(SimpleNamespace(skills_action="untrust", path=None))
+        cfg = load_config()
+        assert str(main.resolve()) not in cfg["skills"]["trusted_project_dirs"]
+        assert su.is_project_root_trusted(wt) is False
 
 
 class TestPrecedence:

@@ -476,6 +476,12 @@ Cron jobs and other non-interactive surfaces inherit your interactive trust deci
 
 In the TUI and Desktop the project root follows each **session's workspace** (the directory shown in the sidebar / set with the workspace picker), so starting `hermes --tui` inside a trusted repo registers its project skills as slash commands even when `terminal.cwd` is left at the default placeholder `.`; two sessions open in two repos each see their own.
 
+### Git worktrees
+
+Linked git worktrees inherit project skill trust from the canonical repository they were created from. If you ran `hermes skills trust` on the primary checkout (e.g. `~/myproject`), any linked worktree created via `git worktree add` or `hermes -w` is automatically recognized as trusted without needing separate configuration.
+
+Trust resolution strictly enforces bidirectional back-references (`gitdir:` in the worktree's `.git` file and `gitdir` in the common repository directory) to prevent forged or malformed git metadata from inheriting trust. For details on using worktrees with Hermes, see [Git Worktrees](../git-worktrees.md).
+
 ## Skill Bundles
 
 Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.

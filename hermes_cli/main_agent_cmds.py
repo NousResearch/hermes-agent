@@ -191,6 +191,7 @@ def _cmd_skills_trust(args):
     from agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
+        _canonical_git_root,
         find_project_root,
         iter_skill_index_files)
     from hermes_cli.config import load_config, save_config
@@ -208,6 +209,9 @@ def _cmd_skills_trust(args):
                 "Not inside a git checkout. Run from a project directory or "
                 "pass the project root path explicitly.")
             return
+        canonical = _canonical_git_root(root)
+        if canonical is not None:
+            root = canonical
 
     config = load_config()
     skills_cfg = config.setdefault("skills", {})

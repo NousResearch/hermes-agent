@@ -1260,8 +1260,16 @@ def build_skills_system_prompt(
     try:
         external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
         # Trusted project-local dirs — highest-precedence tier; cwd/trust are session-stable, so byte-stable.
-        from agent.skill_utils import get_project_skills_dirs
+        from agent.skill_utils import get_project_skills_dirs, get_untrusted_project_skills_root
         project_dirs = get_project_skills_dirs()
+        if not project_dirs:
+            untrusted = get_untrusted_project_skills_root()
+            if untrusted is not None:
+                root, count = untrusted
+                logger.info(
+                    "%d project skill(s) found in %s but not loaded — run `hermes skills trust` to enable them",
+                    count, root,
+                )
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(

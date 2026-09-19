@@ -462,10 +462,89 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
     return result
 
 
-def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+def _canonical_git_root(root: Path) -> Optional[Path]:
+    """Resolve the canonical repository root for a linked git worktree.
+
+    In a git worktree, ``.git`` is a file containing ``gitdir: <path>``.
+    To prevent forged, malformed, or stale metadata from gaining trust, this
+    strictly enforces git's worktree protocol invariants:
+    1. ``<root>/.git`` is a file with a valid ``gitdir:`` prefix.
+    2. The target gitdir exists, is a directory, and contains a ``gitdir`` file
+       whose back-reference resolves exactly to ``<root>/.git``.
+    3. The target gitdir contains a ``commondir`` file resolving to an existing
+       common git directory.
+    4. The resolved canonical repository root exists and is not the home directory.
+
+    Returns the resolved canonical repository root Path if verified, else None.
+    """
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        dot_git = Path(root) / ".git"
+        if not dot_git.is_file():
+            return None
+        content = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+        if not content.startswith("gitdir:"):
+            return None
+        gitdir_raw = content.split("gitdir:", 1)[1].splitlines()[0].strip()
+        if not gitdir_raw:
+            return None
+        gitdir_path = (Path(root) / gitdir_raw).resolve()
+        if not gitdir_path.is_dir():
+            return None
+
+        # Verify mutual back-reference (prevents forged .git files from borrowing trust)
+        backref_file = gitdir_path / "gitdir"
+        if not backref_file.is_file():
+            return None
+        backref_raw = backref_file.read_text(encoding="utf-8", errors="replace").strip()
+        if not backref_raw:
+            return None
+        backref_path = (gitdir_path / backref_raw.splitlines()[0].strip()).resolve()
+        if backref_path != dot_git.resolve():
+            return None
+
+        # Resolve common directory to determine the canonical repo root
+        commondir_file = gitdir_path / "commondir"
+        if not commondir_file.is_file():
+            return None
+        commondir_raw = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+        if not commondir_raw:
+            return None
+        commondir_path = (gitdir_path / commondir_raw.splitlines()[0].strip()).resolve()
+        if not commondir_path.is_dir():
+            return None
+
+        # For standard non-bare repos, commondir is <repo>/.git, so repo root is parent.
+        # For bare repos, commondir is the bare repo directory itself.
+        if commondir_path.name == ".git":
+            canonical = commondir_path.parent.resolve()
+        else:
+            canonical = commondir_path.resolve()
+
+        if not canonical.is_dir():
+            return None
+
+        try:
+            home = Path.home().resolve()
+        except OSError:
+            home = None
+        if home is not None and canonical == home:
+            return None
+
+        return canonical
+    except OSError:
+        return None
+
+
+def is_project_root_trusted(root: Path) -> bool:
+    """True when *root* (or its canonical git repo if *root* is a linked worktree)
+    is listed in ``skills.trusted_project_dirs``."""
+    try:
+        resolved = Path(root).resolve()
+        trusted = _project_trusted_dirs_from_config()
+        if resolved in trusted:
+            return True
+        canonical = _canonical_git_root(resolved)
+        return canonical is not None and canonical in trusted
     except OSError:
         return False
 

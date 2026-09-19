@@ -585,7 +585,8 @@ async def host_header_middleware(request: Request, call_next):
             content={
                 "detail": (
                     "Invalid Host header. Dashboard requests must use the "
-                    "bound hostname or the configured public hostname."
+                    "bound hostname or the hostname configured in "
+                    "`dashboard.public_url`."
                 ),
             },
         )

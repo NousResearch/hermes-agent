@@ -86,6 +86,76 @@ class TestCodingSelection:
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
 
 
+class TestGuardedPrompt:
+    def test_requires_exact_local_provider_model_and_focus_workspace(self, tmp_path):
+        _git_init(tmp_path)
+        cfg = {
+            "agent": {
+                "coding_context": "focus",
+                "guarded_prompt_mode": {
+                    "enabled": True,
+                    "routes": [
+                        {"provider": "ollama-launch", "model": "hermes-qwen3-fast"},
+                    ],
+                },
+            }
+        }
+
+        assert cc.guarded_prompt_enabled(
+            platform="desktop",
+            cwd=tmp_path,
+            provider="ollama-launch",
+            model="hermes-qwen3-fast",
+            config=cfg,
+        ) is True
+        # An exact allowlist is deliberate: no cloud provider or unrelated
+        # local model may silently get a smaller prompt.
+        assert cc.guarded_prompt_enabled(
+            platform="desktop",
+            cwd=tmp_path,
+            provider="ollama-launch",
+            model="unrelated",
+            config=cfg,
+        ) is False
+        assert cc.guarded_prompt_enabled(
+            platform="desktop",
+            cwd=tmp_path,
+            provider="some-other-provider",
+            model="hermes-qwen3-fast",
+            config=cfg,
+        ) is False
+
+    def test_is_off_outside_focus_or_a_coding_workspace(self, tmp_path):
+        cfg = {
+            "agent": {
+                "coding_context": "focus",
+                "guarded_prompt_mode": {
+                    "enabled": True,
+                    "routes": [
+                        {"provider": "ollama-launch", "model": "hermes-qwen3-fast"},
+                    ],
+                },
+            }
+        }
+        assert cc.guarded_prompt_enabled(
+            platform="desktop",
+            cwd=tmp_path,
+            provider="ollama-launch",
+            model="hermes-qwen3-fast",
+            config=cfg,
+        ) is False
+
+        _git_init(tmp_path)
+        cfg["agent"]["coding_context"] = "auto"
+        assert cc.guarded_prompt_enabled(
+            platform="desktop",
+            cwd=tmp_path,
+            provider="ollama-launch",
+            model="hermes-qwen3-fast",
+            config=cfg,
+        ) is False
+
+
 
 
 

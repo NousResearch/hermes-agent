@@ -65,6 +65,14 @@ class PtySession:
             chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
             if chunk is None:                       # EOF — the agent process exited
                 self.alive = False
+                # Reap immediately instead of leaving the bridge's child and
+                # descriptors to the periodic registry sweep. Reconnects will
+                # spawn a fresh session, while detached live sessions retain
+                # their normal keep-alive TTL.
+                try:
+                    await asyncio.to_thread(self.bridge.close)
+                except Exception:
+                    pass
                 await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)
                 return
             if not chunk:                            # idle tick

@@ -667,10 +667,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
     // clipboard.paste / xclip never see the browser clipboard, so image paste
     // must upload browser bytes to HERMES_HOME/images, then drive `/image`
-    // over the PTY (same burst-then-Return timing as handleCopyLast).
+    // over the PTY. Keep the command and its submit byte in one PTY frame:
+    // splitting them with a timer can let the TUI process Enter while its
+    // asynchronous image attachment is still changing composer state.
     let imageUploadDisposed = false;
-    const pasteDelay = () =>
-      new Promise<void>((resolve) => window.setTimeout(resolve, 40));
     const reportImageUploadError = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[dashboard chat] image upload failed:", message);
@@ -686,12 +686,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           );
           return;
         }
-        ws.send(`/image ${path}`);
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
-        const s = wsRef.current;
-        if (!s || s.readyState !== WebSocket.OPEN) return;
-        s.send("\r");
-        await pasteDelay();
+        ws.send(`/image ${path}\r`);
       }
       term.focus();
     };

@@ -288,6 +288,7 @@ async def test_eof_marks_dead_and_closes_socket_4410():
     await asyncio.sleep(0.05)                      # drain hits None (EOF)
     assert s.alive is False
     assert ws.close_code == 4410
+    assert bridge.closed is True                    # EOF reaps the child without waiting for the registry
     await s.close()
 
 

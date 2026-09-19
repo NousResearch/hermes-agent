@@ -219,6 +219,14 @@ def _strip_reasoning_tags(text: str) -> str:
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,
     )
+    # DeepSeek DSML tool-call markup (line-based, #115475) — same recognition as
+    # agent.agent_runtime_helpers.strip_dsml_blocks (keep in sync).
+    if isinstance(cleaned, str) and "dsml" in cleaned.lower():
+        from agent.agent_runtime_helpers import strip_dsml_blocks
+
+        stripped = strip_dsml_blocks(cleaned)
+        if stripped is not None:
+            cleaned = stripped
     return cleaned.strip()
 
 

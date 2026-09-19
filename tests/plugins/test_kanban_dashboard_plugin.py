@@ -82,6 +82,22 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_dashboard_requests_do_not_force_database_reinitialization(client, monkeypatch):
+    init_calls = 0
+
+    def count_init(*args, **kwargs):
+        nonlocal init_calls
+        init_calls += 1
+
+    monkeypatch.setattr(kb, "init_db", count_init)
+
+    for _ in range(2):
+        response = client.get("/api/plugins/kanban/board")
+        assert response.status_code == 200
+
+    assert init_calls == 0
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------
@@ -1276,5 +1292,4 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
 

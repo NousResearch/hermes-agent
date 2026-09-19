@@ -22,6 +22,8 @@ try:
 except ImportError:
     web = None  # type: ignore[assignment]
 
+from hermes_state_runtime import RuntimeStoreError
+
 from gateway.hosted_room_peer import (
     MAX_ROOM_LINK_ATTACHMENT_BYTES,
     HostedMemberDispatch,
@@ -589,6 +591,8 @@ class RoomAttachmentSpool:
                     "complete": False,
                     "idempotent": False,
                 }
+            if authorize_write is not None and hasattr(authorize_write, 'check_current'):
+                authorize_write.check_current()
             _record_staging_origin(conn, batch_key=key, origin=origin, new_batch=existing is None)
         for old_key, attachment_id in retired:
             self._file_path(old_key, attachment_id).unlink(missing_ok=True)
@@ -648,6 +652,8 @@ class RoomAttachmentSpool:
                 raise RoomAttachmentSpoolConflict(
                     "attachment bytes do not match the registered manifest"
                 )
+            if authorize_write is not None and hasattr(authorize_write, 'check_current'):
+                authorize_write.check_current()
             path = self._file_path(str(batch["batch_key"]), attachment_id)
             if int(entry["stored"]):
                 repaired = False
@@ -664,6 +670,8 @@ class RoomAttachmentSpool:
                 complete = self._mark_complete_if_ready(
                     conn, str(batch["batch_key"])
                 )
+                if authorize_write is not None and hasattr(authorize_write, 'check_current'):
+                    authorize_write.check_current()
                 _record_staging_origin(conn, batch_key=str(batch["batch_key"]), origin=origin)
                 return {
                     "complete": complete,
@@ -712,6 +720,8 @@ class RoomAttachmentSpool:
             complete = self._mark_complete_if_ready(
                 conn, str(batch["batch_key"])
             )
+            if authorize_write is not None and hasattr(authorize_write, 'check_current'):
+                authorize_write.check_current()
             _record_staging_origin(conn, batch_key=str(batch["batch_key"]), origin=origin)
         return {"complete": complete, "idempotent": False}
 
@@ -1054,12 +1064,20 @@ def _validate_target_scope(claims: Mapping[str, Any], profile: str) -> None:
         )
 
 
-def _require_receiver(adapter, claims, profile, *, connection=None, dispatch=None):
+def _require_receiver(adapter, claims, profile, *, connection=None, dispatch=None, cleanup=False):
     from gateway.session_peer_target import target_policy
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     from hermes_state_runtime import RuntimeStoreError
     try:
         authority, paths, policy = target_policy(adapter, profile, connection=connection)
+        if cleanup:
+            from gateway.session_peer_input import peer_input_initialized
+            if not peer_input_initialized(adapter, profile, connection=connection):
+                raise RuntimeStoreError('room_attachments_unavailable')
+            return authority, paths
+        from gateway.session_peer_route import require_room_route
+        if dispatch is not None:
+            require_room_route(adapter, dispatch, connection=connection)
         _, catalog = _local_room_catalog(adapter, profile, claims['target_install_id'], _connection=connection)
         if not catalog['attachments'] or policy['policy_digest'] != claims['execution_policy_digest']:
             raise RuntimeStoreError('room_execution_policy_changed')
@@ -1080,7 +1098,7 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
         from gateway.platforms.api_server_room_grants import _decode_request_grant
         from gateway.session_peer_target import require_current_grant
         from hermes_state_runtime import RuntimeStoreError
-        from hermes_cli.sqlite_util import transaction
+        from hermes_cli.sqlite_util import write_txn
         paths = tuple(dict.fromkeys(Path(path).resolve() for path in grant_state_db_paths()))
         main_path = next(path for _, name, path in conn.execute('PRAGMA database_list') if name == 'main')
         if not conn.in_transaction or Path(main_path).resolve() != paths[0] or len(paths) != 2:
@@ -1088,14 +1106,19 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
         # The caller holds shared through COMMIT; keep the distinct owner fence
         # alive for the same interval and inspect THESE connections, not readers.
         with ExitStack() as locks:
-            profile_conn = locks.enter_context(transaction(hosted_rooms._connect(paths[1]), immediate=True))
+            from gateway.session_peer_target import root_target
+            owner, _ = root_target(adapter)
+            profile_conn = locks.enter_context(owner.db.live_read_connection())
+            if profile_conn is None:
+                raise RoomGrantReauthorizationRequired('owner_unavailable')
+            locks.enter_context(write_txn(profile_conn))
             claims = _decode_request_grant(adapter, request, permission=permission)
             profile = _effective_room_profile(_api_request_profile)
             _validate_target_scope(claims, profile)
             if claims != expected or 'attachment.stage' not in claims['permissions']:
                 raise HostedRoomGrantError('room grant changed or cannot stage attachments')
             bound = dispatch
-            if bound is None:
+            if bound is None or permission == "attachment.stage" and request.method == "PUT":
                 row = conn.execute("""SELECT dispatch_json FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=? AND authority_gateway_id=? AND authority_epoch=?
                       AND member_id=? AND target_install_id=? AND target_profile=?
@@ -1104,8 +1127,17 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
                         'authority_epoch', 'member_id', 'target_install_id', 'target_profile')) +
                     (str(request.match_info['task_id']), int(request.match_info['execution_generation']))).fetchone()
                 if row is not None:
-                    bound = HostedMemberDispatch.from_mapping(json.loads(row[0]))
-            authority, _ = _require_receiver(adapter, claims, profile, connection=profile_conn, dispatch=bound)
+                    stored = HostedMemberDispatch.from_mapping(json.loads(row[0]))
+                    if bound is not None and bound != stored:
+                        raise RoomGrantReauthorizationRequired('attachment dispatch changed')
+                    bound = stored
+                elif permission == 'attachment.stage':
+                    raise RoomGrantReauthorizationRequired('attachment batch unavailable')
+            def check_current():
+                return _require_receiver(adapter, claims, profile, connection=profile_conn,
+                    dispatch=bound, cleanup=permission == 'status')
+            authority, _ = check_current()
+            authorize.check_current = check_current
             try:
                 require_current_grant(conn, claims)
                 require_current_grant(profile_conn, claims)
@@ -1165,7 +1197,6 @@ async def _handle_room_attachment_manifest(
             raise RoomAttachmentSpoolError("room grant verification changed")
         _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
         manifest = canonical_attachment_manifest(body["attachments"])
-        _require_receiver(self, claims, _effective_room_profile(_api_request_profile), dispatch=dispatch)
         if (
             any(item["kind"] == "pdf" for item in manifest)
             and shutil.which("pdftoppm") is None
@@ -1173,18 +1204,20 @@ async def _handle_room_attachment_manifest(
             raise RoomAttachmentSpoolError(
                 "This gateway cannot receive PDFs until Poppler is installed."
             )
-        result = await asyncio.to_thread(
-            _default_spool().prepare,
-            dispatch,
-            manifest,
-            authorize_write=_write_guard(self, request, claims, "attachment.stage", dispatch),
-        )
+        if attachment_manifest_digest(manifest) != dispatch.attachment_manifest_digest:
+            raise RoomAttachmentSpoolConflict('attachment manifest does not match the dispatch')
+        from gateway.session_peer_route import run_prepared_room_write
+        def stage():
+            _require_receiver(self, claims, claims['target_profile'], dispatch=dispatch)
+            return _default_spool().prepare(dispatch, manifest,
+                authorize_write=_write_guard(self, request, claims, 'attachment.stage', dispatch))
+        result = await run_prepared_room_write(self, dispatch, request, 'manifest', stage)
     except RoomAttachmentSpoolConflict as exc:
         return web.json_response(
             _openai_error(str(exc), code="room_attachment_conflict"),
             status=409,
         )
-    except (HostedRoomGrantError, RoomGrantReauthorizationRequired) as exc:
+    except (HostedRoomGrantError, RoomGrantReauthorizationRequired, RuntimeStoreError) as exc:
         return web.json_response(
             _openai_error(str(exc), code="invalid_room_grant"),
             status=401,
@@ -1209,6 +1242,24 @@ async def _handle_room_attachment_manifest(
     )
 
 
+def _staged_dispatch(claims, task_id, generation):
+    from gateway import hosted_rooms
+    from contextlib import closing
+    path = Path(hosted_rooms.default_db_path())
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            row = conn.execute("""SELECT dispatch_json FROM roomlink_attachment_batches
+                WHERE room_id=? AND home_install_id=? AND authority_gateway_id=? AND authority_epoch=?
+                AND member_id=? AND target_install_id=? AND target_profile=? AND task_id=? AND execution_generation=?""",
+                tuple(claims[k] for k in ('room_id', 'home_install_id', 'authority_gateway_id',
+                    'authority_epoch', 'member_id', 'target_install_id', 'target_profile')) + (task_id, generation)).fetchone()
+    except sqlite3.Error:
+        raise RoomAttachmentSpoolError('attachment batch unavailable') from None
+    if row is None:
+        raise RoomAttachmentSpoolError('attachment batch unavailable')
+    return HostedMemberDispatch.from_mapping(json.loads(row[0]))
+
+
 async def _handle_room_attachment_upload(
     self,
     request: "web.Request",
@@ -1219,7 +1270,6 @@ async def _handle_room_attachment_upload(
     try:
         claims = self._room_grant_claims(request, permission="attachment.stage")
         _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
-        _require_receiver(self, claims, _effective_room_profile(_api_request_profile))
         task_id = str(request.match_info["task_id"])
         generation = int(request.match_info["execution_generation"])
         if generation < 1:
@@ -1245,21 +1295,22 @@ async def _handle_room_attachment_upload(
                     ),
                     status=413,
                 )
-        result = await asyncio.to_thread(
-            _default_spool().put,
-            claims=claims,
-            task_id=task_id,
-            execution_generation=generation,
-            attachment_id=attachment_id,
-            data=bytes(data),
-            authorize_write=_write_guard(self, request, claims, "attachment.stage"),
-        )
+        dispatch = await asyncio.to_thread(_staged_dispatch, claims, task_id, generation)
+        verify_room_grant(self._room_grant_secret(), self._room_grant_token(request), dispatch,
+            permission='attachment.stage')
+        from gateway.session_peer_route import run_prepared_room_write
+        def store():
+            _require_receiver(self, claims, claims['target_profile'], dispatch=dispatch)
+            return _default_spool().put(claims=claims, task_id=task_id,
+                execution_generation=generation, attachment_id=attachment_id, data=bytes(data),
+                authorize_write=_write_guard(self, request, claims, 'attachment.stage', dispatch))
+        result = await run_prepared_room_write(self, dispatch, request, 'upload', store)
     except RoomAttachmentSpoolConflict as exc:
         return web.json_response(
             _openai_error(str(exc), code="room_attachment_conflict"),
             status=409,
         )
-    except (HostedRoomGrantError, RoomGrantReauthorizationRequired) as exc:
+    except (HostedRoomGrantError, RoomGrantReauthorizationRequired, RuntimeStoreError) as exc:
         return web.json_response(
             _openai_error(str(exc), code="invalid_room_grant"),
             status=401,
@@ -1303,7 +1354,7 @@ async def _handle_room_attachment_discard(
         # to stage attachments; inspection/replication alone cannot delete them.
         if "attachment.stage" not in claims["permissions"]:
             raise HostedRoomGrantError("Room grant does not permit attachment cleanup.")
-        _require_receiver(self, claims, _effective_room_profile(_api_request_profile))
+        _require_receiver(self, claims, _effective_room_profile(_api_request_profile), cleanup=True)
         generation = int(request.match_info["execution_generation"])
         if generation < 1:
             raise RoomAttachmentSpoolError("execution_generation is invalid")
@@ -1314,7 +1365,7 @@ async def _handle_room_attachment_discard(
             execution_generation=generation,
             authorize_write=_write_guard(self, request, claims, "status"),
         )
-    except (HostedRoomGrantError, RoomGrantReauthorizationRequired) as exc:
+    except (HostedRoomGrantError, RoomGrantReauthorizationRequired, RuntimeStoreError) as exc:
         return web.json_response(
             _openai_error(str(exc), code="invalid_room_grant"),
             status=401,

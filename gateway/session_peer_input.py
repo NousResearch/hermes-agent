@@ -15,6 +15,11 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def peer_input_available(adapter, profile='default', *, connection=None):
+    from gateway.session_peer_route import room_route_ready
+    return room_route_ready(adapter, connection=connection) and peer_input_initialized(adapter, profile, connection=connection)
+
+
+def peer_input_initialized(adapter, profile='default', *, connection=None):
     """Read-only readiness of the actual owned, initialized receiver contracts."""
     from gateway.session_peer_target import root_target
     from gateway.hosted_room_input_reclamation import owned_home, require_initialized
@@ -22,7 +27,9 @@ def peer_input_available(adapter, profile='default', *, connection=None):
         authority, _ = root_target(adapter, profile, connection=connection)
         owned_home(authority.db)
         if connection is None:
-            with authority.db._read_ctx() as conn:
+            with authority.db.live_read_connection() as conn:
+                if conn is None:
+                    return False
                 require_initialized(conn, authority.db)
         else:
             require_initialized(connection, authority.db)

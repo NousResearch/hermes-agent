@@ -67,24 +67,33 @@ def main() -> int:
             value = on_state if value else "/Off"
         fill[name] = value
     for page in writer.pages:
-        writer.update_page_form_field_values(page, fill, auto_regenerate=False)
+        writer.update_page_form_field_values(
+            page, fill, flags=1 if args.flatten else 0,
+            auto_regenerate=False, flatten=args.flatten)
 
-    # Set NeedAppearances so viewers render values even without appearance streams.
     root = writer._root_object
-    if "/AcroForm" in root:
-        root["/AcroForm"][NameObject("/NeedAppearances")] = BooleanObject(True)
-
-    flattened = False
+    flattened = args.flatten
     if args.flatten:
-        try:
-            # pypdf >= 5: flatten via update with flags making fields read-only,
-            # then remove interactivity by merging appearances.
-            for page in writer.pages:
-                writer.update_page_form_field_values(page, fill, flags=1)  # 1 = ReadOnly
-            flattened = True
-        except Exception as exc:
-            print(f"Warning: flatten step failed ({exc}); output keeps interactive fields",
-                  file=sys.stderr)
+        # pypdf's flatten=True merges each widget appearance into page
+        # content but intentionally leaves the annotations behind. Remove
+        # those widgets and the form dictionary to make the result genuinely
+        # non-interactive; preserve unrelated links/comments.
+        from pypdf.generic import ArrayObject
+        for page in writer.pages:
+            annots = page.get("/Annots")
+            if not annots:
+                continue
+            kept = ArrayObject(
+                ref for ref in annots
+                if ref.get_object().get("/Subtype") != "/Widget")
+            if kept:
+                page[NameObject("/Annots")] = kept
+            else:
+                page.pop(NameObject("/Annots"), None)
+        root.pop(NameObject("/AcroForm"), None)
+    elif "/AcroForm" in root:
+        # Let conforming viewers regenerate interactive field appearances.
+        root["/AcroForm"][NameObject("/NeedAppearances")] = BooleanObject(True)
 
     with open(args.output, "wb") as fh:
         writer.write(fh)

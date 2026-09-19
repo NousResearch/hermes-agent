@@ -121,6 +121,24 @@ def test_form_fill_unicode_roundtrip(form_pdf: Path, workdir: Path):
     assert fields["size"]["value"] == "large"
 
 
+def test_form_fill_flatten_removes_widgets(form_pdf: Path, workdir: Path):
+    values = workdir / "flat_values.json"
+    values.write_text(json.dumps({"surname": "Ada", "agree": True}),
+                      encoding="utf-8")
+    flattened = workdir / "flattened.pdf"
+    result = json.loads(run(
+        "pdf_fill_form.py", str(form_pdf), "--fields-json", str(values),
+        "-o", str(flattened), "--flatten").stdout)
+    assert result["flattened"] is True
+
+    from pypdf import PdfReader
+    reader = PdfReader(str(flattened))
+    assert reader.get_fields() in (None, {})
+    annots = reader.pages[0].get("/Annots", [])
+    assert all(ref.get_object().get("/Subtype") != "/Widget" for ref in annots)
+    assert "Ada" in (reader.pages[0].extract_text() or "")
+
+
 def test_merge_split_rotate(report_pdf: Path, workdir: Path):
     merged = workdir / "merged.pdf"
     out = json.loads(run("pdf_merge.py", str(report_pdf), str(report_pdf),

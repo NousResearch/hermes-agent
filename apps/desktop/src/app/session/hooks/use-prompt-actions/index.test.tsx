@@ -2457,6 +2457,51 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
     dropSessionState(RUNTIME_SESSION_ID)
   })
+
+  it('reports the exact accepted identity through onAccepted after a stale-runtime recovery', async () => {
+    const STORED_SESSION_ID = 'stored-db-xyz789'
+    const RECOVERED_SESSION_ID = 'rt-recovered-456'
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const onAccepted = vi.fn()
+
+    const ok = await handle!.submitText('identity after wake', { onAccepted })
+
+    expect(ok).toBe(true)
+    expect(onAccepted).toHaveBeenCalledTimes(1)
+    expect(onAccepted).toHaveBeenCalledWith({
+      runtimeSessionId: RECOVERED_SESSION_ID,
+      storedSessionId: STORED_SESSION_ID
+    })
+  })
 })
 
 describe('usePromptActions redirectPrompt', () => {
@@ -3346,6 +3391,7 @@ describe('usePromptActions file attachment sync', () => {
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
   })
+
 })
 
 describe('usePromptActions eager-upload races', () => {

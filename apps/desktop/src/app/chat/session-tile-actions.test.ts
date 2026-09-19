@@ -79,7 +79,10 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
-      submitToSession: vi.fn(async () => undefined),
+      submitToSession: vi.fn(async () => ({
+        runtimeSessionId: RUNTIME_SESSION_ID,
+        storedSessionId: null
+      })),
       updateSession: vi.fn((_runtimeId, updater) =>
         updater({
           attachedImages: [],
@@ -233,7 +236,10 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
-      submitToSession: vi.fn(async () => undefined),
+      submitToSession: vi.fn(async () => ({
+        runtimeSessionId: RUNTIME_SESSION_ID,
+        storedSessionId: null
+      })),
       updateSession: vi.fn((_runtimeId, updater) => {
         const current = $sessionStates.get()[RUNTIME_SESSION_ID]
 

@@ -967,6 +967,42 @@ def test_config_default_dispatch_in_gateway_is_true():
     )
 
 
+def test_dispatcher_presence_probe_scopes_to_kanban_home(monkeypatch, tmp_path):
+    """The CLI's "no gateway is running" warning must probe the kanban store's
+    home, not the active profile's HERMES_HOME. The board is shared at the root
+    home by design, so a profile-scoped shell must not warn against a healthy
+    root gateway just because the profile's own gateway.pid is absent."""
+    from gateway.status import GatewayLiveness
+    from hermes_cli import kanban as kb_cli
+    import hermes_cli.kanban_ops as kanban_ops
+
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "secondary"
+    profile_home.mkdir(parents=True)
+
+    # The board is shared at the root home; the CLI's own HERMES_HOME is the
+    # profile dir (the exact scenario that previously mis-probed).
+    monkeypatch.setattr(kb, "kanban_home", lambda: root)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    seen: dict[str, object] = {}
+
+    def fake_liveness(*, profile_dir=None, **kwargs):
+        seen["profile_dir"] = profile_dir
+        return GatewayLiveness(running=True, pid=4242, source="pid")
+
+    monkeypatch.setattr("gateway.status.resolve_gateway_liveness", fake_liveness)
+    monkeypatch.setattr(kanban_ops, "_kanban_config", lambda: {"dispatch_in_gateway": True})
+
+    running, message = kb_cli._check_dispatcher_presence()
+
+    assert running is True
+    assert "dispatch enabled" in message
+    assert seen.get("profile_dir") == root, (
+        f"probe should target the kanban store home {root}, got {seen.get('profile_dir')!r}"
+    )
+
+
 
 
 

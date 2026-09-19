@@ -528,6 +528,24 @@ class GatewayAuthorizationMixin:
             return set()
         return {s for e in resolved_ids if isinstance(e, (str, int)) and (s := str(e).strip())}
 
+    def _senderless_group_grant(self, source, adapter_profile) -> bool:
+        """Honor an own-policy adapter's explicit chat allowlist, never a sender allowlist."""
+        if source.user_id or self._adapter_policy(source.platform, "group", adapter_profile) != "allowlist":
+            return False
+        if not self._adapter_flag(source.platform, "enforces_own_access_policy", adapter_profile):
+            return False
+        if self._adapter_group_has_sender_allowlist(source.platform, source.chat_id, profile=adapter_profile):
+            return False
+        entry = _registry_entry(source.platform)
+        user_env = _ALLOWED_USERS_ENV.get(source.platform) or getattr(entry, "allowed_users_env", "")
+        if any(_auth_env(name) for name in (user_env, _GROUP_USER_ENV.get(source.platform, ""), "GATEWAY_ALLOWED_USERS") if name):
+            return False  # Anonymous events cannot satisfy an additional caller restriction.
+        adapter = self._authorization_adapter(source.platform, adapter_profile)
+        entries = self._adapter_setting(source.platform, "_group_allow_from", "group_allow_from", adapter_profile)
+        match = getattr(adapter, "_entry_matches", None)
+        # Use the receiving adapter's normalization (e.g. wecom:group:<id>), not a second parser.
+        return callable(match) and match(_coerce_allow_set(entries), source.chat_id) is True
+
     def _chat_scoped_grant(self, source, adapter_profile, is_group: bool, allow_adapter_delegation: bool) -> bool:
         """Grants that need no ``user_id`` (checked before the no-user-id guard)."""
         # Trusted-upstream delegation (relay): the connector authenticates this gateway's WS and
@@ -544,6 +562,8 @@ class GatewayAuthorizationMixin:
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
+            if allow_adapter_delegation and self._senderless_group_grant(source, adapter_profile):
+                return True
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True

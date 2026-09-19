@@ -251,7 +251,26 @@ class GatewayInboundMixin:
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
             return None
+        if await self._hm_report_media_errors(event):
+            return None
         return event, source, False
+
+    async def _hm_report_media_errors(self, event: "MessageEvent") -> bool:
+        """After authorization, report adapter failures once; consume a failure-only event."""
+        errors = event.metadata.pop("inbound_media_errors", None)
+        if not errors:
+            return False
+        # Keep errors outside the user prompt; a failed attachment is not successfully read content.
+        source = event.source
+        adapter = self._adapter_for_source(source)
+        if adapter:
+            try:
+                result = await adapter.send(source.chat_id, "\n".join(errors), reply_to=event.message_id)
+                if not result.success:
+                    logger.warning("Failed to send inbound media error notice: %s", result.error)
+            except Exception:
+                logger.warning("Failed to send inbound media error notice", exc_info=True)
+        return not event.text and not event.media_urls
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never

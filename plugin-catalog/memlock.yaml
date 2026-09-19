@@ -1,0 +1,19 @@
+name: memlock
+repo: https://github.com/Sahil-SS9/hermes-memlock
+sha: 123b9fd252d6fc2c9c7c4f254164915874aa54d5
+description: Reasserts pinned standing instructions after context compaction.
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Sahil-SS9/hermes-memlock
+platforms: []
+capabilities:
+  provides_tools:
+    - guard_pin
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

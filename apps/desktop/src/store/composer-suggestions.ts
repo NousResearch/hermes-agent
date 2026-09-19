@@ -132,10 +132,15 @@ const draftProviders = new Map<string, DraftProvider>()
  *  the composer's debounced sampler; results replace that provider's previous
  *  offerings for the session. Returns an unregister fn (HMR hygiene). */
 export function registerDraftProvider(name: string, provider: DraftProvider): () => void {
-  draftProviders.set(name, provider)
+  // Ownership belongs to a registration, even when the same callback is reused.
+  const registration: DraftProvider = context => provider(context)
+
+  draftProviders.set(name, registration)
 
   return () => {
-    draftProviders.delete(name)
+    if (draftProviders.get(name) === registration) {
+      draftProviders.delete(name)
+    }
   }
 }
 

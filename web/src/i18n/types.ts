@@ -70,6 +70,11 @@ export interface Translations {
     gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
+    /** Shown by PluginErrorBoundary when a plugin tab throws during render.
+     *  Optional — non-English locales fall back to the English literal in
+     *  the component until translated, matching loadFailed/gatewayHint. */
+    pluginCrashed?: string;
+    pluginCrashedDetails?: string;
   };
 
   // ── App shell ──

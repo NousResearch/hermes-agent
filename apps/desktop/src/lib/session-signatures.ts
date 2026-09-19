@@ -29,8 +29,13 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       // whose only delta is a flag has to swap in or the reconciler reads a
       // frozen copy forever. An idle conversation never moves any of the
       // fields above again, which is exactly when a pin gets toggled (#76919).
+      // `unread` is the backend read-state watermark: opening a session
+      // clears it backend-side, and only a read-state-only page delivers the
+      // false — if the signature misses it, the stale emerald dot survives
+      // navigation until some content field moves too.
       session.pinned === other.pinned &&
-      session.archived === other.archived
+      session.archived === other.archived &&
+      session.unread === other.unread
     )
   })
 }

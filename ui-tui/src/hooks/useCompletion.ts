@@ -39,12 +39,6 @@ export function completionRequestForInput(
   const isSlashCommand = looksLikeSlashCommand(input)
   const pathWord = isSlashCommand ? null : (input.match(TAB_PATH_RE)?.[1] ?? null)
 
-  // `/model` uses the two-step ModelPicker (real curated IDs).
-  // Slash completion here only showed short aliases + vendor/family meta.
-  if (isSlashCommand && /^\/model(?:\s|$)/.test(input)) {
-    return null
-  }
-
   // A `/token` mid-message is a skill reference dropped into prose. Detected
   // BEFORE the leading-command shape because only the first slash can be an
   // invocation — `/help /cle` is a command whose argument names a skill, and

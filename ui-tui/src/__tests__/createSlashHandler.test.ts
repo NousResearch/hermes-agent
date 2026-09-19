@@ -214,6 +214,24 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('opens the provider list for /model --provider', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --provider')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ stage: 'provider' })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('opens a session-only hop for /model --session', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ sessionOnly: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('honors TUI picker session scope without adding --global', async () => {
     patchUiState({ sid: 'sid-abc' })
 

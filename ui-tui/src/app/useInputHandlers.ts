@@ -27,6 +27,14 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+
+/** OMP Alt+P: session-only model hop. Ctrl+O stays the persist-capable picker. */
+export function sessionModelHopHotkey(
+  key: { ctrl?: boolean; meta?: boolean; shift?: boolean },
+  ch: string
+) {
+  return Boolean(key.meta) && !key.ctrl && !key.shift && ch.toLowerCase() === 'p'
+}
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
@@ -650,6 +658,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 't')) {
       return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+
+    if (sessionModelHopHotkey(key, ch)) {
+      return patchOverlayState({ modelPicker: { sessionOnly: true } })
     }
 
     if (isCtrl(key, ch, 'o')) {

@@ -1,6 +1,86 @@
 /** Appended by TUI pickers; converted to the backend's `--session` flag before `config.set`. */
 export const TUI_SESSION_MODEL_FLAG = '--tui-session'
 
+export type ModelPickerStage = 'hop' | 'provider'
+
+export type ModelSlashIntent = { type: 'overlay'; refresh?: boolean; stage?: ModelPickerStage; sessionOnly?: boolean } | { type: 'set' }
+
+/** Bare `/model` (and flag-only forms) open the overlay. `--provider` with no slug
+ *  opens the provider list; a model id still goes to config.set. */
+export function modelSlashIntent(arg: string): ModelSlashIntent {
+  const parts = arg.trim().split(/\s+/).filter(Boolean)
+
+  if (parts.length === 0) {
+    return { type: 'overlay' }
+  }
+
+  let refresh = false
+  let providerBare = false
+  let hasPositional = false
+  let wantSession = false
+  let wantGlobal = false
+
+  for (let i = 0; i < parts.length; i++) {
+    const raw = parts[i]
+    const flag = raw.toLowerCase()
+
+    if (flag === '--refresh') {
+      refresh = true
+      continue
+    }
+
+    if (flag === '--session' || flag === TUI_SESSION_MODEL_FLAG) {
+      wantSession = true
+      continue
+    }
+
+    if (flag === '--global') {
+      wantGlobal = true
+      continue
+    }
+
+    if (flag === '--provider' || flag === '--reasoning') {
+      const next = parts[i + 1]
+
+      if (next && !next.startsWith('-')) {
+        i += 1
+        continue
+      }
+
+      if (flag === '--provider') {
+        providerBare = true
+      }
+
+      continue
+    }
+
+    if (raw.startsWith('-')) {
+      continue
+    }
+
+    hasPositional = true
+  }
+
+  if (providerBare && !hasPositional) {
+    return {
+      type: 'overlay',
+      ...(refresh ? { refresh: true } : {}),
+      ...(wantSession && !wantGlobal ? { sessionOnly: true } : {}),
+      stage: 'provider'
+    }
+  }
+
+  if (!hasPositional) {
+    return {
+      type: 'overlay',
+      ...(refresh ? { refresh: true } : {}),
+      ...(wantSession && !wantGlobal ? { sessionOnly: true } : {})
+    }
+  }
+
+  return { type: 'set' }
+}
+
 export const sessionScopedModelArg = (value: string) => {
   const parts = value.trim().split(/\s+/).filter(Boolean)
   const kept = parts.filter(part => part !== TUI_SESSION_MODEL_FLAG && part !== '--global' && part !== '--session')

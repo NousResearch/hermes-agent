@@ -1,7 +1,21 @@
 import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import {
+  buildModelHopRows,
+  filterModelHopRows,
+  hopCurrentIndex,
+  hopIsCurrent,
+  hopDetail,
+  hopLocked,
+  hopMatch,
+  hopPrice,
+  keepReasoningLabel,
+  listStep,
+  orderHopRows,
+  providerIndexAfterClearingFilter,
+  searchAppend
+} from '../components/modelPicker.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
@@ -48,5 +62,147 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
+})
+
+describe('ModelPicker hop catalog', () => {
+  const nous = provider('nous', 'Nous Portal')
+  const openrouter = provider('openrouter', 'OpenRouter')
+  nous.models = ['claude-sonnet-4.6', 'hermes-4']
+  openrouter.models = ['anthropic/claude-sonnet-4.6']
+
+  it('lists every model as provider/id', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(rows.map(row => row.selector)).toEqual([
+      'nous/claude-sonnet-4.6',
+      'nous/hermes-4',
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
+  })
+
+  it('filters like omp /switch: provider then / then model', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(filterModelHopRows(rows, 'nous/').map(row => row.selector)).toEqual([
+      'nous/claude-sonnet-4.6',
+      'nous/hermes-4'
+    ])
+    expect(filterModelHopRows(rows, 'nous/hermes').map(row => row.model)).toEqual(['hermes-4'])
+    expect(filterModelHopRows(rows, 'openrouter/').map(row => row.selector)).toEqual([
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
+  })
+
+  it('fuzzy-matches model fragments without a provider prefix', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(filterModelHopRows(rows, 'son4').map(row => row.model)).toEqual([
+      'claude-sonnet-4.6',
+      'anthropic/claude-sonnet-4.6'
+    ])
+    expect(filterModelHopRows(rows, 'hrms').map(row => row.selector)).toEqual(['nous/hermes-4'])
+  })
+
+  it('AND-matches provider/model tokens across nested ids', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(filterModelHopRows(rows, 'openrouter/claude').map(row => row.selector)).toEqual([
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
+  })
+})
+
+describe('hop current + paste', () => {
+  it('stars by selector or current-provider id', () => {
+    const nous = provider('nous')
+    nous.is_current = true
+    nous.models = ['hermes-4']
+    const or = provider('openrouter')
+    or.models = ['hermes-4']
+    const rows = buildModelHopRows([nous, or], ['n', 'o'])
+    expect(rows.filter(r => hopIsCurrent(r, 'nous/hermes-4')).map(r => r.selector)).toEqual(['nous/hermes-4'])
+    expect(rows.filter(r => hopIsCurrent(r, 'hermes-4')).map(r => r.selector)).toEqual(['nous/hermes-4'])
+    expect(hopCurrentIndex(rows, 'nous/hermes-4')).toBe(0)
+  })
+
+  it('appends paste, ignores controls', () => {
+    expect(searchAppend('', 'nous/hermes-4')).toBe('nous/hermes-4')
+    expect(searchAppend('n', '\t')).toBe('n')
+  })
+})
+
+
+
+describe('searchAppend', () => {
+  it('strips controls out of a paste', () => {
+    expect(searchAppend('', 'nous/\nhermes-4')).toBe('nous/hermes-4')
+    expect(searchAppend('n', '')).toBe('n')
+    expect(searchAppend('', '\t')).toBe('')
+  })
+})
+
+describe('listStep', () => {
+  it('clamps page/home/end on empty and last row', () => {
+    expect(listStep(0, 0, 12)).toBe(0)
+    expect(listStep(3, 5, 12)).toBe(4)
+    expect(listStep(3, 5, -12)).toBe(0)
+    expect(listStep(0, 5, 5)).toBe(4)
+  })
+})
+
+describe('keepReasoningLabel', () => {
+  it('shows the live effort, not hide/show display flags', () => {
+    expect(keepReasoningLabel('')).toBe('Keep current effort')
+    expect(keepReasoningLabel('high')).toBe('Keep current effort (high)')
+    expect(keepReasoningLabel('HIDE')).toBe('Keep current effort')
+  })
+})
+
+describe('hop current edges', () => {
+  it('does not star a row when current is empty', () => {
+    const nous = provider('nous')
+    nous.is_current = true
+    nous.models = ['hermes-4']
+    const rows = buildModelHopRows([nous], ['n'])
+    expect(rows.filter(r => hopIsCurrent(r, ''))).toEqual([])
+    expect(hopCurrentIndex(rows, '')).toBe(0)
+    expect(hopCurrentIndex([], 'nous/hermes-4')).toBe(0)
+  })
+})
+
+describe('hop catalog extras', () => {
+  it('pins current then featured, then the rest', () => {
+    const nous = provider('nous')
+    nous.models = ['alpha', 'hermes-4', 'beta']
+    nous.featured_models = ['beta']
+    nous.is_current = true
+    const rows = buildModelHopRows([nous], ['n'])
+    expect(orderHopRows(rows, 'nous/hermes-4').map(r => r.model)).toEqual(['hermes-4', 'beta', 'alpha'])
+  })
+
+  it('formats price, free, sale, and locked', () => {
+    const nous = provider('nous')
+    nous.models = ['paid', 'free', 'sale', 'pro']
+    nous.unavailable_models = ['pro']
+    nous.pricing = {
+      paid: { input: '$1', output: '$2', free: false },
+      free: { input: '', output: '', free: true },
+      sale: { input: '$1', output: '$2', free: false, discount_percent: 50 }
+    }
+    nous.capabilities = { paid: { fast: true, reasoning: true } }
+    const rows = buildModelHopRows([nous], ['n'])
+    const by = Object.fromEntries(rows.map(r => [r.model, r]))
+    expect(hopPrice(by.paid!)).toBe('$1/$2')
+    expect(hopPrice(by.free!)).toBe('free')
+    expect(hopPrice(by.sale!)).toBe('$1/$2 -50%')
+    expect(hopLocked(by.pro!)).toBe(true)
+    expect(hopDetail(by.paid!)).toBe('$1/$2 · fast')
+    expect(hopDetail(by.pro!)).toBe('locked')
+    expect(hopDetail()).toBe('')
+  })
+})
+
+describe('hopMatch', () => {
+  it('substring beats a scattered subsequence', () => {
+    expect(hopMatch('nous/claude-sonnet-4.6', 'son4')).toBe(0)
+    expect(hopMatch('nous/hermes-4', 'hermes')).toBeGreaterThan(hopMatch('nous/hermes-4', 'hrms') ?? -1)
+    expect(hopMatch('nous/hermes-4', 'xyz')).toBeNull()
   })
 })

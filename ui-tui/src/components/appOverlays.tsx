@@ -261,15 +261,19 @@ export function FloatingOverlays({
   }
 
   if (overlay.modelPicker) {
-    const initialRefresh = typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true
+    const pickerOpts = typeof overlay.modelPicker === 'object' ? overlay.modelPicker : {}
+    const initialRefresh = pickerOpts.refresh === true
+    const initialStage = pickerOpts.stage
 
     widgets.push({
       id: 'model-picker',
       render: width => (
         <FloatBox color={theme.color.border}>
           <ModelPicker
+            allowPersistGlobal={!pickerOpts.sessionOnly}
             gw={gw}
             initialRefresh={initialRefresh}
+            initialStage={initialStage}
             maxWidth={width}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}

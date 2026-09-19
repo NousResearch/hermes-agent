@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url'
 
 import { BrowserWindow, screen } from 'electron'
 
+import { traceWindowDomNavigation } from './dom-navigation-tracer'
 import { attachRendererConsoleCapture } from './renderer-log'
 import {
   normalizeWakeIndicatorState,
@@ -110,6 +111,9 @@ export function createWakeIndicatorWindowController({
     // Console errors go through the shared capture (renderer-log.ts owns
     // console-message; the lifecycle helper deliberately does not).
     attachRendererConsoleCapture(next, 'wake', log)
+    // Navigation telemetry for the flash/reset diagnosis rides the same
+    // window set (dom-navigation-tracer.ts header explains why).
+    traceWindowDomNavigation(next, 'wake', { log })
 
     next.webContents.on('did-finish-load', sendState)
     next.once('ready-to-show', () => {

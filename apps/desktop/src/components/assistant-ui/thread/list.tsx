@@ -163,7 +163,39 @@ export const transcriptBackfillFrameCount = (
 // streamed content normally.
 const SCROLL_TARGET_EPSILON_PX = 0.5
 
+// True while the user holds a non-collapsed text selection inside the
+// transcript. use-stick-to-bottom only pauses for a selection while the mouse
+// button is still down — a selection that persists after mouse-up must also
+// pin the viewport, or streaming growth yanks it out from under the user
+// (#115464). A collapsed caret (or a selection outside the transcript, e.g.
+// in the composer) never pins.
+export function hasTranscriptTextSelection(scrollElement?: Element | null): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const selection = document.getSelection()
+
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false
+  }
+
+  if (!scrollElement) {
+    return true
+  }
+
+  const { anchorNode, focusNode } = selection
+
+  return Boolean(
+    (anchorNode && scrollElement.contains(anchorNode)) || (focusNode && scrollElement.contains(focusNode))
+  )
+}
+
 export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, { scrollElement }) => {
+  if (hasTranscriptTextSelection(scrollElement)) {
+    return scrollElement.scrollTop
+  }
+
   const currentScrollTop = scrollElement.scrollTop
   const remaining = targetScrollTop - currentScrollTop
 
@@ -471,6 +503,20 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
+  // #115464: explicit snaps go through the same selection pin as the resize
+  // follow above — without this a snap still flips isAtBottom and kicks an
+  // animation while the user is selecting transcript text.
+  const scrollToBottomUnlessSelecting = useCallback(
+    (...args: Parameters<typeof scrollToBottom>) => {
+      if (hasTranscriptTextSelection(scrollRef.current)) {
+        return undefined
+      }
+
+      return scrollToBottom(...args)
+    },
+    [scrollRef, scrollToBottom]
+  )
+
   const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
   useEffect(() => {
@@ -700,10 +746,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         if (jumpRestoreRef.current) {
           jumpRestoreRef.current()
         } else {
-          void scrollToBottom()
+          void scrollToBottomUnlessSelecting()
         }
       }, scrollSessionId),
-    [scrollToBottom, scrollSessionId, isHistorical, returnToLatest]
+    [scrollToBottomUnlessSelecting, scrollSessionId, isHistorical, returnToLatest]
   )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
@@ -719,9 +765,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     () =>
       subscribeToThreadForeground(
         () => isAtBottom,
-        () => void scrollToBottom()
+        () => void scrollToBottomUnlessSelecting()
       ),
-    [isAtBottom, scrollToBottom]
+    [isAtBottom, scrollToBottomUnlessSelecting]
   )
 
   const endEditHold = useCallback(() => {
@@ -751,7 +797,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
 
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
-      scrollToBottom()
+      scrollToBottomUnlessSelecting()
     }
   })
 
@@ -980,7 +1026,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
           // (images, highlight) keeps following the bottom.
-          void scrollToBottom('instant')
+          void scrollToBottomUnlessSelecting('instant')
           loadSettledRef.current = true
         } else if (clamped) {
           // Content hasn't finished arriving (the backfill transition is still
@@ -1101,7 +1147,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         resizeObserver.observe(contentRef.current)
       }
 
-      void scrollToBottom('instant')
+      void scrollToBottomUnlessSelecting('instant')
     }
 
     el.addEventListener('wheel', onWheel, { passive: true })
@@ -1121,7 +1167,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollStorageKey, scrollToBottom, sessionKey, stopScroll])
+  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollStorageKey, scrollToBottomUnlessSelecting, sessionKey, stopScroll])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

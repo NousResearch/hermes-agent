@@ -630,6 +630,47 @@ class TestClarifyBatchDispatch:
             "answered", "", "",
         ]
 
+    def test_legacy_loop_aborts_on_gateway_timeout_notice(self):
+        calls = []
+
+        def legacy_cb(question, choices):
+            calls.append(question)
+            return "[user did not respond within 60m]"
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "One?"}, {"question": "Two?"}],
+            callback=legacy_cb,
+        ))
+
+        assert calls == ["One?"]
+        assert result["timed_out"] is True
+        assert [r["user_response"] for r in result["responses"]] == ["", ""]
+
+    def test_gateway_timeout_near_matches_remain_user_answers(self):
+        for answer, expected in (
+            (" [user did not respond within 60m]", "[user did not respond within 60m]"),
+            ("[user did not respond within 60m]\n", "[user did not respond within 60m]"),
+            ("[user did not respond within ６０m]", "[user did not respond within ６０m]"),
+            ("[user did not respond within ٠٦m]", "[user did not respond within ٠٦m]"),
+            ("[user did not respond within 060m]", "[user did not respond within 060m]"),
+        ):
+            calls = []
+
+            def legacy_cb(question, choices):
+                calls.append(question)
+                return answer if len(calls) == 1 else "answered"
+
+            result = json.loads(clarify_tool(
+                "",
+                questions=[{"question": "One?"}, {"question": "Two?"}],
+                callback=legacy_cb,
+            ))
+
+            assert calls == ["One?", "Two?"]
+            assert "timed_out" not in result
+            assert [r["user_response"] for r in result["responses"]] == [expected, "answered"]
+
     def test_legacy_loop_skip_continues(self):
         """An explicit empty answer is a skip. The loop continues."""
         calls = []

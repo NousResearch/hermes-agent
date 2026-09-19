@@ -14,6 +14,7 @@ Acceptance from #90471:
 """
 import subprocess
 import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -282,3 +283,24 @@ class TestHermesHomeForPid:
         monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: None)
         assert dashboard_procs._hermes_home_for_pid(7) is None
         assert dashboard_procs._pids_owned_by_hermes_home([7], "/home/alice/.hermes") == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-shell literal-tilde HERMES_HOME")
+    def test_unexpanded_tilde_hermes_home_still_matches_the_expanded_home(self, monkeypatch, tmp_path):
+        """A foreign PID's exec-time HERMES_HOME can be a literal, un-shell-expanded
+        ``~/.hermes`` (e.g. ``env HERMES_HOME='~/.hermes' hermes serve`` under fish, or any
+        launcher that sets it without invoking a shell): /proc/<pid>/environ reflects the
+        literal string, never an expansion. Comparing it against this install's own
+        (already-expanded) home must still match, or --stop / the update sweep spares a
+        backend it owns."""
+        real_home = tmp_path / "alice"
+        # os.path.expanduser("~") reads $HOME directly (not Path.home()) on POSIX.
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.setattr(Path, "home", lambda: real_home)
+        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {"HERMES_HOME": "~/.hermes"})
+        from hermes_cli import main_dashboard
+        monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid", lambda pid: ["hermes", "serve"])
+
+        # The pid's raw exec-time HERMES_HOME is the literal, unexpanded string.
+        assert dashboard_procs._hermes_home_for_pid(1) == "~/.hermes"
+        # It must still resolve to (and match) the real, expanded home for ownership checks.
+        assert dashboard_procs._pids_owned_by_hermes_home([1], str(real_home / ".hermes")) == [1]

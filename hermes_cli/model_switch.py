@@ -1280,9 +1280,26 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     return True
 
 
+def _route_custom_provider_prefix(st: _Switch) -> bool:
+    """Step b.5: a ``custom[:<name>]:<model>`` input names its own provider, so route there.
+
+    ``parse_model_input()`` already decodes the triple syntax, but nothing on PATH B ever called
+    it: step c early-returns while the current provider is custom and step e is gated on ``not
+    is_custom``, so ``/model custom:other:glm-5-turbo`` kept the old provider (#9147). Returns
+    ``True`` when the input named a *different* custom provider and routing was adopted."""
+    from hermes_cli.models import parse_model_input
+    provider, model = parse_model_input(st.raw_input, st.current_provider)
+    if not model or provider == st.current_provider or not provider.startswith("custom"):
+        return False
+    st.target_provider, st.new_model = provider, model
+    logger.debug("Custom-provider prefix routed '%s' to '%s' on %s", st.raw_input, model, provider)
+    return True
+
+
 def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     """PATH B (no ``--provider``): MoA preset / alias on the current provider (a) -> alias
-    fallback (b) or ``vendor:model`` conversion (c) -> aggregator catalog search (d) ->
+    fallback (b) or ``custom:`` provider prefix (b.5) or ``vendor:model`` conversion (c) ->
+    aggregator catalog search (d) ->
     configured-provider match (d.5) -> detect_provider_for_model() as last resort (e)."""
     from hermes_cli.models import detect_provider_for_model
     raw_input, current_provider = st.raw_input, st.current_provider
@@ -1306,7 +1323,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
             fail = _route_alias_fallback(st, raw_input.strip().lower())
             if fail is not None:
                 return fail
-        else:
+        elif not _route_custom_provider_prefix(st):
             _convert_vendor_colon_slug(st)
 
     # Step d: if the CURRENT provider's live catalog resolved the model, step e must not

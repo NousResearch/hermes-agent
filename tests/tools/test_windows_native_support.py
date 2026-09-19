@@ -533,10 +533,9 @@ class TestTuiGatewayEntrySignalGuards:
 
     def test_module_imports_cleanly(self):
         """Importing the module must not raise — verifies the guards work."""
-        # Drop any cached import so the module re-initialises
-        for mod in list(sys.modules):
-            if mod.startswith("tui_gateway"):
-                del sys.modules[mod]
+        # KENSEI (test-isolation fix): the sys.modules purge was removed —
+        # deleting tui_gateway split module identity for later test files. The
+        # import below exercises import-time guards regardless of caching.
         import tui_gateway.entry  # noqa: F401  # must not raise
 
 

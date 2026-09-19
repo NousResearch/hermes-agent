@@ -19,9 +19,10 @@ def test_no_duplicate_skills_subparser():
     # argparse.ArgumentError at module load time
     import sys
 
-    # Remove cached module if present
-    if 'hermes_cli.main' in sys.modules:
-        del sys.modules['hermes_cli.main']
+    # KENSEI (test-isolation fix): the sys.modules purge was removed — deleting
+    # hermes_cli.main split module identity for later test files. The import
+    # below still raises at module load if a duplicate subparser is reintroduced
+    # (argparse validates on registration, not on first import).
 
     try:
         import hermes_cli.main  # noqa: F401

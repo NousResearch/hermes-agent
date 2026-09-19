@@ -33,9 +33,6 @@ def _clear_provider_caches():
     _pkg._ALIASES.clear()
     _pkg._PROVIDER_LIST_CACHE = None
     _pkg._discovered = False
-    for mod in list(sys.modules):
-        if mod.startswith(("plugins.model_providers", "_hermes_user_provider")):
-            del sys.modules[mod]
 
 
 def _write_plugin(directory: Path, *, name: str, manifest: str | None):

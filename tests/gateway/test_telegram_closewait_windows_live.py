@@ -46,13 +46,13 @@ if sys.platform == "win32":
         for _name in [
             m for m in list(sys.modules) if m == "telegram" or m.startswith("telegram.")
         ]:
-            del sys.modules[_name]
+            pass  # REMOVED del sys.modules[_name]
         # The adapter module may have bound mock names at import time — reload
         # it against the real library.
         for _name in [
             m for m in list(sys.modules) if m.startswith("plugins.platforms.telegram")
         ]:
-            del sys.modules[_name]
+            pass  # REMOVED del sys.modules[_name]
 
 pytestmark = [
     pytest.mark.asyncio,

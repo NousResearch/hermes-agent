@@ -58,10 +58,9 @@ def plugin(hermes_home, monkeypatch):
     ``hermes_plugins.prompt_optimizer`` — matching what the real
     ``hermes_cli.plugins`` loader does in production.
     """
-    # Drop any cached copy so engine constants pick up the new HERMES_HOME.
-    for name in list(sys.modules):
-        if name == "hermes_plugins" or name.startswith("hermes_plugins."):
-            del sys.modules[name]
+    # KENSEI (test-isolation fix): the sys.modules purge was removed — deleting
+    # the hermes_plugins namespace split module identity for later test files.
+    # The synthetic parent package registered below replaces the cache entry.
 
     ns = types.ModuleType("hermes_plugins")
     ns.__path__ = []

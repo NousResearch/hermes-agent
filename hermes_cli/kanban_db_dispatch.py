@@ -2059,9 +2059,20 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # Force-load sdlc-review UNCONDITIONALLY (the lane's reviewer needs its
+        # own playbook even if the card was hand-tagged with another review
+        # skill); the kanban lifecycle is already in every worker's system
+        # prompt via KANBAN_GUIDANCE. Because REVIEW_TAG_SKILL_LANE is a member
+        # of REVIEW_TAG_SKILLS, adding it also makes `_is_review_tagged` true,
+        # so `_worker_argv` appends --ignore-rules. Before that, the native
+        # review lane was the one review path that never got isolation: a
+        # reviewer spawned by `kanban_request_review` loaded the implementer's
+        # own MEMORY.md/USER.md and could "independently" confirm its own
+        # prior conclusion. Not `apply_review_tag`: that one is a no-op when
+        # any review tag is already present, which would skip the force-load.
+        claimed.skills = list(dict.fromkeys(
+            [*(claimed.skills or []), REVIEW_TAG_SKILL_LANE]
+        ))
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2629,6 +2640,69 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+# Skills that mark a task as a review/verifier role. A worker dispatched for
+# one of these must not inherit the profile's own MEMORY.md/USER.md/preloaded
+# skills — those can carry the very worker's self-report or bias forward from
+# earlier same-profile work, collapsing the independence a verifier exists to
+# provide (see the kanban-independent-verification skill). This tag list is
+# intentionally not a DB column: both names are already-real, already-used
+# skill identifiers, so `task.skills` doubles as the mechanism with no schema
+# change. Single source of truth: `hermes kanban create --review`, the review
+# LANE (below) and `hermes kanban swarm`'s verifier node all tag through here,
+# so a card that asks for isolation and the check that grants it cannot drift
+# apart.
+#
+# Each name is the skill a given review ROLE force-loads, so membership is not
+# a taxonomy choice — it is "does the dispatcher ever hand this skill to a
+# worker whose job is judging someone else's work":
+#   sdlc-review                     the native review lane (_spawn_one, lane
+#                                   == "review") force-loads this
+#                                   unconditionally. Omitting it left every
+#                                   `kanban_request_review` handoff running
+#                                   with the implementer's own MEMORY.md/
+#                                   USER.md loaded — a silent 100% isolation
+#                                   failure with no operator in the loop.
+#   requesting-code-review          swarm verifier nodes
+#   kanban-independent-verification `create --review` / hand-tagged cards
+REVIEW_TAG_SKILL_LANE = "sdlc-review"
+REVIEW_TAG_SKILL_SWARM = "requesting-code-review"
+REVIEW_TAG_SKILL_DEFAULT = "kanban-independent-verification"
+REVIEW_TAG_SKILLS = frozenset({
+    REVIEW_TAG_SKILL_DEFAULT, REVIEW_TAG_SKILL_SWARM, REVIEW_TAG_SKILL_LANE,
+})
+
+
+def apply_review_tag(
+    skills: Optional[Iterable[str]] = None, *, tag: str = REVIEW_TAG_SKILL_DEFAULT,
+) -> list[str]:
+    """``skills`` plus a review tag, unless one is already present.
+
+    The single writer of the tag: every caller that wants a task's worker
+    isolated (``create --review``, the review lane, the swarm verifier) goes
+    through here instead of repeating a literal, so the tag written is always
+    one ``_is_review_tagged`` reads. Order-preserving and idempotent.
+
+    ``tag`` must be in :data:`REVIEW_TAG_SKILLS`; passing anything else is the
+    exact drift this helper exists to prevent, so it raises rather than
+    silently writing a tag that grants no isolation.
+    """
+    if tag not in REVIEW_TAG_SKILLS:
+        raise ValueError(
+            f"apply_review_tag: {tag!r} is not a review tag the dispatcher reads "
+            f"({sorted(REVIEW_TAG_SKILLS)}); tagging with it would claim isolation "
+            "the worker never gets."
+        )
+    out = [s for s in (skills or ()) if s]
+    if not any(s in REVIEW_TAG_SKILLS for s in out):
+        out.append(tag)
+    return out
+
+
+def _is_review_tagged(task: Task) -> bool:
+    """True if this task's forced skills mark it as a review/verifier role."""
+    return any(sk in REVIEW_TAG_SKILLS for sk in (task.skills or ()))
+
+
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
@@ -2642,6 +2716,12 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         # configured hooks still register.
         "--accept-hooks",
     ]
+    if _is_review_tagged(task):
+        # Isolation, not evidence-forcing: skip MEMORY.md/USER.md/profile
+        # preloaded-skill injection so a same-profile verifier judges the
+        # artifact fresh instead of inheriting the worker's own framing.
+        # --skills below still force-loads this task's own review skill.
+        cmd.append("--ignore-rules")
     # One `--skills X` pair per name: easier to read in `ps` and avoids quoting
     # ambiguity if a skill name contains unusual chars.
     for sk in task.skills or ():

@@ -9,6 +9,7 @@ engine works on sqlite3.Row objects as well as dataclasses.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -227,6 +228,92 @@ def _triage_task():
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# review_intent_untagged rule — silent loss of verifier isolation
+# ---------------------------------------------------------------------------
+
+
+def _review_card(**overrides):
+    base = {"id": "t_rev001", "title": "Independent review: worker handoff",
+            "status": "ready", "assignee": "reviewer", "skills": None}
+    base.update(overrides)
+    return _task(**base)
+
+
+def _review_diag(task, **kwargs):
+    return [d for d in kd.compute_task_diagnostics(task, [], [], **kwargs)
+            if d.kind == "review_intent_untagged"]
+
+
+def test_review_intent_untagged_fires_on_an_untagged_review_card():
+    diags = _review_diag(_review_card())
+    assert len(diags) == 1
+    assert diags[0].severity == "warning"
+    assert diags[0].data["assignee"] == "reviewer"
+    # The suggested action must be the one that actually fixes it.
+    assert any(a.suggested and "--review" in a.payload.get("command", "") for a in diags[0].actions)
+
+
+def test_review_intent_untagged_silent_when_the_dispatcher_tag_is_present():
+    """The rule's whole job is to warn about MISSING isolation — a card the
+    dispatcher will isolate must never be flagged. Reads the dispatcher's own
+    tag set so the two cannot drift apart."""
+    from hermes_cli.kanban_db_dispatch import REVIEW_TAG_SKILLS
+
+    for tag in sorted(REVIEW_TAG_SKILLS):
+        assert _review_diag(_review_card(skills=[tag])) == []
+    # Rows straight from sqlite carry skills as a JSON string, not a list.
+    assert _review_diag(_review_card(skills=json.dumps(sorted(REVIEW_TAG_SKILLS)[:1]))) == []
+
+
+def test_review_intent_untagged_ignores_cards_that_are_not_review_roles():
+    """A title that merely MENTIONS review is not a review role — over-firing
+    here would train operators to ignore the warning."""
+    for title in ("Fix review lane deadlock in dispatcher",
+                  "Make kanban review-isolation structural: diagnostics + --review flag",
+                  "Add regression tests for terminal.env propagation",
+                  "Post-merge verification: gateway restart, live probe"):
+        assert _review_diag(_review_card(title=title)) == [], title
+
+
+def test_review_intent_untagged_needs_a_dispatchable_card():
+    # No assignee: never dispatches, so nothing can be contaminated.
+    assert _review_diag(_review_card(assignee=None)) == []
+    assert _review_diag(_review_card(assignee="   ")) == []
+    # Terminal: the worker already ran (or never will); the warning is moot.
+    for status in ("done", "archived"):
+        assert _review_diag(_review_card(status=status)) == []
+
+
+def test_review_intent_untagged_silent_for_cards_in_the_review_lane():
+    """A card in the `review` column is isolated STRUCTURALLY — the dispatcher
+    force-adds `sdlc-review` (a REVIEW_TAG_SKILLS member) at spawn — so its
+    stored skills being untagged is not a defect. Flagging it would be a pure
+    false positive on the one review path that cannot lose isolation."""
+    assert _review_diag(_review_card(status="review")) == []
+
+
+def test_review_intent_untagged_shell_quotes_the_card_title():
+    """The suggested command is copy-pasted into a shell and the title is
+    card-supplied text, so it must be shell-quoted. An unquoted title carrying
+    a quote or a ``;`` would produce a broken — or actively dangerous —
+    command in the operator's terminal."""
+    import shlex
+
+    nasty = 'Review "x"; rm -rf ~/tmp #'
+    diags = _review_diag(_review_card(title=nasty))
+    assert len(diags) == 1
+    command = [a for a in diags[0].actions if a.suggested][0].payload["command"]
+    # The whole title must survive as exactly ONE shell word.
+    parsed = shlex.split(command)
+    assert nasty in parsed
+    assert parsed[:3] == ["hermes", "kanban", "create"]
+
+
+def test_review_intent_untagged_can_be_disabled_by_config():
+    assert _review_diag(_review_card(), config={"review_intent_pattern": ""}) == []
 
 
 def test_severity_at_or_above_uses_threshold_semantics():

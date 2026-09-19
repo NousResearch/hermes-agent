@@ -345,6 +345,7 @@ describe('round lifecycle', () => {
     room.rounds.sendToGroupChat('Escalate', member, 'use the ops account')
 
     expect(room.chat.$groupNeedsYou.get().Escalate).toBe(false)
+    await settle(room, 'Escalate')
   })
 
   it('converts an "(empty)" member reply like the gateway does, never appending it raw', async () => {

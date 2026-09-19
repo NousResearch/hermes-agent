@@ -24,9 +24,13 @@ from tools import bot_relay
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
-    (h / "profiles" / "ops").mkdir(parents=True)
-    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
+    profile_home = h / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(h))
+    from hermes_cli.profile_incarnation import write_fresh_profile_incarnation
+
+    write_fresh_profile_incarnation(profile_home)
     return h
 
 

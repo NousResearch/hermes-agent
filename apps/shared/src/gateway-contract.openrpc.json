@@ -10468,6 +10468,17 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "staged_upload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StagedFileUpload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -12746,6 +12757,18 @@
             "default": "",
             "title": "User",
             "type": "string"
+          },
+          "user_originated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Originated"
           },
           "display_kind": {
             "anyOf": [
@@ -28774,6 +28797,43 @@
         "title": "SpawnTreeSaveResult",
         "type": "object"
       },
+      "StagedFileUpload": {
+        "additionalProperties": false,
+        "description": "Source identity returned by the browser upload route, checked against the live profile.",
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "profile_home": {
+            "title": "Profile Home",
+            "type": "string"
+          },
+          "profile_incarnation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Incarnation"
+          }
+        },
+        "required": [
+          "install_id",
+          "path",
+          "profile_home"
+        ],
+        "title": "StagedFileUpload",
+        "type": "object"
+      },
       "StatusUpdatePayload": {
         "additionalProperties": false,
         "description": "``server._status_update`` and the direct emitters (goal / loop / heartbeat / process).",
@@ -31194,6 +31254,18 @@
             ],
             "default": null,
             "title": "Display Metadata"
+          },
+          "user_originated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Originated"
           },
           "name": {
             "anyOf": [

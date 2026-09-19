@@ -193,7 +193,8 @@ def _prompt_building_session(profile_home, key):
         _session_db=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
     agent._build_system_prompt = lambda system_message=None: agent._memory_manager.build_system_prompt()
     return {"agent": agent, "history": [], "history_lock": threading.Lock(), "history_version": 0,
-            "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd()}
+            "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd(),
+            "profile_incarnation": server._capture_profile_incarnation(profile_home)}
 
 
 def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes, monkeypatch):

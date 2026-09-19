@@ -229,6 +229,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_assistant_detail:
             continue
         msg = {"role": role, "text": content_text}
+        if "user_originated" in m:
+            msg["user_originated"] = m["user_originated"]
         # Authoring time (Unix seconds) for display.timestamps; display-only.
         # Display-only: never fed back into model context. See #41531.
         ts = m.get("timestamp")
@@ -279,12 +281,17 @@ def _start_inflight_turn(
     display_metadata: dict | None = None,
 ) -> None:
     now = time.time()
+    display = project_compaction_message_for_display({
+        "role": "user", "content": text, "display_kind": display_kind,
+        "display_metadata": display_metadata,
+    })
     turn = {
         "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
         "user": _inflight_text(text),
+        "user_originated": display is not None and display["user_originated"],
+        **({"display_kind": display_kind} if display_kind else {}),
+        **({"display_kind": "hidden"} if display is None else {}),
     }
-    if display_kind:
-        turn["display_kind"] = display_kind
     if isinstance(display_metadata, dict):
         turn["display_metadata"] = dict(display_metadata)
     session["inflight_turn"] = turn

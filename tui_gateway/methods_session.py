@@ -84,11 +84,12 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
         _clear_session_context(tokens)
 
 
-def _profile_session_db(profile_home):
+def _profile_session_db(profile_home, expected_profile_incarnation=None):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
         from hermes_state_registry import acquire
-        return acquire(Path(profile_home) / "state.db"), True
+        return acquire(Path(profile_home) / "state.db",
+                       expected_profile_incarnation=expected_profile_incarnation), True
     return _get_db(), False
 
 
@@ -337,9 +338,15 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
+    profile_incarnation = _capture_profile_incarnation(profile_home)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:
+        if _profile_home_rejected(profile_home, profile_incarnation):
+            raise FileNotFoundError(
+                "Profile incarnation is stale or home is missing or being deleted: "
+                f"{profile_home or _hermes_home}"
+            )
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
@@ -356,6 +363,7 @@ def _(rid, params: dict) -> dict:
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile_incarnation": profile_incarnation,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
@@ -508,6 +516,7 @@ class _Resume:
         # ``profile`` (app-global remote mode): resume from another local profile's state.db.
         self.profile = (params.get("profile") or "").strip() or None
         self.profile_home = _profile_home(self.profile)
+        self.profile_incarnation = _capture_profile_incarnation(self.profile_home)
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
@@ -563,12 +572,11 @@ class _Resume:
         return [] if self.omit_messages else self.db.get_ancestor_display_prefix(self.target)
 
 
-def _find_live_unpersisted(needle: str, home) -> str:
+def _find_live_unpersisted(needle: str, home, profile_incarnation) -> str:
     """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
-    want_home = str(home) if home is not None else None
     return next((
         live_sid for live_sid, record in list(_sessions.items())
-        if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
+        if isinstance(record, dict) and _session_profile_identity_matches(record, home, profile_incarnation)
         and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
 
 
@@ -637,7 +645,7 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
         ctx.found = {}
         return None
-    live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home)
+    live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home, ctx.profile_incarnation)
     if (live := _sessions.get(live_sid) if live_sid else None) is not None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
@@ -809,7 +817,7 @@ def _resume_eager(ctx: _Resume) -> dict:
         except Exception as e:
             return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
-        live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+        live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
@@ -817,7 +825,9 @@ def _resume_eager(ctx: _Resume) -> dict:
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd),
+                              profile_home=str(ctx.profile_home) if ctx.profile_home is not None else None,
+                              profile_incarnation=ctx.profile_incarnation)
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -852,7 +862,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4006, "session_id required")
     ctx = _Resume(rid, params, target)
     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
-    ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+    ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home, ctx.profile_incarnation)
     try:
         if ctx.db is None:
             return _db_unavailable_error(rid, code=5000)
@@ -864,7 +874,7 @@ def _(rid, params: dict) -> dict:
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
-            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+            live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
         if ctx.lazy:
@@ -962,6 +972,7 @@ def _(rid, params: dict, session: dict) -> dict:
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
+
 
 
 @method("session.delete")
@@ -1941,8 +1952,11 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
+    parent_incarnation = session.get("profile_incarnation")
+    if _profile_home_rejected(parent_home, parent_incarnation):
+        raise FileNotFoundError("Parent session belongs to a stale profile incarnation")
     parent_user_id = _session_auth_user_id(session)
-    branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
+    branch_db, branch_owns_db = _profile_session_db(parent_home, parent_incarnation) if parent_home else (None, False)
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
@@ -1951,7 +1965,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
                                            auth_user_id=parent_user_id)
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
                           cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
-                          explicit_cwd=bool(session.get("explicit_cwd")))
+                          explicit_cwd=bool(session.get("explicit_cwd")), profile_incarnation=parent_incarnation)
             _transfer_db_to_agent(agent, branch_db)
             branch_owns_db = False
         if new_sid in _sessions:

@@ -917,6 +917,15 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
+    if display_kind is None and not str(rid).startswith("__"):
+        session["_wisdom_user_activity"] = time.time()
+        if session.get("_wisdom_activity_tracking"):
+            try:
+                from tui_gateway.wisdom_mediation import note_activity
+
+                note_activity(session, profile_scope=_session_profile_runtime_scope)
+            except Exception:
+                logger.debug("Wisdom user activity unavailable", exc_info=True)
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by

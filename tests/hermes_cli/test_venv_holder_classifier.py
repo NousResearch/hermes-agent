@@ -31,6 +31,7 @@ class TestHolderSubcommand:
             (r"python -m hermes_cli.main -c mysession serve", "serve"),
             (r"C:\bin\hermes.exe dashboard", "dashboard"),
             (r"/usr/local/bin/hermes serve", "serve"),
+            (r"python /opt/hermes/hermes_cli/main.py webapp --port 9119", "webapp"),
             # no hermes entry at all
             (r"python -c import time; time.sleep(3)", None),
             # entry but no subcommand

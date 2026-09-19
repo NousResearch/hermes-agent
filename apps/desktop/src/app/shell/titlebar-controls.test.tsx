@@ -209,9 +209,14 @@ describe('TitlebarControls fixed clusters', () => {
 })
 
 describe('titlebar app-action cluster', () => {
+  beforeEach(() => {
+    vi.stubGlobal('hermesDesktop', { ...window.hermesDesktop, hud: { open: vi.fn() } })
+  })
+
   afterEach(() => {
     setTitlebarAppActionsSide('right')
     cleanup()
+    vi.unstubAllGlobals()
   })
 
   it('defaults settings, layout, and HUD to the right so the left titlebar stays free for tabs', () => {
@@ -241,5 +246,15 @@ describe('titlebar app-action cluster', () => {
     expect(within(left).getByLabelText('Layout editor')).toBeTruthy()
     expect(within(left).getByLabelText('HUD mode')).toBeTruthy()
     expect(within(right).queryByLabelText('Open settings')).toBeNull()
+  })
+
+  it.each(['left', 'right'] as const)('keeps HUD hidden in the browser with app actions on the %s', side => {
+    vi.stubGlobal('hermesDesktop', { ...window.hermesDesktop, hud: undefined })
+    setTitlebarAppActionsSide(side)
+    renderControls('/')
+
+    expect(screen.queryByLabelText('HUD mode')).toBeNull()
+    expect(screen.getByLabelText('Open settings')).toBeTruthy()
+    expect(screen.getByLabelText('Layout editor')).toBeTruthy()
   })
 })

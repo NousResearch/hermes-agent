@@ -552,6 +552,7 @@ def test_desktop_agent_rebuild_preserves_workspace_provenance(
     monkeypatch.setattr(server, "_emit", lambda *_args: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
 
+    monkeypatch.setitem(server._sessions, "live-session", session)
     server._reset_session_agent("live-session", session)
 
     assert captured["context_cwd_is_launch_artifact"] is launch_artifact
@@ -660,6 +661,7 @@ def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path
 def _profile_dir(tmp_path: Path, name: str) -> Path:
     home = tmp_path / "homes" / name
     home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     return home
 
 
@@ -886,5 +888,4 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert _cached_repo_labels(launch_home) == ["only"]
     assert not (coder_home / "projects.db").exists()
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
-
 

@@ -12,6 +12,7 @@ import {
   localPreviewTarget,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
+  pathToFileUrl,
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
@@ -114,6 +115,17 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report%20%231%3F.html')
   })
 
+  it('passes browser blob staging URLs through unchanged', async () => {
+    const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
+    const saveImageBuffer = vi.fn(async () => 'blob:http://127.0.0.1:9119/preview')
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    window.hermesDesktop = { openPreviewInBrowser, saveImageBuffer } as never
+
+    await openPreviewTargetInBrowser({ ...remoteTarget, dataUrl })
+
+    expect(openPreviewInBrowser).toHaveBeenCalledWith('blob:http://127.0.0.1:9119/preview')
+  })
+
   it('serializes UNC staging paths as file URLs', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
     const saveImageBuffer = vi.fn(async () => '\\\\server\\share\\report #1.html')
@@ -166,6 +178,45 @@ describe('remote HTML previews', () => {
       openPreviewTargetInBrowser({ ...remoteTarget, renderMode: 'source', transient: true })
     ).rejects.toThrow('Remote HTML preview could not be loaded')
     expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+})
+
+describe('preview path resolution', () => {
+  it('resolves file URLs back to the same filesystem target', () => {
+    const paths = [
+      ['C:\\work tree\\résumé #1.py', 'C:/work tree/résumé #1.py'],
+      ['\\\\server\\share\\source.py', '//server/share/source.py'],
+      ['/srv/source.py', '/srv/source.py'],
+      ['/srv/name\\with%20spaces.py', '/srv/name\\with%20spaces.py'],
+      ['//srv/share/source.py', '//srv/share/source.py']
+    ]
+
+    for (const [path, expected] of paths) {
+      expect(localPreviewTarget(pathToFileUrl(path), '/unrelated/cwd')?.path).toBe(expected)
+    }
+
+    expect(localPreviewTarget('file:///C:/work%20tree/source.py')?.path).toBe('C:/work tree/source.py')
+  })
+
+  it('keeps absolute filesystem targets independent of the working directory', async () => {
+    window.hermesDesktop = { normalizePreviewTarget: vi.fn(async () => null) } as never
+    const cwd = 'C:\\work tree'
+
+    const absolutePaths = [
+      'C:\\work tree\\source.py',
+      'D:/other project/source.py',
+      '\\\\server\\share\\source.py',
+      '/srv/source.py',
+      '//srv/share/source.py'
+    ]
+
+    for (const path of absolutePaths) {
+      await expect(normalizeOrLocalPreviewTarget(path, cwd)).resolves.toMatchObject({ path })
+    }
+
+    await expect(normalizeOrLocalPreviewTarget('source.py', cwd)).resolves.toMatchObject({
+      path: `${cwd}/source.py`
+    })
   })
 })
 

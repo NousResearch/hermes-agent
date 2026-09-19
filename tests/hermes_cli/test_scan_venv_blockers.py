@@ -344,11 +344,12 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# _is_updater_owned_backend — the serve/dashboard deferral (#98336)
+# _is_updater_owned_backend — the web-server deferral (#98336)
 # ---------------------------------------------------------------------------
 
 
 _SERVE_CMD = r"C:\x\venv\Scripts\python.exe -m hermes_cli.main serve --host 127.0.0.1"
+_WEBAPP_CMD = r"C:\x\venv\Scripts\python.exe -m hermes_cli.main webapp --host 127.0.0.1"
 
 
 def _patch_ledger(monkeypatch, entries, dead):
@@ -378,6 +379,25 @@ def test_updater_owned_backend_dead_spawner_is_deferred(monkeypatch, capsys):
         {"pid": 78, "purpose": "serve", "port": 9119}
     ]
     assert "--host" not in json.dumps(data["deferred_backend_evidence"])
+
+
+def test_updater_owned_webapp_dead_spawner_is_deferred(monkeypatch, capsys):
+    """The PR makes webapp a ledger-owned manual server, so Desktop must let
+    the updater stop and relaunch it under the same positive-identity guard."""
+    _patch_ledger(
+        monkeypatch,
+        [{"pid": 79, "purpose": "webapp", "spawner_pid": 4242}],
+        dead=True,
+    )
+    code, data = _run_main_with_detector(
+        monkeypatch,
+        capsys,
+        [(79, "python.exe", _WEBAPP_CMD)],
+    )
+    assert code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["deferred_backends"] == 1
 
 
 def test_updater_owned_backend_unrecorded_spawner_is_deferred(monkeypatch, capsys):
@@ -430,9 +450,31 @@ def test_updater_owned_backend_purpose_mismatch_blocks(monkeypatch, capsys):
     assert data["deferred_backends"] == 0
 
 
+def test_updater_owned_backend_cross_web_purpose_mismatch_blocks(
+    monkeypatch,
+    capsys,
+):
+    """A webapp argv cannot borrow a serve ledger identity to bypass the
+    blocker; the parsed and registered purposes must match exactly."""
+    _patch_ledger(
+        monkeypatch,
+        [{"pid": 79, "purpose": "serve", "spawner_pid": 4242}],
+        dead=True,
+    )
+    code, data = _run_main_with_detector(
+        monkeypatch,
+        capsys,
+        [(79, "python.exe", _WEBAPP_CMD)],
+    )
+    assert code == 0
+    assert data["blocked"] is True
+    assert [process["pid"] for process in data["processes"]] == [79]
+    assert data["deferred_backends"] == 0
+
+
 def test_updater_owned_backend_non_backend_argv_never_deferred(monkeypatch, capsys):
     """A ledger entry cannot exempt a process whose argv is not a
-    serve/dashboard subcommand (#90778 token rules: `kanban --preserve-cache`
+    web-server subcommand (#90778 token rules: `kanban --preserve-cache`
     must not read as serve)."""
     _patch_ledger(
         monkeypatch, [{"pid": 78, "purpose": "serve", "spawner_pid": 4242}], dead=True

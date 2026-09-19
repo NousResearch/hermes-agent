@@ -94,7 +94,7 @@ _MECHANISM_DESCRIPTIONS = {
     "respawn-argv": "stop before code swap, relaunch with recorded launch args",
 }
 
-_SERVE_KINDS = ("serve", "dashboard")
+_SERVE_KINDS = ("serve", "dashboard", "webapp")
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:

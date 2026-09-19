@@ -24,12 +24,17 @@ def _register(args):
     return args
 
 
+def _webapp(args):
+    return args
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     build_dashboard_parser(
         parser.add_subparsers(dest="command"),
         cmd_dashboard=_dash,
         cmd_dashboard_register=_register,
+        cmd_webapp=_webapp,
     )
     return parser
 
@@ -48,3 +53,16 @@ def test_serve_is_a_headless_backend_but_dashboard_is_not():
     # build; only `serve` carries it.
     assert getattr(_parser().parse_args(["serve"]), "headless_backend", False) is True
     assert getattr(_parser().parse_args(["dashboard"]), "headless_backend", False) is False
+
+
+def test_webapp_is_a_distinct_browser_surface_with_dashboard_runtime_flags():
+    parsed = _parser().parse_args(
+        ["webapp", "--host", "0.0.0.0", "--port", "9443", "--no-open"]
+    )
+
+    assert parsed.func is _webapp
+    assert parsed.host == "0.0.0.0"
+    assert parsed.port == 9443
+    assert parsed.no_open is True
+    assert parsed.headless_backend is False
+    assert parsed.webapp_surface is True

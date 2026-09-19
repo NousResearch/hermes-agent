@@ -227,7 +227,7 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
     try:
         web_server.app.state.auth_required = None
         web_server.start_server(
-            host="0.0.0.0", port=9119,
+            host="0.0.0.0", port=0,
             open_browser=False, allow_public=False,
         )
         assert web_server.app.state.auth_required is True
@@ -257,7 +257,7 @@ def test_start_server_passes_bounded_trusted_proxy_networks(monkeypatch, caplog)
     try:
         with caplog.at_level(logging.INFO, logger=web_server._log.name):
             web_server.start_server(
-                host="0.0.0.0", port=9119,
+                host="0.0.0.0", port=0,
                 open_browser=False, allow_public=False,
             )
         assert captured["kwargs"]["forwarded_allow_ips"] == [

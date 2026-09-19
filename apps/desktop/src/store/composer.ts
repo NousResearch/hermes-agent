@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import type { HermesStagedUpload } from '@/global'
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 
@@ -19,6 +20,8 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** Ownership of browser-staged bytes; survives failed uploads and draft clones. */
+  stagedUpload?: HermesStagedUpload
   /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
   titlePreview?: string
   attachedSessionId?: string

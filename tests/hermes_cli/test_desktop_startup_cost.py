@@ -24,8 +24,11 @@ def _tree(tmp_path):
     return root, app, source
 
 
-def test_desktop_hash_prunes_ignored_build_directories(tmp_path):
-    root, app, _ = _tree(tmp_path)
+@pytest.mark.parametrize("tree", ["desktop", "shared"])
+def test_desktop_hash_prunes_ignored_build_directories(tmp_path, tree):
+    root, _, _ = _tree(tmp_path)
+    app = root / "apps" / tree
+    app.mkdir(exist_ok=True)
     ignored = app / "dist"
     ignored.mkdir()
     (ignored / "bundle.js").write_text("built output")

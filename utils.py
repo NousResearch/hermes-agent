@@ -226,7 +226,8 @@ def fsync_directory(path: Union[str, Path]) -> None:
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  create_parent: bool = True) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -245,7 +246,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     # would resurrect the profile before the write can fail.
     from hermes_constants import mkdir_under_hermes_home
 
-    mkdir_under_hermes_home(path.parent)
+    if create_parent:
+        mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -315,7 +317,7 @@ def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_k
 
 def atomic_json_write(
     path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
-    ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
+    ensure_ascii: bool = False, fsync_dir: bool = False, create_parent: bool = True, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
 
@@ -327,7 +329,7 @@ def atomic_json_write(
     path = Path(path)
     _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
-                  fsync_dir=fsync_dir)
+                  fsync_dir=fsync_dir, create_parent=create_parent)
 
 
 def read_json_or_empty(path: Union[str, Path]) -> dict:
@@ -378,7 +380,8 @@ class IndentDumper(yaml.SafeDumper):
 
 
 def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
-                      extra_content: str | None = None, create_mode: "int | None" = None) -> None:
+                      extra_content: str | None = None, create_mode: "int | None" = None,
+                      create_parent: bool = True) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
@@ -390,7 +393,8 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode),
+                  create_parent=create_parent)
 
 
 def _roundtrip_load(path: Path):

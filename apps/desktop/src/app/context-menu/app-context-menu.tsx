@@ -20,6 +20,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { openPreview } from '@/store/preview'
@@ -625,10 +626,9 @@ export function AppContextMenu() {
   const open = useStore($contextMenu)
 
   useEffect(() => {
-    // stopPropagation beats other renderer handlers; preventDefault is never
-    // called because Chromium emits the main-process context-menu event (the
-    // spellcheck + image-coordinate source) only for unprevented gestures —
-    // and with no Menu.popup anywhere, "default" means no menu at all.
+    // Electron needs unprevented gestures for main-process spellcheck and
+    // image coordinates. Webapp must cancel the browser's native menu when
+    // we own the gesture, or it opens alongside the app menu.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
@@ -646,6 +646,10 @@ export function AppContextMenu() {
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
+        if (isBrowserHostedDesktop()) {
+          event.preventDefault()
+        }
+
         event.stopPropagation()
         openTerminalContextMenu(event.clientX, event.clientY, terminal)
 
@@ -659,6 +663,10 @@ export function AppContextMenu() {
       // opens the link menu.
       if (!owned && element?.closest(`[${CONTEXT_MENU_SKIP_ATTR}]`)) {
         return
+      }
+
+      if (isBrowserHostedDesktop()) {
+        event.preventDefault()
       }
 
       event.stopPropagation()

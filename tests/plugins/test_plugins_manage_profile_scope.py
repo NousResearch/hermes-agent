@@ -15,6 +15,7 @@ def test_plugins_manage_profile_reads_that_profiles_dir(tmp_path, monkeypatch):
     profile_home = tmp_path / "profiles" / "botA"
     plugin_dir = profile_home / "plugins" / "bota-only-plugin"
     plugin_dir.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     (plugin_dir / "plugin.yaml").write_text(
         "name: bota-only-plugin\nversion: '1.0'\ndescription: BotA-only plugin\n",
         encoding="utf-8",

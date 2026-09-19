@@ -150,15 +150,14 @@ def test_clone_is_published_atomically_after_stripping(home, monkeypatch):
     def _observing_strip(profile_dir, **kw):
         seen["final_exists"] = (home / "profiles" / "bot2").exists()
         seen["served"] = [n for n, _ in profiles.profiles_to_serve(multiplex=True)]
-        seen["work_dir_hidden"] = profile_dir.name.startswith(".")
         return real_strip(profile_dir, **kw)
 
     monkeypatch.setattr(profile_channels, "strip_channel_settings", _observing_strip)
     profile_dir = create_profile("bot2", clone_config=True, no_alias=True)
 
-    assert seen == {"final_exists": False, "served": ["default"], "work_dir_hidden": True}
+    assert seen == {"final_exists": False, "served": ["default"]}
     assert profile_dir.is_dir() and [n for n, _ in profiles.profiles_to_serve(multiplex=True)] == ["default", "bot2"]
-    assert not [p for p in (home / "profiles").iterdir() if p.name.startswith(".")]
+    assert not [p for p in (home / "profiles").iterdir() if p.is_dir() and p.name.startswith(".")]
 
 
 def test_clone_channels_refusal_lives_in_create_profile(home, monkeypatch):

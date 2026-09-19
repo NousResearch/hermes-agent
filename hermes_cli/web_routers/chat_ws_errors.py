@@ -14,15 +14,15 @@ from fastapi import HTTPException
 from hermes_cli.pty_session import RegistryFull
 
 CHAT_NEEDS_NODE = (
-    "Chat could not start: Hermes needs Node.js to run the terminal chat. "
+    "{surface} could not start: Hermes needs Node.js to run the terminal chat. "
     "Install Node 18+ (for example from nodejs.org) and reopen this tab."
 )
 CHAT_TOO_MANY_TERMINALS = (
-    "Chat could not start: too many chat terminals are open in other tabs. "
+    "{surface} could not start: too many chat terminals are open in other tabs. "
     "Close one and click Start new session."
 )
-CHAT_PROFILE_UNKNOWN = "Chat could not start: {detail} Pick another profile from the switcher and reopen this tab."
-CHAT_START_FAILED = "Chat could not start: {detail} Check the server log (`hermes dashboard` terminal) and click Start new session."
+CHAT_PROFILE_UNKNOWN = "{surface} could not start: {detail} Pick another profile from the switcher and reopen this tab."
+CHAT_START_FAILED = "{surface} could not start: {detail} Check the server log (`hermes dashboard` terminal) and click Start new session."
 
 
 def _node_missing(exc: BaseException) -> bool:
@@ -30,15 +30,15 @@ def _node_missing(exc: BaseException) -> bool:
     return isinstance(exc, SystemExit) or "'node'" in text or "'npm'" in text or "Node.js" in text
 
 
-def chat_start_failure_message(exc: BaseException) -> str:
+def chat_start_failure_message(exc: BaseException, *, surface: str = "Chat") -> str:
     """One plain sentence for the terminal pane; never the bare exception."""
     if isinstance(exc, RegistryFull):
-        return CHAT_TOO_MANY_TERMINALS
+        return CHAT_TOO_MANY_TERMINALS.format(surface=surface)
     if isinstance(exc, HTTPException):
-        return CHAT_PROFILE_UNKNOWN.format(detail=_sentence(str(exc.detail)))
+        return CHAT_PROFILE_UNKNOWN.format(surface=surface, detail=_sentence(str(exc.detail)))
     if _node_missing(exc):
-        return CHAT_NEEDS_NODE
-    return CHAT_START_FAILED.format(detail=_sentence(str(exc) or type(exc).__name__))
+        return CHAT_NEEDS_NODE.format(surface=surface)
+    return CHAT_START_FAILED.format(surface=surface, detail=_sentence(str(exc) or type(exc).__name__))
 
 
 def _sentence(text: str) -> str:

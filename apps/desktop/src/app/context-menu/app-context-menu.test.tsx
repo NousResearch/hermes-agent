@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -54,6 +54,7 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   document.body.innerHTML = ''
+  delete window.document.documentElement.dataset.hermesDesktopHost
   delete desktopWindow.hermesDesktop
 })
 
@@ -95,6 +96,67 @@ describe('resolveDomTarget', () => {
 })
 
 describe('AppContextMenu', () => {
+  describe.each(['browser', 'electron'])('%s host gesture ownership', hostKind => {
+    it.each([
+      ['chrome', '<p>plain chrome</p>', 'Settings'],
+      ['link', '<a href="https://example.com/docs">Docs</a>', 'Copy URL'],
+      ['image', '<img src="https://example.com/pic.png">', 'Copy image'],
+      ['editable', '<textarea>draft</textarea>', 'Paste'],
+      ['terminal', '<div data-terminal=""><canvas></canvas></div>', 'Select all']
+    ])('opens only the app menu for %s, preserving Electron native facts', async (_kind, html, label) => {
+      installBridge()
+      window.document.documentElement.dataset.hermesDesktopHost = hostKind
+      mountMenu()
+      const host = attach(html)
+      const terminal = host.querySelector('[data-terminal]')
+
+      const unregister = terminal
+        ? registerTerminalContextMenu(terminal, {
+            getSelection: () => '',
+            paste: null,
+            selectAll: vi.fn()
+          })
+        : undefined
+
+      const target = host.querySelector('canvas') ?? host.firstElementChild!
+      const onTarget = vi.fn()
+
+      target.addEventListener('contextmenu', onTarget)
+      const event = createEvent.contextMenu(target)
+
+      try {
+        fireEvent(target, event)
+
+        expect(await screen.findByText(label)).toBeTruthy()
+        expect(onTarget).not.toHaveBeenCalled()
+        expect(event.defaultPrevented).toBe(hostKind === 'browser')
+      } finally {
+        unregister?.()
+      }
+    })
+
+    it.each([HERMES_CONTEXT_MENU_TRIGGER_ATTR, 'data-slot="context-menu-trigger"', 'data-context-menu-skip'])(
+      'leaves the gesture untouched for a surface owning %s',
+      marker => {
+        installBridge()
+        window.document.documentElement.dataset.hermesDesktopHost = hostKind
+        mountMenu()
+        const host = attach(`<div ${marker}><span>owned surface</span></div>`)
+        const target = host.querySelector('span')!
+        const onTarget = vi.fn()
+
+        target.addEventListener('contextmenu', onTarget)
+        const event = createEvent.contextMenu(target)
+
+        fireEvent(target, event)
+
+        expect($contextMenu.get()).toBeNull()
+        expect(onTarget).toHaveBeenCalledOnce()
+        expect(event.defaultPrevented).toBe(false)
+      }
+    )
+  })
+
   it('opens the link menu on a chat link right-click', async () => {
     installBridge()
     mountMenu()

@@ -36,6 +36,7 @@ def homes(tmp_path, monkeypatch):
     root.mkdir(parents=True)
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     return root, profile
 
@@ -254,9 +255,11 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
     session = {
         "session_key": "key-bot",
         "profile_home": str(profile),
+        "profile_incarnation": server._capture_profile_incarnation(profile),
         "agent": old_agent,
         "bot_caps_seen": "caps-v1",  # a CHANGED fingerprint is what triggers the rebuild
     }
+    monkeypatch.setitem(server._sessions, "sid-bot", session)
     try:
         server._sync_bot_capabilities("sid-bot", session)
 
@@ -295,6 +298,7 @@ def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
     session = {
         "session_key": "key-reset",
         "profile_home": str(profile),
+        "profile_incarnation": server._capture_profile_incarnation(profile),
         "agent": old_agent,
         "source": "desktop",
         "cwd": str(root),
@@ -303,6 +307,7 @@ def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
         "history_lock": threading.Lock(),
         "history_version": 0,
     }
+    monkeypatch.setitem(server._sessions, "sid-reset", session)
     try:
         server._reset_session_agent("sid-reset", session)
 

@@ -30,12 +30,41 @@ def _args(**kw):
 class TestUnifiedDashboardRouting:
 
 
+    def test_surface_probe_recognizes_pre_webapp_hermes_as_dashboard(self, main_mod, monkeypatch):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit) -> bytes:
+                return b'{"version":"0.20.4","config_version":9,"gateway_running":false}'
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+
+        assert main_dashboard._dashboard_surface_at("127.0.0.1", 9119) == "dashboard"
+
+        class InvalidResponse(Response):
+            def read(self, _limit) -> bytes:
+                return b'{"version":"0.20.5","ui_surface":"unknown"}'
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda *_args, **_kwargs: InvalidResponse(),
+        )
+        assert main_dashboard._dashboard_surface_at("127.0.0.1", 9119) is None
+
+
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_dashboard, "_dashboard_surface_at", lambda host, port: None)
         execs = []
 
         def fake_exec(exe, argv, env):
@@ -60,6 +89,62 @@ class TestUnifiedDashboardRouting:
         # test below for why we resolve explicitly instead of popping.
         from hermes_constants import get_default_hermes_root
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
+
+    def test_named_webapp_refuses_to_attach_to_dashboard_surface(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: True)
+        monkeypatch.setattr(
+            main_dashboard,
+            "_dashboard_surface_at",
+            lambda host, port: "dashboard",
+            raising=False,
+        )
+        opened = []
+        monkeypatch.setitem(
+            sys.modules,
+            "webbrowser",
+            types.SimpleNamespace(open=lambda url: opened.append(url)),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(
+                _args(no_open=False, skip_build=True, webapp_surface=True)
+            )
+
+        assert exc.value.code == 1
+        assert opened == []
+
+    def test_named_webapp_attaches_only_to_matching_surface(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: True)
+        monkeypatch.setattr(
+            main_dashboard,
+            "_dashboard_surface_at",
+            lambda host, port: "webapp",
+            raising=False,
+        )
+        opened = []
+        monkeypatch.setitem(
+            sys.modules,
+            "webbrowser",
+            types.SimpleNamespace(open=lambda url: opened.append(url)),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(
+                _args(no_open=False, skip_build=True, webapp_surface=True)
+            )
+
+        assert exc.value.code == 0
+        assert opened == ["http://127.0.0.1:9119/?profile=worker_x"]
 
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):

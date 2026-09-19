@@ -517,6 +517,18 @@ class TestKeylessFailover:
         assert out["success"] is True
         assert out["data"]["served_by"] == "parallel"
 
+    def test_pinned_firecrawl_search_fails_over_on_403(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            "firecrawl",
+            lambda q, l: {"success": False, "error": "403 Forbidden: IP address blocked"},
+        )
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "keenable", lambda q, l: self._ok("keenable"))
+        out = keyless_mcp.search_with_failover("firecrawl", "q")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "keenable"
+
     def test_search_no_failover_on_non_throttle_error(self, monkeypatch):
         self._pin(monkeypatch, "exa")
         monkeypatch.setitem(
@@ -595,6 +607,20 @@ class TestKeylessFailover:
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "parallel", lambda urls: good)
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == good
+
+    def test_pinned_firecrawl_extract_fails_over_on_403(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        blocked = [
+            {"url": "https://a", "title": "", "content": "", "error": "HTTP 403: IP address blocked"},
+            {"url": "https://b", "title": "", "content": "", "error": "HTTP 403: IP address blocked"},
+        ]
+        good = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "B", "content": "y"},
+        ]
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "firecrawl", lambda urls: blocked)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "keenable", lambda urls: good)
+        assert keyless_mcp.extract_with_failover("firecrawl", ["https://a", "https://b"]) == good
 
     def test_extract_partial_failure_stays_on_primary(self, monkeypatch):
         self._pin(monkeypatch, "exa")

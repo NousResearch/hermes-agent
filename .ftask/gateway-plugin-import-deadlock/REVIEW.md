@@ -106,3 +106,21 @@ assumptions: |
 notes: |
   [rebase-refresh] Terminal delta only changes scripts/run_tests.sh to ./scripts/run_tests.sh; identical repository-root execution; no p0.
 ---
+---
+recorded_at: 2026-09-19T05:18:51.468Z
+by: codex-independent
+verdict: pass
+mode: delta
+finding_ids: none
+simulation_verdict: pass
+spec_hash: 9145c40a89a0
+code_patch_id: 9cbdd6c5f665c6a43b01b806a8ece878a8cbf29df81c1b33028119d62a4d7a8e
+code_diff_hash: 88c134b569e2bfaaa2830327a8e9f1d50e549becf9ec828278e4b995d62b72e0
+head_sha: ddf909f6c8619c82f52cfaf97dd6f7cce567a936
+confusion: |
+  (none)
+assumptions: |
+  (none)
+notes: |
+  [rebase-refresh] ddf909f6c8: via_ci guards both full-suite and e2e; caller-specific concurrency closes cancellation race; no p0/p1
+---

@@ -56,3 +56,42 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     said: list[str] = []
     assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
+
+
+def test_recover_at_startup_one_shot_is_scoped_per_profile_home(tmp_path, monkeypatch):
+    """A multiplex gateway serves several profile homes; two of them configuring the same provider
+    name must each get their own one-shot recovery attempt — recovering it for one must not skip
+    the other. The one-shot must still hold when the SAME home retries the SAME name."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+
+    attempted_homes: list[Path] = []
+
+    def fake_migrate_home(home, *, install, say):
+        attempted_homes.append(home)
+        return "honcho"
+
+    monkeypatch.setattr(mig, "migrate_home", fake_migrate_home)
+
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+
+    token = set_hermes_home_override(home_a)
+    try:
+        assert mig.recover_at_startup("honcho") is True
+        # same home, same name, second call: the one-shot fires, no second attempt
+        assert mig.recover_at_startup("honcho") is False
+    finally:
+        reset_hermes_home_override(token)
+
+    token = set_hermes_home_override(home_b)
+    try:
+        assert mig.recover_at_startup("honcho") is True
+    finally:
+        reset_hermes_home_override(token)
+
+    assert attempted_homes == [home_a, home_b]

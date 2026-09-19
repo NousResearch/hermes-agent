@@ -55,6 +55,11 @@ def _skin_color(key: str, fallback: str) -> str:
     return _quiet(lambda: _active_skin().get_color(key, fallback), fallback)
 
 
+def _skin_branding(key: str, fallback: str) -> str:
+    """Get a branding string from the active skin, or return fallback."""
+    return _quiet(lambda: _active_skin().get_branding(key, fallback), fallback)
+
+
 # === ASCII Art & Branding ===
 
 from hermes_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
@@ -485,7 +490,9 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
-    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    # The banner speaks in the active skin's voice, not the hardcoded product name.
+    agent_name = _skin_branding("agent_name", "Hermes Agent")
+    base = f"{agent_name} v{VERSION} ({RELEASE_DATE})"
     state = get_git_banner_state()
     if not state:
         return base

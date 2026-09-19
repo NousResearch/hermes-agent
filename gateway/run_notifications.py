@@ -548,11 +548,19 @@ class GatewayNotificationsMixin:
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
             with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s"):
-                await adapter.send_update_prompt(
+                result = await adapter.send_update_prompt(
                     chat_id=target.chat_id, prompt=prompt_text, default=default,
                     session_key=target.session_key, metadata=target.send_metadata(),
                 )
-                sent_buttons = True
+                # A native hook may return None, but an explicit failure is not delivery:
+                # leaving the flag set would skip the text prompt below and stall the
+                # update on .update_response until the input timeout.
+                sent_buttons = not _send_failed(result)
+                if not sent_buttons:
+                    logger.warning(
+                        "Native update prompt send failed for %s: %s; falling back to text",
+                        target.session_key, _send_error(result),
+                    )
         if not sent_buttons:
             default_hint = f" (default: {default})" if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")

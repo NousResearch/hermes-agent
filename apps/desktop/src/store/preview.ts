@@ -52,9 +52,8 @@ export interface PreviewServerRestart {
   url: string
 }
 
-/** Where an open came from. Only affects how an HTML file is first rendered:
- *  browsing files is "peek at the source", a tool/link handing you something is
- *  "run it". Not a separate code path — just a property of the target. */
+/** Where an open came from. HTML files default to a live Render for every
+ *  source; an explicit `target.renderMode` is never overridden. */
 export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface PreviewTab {
@@ -365,18 +364,26 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
-// Browsing files is "peek at the source"; a tool or an explicit link handing
-// you an HTML file means "run it".
-function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
-}
-
-function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
-  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode === 'source') {
+function previewTargetForSource(target: PreviewTarget, _source: PreviewRecordSource): PreviewTarget {
+  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
 
-  return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
+  return { ...target, renderMode: 'preview' }
+}
+
+/** Flip a tab between live Render and Source in place. Same tab id. */
+export function setPreviewRenderMode(tabId: string, renderMode: 'preview' | 'source') {
+  const current = $previewTabs.get()
+  const index = current.findIndex(tab => tab.id === tabId)
+
+  if (index === -1 || current[index]?.target.renderMode === renderMode) {
+    return
+  }
+
+  $previewTabs.set(
+    current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item))
+  )
 }
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes

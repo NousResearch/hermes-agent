@@ -541,6 +541,10 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     """
     if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
         return None
+    from tools.terminal_workspace import kanban_workspace
+    workspace = kanban_workspace()
+    if workspace:
+        return workspace
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
         return config.get("host_cwd")
@@ -620,13 +624,14 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     are discarded in favor of the backend default.
     """
     default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
-    cwd = _tenv("TERMINAL_CWD", default_cwd)
+    from tools.terminal_workspace import kanban_workspace
+    cwd = kanban_workspace() or _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        candidate = os.path.abspath(os.path.expanduser(_tenv("TERMINAL_CWD") or _safe_getcwd()))
+        candidate = os.path.abspath(os.path.expanduser(kanban_workspace() or _tenv("TERMINAL_CWD") or _safe_getcwd()))
         if (
             _is_host_cwd(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))

@@ -2210,6 +2210,10 @@ def apply_terminal_config_to_env(
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
+    from tools.terminal_workspace import kanban_workspace
+    workspace = kanban_workspace(target)
+    if workspace:
+        target["TERMINAL_CWD"] = workspace
     return target
 
 

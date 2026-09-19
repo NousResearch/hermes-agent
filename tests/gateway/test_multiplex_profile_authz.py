@@ -66,6 +66,50 @@ def test_default_profile_still_trusts_own_allowlist(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_discord_channel_honors_profile_scoped_yaml_allow_from(monkeypatch):
+    """Discord's global allow_from applies to channel traffic under multiplex."""
+    from agent import secret_scope
+    from gateway.run import GatewayRunner
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    adapter = SimpleNamespace(
+        config=PlatformConfig(
+            enabled=True,
+            extra={"allow_from": "897961621304000532"},
+        ),
+        authorization_is_upstream=False,
+        enforces_own_access_policy=False,
+    )
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._profile_adapters = {}
+    runner._primary_profile_name = "rex"
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="897961621304000532",
+        chat_id="1544510769830563840",
+        user_name="Jonkman",
+        chat_type="group",
+        profile="rex",
+    )
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        assert runner._is_user_authorized(source) is True
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
 def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
     """A single-profile gateway stamps its active profile but stores adapters as primary."""
     runner, default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)

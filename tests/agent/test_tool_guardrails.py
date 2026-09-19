@@ -189,6 +189,67 @@ def test_skill_read_tools_are_idempotent_and_block_repeated_identical_success_ou
         assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_post_compaction_reanchor_gets_bounded_grace_and_write_oriented_guidance():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=1,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"path": "src/app.py"}
+    result = "same file contents"
+
+    # A read already in progress before compaction must not poison the first
+    # re-anchoring read after the transcript is rewritten.
+    pre_compaction = controller.after_call("read_file", args, result, failed=False)
+    assert pre_compaction.action == "warn"
+
+    controller.note_compaction()
+    first_reanchor = controller.after_call("read_file", args, result, failed=False)
+    assert first_reanchor.action == "allow"
+    assert first_reanchor.count == 1
+
+    warning = controller.after_call("read_file", args, result, failed=False)
+    assert warning.action == "warn"
+    assert warning.code == "idempotent_no_progress_warning"
+    assert "after context compaction" in warning.message
+    assert "proceed to the write/update step" in warning.message
+    assert "change the query" not in warning.message
+
+    controller.after_call("read_file", args, result, failed=False)
+    blocked = controller.before_call("read_file", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+    assert "proceed to the write/update step" in blocked.message
+
+
+def test_post_compaction_reanchor_resets_the_identical_call_stall_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"path": "src/app.py"}
+    result = "same file contents"
+
+    for _ in range(2):
+        controller.after_call("read_file", args, result, failed=False)
+        controller.observe_call("read_file", args, result, failed=False)
+    assert controller.halt_decision is None
+
+    controller.note_compaction()
+    for _ in range(2):
+        controller.after_call("read_file", args, result, failed=False)
+        controller.observe_call("read_file", args, result, failed=False)
+        assert controller.halt_decision is None
+
+    controller.after_call("read_file", args, result, failed=False)
+    controller.observe_call("read_file", args, result, failed=False)
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_call_streak_halt"
+    assert "proceed to the write/update step" in halt.message
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

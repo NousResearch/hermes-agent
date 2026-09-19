@@ -70,7 +70,9 @@ class TestCompressionBoundaryHook:
                 {"role": "user", "content": f"m{i}"} for i in range(10)
             ]
 
-            agent._compress_context(messages, "sys", approx_tokens=10_000)
+            with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+                agent._compress_context(messages, "sys", approx_tokens=10_000)
+            note_compaction.assert_called_once_with()
 
             # Session_id rotated
             assert agent.session_id != original_sid, \
@@ -170,14 +172,16 @@ class TestCompressionBoundaryHook:
             agent.context_compressor = compressor
             messages = [{"role": "user", "content": "request"}]
 
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=100,
-            )
+            with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+                returned, _ = agent._compress_context(
+                    messages,
+                    "sys",
+                    approx_tokens=100,
+                )
 
             assert returned is messages
             compressor.on_session_start.assert_not_called()
+            note_compaction.assert_not_called()
 
 
     def test_no_hook_when_no_session_db(self):
@@ -201,13 +205,19 @@ class TestCompressionBoundaryHook:
         compressor.last_prompt_tokens = 0
         compressor.last_completion_tokens = 0
         compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        compressor._last_compression_made_progress = True
+        compressor._last_summary_fallback_used = False
+        compressor._last_feasibility_skip = False
         agent.context_compressor = compressor
 
         original_sid = agent.session_id
-        agent._compress_context([{"role": "user", "content": "m"}], "sys", approx_tokens=100)
+        with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+            agent._compress_context([{"role": "user", "content": "m"}], "sys", approx_tokens=100)
 
         # No DB => no rotation => no compression-boundary hook
         assert agent.session_id == original_sid
+        note_compaction.assert_called_once_with()
         comp_calls = [
             c for c in compressor.on_session_start.call_args_list
             if c.kwargs.get("boundary_reason") == "compression"

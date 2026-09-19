@@ -3409,6 +3409,23 @@ def _finish_compaction_boundary(
         else:
             compressor._verify_compaction_cleared_threshold = True
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    # The first file read after a committed rewrite is often required to recover
+    # exact state for an in-flight edit. Do not arm this on a rejected/no-op or
+    # failed persistence attempt: only a real boundary invalidates the old tool
+    # context and earns the bounded re-anchoring grace. Agents without a session
+    # DB still have a real in-memory rewrite, so compression_made_progress is the
+    # commit signal for that path.
+    _committed_boundary = (
+        session_commit_succeeded and (bool(_old_sid) or compacted_in_place)
+    ) or (
+        not getattr(agent, "_session_db", None) and compression_made_progress
+    )
+    if _committed_boundary:
+        with _swallow("tool guardrail compaction reset failed (ignored)", exc_info=True):
+            _guardrails = getattr(agent, "_tool_guardrails", None)
+            _note_compaction = getattr(_guardrails, "note_compaction", None)
+            if callable(_note_compaction):
+                _note_compaction()
     return _compressed_est
 
 

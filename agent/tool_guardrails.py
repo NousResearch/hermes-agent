@@ -25,6 +25,16 @@ IDEMPOTENT_TOOL_NAMES = frozenset({
     "mcp_filesystem_search_files",
 })
 
+# A successful compaction can remove the exact file contents that the model needs to
+# resume an in-flight edit. These tools are the read side of that re-anchoring flow;
+# search/web calls are intentionally excluded because their repeated results do not
+# establish that the model is ready to write.
+_POST_COMPACTION_REANCHOR_READ_TOOLS = frozenset({
+    "read_file", "mcp_filesystem_read_file", "mcp_filesystem_read_text_file",
+    "mcp_filesystem_read_multiple_files",
+})
+_POST_COMPACTION_REANCHOR_GRACE_READS = 1
+
 MUTATING_TOOL_NAMES = frozenset({
     "terminal", "execute_code", "write_file", "patch", "todo_list", "memory", "skill_manage",
     "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_navigate",
@@ -281,6 +291,17 @@ _DECISION_MESSAGES: dict[str, str] = {
     ),
 }
 
+_POST_COMPACTION_REANCHOR_WARNING = (
+    "{tool_name} returned the same result {count} times after context compaction. "
+    "You already have the information needed to re-anchor; proceed to the write/update step "
+    "instead of changing the query."
+)
+_POST_COMPACTION_REANCHOR_BLOCK = (
+    "Blocked {tool_name}: this re-anchoring read returned the same result {count} times after "
+    "context compaction. You already have the information needed; proceed to the write/update "
+    "step instead of rereading it."
+)
+
 _IDENTICAL_CALL_NOTICE = (
     "[hermes note: this is the {ordinal} consecutive identical call to "
     "{tool_name} with identical arguments returning the same result. "
@@ -327,6 +348,11 @@ class ToolCallGuardrailController:
         self._identical_streak_result_hash: str = ""
         self._identical_streak_count: int = 0
         self._identical_streak_first_call_id: str = ""
+        # A successful compaction may legitimately require a file re-read before the model can
+        # resume an edit. Keep that grace bounded and turn-local; repeated reads after it still
+        # use the normal no-progress and stall thresholds.
+        self._post_compaction_reanchor_active = False
+        self._post_compaction_reanchor_reads_remaining = 0
         # Batch-cycle loop breaker (port of can1357/oh-my-pi#10521): sequence of
         # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
         # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
@@ -367,7 +393,10 @@ class ToolCallGuardrailController:
             return self._decide("block", "repeated_exact_failure_block", tool_name, exact_count, signature)
         record = self._no_progress.get(signature) if self._is_idempotent(tool_name) else None
         if record is not None and record[1] >= self.config.no_progress_block_after:
-            return self._decide("block", "idempotent_no_progress_block", tool_name, record[1], signature)
+            return self._decide(
+                "block", "idempotent_no_progress_block", tool_name, record[1], signature,
+                message=self._post_compaction_reanchor_message(tool_name, record[1], blocked=True),
+            )
         return allow
 
     def after_call(
@@ -418,6 +447,7 @@ class ToolCallGuardrailController:
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+            self._clear_post_compaction_reanchor()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -426,9 +456,53 @@ class ToolCallGuardrailController:
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
+        grace_read = (
+            self._post_compaction_reanchor_active
+            and tool_name in _POST_COMPACTION_REANCHOR_READ_TOOLS
+            and self._post_compaction_reanchor_reads_remaining > 0
+        )
+        if grace_read:
+            self._post_compaction_reanchor_reads_remaining -= 1
         if warnings and repeat_count >= self.config.no_progress_warn_after:
-            return self._decide("warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature)
+            if grace_read:
+                return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+            return self._decide(
+                "warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature,
+                message=self._post_compaction_reanchor_message(tool_name, repeat_count),
+            )
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+
+    def note_compaction(self) -> None:
+        """Reset stale read-loop state after a committed context rewrite.
+
+        Context compaction can discard the file contents that an in-flight edit was
+        based on, so the first post-compaction read is an expected re-anchoring action,
+        not evidence of a stalled tool loop. The exemption is deliberately bounded to
+        one file-read call; subsequent identical reads still reach the normal warning
+        and hard-stop thresholds.
+        """
+        self._no_progress.clear()
+        self._identical_streak_sig = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        call_history = getattr(self, "_call_history", None)
+        if call_history is not None:
+            call_history.clear()
+        self._post_compaction_reanchor_active = True
+        self._post_compaction_reanchor_reads_remaining = _POST_COMPACTION_REANCHOR_GRACE_READS
+
+    def _clear_post_compaction_reanchor(self) -> None:
+        self._post_compaction_reanchor_active = False
+        self._post_compaction_reanchor_reads_remaining = 0
+
+    def _post_compaction_reanchor_message(
+        self, tool_name: str, count: int, *, blocked: bool = False,
+    ) -> str | None:
+        if not self._post_compaction_reanchor_active or tool_name not in _POST_COMPACTION_REANCHOR_READ_TOOLS:
+            return None
+        template = _POST_COMPACTION_REANCHOR_BLOCK if blocked else _POST_COMPACTION_REANCHOR_WARNING
+        return template.format(tool_name=tool_name, count=count)
 
     def _is_idempotent(self, tool_name: str) -> bool:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
@@ -465,7 +539,10 @@ class ToolCallGuardrailController:
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
             if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
-                self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
+                self._decide(
+                    "halt", "identical_call_streak_halt", tool_name, count, signature,
+                    message=self._post_compaction_reanchor_message(tool_name, count, blocked=True),
+                )
 
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
         # consecutive streak on every alternation, so check the call history for a period-p lap.

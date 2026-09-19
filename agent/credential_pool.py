@@ -2306,6 +2306,11 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     })
 
 
+# Copilot sources already warned about a RAW-token degrade, once per process
+# until the exchange recovers (see _seed_copilot_singleton).
+_COPILOT_DEGRADED_WARNED: Set[str] = set()
+
+
 def _seed_copilot_singleton(seed: _Seeder) -> None:
     # Copilot tokens are resolved dynamically via `gh auth token` or env vars
     # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
@@ -2335,13 +2340,20 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
         # get_copilot_api_token falls back to the RAW token when the exchange
         # fails; the Copilot API then routes it to the fallback
         # "copilot-language-server" integrator whose allowlist omits
-        # enterprise-only models -> HTTP 400 on every turn. Surface it.
+        # enterprise-only models -> HTTP 400 on every turn. Surface it — once
+        # per source per process: every pool load (picker, delegation, dashboard
+        # polls) re-seeds, and the exchange's negative cache fails fast, so an
+        # unconditional WARNING storms errors.log. Re-armed on recovery.
         if api_token == token and not enterprise_base_url:
-            logger.warning(
-                "Copilot token exchange degraded to RAW token (exchange "
-                "unavailable); enterprise-only models may 400 with "
-                "model_not_available_for_integrator until exchange recovers."
-            )
+            if source_name not in _COPILOT_DEGRADED_WARNED:
+                _COPILOT_DEGRADED_WARNED.add(source_name)
+                logger.warning(
+                    "Copilot token exchange degraded to RAW token (exchange "
+                    "unavailable); enterprise-only models may 400 with "
+                    "model_not_available_for_integrator until exchange recovers."
+                )
+        else:
+            _COPILOT_DEGRADED_WARNED.discard(source_name)
         pconfig = PROVIDER_REGISTRY.get(seed.provider)
         seed.upsert(source_name, {
             "auth_type": AUTH_TYPE_API_KEY,

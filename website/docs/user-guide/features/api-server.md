@@ -178,6 +178,49 @@ Chain responses to maintain full context (including tool calls) across turns:
 
 The server reconstructs the full conversation from the stored response chain — all previous tool calls and results are preserved. Chained requests also share the same session, so multi-turn conversations appear as a single entry in the dashboard and session history.
 
+Hermes also accepts `conversation_history` as a non-standard extension for
+clients that want to send prior messages separately from the current `input`.
+
+#### Client-managed session ID
+
+By default, `/v1/responses` ignores `X-Hermes-Session-Id` and derives transcript
+identity from its response chain, named conversation, session key, or a new ID.
+Enable client-managed identity explicitly:
+
+```yaml
+gateway:
+  api_server:
+    responses_client_managed_session_id: true
+```
+
+An authenticated client may then provide its stable transcript ID on any
+Responses API request:
+
+```http
+POST /v1/responses HTTP/1.1
+Authorization: Bearer ***
+X-Hermes-Session-Id: openwebui-chat-42
+```
+
+The header is authoritative for transcript identity even alongside
+`previous_response_id` or `conversation`. When a request carries only its new
+input, Hermes recovers that transcript's persisted `state.db` history, including
+after a gateway restart. Explicit `conversation_history`, a multi-message
+`input`, or a `previous_response_id`/`conversation` response chain supplies the
+request context instead and is never combined with the header-loaded history.
+If Hermes rotated the client transcript during compression, the header resolves
+to the stored post-compression session before its history is loaded.
+
+Hermes returns the selected ID in the same response header for both JSON and SSE
+responses. The default `compression.in_place: true` mode keeps that ID stable.
+If an operator enables the legacy rotating mode with `compression.in_place:
+false`, a non-streaming response reflects the rotated ID. SSE headers are sent
+before the agent runs, so a later rotation is instead recorded in the completed
+response snapshot and used by a subsequent stateful request.
+
+Caller-selected session IDs require API-key authentication, are limited to 256
+characters, and may not contain control characters or path traversal.
+
 #### Named conversations
 
 Use the `conversation` parameter instead of tracking response IDs:
@@ -709,10 +752,11 @@ gateway:
     key: your-secret-key
     cors_origins: http://localhost:3000
     model_name: my-hermes
+    responses_client_managed_session_id: true # honor X-Hermes-Session-Id on /v1/responses
     max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
 ```
 
-`port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
+`port`, `key`, `host`, `cors_origins`, `model_name`, and `responses_client_managed_session_id` are automatically bridged into the platform's `extra` settings. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
 
 ### Concurrent-run cap
 

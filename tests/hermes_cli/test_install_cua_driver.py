@@ -11,6 +11,7 @@ must:
   complaint). Automatic Windows updates defer because the installer can prompt.
 * For ``upgrade=False``, keep compatible installations, repair old or
   incomplete installations, and install when missing.
+* Keep explicit command overrides user-managed, including during upgrades.
 
 The pre-install arch probe that used to live alongside this function was
 deleted (see the release-probe comment in tools_config_cua.py) — the upstream
@@ -25,7 +26,7 @@ from __future__ import annotations
 import json
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -414,6 +415,69 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=False) is True
 
         assert runner.call_args.kwargs["label"] == "Repairing"
+
+    def test_same_fingerprint_repair_checks_the_fresh_contract(self, monkeypatch, tmp_path):
+        from hermes_cli import tools_config_cua as tools_config
+        from tools.computer_use import cua_backend_driver
+
+        binary = tmp_path / "cua-driver"
+        binary.write_bytes(b"same-version-binary")
+        binary.chmod(0o755)
+        before = binary.stat()
+        incompatible = {"ready": False, "version": "0.20.0", "reason": "manifest unavailable"}
+        ready = {"ready": True, "version": "0.20.0", "reason": ""}
+        probe = Mock(side_effect=[incompatible, ready])
+        installer = Mock(return_value=True)
+
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+        monkeypatch.setattr(tools_config, "_CUA_DRIVER_CONTRACT_CACHE", {})
+        monkeypatch.setattr(tools_config, "time", SimpleNamespace(monotonic=lambda: 100.0))
+        monkeypatch.setattr(tools_config, "_resolved_cua_driver_cmd", lambda: str(binary))
+        monkeypatch.setattr(tools_config, "_cua_driver_version", lambda _: "0.20.0")
+        monkeypatch.setattr(tools_config, "_cua_install_target_writable", lambda: True)
+        monkeypatch.setattr(tools_config.shutil, "which", lambda name: str(tmp_path / name))
+        monkeypatch.setattr(tools_config, "_run_cua_driver_installer", installer)
+        monkeypatch.setattr(cua_backend_driver, "cua_driver_runtime_contract_status", probe)
+
+        assert tools_config.install_cua_driver(upgrade=True) is True
+        assert installer.call_args.kwargs["label"] == "Repairing"
+        assert probe.call_count == 2
+        assert tools_config._cua_driver_contract_status(str(binary)) == ready
+        assert probe.call_count == 2, "the fresh verdict should become the new cached state"
+        after = binary.stat()
+        assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size)
+
+    @pytest.mark.parametrize("require_confirmed_update", [False, True])
+    def test_compatible_explicit_override_is_not_refreshed(
+        self, monkeypatch, tmp_path, require_confirmed_update
+    ):
+        from hermes_cli import tools_config_cua as tools_config
+        from tools.computer_use import cua_backend_driver
+
+        binary = tmp_path / "custom-cua-driver"
+        binary.write_bytes(b"user-managed-driver")
+        binary.chmod(0o755)
+        checker = Mock(return_value={"update_available": True, "latest_version": "0.21.0"})
+        installer = Mock(return_value=True)
+
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(binary))
+        monkeypatch.setattr(tools_config, "_resolved_cua_driver_cmd", lambda: str(binary))
+        monkeypatch.setattr(
+            tools_config, "_cua_driver_contract_status",
+            lambda *_: {"ready": True, "version": "0.20.0", "reason": ""},
+        )
+        monkeypatch.setattr(tools_config, "_cua_driver_version", lambda _: "0.20.0")
+        monkeypatch.setattr(tools_config, "_cua_install_target_writable", lambda: True)
+        monkeypatch.setattr(tools_config.shutil, "which", lambda name: str(tmp_path / name))
+        monkeypatch.setattr(tools_config, "_run_cua_driver_installer", installer)
+        monkeypatch.setattr(cua_backend_driver, "cua_driver_update_check", checker)
+
+        assert tools_config.install_cua_driver(
+            upgrade=True, require_confirmed_update=require_confirmed_update
+        ) is True
+        checker.assert_not_called()
+        installer.assert_not_called()
+        assert binary.read_bytes() == b"user-managed-driver"
 
     def test_incompatible_explicit_override_is_not_replaced(self, monkeypatch):
         from hermes_cli import tools_config_cua as tools_config

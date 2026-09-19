@@ -174,7 +174,11 @@ export function voiceFieldVisible(key: string, config: HermesConfigRecord): bool
     return false
   }
 
-  return provider === String(getNested(config, `${domain}.provider`) ?? '')
+  const selected = String(getNested(config, `${domain}.provider`) ?? '')
+  // Backend defaults when the key is unset: TTS → edge, STT → local.
+  // An empty string used to hide every nested model field.
+  const fallback = domain === 'tts' ? 'edge' : domain === 'stt' ? 'local' : ''
+  return provider === (selected || fallback)
 }
 
 export function inferFieldSchema(value: unknown): ConfigFieldSchema {

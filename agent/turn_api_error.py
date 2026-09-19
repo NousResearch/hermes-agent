@@ -215,17 +215,35 @@ def handle_api_error(
     return _verdict(_ue.action, _ue.result)
 
 
+# jiter (the Rust-backed JSON parser the Anthropic SDK's streaming helper uses internally,
+# anthropic/lib/streaming/_messages.py's ``from_json(json_buf, partial_mode=True)``) raises a
+# bare ValueError for a truncated/malformed streaming tool-call buffer -- e.g. "expected value
+# at line 1 column 11", "EOF while parsing a value at line 1 column 10". Same transient
+# provider/network-glitch shape as json.JSONDecodeError below, just a different exception
+# class, so it was falling through the JSONDecodeError carve-out and getting treated as a
+# permanent local bug (non-retryable) instead of retried. Reproduced directly:
+# `jiter.from_json(b"          ", partial_mode=True)` raises
+# `ValueError('EOF while parsing a value at line 1 column 10')`.
+_JITER_PARSE_ERROR_PATTERNS = (
+    "expected value", "eof while parsing", "expected ident", "trailing characters",
+)
+
+
 def _is_local_validation_error(api_error: Any) -> bool:
     """ValueError/TypeError are local bugs, except: UnicodeEncodeError (surrogate recovery
-    path), json.JSONDecodeError (transient provider/network failure, must retry),
-    ssl.SSLError (inherits OSError *and* ValueError — a TLS failure is not a local bug)
-    and "NoneType is not iterable" TypeErrors (upstream shape mismatches, e.g. Codex
-    response.completed.output=null — retryable so the fallback path runs)."""
+    path), json.JSONDecodeError (transient provider/network failure, must retry), a jiter
+    streaming-parse ValueError (see _JITER_PARSE_ERROR_PATTERNS above -- same transient shape
+    as JSONDecodeError, different exception type), ssl.SSLError (inherits OSError *and*
+    ValueError — a TLS failure is not a local bug) and "NoneType is not iterable" TypeErrors
+    (upstream shape mismatches, e.g. Codex response.completed.output=null — retryable so the
+    fallback path runs)."""
     if not isinstance(api_error, (ValueError, TypeError)):
         return False
     if isinstance(api_error, (UnicodeEncodeError, json.JSONDecodeError, ssl.SSLError)):
         return False
     _text = str(api_error).lower()
+    if isinstance(api_error, ValueError) and any(p in _text for p in _JITER_PARSE_ERROR_PATTERNS):
+        return False
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 

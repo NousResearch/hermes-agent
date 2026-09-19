@@ -1982,6 +1982,21 @@ def _prepare_job_prompt(
     """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt)``: an early
     result short-circuits ``run_job`` (no_agent job, empty payload, monitor gate, wake gate,
     injection block, empty prompt); otherwise ``prompt`` is set."""
+    # A dispatch snapshot normally carries the full stored record, but a partial
+    # one (older or third-party provider handoff, reconstructed fire) that lacks
+    # the script would otherwise run blind: the wake gate below and the Script
+    # Output/Error block both key off job.get("script"). Backfill the
+    # definition from the store, which is authoritative. Only a missing script
+    # triggers a re-read, so full snapshots pay nothing. (#115470)
+    if not job.get("script"):
+        try:
+            from cron.jobs import get_job
+            _stored_job = get_job(job_id)
+            if _stored_job and _stored_job.get("script"):
+                job["script"] = _stored_job.get("script")
+        except Exception:
+            logger.debug(
+                "Job %s: script backfill read failed", job_id, exc_info=True)
     # Fail closed on a corrupt config.yaml: defaults would let auto-detection bill a provider the
     # user never chose. no_agent jobs are exempt. Escape hatch: HERMES_IGNORE_USER_CONFIG=1.
     if not job.get("no_agent"):

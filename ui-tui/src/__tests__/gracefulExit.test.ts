@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldExitForSignal } from '../lib/gracefulExit.js'
+import { ignoredSignalsForTuiMode, shouldExitForSignal } from '../lib/gracefulExit.js'
 
 describe('shouldExitForSignal', () => {
-  it('ignores only the signals explicitly disabled for embedded dashboard chat', () => {
-    expect(shouldExitForSignal('SIGINT', ['SIGINT'])).toBe(false)
-    expect(shouldExitForSignal('SIGTERM', ['SIGINT'])).toBe(true)
-    expect(shouldExitForSignal('SIGHUP', ['SIGINT'])).toBe(true)
+  it('keeps an embedded dashboard TUI alive across PTY hangups while normal TUI sessions exit', () => {
+    const dashboardIgnoredSignals = ignoredSignalsForTuiMode(true)
+    const terminalIgnoredSignals = ignoredSignalsForTuiMode(false)
+
+    expect(shouldExitForSignal('SIGINT', dashboardIgnoredSignals)).toBe(false)
+    expect(shouldExitForSignal('SIGHUP', dashboardIgnoredSignals)).toBe(false)
+    expect(shouldExitForSignal('SIGTERM', dashboardIgnoredSignals)).toBe(true)
+
+    expect(shouldExitForSignal('SIGHUP', terminalIgnoredSignals)).toBe(true)
   })
 })

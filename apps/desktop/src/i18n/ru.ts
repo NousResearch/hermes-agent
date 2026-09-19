@@ -100,6 +100,7 @@ export const ru = defineLocale({
     off: 'Выкл'
   },
   fileMenu: {
+    openWithApp: 'Открыть в приложении по умолчанию',
     revealFinder: 'Показать в Finder',
     revealExplorer: 'Показать в Проводнике',
     revealFileManager: 'Открыть содержащую папку',

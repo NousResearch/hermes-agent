@@ -24,6 +24,8 @@ import {
   $renamingPath,
   copyFilePath,
   downloadRemoteFile,
+  isRecentOpenWithDefaultApp,
+  openFileWithDefaultApp,
   revealFile,
   shouldOfferRemoteFileDownload,
   toRelativePath
@@ -340,8 +342,9 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
 
   const handleClick = () => {
     // A file-browser rename of the same path is active → ignore the fall-through
-    // click so it doesn't open the diff / steal focus from that editor.
-    if ($renamingPath.get() === dragPath) {
+    // click so it doesn't open the diff / steal focus from that editor. Same
+    // fall-through guard right after the menu's "Open with default app".
+    if ($renamingPath.get() === dragPath || isRecentOpenWithDefaultApp()) {
       return
     }
 
@@ -510,9 +513,12 @@ function ReviewFileContextMenu({
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => revealFileInTree(dragPath)}>{m.revealInSidebar}</ContextMenuItem>
         {localFs && (
-          <ContextMenuItem onSelect={() => void revealFile(dragPath)}>
-            {pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)}
-          </ContextMenuItem>
+          <>
+            <ContextMenuItem onSelect={() => void openFileWithDefaultApp(dragPath)}>{m.openWithApp}</ContextMenuItem>
+            <ContextMenuItem onSelect={() => void revealFile(dragPath)}>
+              {pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)}
+            </ContextMenuItem>
+          </>
         )}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => void copyFilePath(dragPath)}>{m.copyPath}</ContextMenuItem>

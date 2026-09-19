@@ -4,6 +4,7 @@ import { translateNow } from '@/i18n'
 import {
   copyTextToClipboard,
   isDesktopFsRemoteMode,
+  openDesktopPathWithDefaultApp,
   renameDesktopPath,
   revealDesktopPath,
   trashDesktopPath
@@ -62,6 +63,27 @@ export async function revealFile(path: string): Promise<void> {
   } catch (error) {
     notifyError(error, translateNow('errors.genericFailure'))
   }
+}
+
+// Radix closes a context menu BEFORE the activation click lands on the row
+// underneath, so the menu item's own click "falls through" and re-activates the
+// file row — which opens it in the preview rail right as the OS default app
+// launches. (The same fall-through is why Rename hides itself via $renamingPath
+// and why the menu suppresses focus-restore.) openFileWithDefaultApp stamps
+// this instant; both file trees drop row activation within the window.
+let lastOpenWithAppAt = 0
+const OPEN_WITH_APP_SUPPRESS_MS = 400
+
+export function isRecentOpenWithDefaultApp(now: number = Date.now()): boolean {
+  return now - lastOpenWithAppAt < OPEN_WITH_APP_SUPPRESS_MS
+}
+
+export function openFileWithDefaultApp(path: string): Promise<void> {
+  lastOpenWithAppAt = Date.now()
+
+  return openDesktopPathWithDefaultApp(path).catch(error => {
+    notifyError(error, translateNow('errors.genericFailure'))
+  })
 }
 
 export async function copyFilePath(path: string): Promise<void> {

@@ -113,6 +113,7 @@ export const en: Translations = {
   },
 
   fileMenu: {
+    openWithApp: 'Open with default app',
     revealFinder: 'Reveal in Finder',
     revealExplorer: 'Reveal in File Explorer',
     revealFileManager: 'Open containing folder',

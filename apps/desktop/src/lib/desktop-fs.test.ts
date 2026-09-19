@@ -8,6 +8,9 @@ import {
   desktopFileDiff,
   desktopFsCacheKey,
   desktopGitRoot,
+  localPathFromFileHref,
+  openDesktopPathWithDefaultApp,
+  pathToFileUrl,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileDataUrlLocalFirst,
@@ -317,5 +320,38 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('opens a local path through the OS default app via openExternal(file://)', async () => {
+    const openExternal = vi.fn(async () => {})
+
+    vi.stubGlobal('window', { hermesDesktop: { api, openExternal } })
+    $connection.set({ mode: 'local' } as never)
+
+    await openDesktopPathWithDefaultApp('/tmp/报告 1.xlsx')
+
+    expect(openExternal).toHaveBeenCalledWith('file:///tmp/%E6%8A%A5%E5%91%8A%201.xlsx')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('encodes absolute paths as file URLs across platforms', () => {
+    expect(pathToFileUrl('/tmp/a b.pdf')).toBe('file:///tmp/a%20b.pdf')
+    // Drive colon arrives percent-encoded; the main process decodes it back
+    // via fileURLToPath before handing the path to the OS.
+    expect(pathToFileUrl('C:\\Users\\me\\x.xlsx')).toBe('file:///C%3A/Users/me/x.xlsx')
+    expect(pathToFileUrl('\\\\share\\docs\\x.pdf')).toBe('file://share/docs/x.pdf')
+  })
+
+  it('round-trips UNC hosts through file hrefs', () => {
+    // A non-localhost host is a Windows UNC share; it decodes to the native
+    // \\server\share form and pathToFileUrl re-encodes it host-intact.
+    expect(localPathFromFileHref('file://server/docs/x.pdf')).toBe('\\\\server\\docs\\x.pdf')
+    expect(pathToFileUrl(localPathFromFileHref('file://server/docs/x.pdf'))).toBe('file://server/docs/x.pdf')
+    // localhost / empty host is the no-host spelling — a plain local path.
+    expect(localPathFromFileHref('file://localhost/tmp/x.pdf')).toBe('/tmp/x.pdf')
+    expect(localPathFromFileHref('file:///tmp/a%20b.pdf')).toBe('/tmp/a b.pdf')
+    // Non-file hrefs and raw paths pass through untouched.
+    expect(localPathFromFileHref('https://example.com/x')).toBe('https://example.com/x')
+    expect(localPathFromFileHref('notes/x.md')).toBe('notes/x.md')
   })
 })

@@ -238,3 +238,162 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+# ---------------------------------------------------------------------------
+# repeated_crashes — a streak that is over is reported as historical
+# ---------------------------------------------------------------------------
+
+# The board's real shape (t_2d283056 / t_6db2248b / t_8afe5089, 2026-09-14):
+# five crashed runs days old, and a NEWER run that ended `unreported` (the
+# deliberate "exited cleanly without a terminal kanban call" outcome) or
+# `blocked`. The page said "The last 5 runs ended with outcome=crashed" about
+# those cards in the present tense and paged them `critical`.
+_PROTOCOL_ERR = (
+    "worker exited cleanly (rc=0) without calling kanban_complete or "
+    "kanban_block — protocol violation."
+)
+_LAST_CRASH_END = 1789234174        # 2026-09-12 17:29Z
+_NEWEST_END = 1789346851            # 2026-09-14 00:47Z
+
+
+def _run_at(outcome, run_id, started_at, ended_at, error=None):
+    return {
+        "id": run_id, "outcome": outcome, "error": error,
+        "started_at": started_at, "ended_at": ended_at,
+    }
+
+
+def _crash_rule_diag(task, runs):
+    """The one repeated_crashes diagnostic, or a readable failure."""
+    found = [d for d in kd.compute_task_diagnostics(task, [], runs)
+             if d.kind == "repeated_crashes"]
+    assert len(found) == 1, f"expected one repeated_crashes finding, got {found}"
+    return found[0]
+
+
+def _five_old_crashes():
+    """Five consecutive crashes, newest first, all on 2026-09-12."""
+    return [
+        _run_at("crashed", 5, 1789233932, _LAST_CRASH_END, error=_PROTOCOL_ERR),
+        _run_at("crashed", 4, 1789233691, 1789233932, error=_PROTOCOL_ERR),
+        _run_at("crashed", 3, 1789233508, 1789233691, error=_PROTOCOL_ERR),
+        _run_at("crashed", 2, 1789233327, 1789233508, error=_PROTOCOL_ERR),
+        _run_at("crashed", 1, 1789233145, 1789233327, error=_PROTOCOL_ERR),
+    ]
+
+
+def test_repeated_crashes_finished_streak_is_historical_not_current():
+    """A streak the card has since left must not be asserted in the present
+    tense, and must not page at the critical floor the board-health page uses.
+    """
+    task = _task(status="ready")
+    runs = [_run_at("unreported", 6, 1789346236, _NEWEST_END, error=_PROTOCOL_ERR)]
+    runs += _five_old_crashes()
+
+    d = _crash_rule_diag(task, runs)
+
+    # Pre-fix this was "critical" with a present-tense claim.
+    assert d.severity == "warning"
+    assert "historical" in d.title
+    assert "2026-09-12 17:29Z" in d.title
+    assert "2026-09-12 17:29Z" in d.detail
+    assert "not a current crash" in d.detail
+    assert "2026-09-14 00:47Z" in d.detail and "outcome=unreported" in d.detail
+    assert "crashed 5x" in d.title
+    # The basis is inspectable: which runs were read, in which order, and what
+    # the newest one ended as.
+    assert d.data["is_current"] is False
+    assert d.data["newest_outcome"] == "unreported"
+    assert d.data["newest_run_id"] == 6
+    assert d.data["last_crash_run_id"] == 5
+    assert d.data["last_crash_at"] == _LAST_CRASH_END
+    assert [r["id"] for r in d.data["runs_read"]] == [6, 5, 4, 3, 2, 1]
+    assert [r["outcome"] for r in d.data["runs_read"]] == [
+        "unreported", "crashed", "crashed", "crashed", "crashed", "crashed",
+    ]
+
+
+def test_repeated_crashes_finished_streak_behind_a_blocked_run_is_historical():
+    """Same shape with the newest run `blocked` (t_6db2248b): the streak is
+    over, so the finding dates it instead of claiming a live crash."""
+    task = _task(status="ready")
+    runs = [_run_at("blocked", 6, 1789346111, 1789346472, error=None)]
+    runs += _five_old_crashes()
+
+    d = _crash_rule_diag(task, runs)
+
+    assert d.severity == "warning"
+    assert d.data["is_current"] is False
+    assert d.data["newest_outcome"] == "blocked"
+    assert "outcome=blocked" in d.detail
+    assert "not a current crash" in d.detail
+
+
+def test_repeated_crashes_finished_streak_behind_a_live_run_is_historical():
+    """A newest run with no outcome yet (in flight while the card is not
+    `running`) is not a crash: the streak reads as historical, not current."""
+    task = _task(status="blocked")
+    runs = [_run_at(None, 6, 1789346800, None, error=None)]
+    runs += _five_old_crashes()
+
+    d = _crash_rule_diag(task, runs)
+
+    assert d.severity == "warning"
+    assert d.data["is_current"] is False
+    assert "is still in flight (no outcome yet)" in d.detail
+
+
+def test_repeated_crashes_current_streak_pages_exactly_as_before():
+    """The other direction: when the newest run IS a crash the finding pages
+    exactly as before — same title, same detail, same critical severity. Those
+    three assertions pass pre-fix on purpose (they are the no-regression
+    contract); the basis keys asserted below them are the new ones.
+    """
+    task = _task(status="ready")
+    runs = _five_old_crashes()
+
+    d = _crash_rule_diag(task, runs)
+
+    assert d.severity == "critical"
+    assert d.title == f"Agent crashed 5x: {_PROTOCOL_ERR}"
+    assert d.detail == (
+        f"The last 5 runs ended with outcome=crashed. Full last error:\n\n{_PROTOCOL_ERR}"
+    )
+    assert d.data["is_current"] is True
+    assert d.data["newest_outcome"] == "crashed"
+
+
+def test_repeated_crashes_pid_not_alive_mode_still_pages():
+    """The `pid <n> not alive` crash mode is a live incident and keeps paging
+    critical exactly as before — the fix must not mute it."""
+    task = _task(status="ready")
+    runs = [
+        _run_at("crashed", 4, 1789233508, _LAST_CRASH_END, error="pid 364463 not alive"),
+        _run_at("crashed", 3, 1789233327, 1789233508, error=_PROTOCOL_ERR),
+        _run_at("crashed", 2, 1789233145, 1789233327, error=_PROTOCOL_ERR),
+        _run_at("crashed", 1, 1789233000, 1789233145, error=_PROTOCOL_ERR),
+    ]
+
+    d = _crash_rule_diag(task, runs)
+
+    assert d.severity == "critical"
+    assert d.title == "Agent crashed 4x: pid 364463 not alive"
+    assert d.data["is_current"] is True
+
+
+def test_repeated_crashes_threshold_and_vocabulary_are_untouched():
+    """The fix distinguishes; it does not suppress. One crash below the default
+    threshold still fires nothing, and `unreported` is reported by name rather
+    than dropped from the vocabulary."""
+    task = _task(status="ready")
+    below = [d for d in kd.compute_task_diagnostics(
+        task, [], [_run_at("crashed", 1, 1789233145, _LAST_CRASH_END, error=_PROTOCOL_ERR)],
+    ) if d.kind == "repeated_crashes"]
+    assert below == []
+
+    runs = [_run_at("unreported", 6, 1789346236, _NEWEST_END, error=_PROTOCOL_ERR)]
+    runs += _five_old_crashes()
+    d = _crash_rule_diag(task, runs)
+    assert "unreported" in d.detail
+    assert d.count == 5

@@ -255,6 +255,77 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    # -- multimodal tool results ------------------------------------------
+    # Converse toolResult.content accepts image blocks. Flattening through
+    # json.dumps hid the image from the model AND inlined the raw base64 as
+    # text, pushing the request toward the size limit.
+
+    _IMG = "data:image/png;base64,iVBORw0KGgo="
+
+    def _tool_result_content(self, content):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        _, msgs = convert_messages_to_converse([
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "t1", "content": content},
+        ])
+        blocks = [b for turn in msgs for b in turn["content"] if "toolResult" in b]
+        assert len(blocks) == 1
+        return blocks[0]["toolResult"]["content"]
+
+    def test_image_tool_result_becomes_image_block(self):
+        content = self._tool_result_content([
+            {"type": "image_url", "image_url": {"url": self._IMG}}])
+        assert [b for b in content if "image" in b], "image flattened to text"
+        assert content[0]["image"]["format"] == "png"
+        assert content[0]["image"]["source"]["bytes"] == b"\x89PNG\r\n\x1a\n"
+
+    def test_multimodal_envelope_dict_is_converted(self):
+        """vision_analyze's native fast path returns a dict envelope, not a list.
+
+        Matching only on ``list`` left the most common producer of
+        image-bearing tool results on the json.dumps path with base64 inline.
+        """
+        content = self._tool_result_content({
+            "_multimodal": True,
+            "content": [{"type": "text", "text": "a cat"},
+                        {"type": "image_url", "image_url": {"url": self._IMG}}],
+            "text_summary": "a cat",
+        })
+        assert content[0]["text"] == "a cat"
+        assert content[1]["image"]["format"] == "png"
+
+    def test_multimodal_envelope_falls_back_to_text_summary(self):
+        """When the parts convert to nothing, send the summary, not "(empty)".
+
+        ``_convert_content_to_converse`` never returns an empty list - it
+        substitutes the placeholder Converse demands - so "nothing converted"
+        has to be detected by that value rather than by emptiness.
+        """
+        content = self._tool_result_content({
+            "_multimodal": True,
+            "content": [{"type": "bogus"}],
+            "text_summary": "fallback summary",
+        })
+        assert content == [{"text": "fallback summary"}]
+
+    @pytest.mark.parametrize("payload,expected", [
+        ([{"file": "a.py"}, {"file": "b.py"}], '[{"file": "a.py"}, {"file": "b.py"}]'),
+        ([1, 2, 3], "[1, 2, 3]"),
+    ])
+    def test_list_shaped_plain_data_is_not_treated_as_content_parts(self, payload, expected):
+        """A list-shaped tool result that is data must survive verbatim.
+
+        Converting it would find no recognised parts and replace the tool's
+        entire output with the "(empty)" placeholder.
+        """
+        assert self._tool_result_content(payload) == [{"text": expected}]
+
+    def test_string_and_dict_tool_results_unchanged(self):
+        """Control: the shapes that already worked keep their behaviour."""
+        assert self._tool_result_content("done") == [{"text": "done"}]
+        assert self._tool_result_content({"ok": True}) == [{"text": '{"ok": true}'}]
+        assert self._tool_result_content("") == [{"text": "(empty)"}]
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

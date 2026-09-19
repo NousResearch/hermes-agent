@@ -41,6 +41,7 @@ import {
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
+  windowBackgroundMaterialOptions,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions,
@@ -498,6 +499,21 @@ describe('windowBackingOptions', () => {
     expect(windowBackingOptions(glass(0), '#111111')).toEqual({ backgroundColor: '#111111' })
     expect(windowBackingOptions(clear(60), '#111111')).toEqual({ backgroundColor: '#111111' })
     expect(windowBackingOptions(clear(0), '#f7f7f7')).toEqual({ backgroundColor: '#f7f7f7' })
+  })
+})
+
+describe('windowBackgroundMaterialOptions', () => {
+  it('omits the Windows backdrop when glass is inactive', () => {
+    expect(windowBackgroundMaterialOptions(glass(0), true, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(clear(60), true, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(glass(60), false, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(glass(60), true, false)).toEqual({})
+  })
+
+  it('passes the selected backdrop only for active supported Windows glass', () => {
+    expect(windowBackgroundMaterialOptions(glass(60, 'under-window'), true, true)).toEqual({
+      backgroundMaterial: 'acrylic'
+    })
   })
 })
 

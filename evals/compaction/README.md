@@ -19,7 +19,7 @@ Measures what context compaction actually costs in *recall*, not just tokens.
 # from repo root, venv active
 python evals/compaction/runner.py \
     --transcript /path/to/lineage.json \
-    --policies current,aggressive,floor10k \
+    --policies current+recovery,lean+recovery \
     --questions 15 \
     --out evals/compaction/results/run1
 python evals/compaction/report.py evals/compaction/results/run1
@@ -99,3 +99,9 @@ token bill.
   does not.
 - `--also-uncompacted` adds a control arm that answers from the full
   original transcript — the recall ceiling.
+- **Default arm is `current+recovery`: the production path.** Compaction in
+  Hermes is the summary *plus* the session_search pointer it carries, so the
+  answerer gets one search round-trip over the archived region (same FTS5+BM25
+  engine as production). A bare policy name (`current`) is closed-book — the
+  summary with its recovery pointer unused — and scores 30+ pts lower on
+  needle questions. Use it only when you specifically want that floor.

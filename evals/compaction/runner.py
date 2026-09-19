@@ -412,7 +412,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--transcript", required=True)
     ap.add_argument("--cap-tokens", type=int, default=500_000)
-    ap.add_argument("--policies", default="current,tail25k,codex_style")
+    ap.add_argument("--policies", default="current+recovery",
+                    help="comma-separated arms; <name>+recovery = production path (summary + one session_search round-trip). Bare <name> is closed-book, opt-in only.")
     ap.add_argument("--questions", type=int, default=15)
     ap.add_argument("--out", required=True)
     ap.add_argument("--also-uncompacted", action="store_true")

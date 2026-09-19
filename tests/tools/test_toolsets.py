@@ -158,6 +158,33 @@ class TestValidateToolset:
         assert validate_toolset("mcp-dynserver") is True
         assert "mcp__dynserver__ping" in resolve_toolset("dynserver")
 
+    def test_plugin_toolset_valid_before_discovery_finishes(self, monkeypatch):
+        """A configured plugin toolset must validate even while discovery is still in flight.
+
+        The live registry is empty until plugin discovery completes, so validating against it alone
+        reported a perfectly valid `-t <plugin>` as unknown on every fast startup and printed
+        "Warning: Unknown toolsets: <name>".
+        """
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr("tools.registry.registry", ToolRegistry())
+        monkeypatch.setattr(
+            plugins, "get_plugin_toolset_keys_nowait", lambda: {"dsh", "spotify"}, raising=False)
+
+        assert validate_toolset("dsh") is True
+        assert validate_toolset("spotify") is True
+
+    def test_declared_plugin_key_still_resolves_to_no_tools(self, monkeypatch):
+        """Name validation must not invent tools: an unloaded plugin toolset resolves empty."""
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr("tools.registry.registry", ToolRegistry())
+        monkeypatch.setattr(
+            plugins, "get_plugin_toolset_keys_nowait", lambda: {"dsh"}, raising=False)
+
+        assert validate_toolset("dsh") is True
+        assert resolve_toolset("dsh") == []
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):

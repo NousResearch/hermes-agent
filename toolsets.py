@@ -402,6 +402,23 @@ def _get_plugin_toolset_names() -> Set[str]:
     return {n for n in _registry_call("get_registered_toolset_names", ()) if n not in TOOLSETS}
 
 
+def _declared_plugin_toolset_names() -> Set[str]:
+    """Plugin toolset keys that a CONFIG may legitimately name, without joining discovery.
+
+    The live registry is empty until plugin discovery finishes, so validating a configured name
+    against it alone reports a valid plugin toolset (``-t dsh``) as unknown on every fast startup.
+    ``get_plugin_toolset_keys_nowait`` serves last launch's persisted set while a scan is in flight.
+    Only name validation uses this: a key with no live tools yet must still resolve to NO tools, so
+    ``get_toolset`` keeps reading the registry alone.
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+
+        return set(get_plugin_toolset_keys_nowait())
+    except Exception:
+        return set()
+
+
 def _get_registry_toolset_aliases() -> Dict[str, str]:
     return _registry_call("get_registered_toolset_aliases", {})
 
@@ -438,7 +455,8 @@ def get_toolset_names() -> List[str]:
 
 def validate_toolset(name: str) -> bool:
     return (name in {"all", "*"} or name in TOOLSETS
-            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
+            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases()
+            or name in _declared_plugin_toolset_names())
 
 
 def create_custom_toolset(name: str, description: str, tools: List[str] = None, includes: List[str] = None) -> None:

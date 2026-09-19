@@ -92,6 +92,50 @@ export function transferMayContainImage(data: DataTransfer | null): boolean {
   return false;
 }
 
+function addNonImageFile(files: File[], seen: Set<string>, file: File | null) {
+  if (!file || file.type.startsWith("image/")) return;
+  const key = imageFileKey(file);
+  if (seen.has(key)) return;
+  seen.add(key);
+  files.push(file);
+}
+
+/** Pull every non-image file out of a DataTransfer (clipboard or drop). */
+export function nonImageFilesFromTransfer(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  const seen = new Set<string>();
+
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      const item = data.items[i];
+      if (item.kind === "file" && !item.type.startsWith("image/")) {
+        addNonImageFile(files, seen, item.getAsFile());
+      }
+    }
+  }
+
+  if (data.files?.length) {
+    for (let i = 0; i < data.files.length; i++) {
+      addNonImageFile(files, seen, data.files[i]);
+    }
+  }
+
+  return files;
+}
+
+/** True when a drag payload contains any file at all, image or not (for dragover preventDefault). */
+export function transferMayContainFile(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      if (data.items[i].kind === "file") return true;
+    }
+    return false;
+  }
+  return Boolean(data.files?.length);
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -159,6 +203,61 @@ export async function uploadChatImage(
   const uploaded = (await res.json()) as ChatImageUploadResult;
   if (!uploaded?.path) {
     throw new Error("image upload did not return a path");
+  }
+  return uploaded;
+}
+
+export interface ChatFileUploadResult {
+  /** Absolute path under HERMES_HOME/uploads the gateway wrote. */
+  path: string;
+  /** Byte size of the uploaded file. */
+  bytes: number;
+  /** Basename written on the server. */
+  name: string;
+  mime_type: string;
+}
+
+// Matches the server's managed-file size cap (_MANAGED_FILE_MAX_BYTES); reject
+// earlier client-side rather than round-tripping a doomed upload.
+const MAX_CHAT_FILE_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Upload a browser drag/drop or pasted non-image file to ``HERMES_HOME/uploads``
+ * and return the absolute gateway path.
+ *
+ * Unlike ``uploadChatImage``, the caller doesn't drive ``/image`` with the
+ * result — the agent can already read an arbitrary file once it knows the
+ * path, so the caller just types the path into the prompt, unsent.
+ */
+export async function uploadChatFile(
+  file: File,
+  profile = "",
+): Promise<ChatFileUploadResult> {
+  if (file.size === 0) throw new Error("file is empty");
+  if (file.size > MAX_CHAT_FILE_BYTES) {
+    const mb = Math.round(MAX_CHAT_FILE_BYTES / (1024 * 1024));
+    throw new Error(`file too large (max ${mb} MB)`);
+  }
+
+  const dataUrl = await fileToDataUrl(file);
+  const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  const res = await authedFetch(`/api/chat/file-upload${qs}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      data_url: dataUrl,
+      filename: file.name,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  const uploaded = (await res.json()) as ChatFileUploadResult;
+  if (!uploaded?.path) {
+    throw new Error("file upload did not return a path");
   }
   return uploaded;
 }

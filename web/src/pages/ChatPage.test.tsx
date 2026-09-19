@@ -89,9 +89,13 @@ const apiMocks = vi.hoisted(() => ({
 const uploadChatImage = vi.hoisted(() =>
   vi.fn(async () => ({ path: "/tmp/pasted.png" })),
 );
+const uploadChatFile = vi.hoisted(() =>
+  vi.fn(async () => ({ path: "/tmp/pasted.csv" })),
+);
 
 vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
+  uploadChatFile,
   uploadChatImage,
 }));
 
@@ -374,6 +378,82 @@ describe("ChatPage", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  });
+
+  it("serializes a mixed image+file paste so the file write can't land inside the /image command", async () => {
+    // #115451 review: uploadAndAttachImages and uploadAndInsertFiles used to
+    // fire independently off the same paste/drop event and both write to the
+    // PTY socket. A fast-resolving file upload could land its write in the
+    // ~100ms gap driveImageAttach leaves between typing "/image <path>" and
+    // sending "\r", splicing the file path into the image command.
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      uploadChatImage.mockClear();
+      uploadChatFile.mockClear();
+
+      const host = container.querySelector(".hermes-chat-xterm-host");
+      expect(host).not.toBeNull();
+      const imageFile = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+        type: "image/png",
+      });
+      const csvFile = new File([new Uint8Array([4, 5, 6])], "notes.csv", {
+        type: "text/csv",
+      });
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          files: [imageFile, csvFile],
+          items: [
+            { getAsFile: () => imageFile, kind: "file", type: "image/png" },
+            { getAsFile: () => csvFile, kind: "file", type: "text/csv" },
+          ],
+        },
+      });
+
+      await act(async () => {
+        host!.dispatchEvent(paste);
+        // Flush the microtasks that resolve uploadChatImage/uploadChatFile
+        // without advancing the fake macrotask timers (the 100ms/40ms PTY
+        // pacing delays), so a would-be-concurrent file write has every
+        // chance to race ahead of "\r" if the flows aren't serialized.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // The image command has been typed, but its Enter (and the whole file
+      // flow) must still be pending: the file upload must not even have
+      // started yet, let alone written to the socket.
+      expect(socket.send).toHaveBeenCalledWith("/image /tmp/pasted.png");
+      expect(uploadChatFile).not.toHaveBeenCalled();
+      expect(socket.send).not.toHaveBeenCalledWith(
+        expect.stringContaining("pasted.csv"),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+
+      const calls = socket.send.mock.calls.map((args) => args[0]);
+      const imageIdx = calls.indexOf("/image /tmp/pasted.png");
+      const enterIdx = calls.indexOf("\r");
+      const fileIdx = calls.indexOf("/tmp/pasted.csv ");
+      expect(imageIdx).toBeGreaterThanOrEqual(0);
+      expect(enterIdx).toBeGreaterThan(imageIdx);
+      expect(fileIdx).toBeGreaterThan(enterIdx);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {

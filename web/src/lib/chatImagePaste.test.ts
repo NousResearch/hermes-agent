@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   firstImageFromClipboard,
   imageFilesFromTransfer,
+  nonImageFilesFromTransfer,
+  transferMayContainFile,
   transferMayContainImage,
 } from "./chatImagePaste";
 
@@ -95,5 +97,60 @@ describe("transferMayContainImage", () => {
       items: [makeItem("string", "text/plain", null)],
     });
     expect(transferMayContainImage(data)).toBe(false);
+  });
+});
+
+const pdf = new File([new Uint8Array([1, 2, 3])], "report.pdf", {
+  type: "application/pdf",
+});
+const csv = new File([new Uint8Array([4, 5])], "data.csv", {
+  type: "text/csv",
+});
+
+describe("nonImageFilesFromTransfer", () => {
+  it("returns [] for null transfer data", () => {
+    expect(nonImageFilesFromTransfer(null)).toEqual([]);
+  });
+
+  it("pulls non-image files and skips images", () => {
+    const data = makeData({
+      items: [
+        makeItem("file", "application/pdf", pdf),
+        makeItem("file", "image/png", png),
+      ],
+    });
+    expect(nonImageFilesFromTransfer(data)).toEqual([pdf]);
+  });
+
+  it("dedupes the same file when present in both items and files", () => {
+    const data = makeData({
+      items: [makeItem("file", "application/pdf", pdf)],
+      files: [pdf, csv],
+    });
+    expect(nonImageFilesFromTransfer(data)).toEqual([pdf, csv]);
+  });
+
+  it("falls back to files[] when items are absent (Safari/Firefox)", () => {
+    const data = makeData({ files: [csv] });
+    expect(nonImageFilesFromTransfer(data)).toEqual([csv]);
+  });
+});
+
+describe("transferMayContainFile", () => {
+  it("is true for a non-image file item", () => {
+    const data = makeData({ items: [makeItem("file", "application/pdf", pdf)] });
+    expect(transferMayContainFile(data)).toBe(true);
+  });
+
+  it("is false for text-only transfers", () => {
+    const data = makeData({
+      items: [makeItem("string", "text/plain", null)],
+    });
+    expect(transferMayContainFile(data)).toBe(false);
+  });
+
+  it("falls back to files[] when items are absent", () => {
+    const data = makeData({ files: [csv] });
+    expect(transferMayContainFile(data)).toBe(true);
   });
 });

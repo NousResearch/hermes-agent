@@ -214,24 +214,14 @@ def _profile_create(args):
         if clone_all:
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
-            print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
+            print(f"Cloned config, .env, SOUL.md, skills, and plugin packages from {source_label}.")
         if sync_imports:
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
-        # Auto-clone Honcho config for the new profile (only with clone operations)
-        try:
-            from plugins.memory.honcho.cli import ConfigWriteRefused, clone_honcho_for_profile
-        except Exception:
-            clone_honcho_for_profile = None  # Honcho plugin not installed
-        if clone_honcho_for_profile is not None:
-            try:
-                if clone_honcho_for_profile(name):
-                    print(f"Honcho config cloned (peer: {name})")
-            except ConfigWriteRefused as e:
-                print(f"Honcho config not cloned: {e}")
-            except Exception:
-                pass  # Honcho not configured
+        from hermes_cli.profile_clone import clone_needs_auth
+        for provider in clone_needs_auth(profile_dir):
+            print(f"Memory provider '{provider}' needs authentication in the new profile.")
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
         result = seed_profile_skills(profile_dir)
@@ -272,7 +262,7 @@ def _profile_create(args):
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
-    if clone or clone_all:
+    if cloned:
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:

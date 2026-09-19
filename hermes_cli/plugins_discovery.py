@@ -37,17 +37,23 @@ def _select_entry_point_group(entry_points: Any, group: str) -> list:
     return [ep for ep in entry_points if ep.group == group]
 
 
-def discover_entrypoint_manifests() -> List["PluginManifest"]:
+def discover_entrypoint_manifests(*, strict: bool = False) -> List["PluginManifest"]:
     """Return metadata-only manifests for installed entry-point plugins. Kind comes from an import-free source
     scan (memory/model providers route to their own discovery). Capabilities come from the companion
     ``hermes_agent.plugin_capabilities`` group (``<plugin-id>.<capability-id>`` entries pointing at the same
-    object), so consent works without importing plugin code. Failures are isolated per entry point."""
+    object), so consent works without importing plugin code. Runtime isolates failures per entry point;
+    ``strict`` refuses incomplete metadata for offline ownership inventories."""
     manifests: List[PluginManifest] = []
     try:
         eps = importlib.metadata.entry_points()
         group_eps = _select_entry_point_group(eps, ENTRY_POINTS_GROUP)
         capability_eps = _select_entry_point_group(eps, ENTRY_POINT_CAPABILITIES_GROUP)
     except Exception as exc:
+        if strict:
+            raise ValueError(
+                "Cannot safely inventory installed plugin entry points; "
+                "repair package metadata and retry cloning."
+            ) from None
         logger.debug("Entry-point scan failed: %s", exc)
         return manifests
     for ep in group_eps:
@@ -64,6 +70,11 @@ def discover_entrypoint_manifests() -> List["PluginManifest"]:
                 capabilities=_parse_declared_capabilities(capabilities, ep.name),
             ))
         except Exception as exc:
+            if strict:
+                raise ValueError(
+                    "Cannot safely inventory an installed plugin entry point; "
+                    "repair package metadata and retry cloning."
+                ) from None
             logger.debug("Entry-point manifest for %r skipped: %s", getattr(ep, "name", "?"), exc)
     return manifests
 
@@ -100,12 +111,13 @@ def _get_enabled_plugins() -> Optional[set]:
 
 
 def scan_directory(
-    path: Path, source: str, *, skip_names: Optional[Set[str]] = None, prefix: str = "", depth: int = 0
+    path: Path, source: str, *, skip_names: Optional[Set[str]] = None, prefix: str = "", depth: int = 0,
+    strict: bool = False,
 ) -> List[PluginManifest]:
     """Read manifests under *path*: flat ``<root>/<name>/plugin.yaml`` (key ``name``) or category
     ``<root>/<cat>/<name>/plugin.yaml`` (key ``cat/name``; a manifest-less directory recurses one level, depth
     capped at two). *skip_names* ignores top-level names; portable ``plugin.json`` packages are accepted
-    alongside YAML manifests."""
+    alongside YAML manifests. ``strict`` refuses unreadable/invalid installations rather than skipping."""
     manifests: List[PluginManifest] = []
     if not path.is_dir():
         return manifests
@@ -113,40 +125,59 @@ def scan_directory(
         try:
             if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
                 continue
-            manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml") if f.exists()), None)
+            manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml")
+                                  if f.exists() or (strict and f.is_symlink())), None)
             portable_file = child / "plugin.json"
             has_portable = portable_file.exists() or portable_file.is_symlink()
         except OSError as exc:
+            if strict:
+                raise ValueError(
+                    f"Cannot safely inventory installed plugin at {str(child)!r}; "
+                    "repair directory permissions and retry cloning."
+                ) from None
             # stat() raises (not "False") on an unsearchable directory — Windows ACLs (WinError 5) or a
             # mode-000 dir; one such plugin must not abort discovery for every other plugin (#111804).
             logger.warning("Skipping unreadable plugin directory %s: %s", child, exc)
             continue
         if manifest_file is not None:
-            manifest = parse_manifest_file(manifest_file, child, source, prefix)
+            manifest = parse_manifest_file(manifest_file, child, source, prefix, strict=strict)
             if manifest is not None:
                 manifests.append(manifest)
         elif has_portable:
             try:
                 manifests.append(portable_plugin_manifest(child, source, prefix))
             except Exception as exc:
+                if strict:
+                    raise ValueError(
+                        f"Cannot safely inventory installed plugin at {str(child)!r}; "
+                        "repair its portable manifest and retry cloning."
+                    ) from None
                 logger.warning("Failed to parse %s: %s", portable_file, exc)
         elif depth >= 1:
             logger.debug("Skipping %s (no plugin.yaml, depth cap reached)", child)
         else:
             sub_prefix = f"{prefix}/{child.name}" if prefix else child.name
-            manifests.extend(scan_directory(child, source, prefix=sub_prefix, depth=depth + 1))
+            manifests.extend(scan_directory(child, source, prefix=sub_prefix, depth=depth + 1, strict=strict))
     return manifests
 
 
-def collect_directory_manifests() -> List[PluginManifest]:
+def collect_directory_manifests(*, strict: bool = False) -> List[PluginManifest]:
     """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
     project) without loading or mutating anything, so startup probes share the exact precedence/containment
-    rules of the real discovery sweep."""
+    rules of the real discovery sweep. ``strict`` is for fail-closed offline ownership inventories."""
     from hermes_cli import plugins as _origin  # patched names resolve through the origin
     manifests: List[PluginManifest] = []
 
     def _scan(label: str, directory: Path, source: str, skip_names: Optional[Set[str]] = None) -> None:
-        found = scan_directory(directory, source, skip_names=skip_names)
+        try:
+            found = scan_directory(directory, source, skip_names=skip_names, strict=strict)
+        except OSError:
+            if not strict:
+                raise
+            raise ValueError(
+                f"Cannot safely inventory installed plugins under {str(directory)!r}; "
+                "repair directory permissions and retry cloning."
+            ) from None
         logger.debug("  %s: %d manifest(s)", label, len(found))
         manifests.extend(found)
 

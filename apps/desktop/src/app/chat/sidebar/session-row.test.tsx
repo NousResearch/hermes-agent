@@ -5,9 +5,11 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
+import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
@@ -322,5 +324,73 @@ describe('SidebarSessionRow inside the sortable list', () => {
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+// Row-decoration slots: a plugin decorates rows through the registry with the
+// row's stored session id handed to its render — the seam the session-list API
+// pairs with (see #116305 item 3).
+describe('SidebarSessionRow decoration slots', () => {
+  const disposers: Array<() => void> = []
+
+  afterEach(() => {
+    disposers.splice(0).forEach(dispose => dispose())
+  })
+
+  const decorate = (area: string, id: string, testId: string) =>
+    disposers.push(
+      registry.register({
+        area,
+        data: {
+          render: ({ sessionId }: SessionRowSlotProps) => <span data-testid={testId}>{sessionId}</span>
+        },
+        id,
+        source: 'disk'
+      })
+    )
+
+  it('mounts leading and trailing decorations with the row session id', () => {
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+      decorate(SESSION_ROW_AREAS.trailing, 'deco-tail', 'tail-deco')
+    })
+
+    renderRow(makeSession({ id: 'row-42', title: 'Decorated' }))
+
+    expect(screen.getByTestId('lead-deco').textContent).toBe('row-42')
+    expect(screen.getByTestId('tail-deco').textContent).toBe('row-42')
+  })
+
+  it('hands the slot the DURABLE id when it differs from the live one', () => {
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+    })
+
+    // Auto-compression rotates the live id. A plugin that remembered the live
+    // one decorates this row until the next compaction and then silently stops
+    // matching — so the slot hands the lineage root, the id core's own
+    // pin/reorder and `host.sessions.*` address.
+    renderRow(makeSession({ _lineage_root_id: 'root-9', id: 'live-9', title: 'Compressed' }))
+
+    expect(screen.getByTestId('lead-deco').textContent).toBe('root-9')
+  })
+
+  it('renders nothing for an area with no registrations and survives an unmount', () => {
+    const { container } = renderRow(makeSession({ id: 'row-7', title: 'Plain' }))
+
+    expect(container.querySelector('[data-testid="lead-deco"]')).toBeNull()
+
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+    })
+
+    // Same row, contribution arriving late: the slot mounts it in place.
+    expect(screen.getByTestId('lead-deco').textContent).toBe('row-7')
+
+    act(() => {
+      disposers.splice(0).forEach(dispose => dispose())
+    })
+
+    expect(screen.queryByTestId('lead-deco')).toBeNull()
   })
 })

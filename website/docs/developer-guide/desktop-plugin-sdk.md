@@ -497,6 +497,33 @@ plugin write can never land in another session's composer.
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
 
+### Session rows — decorations + the session list API
+
+`SESSION_ROW_AREAS` (`leading`, `trailing`) let a plugin decorate sidebar
+session rows. Register a `data` contribution whose `render({ sessionId })`
+returns a small element (a badge, a swatch, a tag) or `null` for rows you don't
+own — registering costs nothing on every other row:
+
+```ts
+import { SESSION_ROW_AREAS, type SessionRowSlotContribution } from '@hermes/plugin-sdk'
+
+ctx.register({
+  area: SESSION_ROW_AREAS.trailing,
+  id: 'my-tag',
+  data: {
+    render: ({ sessionId }) => (owned.has(sessionId) ? <span className="my-tag">★</span> : null)
+  } satisfies SessionRowSlotContribution
+})
+```
+
+Pair it with the session list API — `host.sessions.pin(id, pinned?)`,
+`host.sessions.reorder(ids)`, `host.sessions.setColor(id, color | null)` — which
+write the same stores the app's own controls write (so a plugin action and a
+hand click can never disagree). Ids are STORED session ids: a live id is
+resolved to its durable lineage root, so pins and colours survive compression's
+id rotation — and the row-decoration slots hand your render that same durable id
+(`_lineage_root_id ?? id`), never the live one.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.
@@ -627,6 +654,10 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?, timeoutMs?, { spawnPriority? })   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.sessions.pin(storedSessionId, pinned?)  // pin/unpin a session (default pinned=true);
+                                           //   same store the row's ⇧-click writes
+host.sessions.reorder(ids)                 // replace the manual session order (what a drag persists)
+host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,

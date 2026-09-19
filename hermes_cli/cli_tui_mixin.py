@@ -35,7 +35,7 @@ from prompt_toolkit.layout.processors import (
     Processor,
     Transformation)
 from prompt_toolkit.styles import Style as PTStyle
-from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.widgets import SearchToolbar, TextArea
 from typing import Optional
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
@@ -386,7 +386,8 @@ class CLITuiMixin:
         input_area,
         input_rule_bot,
         voice_status_bar,
-        completions_menu) -> list:
+        completions_menu,
+        search_toolbar=None) -> list:
         """Ordered children of the root ``HSplit``; override only for full control over ordering
         (wrappers normally override ``_get_extra_tui_widgets`` instead)."""
         ordered = [
@@ -408,6 +409,7 @@ class CLITuiMixin:
             input_rule_top,
             image_bar,
             input_area,
+            search_toolbar,
             input_rule_bot,
             voice_status_bar,
             completions_menu]
@@ -2100,7 +2102,8 @@ class CLITuiMixin:
         cli_ref = self
         from hermes_cli.cli_subagent_monitor import install_dock
         install_dock(self)
-        input_area = self._tui_build_input_area()
+        search_toolbar = SearchToolbar(ignore_case=True)
+        input_area = self._tui_build_input_area(search_field=search_toolbar)
         spinner_widget = Window(
             content=FormattedTextControl(self._tui_spinner_text),
             height=self._tui_spinner_height,
@@ -2170,13 +2173,14 @@ class CLITuiMixin:
             input_rule_top=input_rule_top,
             image_bar=image_bar,
             input_area=input_area,
+            search_toolbar=search_toolbar,
             input_rule_bot=input_rule_bot,
             voice_status_bar=voice_status_bar,
             completions_menu=CompletionsMenu(max_height=12, scroll_offset=1))))
         self._tui_set_base_style()
         return layout, PTStyle.from_dict(self._build_tui_style_dict())
 
-    def _tui_build_input_area(self):
+    def _tui_build_input_area(self, *, search_field=None):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
         from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
@@ -2197,6 +2201,7 @@ class CLITuiMixin:
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
+            search_field=search_field,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
             history=FileHistory(str(self._history_file)),
             # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a

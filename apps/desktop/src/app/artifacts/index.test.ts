@@ -345,6 +345,30 @@ ${payload}
 })
 
 describe('loadArtifactsForSessions', () => {
+  it('publishes completed sessions and stops before starting more work after cancellation', async () => {
+    const controller = new AbortController()
+    const sessions = [makeSession({ id: 'session-1' }), makeSession({ id: 'session-2' })]
+    const published: string[][] = []
+
+    const loadMessages = vi.fn(async (session: SessionInfo) => {
+      if (session.id === 'session-1') {
+        controller.abort()
+      }
+
+      return [{ content: `https://example.com/${session.id}.png`, role: 'assistant' as const, timestamp: 2000 }]
+    })
+
+    await expect(
+      loadArtifactsForSessions(sessions, loadMessages, {
+        onProgress: result => published.push(result.artifacts.map(artifact => artifact.sessionId)),
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(loadMessages).toHaveBeenCalledOnce()
+    expect(published).toEqual([['session-1']])
+  })
+
   it('loads transcripts serially and continues after a session fails', async () => {
     const sessions = [
       makeSession({ id: 'session-1' }),
@@ -355,31 +379,36 @@ describe('loadArtifactsForSessions', () => {
     const callOrder: string[] = []
     let activeLoads = 0
     let maxActiveLoads = 0
+    const yieldToMainThread = vi.fn(async () => undefined)
 
-    const result = await loadArtifactsForSessions(sessions, async session => {
-      activeLoads += 1
-      maxActiveLoads = Math.max(maxActiveLoads, activeLoads)
-      callOrder.push(`start:${session.id}`)
+    const result = await loadArtifactsForSessions(
+      sessions,
+      async session => {
+        activeLoads += 1
+        maxActiveLoads = Math.max(maxActiveLoads, activeLoads)
+        callOrder.push(`start:${session.id}`)
 
-      try {
-        await Promise.resolve()
+        try {
+          await Promise.resolve()
 
-        if (session.id === 'session-2') {
-          throw new Error('Session transcript exceeds the Desktop safe-load limit')
-        }
-
-        return [
-          {
-            content: `https://example.com/${session.id}.png`,
-            role: 'assistant',
-            timestamp: 2000
+          if (session.id === 'session-2') {
+            throw new Error('Session transcript exceeds the Desktop safe-load limit')
           }
-        ]
-      } finally {
-        callOrder.push(`end:${session.id}`)
-        activeLoads -= 1
-      }
-    })
+
+          return [
+            {
+              content: `https://example.com/${session.id}.png`,
+              role: 'assistant',
+              timestamp: 2000
+            }
+          ]
+        } finally {
+          callOrder.push(`end:${session.id}`)
+          activeLoads -= 1
+        }
+      },
+      { yieldToMainThread }
+    )
 
     expect(maxActiveLoads).toBe(1)
     expect(callOrder).toEqual([
@@ -393,5 +422,6 @@ describe('loadArtifactsForSessions', () => {
     expect(result.artifacts.map(artifact => artifact.sessionId)).toEqual(['session-1', 'session-3'])
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
+    expect(yieldToMainThread).toHaveBeenCalledTimes(3)
   })
 })

@@ -535,6 +535,34 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
   })
 
+  it('never resurrects a hidden row even when its id is in the keep set (#113273)', () => {
+    // A canonical Bot Chat: fetched by id (get_session returns s.* with the
+    // hidden flag), upserted into the list, and its bot holds a live turn —
+    // so the id sits in $workingSessionIds on every refresh. The keep-list
+    // exists to protect in-flight VISIBLE rows; a hidden row has no sidebar
+    // life to protect and must drop out as soon as the server page omits it.
+    const previous = [
+      session({ id: 'bot-chat', hidden: true, last_active: 50, profile: 'botto', title: 'Bot Chat' }),
+      session({ id: 'real-work', last_active: 10, profile: 'botto' })
+    ]
+
+    const incoming = [session({ id: 'real-work', message_count: 2, profile: 'botto' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['bot-chat', 'real-work'])
+
+    expect(merged.map(s => s.id)).toEqual(['real-work'])
+
+    // The guard is the flag, not the title: a hidden row under any title is
+    // equally out of the sidebar contract.
+    const retitled = mergeSessionPage(
+      [session({ hidden: true, id: 'mislabeled', title: 'Just a chat' })],
+      [],
+      ['mislabeled']
+    )
+
+    expect(retitled).toEqual([])
+  })
+
   it('keeps a pinned session that has aged off the recent page', () => {
     // Repro of "loses pins until you refresh": a pinned chat falls off the
     // most-recent page, so the server stops returning it. A hard replace would
@@ -749,6 +777,20 @@ describe('carryForwardFailedProfileSessions', () => {
     expect(carryForwardFailedProfileSessions(previous, [], [{ error: 'disk I/O error' }]).map(s => s.id)).toEqual([
       'idle'
     ])
+  })
+
+  it('does not carry a hidden row forward through a failed profile scan (#113273)', () => {
+    // The failed-slice carry is the back door: a canonical Bot Chat parked in
+    // the list by an owner-resolution upsert would ride the "keep what the
+    // failed scan couldn't confirm" rule right back into the sidebar.
+    const previous = [
+      session({ hidden: true, id: 'bot-chat', profile: 'work', title: 'Bot Chat' }),
+      session({ id: 'idle', profile: 'work' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'work', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['idle'])
   })
 })
 

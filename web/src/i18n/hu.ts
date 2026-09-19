@@ -287,6 +287,7 @@ export const hu: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "Jelentkezzen be újra: {providers}.",
     newProfile: "Új profil",
     name: "Név",
     namePlaceholder: "pl. coder, writer stb.",

@@ -286,6 +286,7 @@ export const zhHant: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "請重新登入 {providers}。",
     newProfile: "新增設定檔",
     name: "名稱",
     namePlaceholder: "例如：coder、writer 等",

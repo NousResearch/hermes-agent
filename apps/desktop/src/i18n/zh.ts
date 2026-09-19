@@ -2667,6 +2667,7 @@ export const zh = defineLocale({
     cloneFrom: '克隆来源',
     cloneFromNone: '无（空白）',
     cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',
+    cloneNeedsAuth: providers => `请重新登录 ${providers}。`,
     cloneFromDefault: '从默认档案克隆',
     cloneFromDefaultDesc: '从你的默认配置档案复制配置、技能和 SOUL.md。',
     invalidName: hint => `名称无效。${hint}`,

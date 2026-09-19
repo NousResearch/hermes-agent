@@ -19907,6 +19907,13 @@
           },
           "mirrored": {
             "$ref": "#/components/schemas/ProfileMirrored"
+          },
+          "clone_needs_auth": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Clone Needs Auth",
+            "type": "array"
           }
         },
         "required": [

@@ -2081,6 +2081,7 @@ export interface Translations {
   }
 
   profiles: {
+    cloneNeedsAuth: (providers: string) => string
     close: string
     nameHint: string
     title: string

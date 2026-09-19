@@ -287,6 +287,7 @@ export const af: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "Meld weer aan by {providers}.",
     newProfile: "Nuwe Profiel",
     name: "Naam",
     namePlaceholder: "bv. coder, writer, ens.",

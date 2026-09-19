@@ -287,6 +287,7 @@ export const it: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "Accedi di nuovo a {providers}.",
     newProfile: "Nuovo profilo",
     name: "Nome",
     namePlaceholder: "es. coder, writer, ecc.",

@@ -328,6 +328,7 @@ export const en: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "Sign in again for {providers}.",
     newProfile: "New Profile",
     name: "Name",
     namePlaceholder: "e.g. coder, writer, etc.",

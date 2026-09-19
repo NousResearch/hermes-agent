@@ -2033,6 +2033,7 @@ export const ja = defineLocale({
     cloneFrom: '複製元',
     cloneFromNone: 'なし（空）',
     cloneFromDesc: '選択したプロファイルから設定、スキル、SOUL.md をコピーします。',
+    cloneNeedsAuth: providers => `${providers} に再度ログインしてください。`,
     cloneFromDefault: 'デフォルトプロファイルから設定を複製',
     cloneFromDefaultDesc: 'デフォルトプロファイルから設定、スキル、SOUL.md をコピーします。',
     invalidName: hint => `無効なプロファイル名。${hint}`,

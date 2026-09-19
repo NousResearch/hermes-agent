@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteProfile } from '@/hermes'
+import { createProfile, deleteProfile } from '@/hermes'
+import { notify } from '@/store/notifications'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -130,6 +131,14 @@ describe('ProfilesView', () => {
 
     expect(soul.tagName).toBe('TEXTAREA')
     expect(soul.getAttribute('id')).toBe('new-profile-soul')
+    vi.mocked(createProfile).mockResolvedValueOnce({
+      name: 'copy', ok: true, path: '/copy', clone_needs_auth: ['honcho', 'openviking']
+    })
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'copy' } })
+    await act(async () => { fireEvent.submit(soul.closest('form')!) })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'info', message: expect.stringMatching(/copy.*honcho, openviking/)
+    }))
   })
 
   it('re-homes to default when the active profile is deleted', async () => {

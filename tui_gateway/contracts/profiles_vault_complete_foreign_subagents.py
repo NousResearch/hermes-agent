@@ -211,6 +211,7 @@ class ProfilesCreateResult(Result):
     soul_written: bool = False
     model_set: bool = False
     mirrored: ProfileMirrored
+    clone_needs_auth: list[str] = Field(default_factory=list)
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,

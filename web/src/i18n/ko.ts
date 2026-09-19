@@ -286,6 +286,7 @@ export const ko: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "{providers}에 다시 로그인하세요.",
     newProfile: "새 프로필",
     name: "이름",
     namePlaceholder: "예: coder, writer 등.",

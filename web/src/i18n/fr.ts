@@ -287,6 +287,7 @@ export const fr: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "Reconnectez-vous à {providers}.",
     newProfile: "Nouveau profil",
     name: "Nom",
     namePlaceholder: "ex. coder, writer, etc.",

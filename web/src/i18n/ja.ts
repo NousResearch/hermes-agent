@@ -286,6 +286,7 @@ export const ja: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "{providers} に再度ログインしてください。",
     newProfile: "新しいプロファイル",
     name: "名前",
     namePlaceholder: "例: coder, writer など",

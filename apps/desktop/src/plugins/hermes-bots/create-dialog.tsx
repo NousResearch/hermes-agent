@@ -380,7 +380,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       }
 
       const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
-      await requestForTarget('profiles.create', {
+      const result = await requestForTarget<{ name?: string; clone_needs_auth?: string[] }>('profiles.create', {
         name: slug,
         description: descriptionText,
         // Clone sources are profiles of the TARGET backend. The picker's
@@ -408,6 +408,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           : {})
       })
       createdRef.current = slug
+      if (result?.clone_needs_auth?.length) {
+        host.notify({ kind: 'info', message: b.bot.cloneNeedsAuth(result.name || slug, result.clone_needs_auth.join(', ')) })
+      }
 
       // Apply capability picks from the Advanced tabs (best-effort; the
       // profile exists either way and Edit Profile can finish the job).

@@ -287,6 +287,7 @@ export const ru: Translations = {
   },
 
   profiles: {
+    cloneNeedsAuth: "Войдите снова в {providers}.",
     newProfile: "Новый профиль",
     name: "Имя",
     namePlaceholder: "напр. coder, writer и т.п.",

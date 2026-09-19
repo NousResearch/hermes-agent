@@ -388,17 +388,17 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           onSelect={() => {
             host.notify({
               kind: 'info',
-              message: `Duplicating ${displayName(bot, meta)}…`
+              message: b.bot.duplicating(displayName(bot, meta))
             })
             duplicateBot(bot, $lastRoster.get())
-              .then(name => {
-                queryClient.invalidateQueries({
-                  queryKey: ROSTER_KEY
-                })
-                host.notify({
-                  kind: 'success',
-                  message: `Created ${name} — full copy of ${bot.name}`
-                })
+              .then(({ name, clone_needs_auth, appearanceSaved }) => {
+                host.notify({ kind: 'success', message: b.bot.duplicated(name) })
+                if (clone_needs_auth.length) {
+                  host.notify({ kind: 'info', message: b.bot.cloneNeedsAuth(name, clone_needs_auth.join(', ')) })
+                }
+                if (!appearanceSaved) {
+                  host.notify({ kind: 'warning', message: b.bot.cloneAppearanceFailed(name) })
+                }
               })
               .catch(err => host.notifyError(err, b.bot.duplicateFailed))
           }}

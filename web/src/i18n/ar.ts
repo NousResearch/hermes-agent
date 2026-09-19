@@ -233,6 +233,7 @@ export const ar = defineLocale({
   },
 
   profiles: {
+    cloneNeedsAuth: "سجّل الدخول مجددًا إلى {providers}.",
     newProfile: "ملف شخصي جديد",
     name: "الاسم",
     namePlaceholder: "مثال: coder, writer, إلخ.",

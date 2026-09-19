@@ -76,6 +76,10 @@ const FITTING_MODEL: LocalCatalogModel = {
   mtp: false,
   fits: true,
   fit_summary: 'runs at its full 256K context',
+  reference_prompt_tokens: 20000,
+  reference_output_tokens: 512,
+  estimated_ttft_seconds: 480,
+  estimated_turn_seconds: 520,
   start_window: 262144,
   start_window_label: '256K',
   spilled: false
@@ -311,7 +315,7 @@ describe('LocalModelsSettings', () => {
     expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
-  it('explains the Recommended pick on hover', async () => {
+  it('explains the Recommended pick and reference-turn cost on hover', async () => {
     // The tooltip is the resolver's own reason, and it must actually OPEN:
     // Tip works by asChild-cloning hover handlers onto the pill, so a Pill
     // that swallows its rest props kills the tooltip silently (the pill
@@ -321,6 +325,13 @@ describe('LocalModelsSettings', () => {
     })
     await renderFullPane()
     await screen.findByText('Qwen3.6 27B')
+
+    const ttft = screen.getByText('TTFT ≈ 8m')
+    fireEvent.pointerMove(ttft)
+    fireEvent.pointerEnter(ttft)
+    await waitFor(() =>
+      expect(screen.getAllByText(/20K prompt · first token ≈ 8m · 512 output tokens ≈ 9m total/).length).toBeGreaterThan(0)
+    )
 
     fireEvent.pointerMove(screen.getByText('Recommended'))
     fireEvent.pointerEnter(screen.getByText('Recommended'))

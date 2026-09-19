@@ -72,6 +72,18 @@ function gbLabel(bytes: number | null | undefined): string {
   return `${(bytes / (1 << 30)).toFixed(1)} GB`
 }
 
+function durationLabel(seconds: number): string {
+  if (seconds < 60) {
+    return `${Math.max(1, Math.round(seconds))}s`
+  }
+
+  if (seconds < 3600) {
+    return `${Math.round(seconds / 60)}m`
+  }
+
+  return `${(seconds / 3600).toFixed(1)}h`
+}
+
 // Catalog display order: what runs well leads. Resident (all on GPU)
 // first, then spilled (works, slower), then doesn't-fit; catalog order
 // (recommended first) holds within each band.
@@ -731,6 +743,23 @@ export function LocalModelsSettings() {
                         ))}
 
                       {!model.fits && <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>}
+
+                      {model.fits &&
+                        model.reference_prompt_tokens &&
+                        model.reference_output_tokens &&
+                        model.estimated_ttft_seconds &&
+                        model.estimated_turn_seconds && (
+                          <Tip
+                            label={copy.referenceTurnEstimate(
+                              `${Math.round(model.reference_prompt_tokens / 1000)}K`,
+                              durationLabel(model.estimated_ttft_seconds),
+                              `${model.reference_output_tokens}`,
+                              durationLabel(model.estimated_turn_seconds)
+                            )}
+                          >
+                            <Pill>TTFT ≈ {durationLabel(model.estimated_ttft_seconds)}</Pill>
+                          </Tip>
+                        )}
 
                       {model.vision && <Pill>{copy.pillVision}</Pill>}
                     </span>

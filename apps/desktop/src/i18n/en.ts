@@ -1412,9 +1412,7 @@ export const en: Translations = {
       unifiedMemory: 'Unified memory',
       modelsTitle: 'Models',
       recommended: 'Recommended',
-      /* The Recommended badge's tooltip, keyed by the resolver branch that
-         made the pick. Qualitative on purpose: predictions order candidates,
-         they are not promises to print. */
+      /* The Recommended badge's tooltip, keyed by the resolver branch that made the pick. */
       recommendedReason: {
         'best-quality-resident':
           'The highest-quality model that runs entirely on your GPU at full speed. Picks weigh quality against predicted speed on this hardware.',
@@ -1423,6 +1421,8 @@ export const en: Translations = {
         'fastest-resident':
           'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
       } as Record<string, string>,
+      referenceTurnEstimate: (prompt, ttft, output, turn) =>
+        `${prompt} prompt · first token ≈ ${ttft} · ${output} output tokens ≈ ${turn} total. Hardware-class estimate, not a benchmark.`,
       noRecommendationTitle: 'No automatic recommendation for this machine',
       noRecommendationDetail:
         'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',

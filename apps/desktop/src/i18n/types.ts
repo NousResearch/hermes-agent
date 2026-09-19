@@ -1243,6 +1243,7 @@ export interface Translations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
+      referenceTurnEstimate: (prompt: string, ttft: string, output: string, turn: string) => string
       noRecommendationTitle: string
       noRecommendationDetail: string
       noRecommendationAction: string

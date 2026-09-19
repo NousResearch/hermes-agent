@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import time
 from functools import partial
 from pathlib import Path
 import weakref
@@ -59,9 +60,19 @@ def diagnostic_event(ev) -> bool:
 # (advanced atomically by claim_unseen_events_for_sub) handle dedup, and any retry-loop event reaches the
 # user. Per-subscription send-failure counter. Adapter.send raising means the chat is dead (deleted, bot
 # kicked, etc.) — after N consecutive send failures the sub is dropped so we don't spin against a dead chat
-# every 5 seconds forever. A genuinely dead chat still drops, just ~60s later — a fine trade for an
-# unattended gate where a false drop means silent work pileup.
+# every 5 seconds forever. A genuinely dead chat still drops, just later.
+#
+# The count alone is NOT enough, and this is the load-bearing part. At the ~5s notifier cadence a bare
+# 12-failure cap is ~60 SECONDS of wall-clock trouble, and a transient network window returns ordinary
+# send errors for a chat that is perfectly alive — including Telegram's "Chat not found", which is what
+# came back during the 2026-09-13 outage. A false drop is unrecoverable without operator action:
+# subscriptions are only created by an explicit subscribe, so once every live review gate has dropped,
+# nothing self-heals and no notification can reach anyone on any card. A streak must therefore ALSO span
+# MIN_DROP_WINDOW_SECONDS of wall-clock time before it counts as a dead chat. That makes the drop immune
+# both to a network window and to cadence drift (retry backoff slowing the streak into a longer, not
+# shorter, real interval than the count implies).
 MAX_SEND_FAILURES = 12
+MIN_DROP_WINDOW_SECONDS = 600
 
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
@@ -458,11 +469,17 @@ class _KanbanNotification:
     is at-least-once queueing, not an execution or final-response receipt.
     """
 
-    def __init__(self, runner: Any, d: dict, *, platform_cls: Any, sub_fail_counts: dict) -> None:
+    def __init__(
+        self, runner: Any, d: dict, *, platform_cls: Any, sub_fail_counts: dict, sub_fail_since: Optional[dict] = None,
+    ) -> None:
         self.runner = runner
         self.d = d
         self.platform_cls = platform_cls
         self.sub_fail_counts = sub_fail_counts
+        # Streak-start timestamps, runner-owned exactly like sub_fail_counts so the window survives the
+        # per-tick notifier rebuild. A caller passing nothing gets a fresh map, which can only make the
+        # drop MORE conservative (the window restarts) — never less.
+        self.sub_fail_since = sub_fail_since if sub_fail_since is not None else {}
         self.sub = sub = d["sub"]
         self.task = task = d["task"]
         self.board_slug = d.get("board")
@@ -502,18 +519,29 @@ class _KanbanNotification:
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
+        self.sub_fail_since.pop(self.sub_key, None)
 
     async def delivery_failed(self, fmt: str, prefix: tuple, drop_fmt: str, exc: Exception, exc_info: bool) -> None:
-        """Bump the failure counter; drop the sub past the limit, else rewind the claim so the next tick retries."""
+        """Bump the streak; drop only past BOTH the failure cap and the wall-clock window, else rewind."""
+        now = time.monotonic()
         fails = self.sub_fail_counts.get(self.sub_key, 0) + 1
         self.sub_fail_counts[self.sub_key] = fails
+        since = self.sub_fail_since.setdefault(self.sub_key, now)
+        streak = now - since
         logger.warning(fmt, *prefix, fails, MAX_SEND_FAILURES, exc, exc_info=exc_info)
-        if fails >= MAX_SEND_FAILURES:
+        if fails >= MAX_SEND_FAILURES and streak >= MIN_DROP_WINDOW_SECONDS:
             logger.warning(drop_fmt, self.task_id, self.platform_str, fails)
             await self.unsub()
             self.clear_failures()
-        else:
-            await self.rewind()
+            return
+        if fails >= MAX_SEND_FAILURES:
+            # Past the count but inside the window: almost always a transport outage, not a dead chat.
+            logger.warning(
+                "kanban notifier: holding subscription %s on %s after %d failures in %.0fs "
+                "(drop window %ds not elapsed) — treating as retryable transport failure",
+                self.task_id, self.platform_str, fails, streak, MIN_DROP_WINDOW_SECONDS,
+            )
+        await self.rewind()
 
     async def _wake_failed(self, fmt: str, exc: Exception) -> None:
         drop_fmt = "kanban notifier: dropping subscription %s on %s after %d consecutive wake failures"

@@ -11,8 +11,10 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 """
 
 import asyncio
+import time
 
 from gateway.config import Platform
+from gateway.kanban_watchers_notifier import MIN_DROP_WINDOW_SECONDS
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -187,10 +189,11 @@ def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
 
     adapter = FailingWakeAdapter()
     runner = _make_runner(adapter)
-    # Simulate 11 prior consecutive failures (MAX_SEND_FAILURES = 12).
-    runner._kanban_sub_fail_counts = {
-        (tid, "telegram", "chat-1", ""): 11,
-    }
+    # Simulate 11 prior consecutive failures (MAX_SEND_FAILURES = 12) whose streak already spans the
+    # drop window — the shape of a genuinely dead chat.
+    key = (tid, "telegram", "chat-1", "")
+    runner._kanban_sub_fail_counts = {key: 11}
+    runner._kanban_sub_fail_since = {key: time.monotonic() - MIN_DROP_WINDOW_SECONDS - 1}
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.handled) == 1
@@ -200,4 +203,32 @@ def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
     )
     assert runner._kanban_sub_fail_counts == {}, (
         "counter entry must clear when the subscription is dropped"
+    )
+
+
+def test_transient_outage_burst_does_not_drop_subscription(tmp_path, monkeypatch):
+    """A short burst of failures must NOT unsubscribe a live channel.
+
+    Regression for the 2026-09-13 outage: a ~60s Telegram reachability window produced 12 consecutive
+    send failures and permanently dropped EVERY subscription on the board, after which no card of any
+    status could notify anyone. Nothing self-heals a dropped sub — only an explicit subscribe re-creates
+    one — so a transient outage silently killed all delivery. The failure cap alone must not drop while
+    the streak is still inside MIN_DROP_WINDOW_SECONDS.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "outage-window.db"))
+    kb.init_db()
+    tid = _make_completed_task("wake")
+
+    adapter = FailingWakeAdapter()
+    runner = _make_runner(adapter)
+    # 11 prior failures whose streak began seconds ago: past the count, inside the window.
+    key = (tid, "telegram", "chat-1", "")
+    runner._kanban_sub_fail_counts = {key: 11}
+    runner._kanban_sub_fail_since = {key: time.monotonic()}
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.handled) == 1
+    assert _subs(tid) != [], (
+        "a failure streak still inside the drop window must NOT unsubscribe — otherwise a transient "
+        "network window permanently silences every live review gate"
     )

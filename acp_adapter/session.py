@@ -139,6 +139,11 @@ class SessionState:
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
+    # A state-mutating slash command (/reset, /compress, /model) is in flight. Turn claims
+    # must queue behind it: /compress's LLM call and /model's agent rebuild take seconds, so
+    # a bare is_running check in the slash thread would leave a check-then-act window where
+    # a prompt claims the turn mid-mutation.
+    command_op: bool = False
     queued_prompts: List[str] = field(default_factory=list)
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""

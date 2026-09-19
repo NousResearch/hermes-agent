@@ -463,6 +463,43 @@ class TestAdapterFallbackIps:
         adapter = self._make_adapter(extra={"fallback_ips": "149.154.167.220,149.154.167.221"})
         assert adapter._fallback_ips() == ["149.154.167.220", "149.154.167.221"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [None, {"fallback_ips": ["149.154.167.220"]}])
+    async def test_disable_env_skips_fallback_resolution_during_connect(self, monkeypatch, extra):
+        """Disabling fallback IPs should skip both config fallback IPs and DoH discovery."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from plugins.platforms.telegram import adapter as telegram_mod
+
+        adapter = self._make_adapter(extra=extra)
+        monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "1")
+
+        discover = AsyncMock(return_value=["149.154.167.221"])
+        monkeypatch.setattr(telegram_mod, "discover_fallback_ips", discover)
+
+        resolved_targets = []
+
+        def fake_resolve_proxy_url(platform_env_var, *, target_hosts=None, configured=None):
+            resolved_targets.append((platform_env_var, list(target_hosts or [])))
+            return None
+
+        monkeypatch.setattr(telegram_mod, "resolve_proxy_url", fake_resolve_proxy_url)
+
+        request_kwargs = []
+
+        def fake_httpx_request(**kwargs):
+            request_kwargs.append(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(telegram_mod, "HTTPXRequest", fake_httpx_request)
+
+        await adapter._build_ptb_requests()
+
+        discover.assert_not_awaited()
+        assert resolved_targets == [("TELEGRAM_PROXY", ["api.telegram.org"])]
+        assert request_kwargs
+        assert all("transport" not in kwargs.get("httpx_kwargs", {}) for kwargs in request_kwargs)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DoH auto-discovery

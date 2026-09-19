@@ -100,6 +100,27 @@ def _tool_name(tool: Any) -> Any:
     return tool.get("function", {}).get("name") if isinstance(tool, dict) else None
 
 
+def _tool_search_deferred_names(agent: Any) -> frozenset[str]:
+    """Names already represented by an active tool-search bridge."""
+    tools = getattr(agent, "tools", None) or []
+    if not any(_tool_name(tool) == "tool_search" for tool in tools):
+        return frozenset()
+    try:
+        import model_tools
+        from tools.tool_search import scoped_deferrable_names
+
+        full_defs = model_tools.get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) or []
+        return scoped_deferrable_names(full_defs)
+    except Exception:
+        logger.debug("Failed to resolve deferred tools during memory-provider injection", exc_info=True)
+        return frozenset()
+
+
 def memory_provider_tools_exposed(agent: Any) -> bool:
     """Whether external memory-provider tools are exposed on ``agent``.
 
@@ -142,6 +163,7 @@ def inject_memory_provider_tools(agent: Any) -> int:
     if getattr(agent, "valid_tool_names", None) is None:
         agent.valid_tool_names = set()
     existing_tool_names = {_tool_name(tool) for tool in tools if isinstance(tool, dict)}
+    deferred_tool_names = _tool_search_deferred_names(agent)
     added = 0
     for raw_schema in get_schemas():
         schema = normalize_tool_schema(raw_schema)
@@ -150,7 +172,7 @@ def inject_memory_provider_tools(agent: Any) -> int:
                 "Memory provider returned a tool schema with no resolvable "
                 "name; skipping to avoid poisoning the request (%r)", raw_schema,
             )
-        elif schema["name"] not in existing_tool_names:
+        elif schema["name"] not in existing_tool_names and schema["name"] not in deferred_tool_names:
             tools.append({"type": "function", "function": schema})
             agent.valid_tool_names.add(schema["name"])
             existing_tool_names.add(schema["name"])

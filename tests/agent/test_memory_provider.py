@@ -1253,6 +1253,54 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(None, mgr)
         assert names == {"fact_store", "memory_search", "memory_add"}
 
+    def test_deferred_schema_is_not_reinjected_beside_tool_search(self):
+        """A provider alias of a deferred registry tool stays represented only by the bridge."""
+        import model_tools
+        from tools.registry import discover_builtin_tools, registry
+
+        discover_builtin_tools()
+        deferred_name = "memory_provider_deferred_probe"
+        provider_only_name = "memory_provider_direct_probe"
+        registry.register(
+            name=deferred_name,
+            handler=lambda args, **kwargs: "{}",
+            schema={"name": deferred_name, "description": "probe", "parameters": {}},
+            toolset="memory-provider-deferred-probe",
+        )
+        enabled = ["memory", "memory-provider-deferred-probe"]
+        assembled = model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+        assembled_names = {tool["function"]["name"] for tool in assembled}
+        assert "tool_search" in assembled_names
+        assert deferred_name not in assembled_names
+
+        mgr = MemoryManager()
+        mgr.add_provider(
+            FakeMemoryProvider(
+                "ext",
+                tools=[
+                    registry.get_schema(deferred_name),
+                    {
+                        "name": provider_only_name,
+                        "description": "probe",
+                        "parameters": {},
+                    },
+                ],
+            )
+        )
+        agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=enabled,
+            disabled_toolsets=None,
+            tools=list(assembled),
+            valid_tool_names=set(assembled_names),
+        )
+
+        assert inject_memory_provider_tools(agent) == 1
+        final_names = {tool["function"]["name"] for tool in agent.tools}
+        assert deferred_name not in final_names
+        assert provider_only_name in final_names
+        assert provider_only_name in agent.valid_tool_names
+
 
 class TestContextEngineToolsetGate:
     """Issue #5544 (sibling): context engine tools follow the same gate.

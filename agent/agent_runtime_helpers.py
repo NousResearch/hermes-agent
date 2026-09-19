@@ -1871,7 +1871,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_config_context_length", "_ollama_num_ctx", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
 )
 _MISSING = object()
@@ -2118,6 +2118,20 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     revalidate_compression_feasibility(agent)
 
 
+def _reconfigure_switched_ollama_num_ctx(agent, config_context_length, snapshot) -> None:
+    """Recompute per-request Ollama ``num_ctx`` for the newly selected model."""
+    try:
+        from agent.agent_init import _configure_ollama_num_ctx
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+        model_config = config.get("model", {}) if isinstance(config, dict) else {}
+        _configure_ollama_num_ctx(agent, model_config, config_context_length)
+    except Exception:
+        _restore_switch_snapshot(agent, snapshot)
+        raise
+
+
 def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
     """The ``_primary_runtime`` record that persists a switch across turns."""
     cc = getattr(agent, "context_compressor", None) or None
@@ -2233,6 +2247,7 @@ def switch_model(
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
+    _reconfigure_switched_ollama_num_ctx(agent, effective_context_length, snapshot)
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:

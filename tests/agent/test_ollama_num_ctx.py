@@ -191,6 +191,37 @@ class TestCompressorClampsToNumCtx:
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
 
+    def test_model_switch_updates_ollama_num_ctx_request_option(self):
+        """Regression for #110239: local model switches use their own context cap on requests."""
+        cfg = {
+            "agent": {},
+            "model": {},
+            "providers": {
+                "ollama-local": {
+                "base_url": "http://localhost:11434/v1",
+                "models": {
+                    "gemma3:27b": {"context_length": 65536},
+                    "qwen2.5:7b": {"context_length": 32768},
+                },
+                },
+            },
+        }
+        with (
+            patch("agent.agent_init.query_ollama_num_ctx", return_value=131072),
+            patch("hermes_cli.config.load_config", return_value=cfg),
+        ):
+            agent = _build_agent(cfg, probed_ctx=131072)
+            agent.switch_model(
+                "qwen2.5:7b", "custom", api_key=agent.api_key,
+                base_url=agent.base_url, api_mode=agent.api_mode,
+            )
+
+        from agent.chat_completion_helpers import build_api_kwargs
+
+        request = build_api_kwargs(agent, [{"role": "user", "content": "hello"}])
+        assert request["extra_body"]["options"]["num_ctx"] == 32768
+        assert agent.context_compressor.context_length == 32768
+
 
 class TestServedNumCtxSatisfiesTheFloor:
     """#100437: the 64K floor judges the window a local Ollama server actually serves. A Modelfile

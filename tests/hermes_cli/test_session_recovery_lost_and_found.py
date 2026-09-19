@@ -1218,3 +1218,78 @@ def test_recover_attempts_survive_dump_stderr_beyond_pipe_buffer(tmp_path: Path)
     # The stderr tail is load-bearing: the caller keys the header-zeroing retry
     # on "not a database" appearing in it, so the drain must preserve it.
     assert "file is not a database" in attempts[-1]["dump_stderr_tail"]
+
+def test_map_lost_and_found_quarantines_model_config_before_message_insert(
+    tmp_path: Path,
+) -> None:
+    """#101679: malformed sessions.model_config must not abort message copy.
+
+    ``map_lost_and_found_rows`` copies canonical tables in ``_CANONICAL_TABLES``
+    order (sessions, then messages) inside one transaction. The
+    ``messages_fts_trigram_insert`` trigger ``json_extract``s the owning
+    session's ``model_config``. Quarantine has to run after the session insert
+    and before the message insert; the previous post-mapper cleanup never ran.
+    """
+
+    recovered_source = tmp_path / "lost_and_found.db"
+    session_id = "20260812_135301_abc001"
+    db = SessionDB(db_path=recovered_source)
+    try:
+        db.create_session(session_id, "cli", cwd="/tmp/laf-malformed")
+        db.append_message(session_id, "user", "lost-and-found message must survive")
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(recovered_source), isolation_level=None)
+    try:
+        conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            ('{"broken"', session_id),
+        )
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert conn.execute(
+            "SELECT json_valid(model_config) FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone() == (0,)
+    finally:
+        conn.close()
+
+    output = tmp_path / "mapped.db"
+    SessionDB(db_path=output).close()
+
+    lf_conn = sqlite3.connect(str(recovered_source), isolation_level=None)
+    dest = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        dest.execute("PRAGMA foreign_keys=OFF")
+        mapping = map_lost_and_found_rows(lf_conn, dest)
+        assert mapping["direct_table_rows"]["sessions"] == 1
+        assert mapping["direct_table_rows"]["messages"] == 1
+        assert mapping["semantic_cleanup"] == {
+            "malformed_json_values_quarantined": 1,
+            "columns": {"sessions.model_config": 1},
+        }
+        row = dest.execute(
+            "SELECT model_config FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        messages = dest.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        content = dest.execute("SELECT content FROM messages").fetchone()[0]
+    finally:
+        lf_conn.close()
+        dest.close()
+
+    assert row == ("{}",)
+    assert messages == 1
+    assert content == "lost-and-found message must survive"
+
+    recovered = SessionDB(db_path=output)
+    try:
+        listed = recovered.list_sessions_rich(limit=10)
+        session = recovered.get_session(session_id)
+    finally:
+        recovered.close()
+    assert {item["id"] for item in listed} == {session_id}
+    assert session is not None
+    assert session["model_config"] == "{}"
+

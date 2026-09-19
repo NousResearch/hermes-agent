@@ -407,6 +407,52 @@ def _append_skipped_range(ranges: list[dict[str, Any]], low: int, high: int, err
     ranges.append({"low": low, "high": high, "error": error})
 
 
+def _apply_malformed_json_quarantine(destination: sqlite3.Connection) -> dict[str, Any]:
+    """Replace malformed runtime JSON in place. Caller owns the transaction."""
+
+    result: dict[str, Any] = {
+        "malformed_json_values_quarantined": 0,
+        "columns": {},
+    }
+    for table, column, replacement in _RECOVERY_JSON_COLUMNS:
+        if column not in _table_columns(destination, table):
+            continue
+        invalid = int(
+            destination.execute(
+                f'SELECT COUNT(*) FROM "{table}" '
+                f'WHERE "{column}" IS NOT NULL '
+                f'AND NOT json_valid("{column}")'
+            ).fetchone()[0]
+        )
+        if not invalid:
+            continue
+        destination.execute(
+            f'UPDATE "{table}" SET "{column}" = ? '
+            f'WHERE "{column}" IS NOT NULL '
+            f'AND NOT json_valid("{column}")',
+            (replacement,),
+        )
+        result["columns"][f"{table}.{column}"] = invalid
+        result["malformed_json_values_quarantined"] += invalid
+    return result
+
+
+def _merge_json_quarantine_reports(*reports: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {
+        "malformed_json_values_quarantined": 0,
+        "columns": {},
+    }
+    for report in reports:
+        if not report:
+            continue
+        merged["malformed_json_values_quarantined"] += int(
+            report.get("malformed_json_values_quarantined") or 0
+        )
+        for key, count in (report.get("columns") or {}).items():
+            merged["columns"][key] = int(merged["columns"].get(key) or 0) + int(count)
+    return merged
+
+
 def _quarantine_malformed_json(
     destination: sqlite3.Connection,
 ) -> dict[str, Any]:
@@ -416,39 +462,17 @@ def _quarantine_malformed_json(
     columns. Recovery therefore enforces this semantic invariant before
     declaring an output usable. The original source/snapshot stays untouched;
     the report records only table/column counts, never raw values.
+
+    If the destination already has an open transaction (lost-and-found mapping
+    copies sessions then messages in one BEGIN), join it. A nested BEGIN
+    would fail, and postponing quarantine until after COMMIT lets the
+    messages_fts_trigram_insert trigger see malformed model_config.
     """
 
-    result: dict[str, Any] = {
-        "malformed_json_values_quarantined": 0,
-        "columns": {},
-    }
-    destination.execute("BEGIN IMMEDIATE")
-    try:
-        for table, column, replacement in _RECOVERY_JSON_COLUMNS:
-            if column not in _table_columns(destination, table):
-                continue
-            invalid = int(
-                destination.execute(
-                    f'SELECT COUNT(*) FROM "{table}" '
-                    f'WHERE "{column}" IS NOT NULL '
-                    f'AND NOT json_valid("{column}")'
-                ).fetchone()[0]
-            )
-            if not invalid:
-                continue
-            destination.execute(
-                f'UPDATE "{table}" SET "{column}" = ? '
-                f'WHERE "{column}" IS NOT NULL '
-                f'AND NOT json_valid("{column}")',
-                (replacement,),
-            )
-            result["columns"][f"{table}.{column}"] = invalid
-            result["malformed_json_values_quarantined"] += invalid
-        destination.execute("COMMIT")
-    except BaseException:
-        destination.execute("ROLLBACK")
-        raise
-    return result
+    if destination.in_transaction:
+        return _apply_malformed_json_quarantine(destination)
+    with _immediate_transaction(destination):
+        return _apply_malformed_json_quarantine(destination)
 
 
 def _salvage_rowid_bounds(
@@ -1080,7 +1104,10 @@ def _recover_via_lost_and_found(
     try:
         mapping = map_lost_and_found_rows(lf_conn, destination_conn)
         stubbing = stub_missing_parent_sessions(destination_conn)
-        semantic_cleanup = _quarantine_malformed_json(destination_conn)
+        semantic_cleanup = _merge_json_quarantine_reports(
+            mapping.get("semantic_cleanup") or {},
+            _quarantine_malformed_json(destination_conn),
+        )
         fts = rebuild_fts_indexes(destination_conn)
         derived_metadata = _finalize_derived_metadata(destination_conn)
     finally:

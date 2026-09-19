@@ -987,20 +987,33 @@ def test_recovery_quarantines_malformed_session_model_config(tmp_path: Path) -> 
     assert row["model_config"] == "{}"
 
 
-def test_quarantine_malformed_json_is_not_called_inside_an_open_transaction(
+def test_quarantine_malformed_json_joins_an_open_transaction_without_nested_begin(
     tmp_path: Path,
 ) -> None:
-    """Regression guard for the reviewer-flagged nested-BEGIN concern.
+    """#101679: quarantine must join an open destination transaction.
 
-    ``_quarantine_malformed_json`` issues its own ``BEGIN IMMEDIATE`` /
-    ``COMMIT`` / ``ROLLBACK``. Both recovery call sites hand it a fresh
-    autocommit (``isolation_level=None``) connection, so SQLite is not inside
-    a transaction when the quarantine runs. If a future caller ever invokes
-    it while a transaction is already open, the nested ``BEGIN`` raises
-    ``sqlite3.OperationalError: cannot start a transaction within a
-    transaction`` — this test pins the current safe contract by asserting the
-    connection is transaction-free at entry on both call paths.
+    Lost-and-found mapping copies sessions then messages in one BEGIN. If
+    quarantine issued its own BEGIN IMMEDIATE there, SQLite would raise
+    "cannot start a transaction within a transaction" and the mapper would
+    roll back. The helper must apply in place when ``in_transaction`` is
+    already true, and still open its own transaction on the SQL-copy path.
     """
+
+    destination = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        destination.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, model_config TEXT)")
+        destination.execute("INSERT INTO sessions VALUES (?, ?)", ("s1", '{"broken'))
+        destination.execute("BEGIN IMMEDIATE")
+        report = session_recovery._quarantine_malformed_json(destination)
+        assert destination.in_transaction is True
+        destination.execute("COMMIT")
+    finally:
+        destination.close()
+
+    assert report == {
+        "malformed_json_values_quarantined": 1,
+        "columns": {"sessions.model_config": 1},
+    }
 
     source = tmp_path / "state.db"
     output = tmp_path / "recovered.db"

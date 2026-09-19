@@ -19,7 +19,8 @@ from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical
 from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
 from hermes_cli.session_recovery import (
     _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
+    _merge_json_quarantine_reports, _placeholder_titles, _quoted_columns, _quarantine_malformed_json,
+    _table_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -659,7 +660,11 @@ def _execute_insert(
     return cursor.rowcount == 1
 
 
-def _copy_direct_tables(lf_conn: sqlite3.Connection, dest: sqlite3.Connection) -> dict[str, int]:
+def _copy_direct_tables(
+    lf_conn: sqlite3.Connection,
+    dest: sqlite3.Connection,
+    json_quarantine: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, int]:
     """Copy rows .recover managed to attribute to real canonical tables."""
     copied: dict[str, int] = {}
     for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES):
@@ -681,6 +686,12 @@ def _copy_direct_tables(lf_conn: sqlite3.Connection, dest: sqlite3.Connection) -
         before = _count_rows(dest, table)
         dest.executemany(f'INSERT OR IGNORE INTO "{table}" ({quoted}) VALUES ({placeholders})', rows)
         copied[table] = _count_rows(dest, table) - before
+        # Message FTS triggers inspect sessions.model_config. Quarantine before
+        # the next canonical table (messages) is copied.
+        if table == "sessions":
+            cleaned = _quarantine_malformed_json(dest)
+            if json_quarantine is not None:
+                json_quarantine.append(cleaned)
     return copied
 
 
@@ -693,8 +704,11 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
         "unmapped_rows": 0, "insert_conflicts": 0, "lost_and_found_tables": [],
     }
     with _immediate_transaction(dest):
-        report["direct_table_rows"] = _copy_direct_tables(lf_conn, dest)
-
+        json_quarantine: list[dict[str, Any]] = []
+        report["direct_table_rows"] = _copy_direct_tables(lf_conn, dest, json_quarantine)
+        # Direct copy already quarantined after sessions. Classified session
+        # rows still land before messages in pass 2; quarantine again after
+        # that pass so a classified session cannot poison a later message insert.
         # Per-kind destination columns + NOT NULL substitutes. Identity fields are never fabricated:
         # rows with a NULL session id / role / source were already rejected by classify_lost_and_found_row.
         targets: dict[str, tuple[list[str], dict[int, Any]]] = {}
@@ -743,9 +757,17 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
 
         # Pass 2: insert. Records whose width resolved to a layout are mapped by column name (#101409);
         # the rest take the historical positional prefix, audited by the recovery verifier's plausibility gate.
-        for kind, lf_rowid, nfield, cells in records():
-            if kind is None:
-                continue  # counted in pass 1
+        # Sessions must land and be JSON-quarantined before any message insert: the
+        # messages_fts_trigram_insert trigger json_extracts sessions.model_config.
+        classified_rows = [
+            (kind, lf_rowid, nfield, cells)
+            for kind, lf_rowid, nfield, cells in records()
+            if kind is not None
+        ]
+        session_rows = [row for row in classified_rows if row[0] == "sessions"]
+        other_rows = [row for row in classified_rows if row[0] != "sessions"]
+
+        def _insert_classified(kind, lf_rowid, nfield, cells) -> None:
             columns, defaults = targets[kind]
             layout = layouts[kind].get(len(cells))
             legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
@@ -782,11 +804,18 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
                     inserted = _insert_prefix_row(dest, kind, columns, values, defaults)
             except sqlite3.DatabaseError:
                 report["unmapped_rows"] += 1
-                continue
+                return
             if inserted:
                 report["mapped"][kind] += 1
             else:
                 report["insert_conflicts"] += 1
+
+        for kind, lf_rowid, nfield, cells in session_rows:
+            _insert_classified(kind, lf_rowid, nfield, cells)
+        json_quarantine.append(_quarantine_malformed_json(dest))
+        for kind, lf_rowid, nfield, cells in other_rows:
+            _insert_classified(kind, lf_rowid, nfield, cells)
+    report["semantic_cleanup"] = _merge_json_quarantine_reports(*json_quarantine)
     return report
 
 

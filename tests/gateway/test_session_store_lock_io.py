@@ -252,3 +252,37 @@ def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
         old.session_id, "suspended"
     )
     db.end_session.assert_not_called()
+
+
+def test_restore_route_entry_reinstates_snapshot(tmp_path):
+    """``restore_route_entry`` puts a captured entry back verbatim.
+
+    Route-rollback primitive for a failed /topic restore: reinstating the snapshot keeps
+    counters, model overrides and auto-reset metadata that a switch-back-by-ID would lose.
+    """
+    source = _source()
+    db = _db_with_rows({})
+    store = _make_store(tmp_path, db)
+    key = store._generate_session_key(source)
+    prior = _seed_entry(store, key, "sid_prior")
+    prior.model_override = {"model": "m1", "provider": "p1"}
+    prior.was_auto_reset = True
+    prior.prev_session_id = "sid_retired"
+    store._save()
+
+    switched = store.switch_session(key, "sid_target")
+    assert switched is not None
+    assert switched.session_id == "sid_target"
+    target = store.lookup_by_session_key(key)
+    assert target is not None
+    assert target.session_id == "sid_target"
+
+    store.restore_route_entry(key, prior)
+
+    current = store.lookup_by_session_key(key)
+    assert current is not None
+    assert current is prior  # the exact snapshot, not a fresh shell entry
+    assert current.session_id == "sid_prior"
+    assert current.model_override == {"model": "m1", "provider": "p1"}
+    assert current.was_auto_reset is True
+    assert current.prev_session_id == "sid_retired"

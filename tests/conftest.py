@@ -663,16 +663,25 @@ def _close_leaked_session_dbs():
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
     still holds. The registry owns that lifecycle (``close_all()``).
+
+    Instances whose constructing thread is still running are skipped too: the
+    dashboard lifespan's ``statedb-eager-reconcile`` daemon opens a bare
+    read-only SessionDB and probes it, and closing that connection from here
+    while the thread is inside ``sqlite3_step()`` segfaulted the whole test
+    process on CI (test_web_server.py, test_web_profiles_off_loop.py,
+    test_dashboard_param_clamps.py). The owner closes it; a thread that dies
+    without closing leaves the instance to the next sweep.
     """
     yield
     try:
+        from hermes_state_guard import _owner_thread_is_running
         from hermes_state_guard import _test_instance_registry as registry
     except Exception:
         return
     if not registry:
         return
     for db in list(registry):
-        if getattr(db, "_shared_registry_owned", False):
+        if getattr(db, "_shared_registry_owned", False) or _owner_thread_is_running(db):
             continue
         try:
             db.close()

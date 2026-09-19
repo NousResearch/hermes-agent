@@ -139,6 +139,10 @@ def _is_production_state_db(resolved: Path, root: Path) -> bool:
 # before any test module imports). Production processes never populate it;
 # do not "simplify" the gate away. WeakSet membership never pins an instance.
 _test_instance_registry: "weakref.WeakSet[Any]" = weakref.WeakSet()
+# Constructing thread per registered instance. A SessionDB whose owner thread is still
+# running is in use, not leaked: sqlite3.Connection.close() racing that thread's
+# sqlite3_step() is a use-after-free (segfault), so the sweep must leave it to its owner.
+_test_instance_owners: "weakref.WeakKeyDictionary[Any, threading.Thread]" = weakref.WeakKeyDictionary()
 
 
 def _register_test_instance(db: Any) -> None:
@@ -146,8 +150,15 @@ def _register_test_instance(db: Any) -> None:
     if os.environ.get(_TEST_ISOLATION_MARKER_ENV):
         try:
             _test_instance_registry.add(db)
+            _test_instance_owners[db] = threading.current_thread()
         except Exception:  # pragma: no cover — registry must never break init
             pass
+
+
+def _owner_thread_is_running(db: Any) -> bool:
+    """True when *db* was constructed on another thread that is still alive."""
+    owner = _test_instance_owners.get(db)
+    return owner is not None and owner is not threading.current_thread() and owner.is_alive()
 
 
 # Last SessionDB() init error, per-process; surfaced by /resume-style slash

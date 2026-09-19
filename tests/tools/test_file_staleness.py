@@ -126,6 +126,15 @@ class TestStalenessCheck(unittest.TestCase):
         with open(self._tmpfile) as f:
             self.assertEqual(f.read(), "merged\n")
 
+    def test_write_file_on_a_directory_names_the_directory_not_a_stale_read(self):
+        """A directory target is a wrong-path mistake, not an unread file: the error
+        must say so (and never suggest read_file, which cannot read a directory)."""
+        result = json.loads(write_file_tool(self._tmpdir, "x\n", task_id="t2"))
+        self.assertIn("is a directory", result["error"])
+        self.assertNotIn("has not seen its full current content", result["error"])
+        self.assertFalse(result.get("stale_write_blocked"))
+        self.assertTrue(os.path.isdir(self._tmpdir))
+
     def test_write_file_requires_full_unredacted_read_of_existing_file(self):
         """Existing file with no baseline is refused untouched: never read, only
         patched, read partially, or read redacted (the «redacted:…» sentinel must

@@ -489,6 +489,14 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "still current — refer to that instead of re-reading.")
 
 
+def _is_directory_target(path: str) -> bool:
+    """True when *path* is an existing directory on this host (a symlink to one counts)."""
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
 def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:
     """Reason write_file must NOT replace the existing file, else ``None``.
 

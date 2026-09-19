@@ -32,7 +32,7 @@ from tools.file_tools_paths import (
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
-    _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
+    _is_directory_target, _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
@@ -860,6 +860,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # A whole-file overwrite of content this task never saw, or that
             # changed since, is refused HERE — before the write — instead of
             # warning after the clobber (#65604). Nothing below runs.
+            # A directory target is a wrong-path mistake, not an unread file:
+            # the stale guard's "read the file first" advice would send the
+            # model in a loop (read_file cannot read a directory), so name it.
+            if _is_directory_target(_resolved or path):
+                return tool_error(
+                    f"{_resolved or path} is a directory, not a file. Pass the path of a file "
+                    "inside it (e.g. <dir>/<name>) — write_file never replaces a directory.")
             blocker = _stale_overwrite_blocker(path, _resolved, task_id)
             if blocker:
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)

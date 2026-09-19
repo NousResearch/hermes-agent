@@ -134,6 +134,62 @@ describe('the catalog owns model curation', () => {
   })
 })
 
+// Reaching the options panel means crossing the rows between it and the row
+// that opened it, and every one of those rows is a hover target: Radix moves
+// DOM focus to whatever row the pointer passes over. It reads that focus hop as
+// "the pointer left the panel" and unmounts it mid-transit — the options are
+// gone before the pointer ever lands on them (#107116). The panel has to
+// outlive the crossing, and only give way to a row that asks for its own panel.
+describe('the options panel survives the pointer crossing to it', () => {
+  const rowFor = (label: HTMLElement) => label.closest<HTMLElement>('[data-slot="dropdown-menu-sub-trigger"]')
+
+  const openPanel = () => {
+    // eslint-disable-next-line no-restricted-globals -- the panel is portaled under document.body, outside the tree screen renders into
+    return document.querySelector<HTMLElement>('[data-slot="dropdown-menu-sub-content"]')
+  }
+
+  const panelOf = (row: HTMLElement) => {
+    const panel = openPanel()
+
+    return panel?.getAttribute('aria-labelledby') === row.id ? panel : null
+  }
+
+  it('stays mounted when the pointer crosses a sibling model row', async () => {
+    renderMenu()
+
+    const rowA = rowFor(await screen.findByText(/Gemini 3\.1 Pro/i))!
+    const rowB = rowFor(await screen.findByText(/Gemini 2\.5 Flash/i))!
+
+    fireEvent.click(rowA)
+    expect(panelOf(rowA)).toBeTruthy()
+
+    // Leaving rowA toward its panel, the first pointer sample lands on the
+    // sibling row underneath — which takes focus on the way there.
+    fireEvent.pointerMove(rowB, { pointerType: 'mouse' })
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    expect(document.activeElement).toBe(rowB)
+    expect(panelOf(rowA)).toBeTruthy()
+    // eslint-disable-next-line no-restricted-globals -- the row under the pointer must not have added a second panel
+    expect(document.querySelectorAll('[data-slot="dropdown-menu-sub-content"]').length).toBe(1)
+  })
+
+  it('still dismisses when the pointer lands on a row that owns no panel', async () => {
+    renderMenu()
+
+    const rowA = rowFor(await screen.findByText(/Gemini 3\.1 Pro/i))!
+
+    fireEvent.click(rowA)
+    expect(panelOf(rowA)).toBeTruthy()
+
+    // A plain row (here the Edit models footer) can never replace the panel, so
+    // hovering it still means the user is done with the options.
+    fireEvent.pointerMove(screen.getByText('Edit models…'), { pointerType: 'mouse' })
+
+    expect(openPanel()).toBeNull()
+  })
+})
+
 describe('in-flight local downloads', () => {
   const DOWNLOAD_JOB: LocalRuntimeJob = {
     job_id: 'dl1',

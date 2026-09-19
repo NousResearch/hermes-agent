@@ -468,7 +468,49 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
 
 
 class TestEditMessageStreamingSafety:
+    @staticmethod
+    def _assert_link_previews_disabled(kwargs):
+        assert (
+            kwargs.get("disable_web_page_preview") is True
+            or kwargs.get("link_preview_options") is not None
+        )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("finalize", "edit_side_effect", "expected_edits"),
+        [
+            (False, None, 1),
+            # Final edit: MarkdownV2 rejected, then the plain-text fallback edit.
+            (True, [Exception("bad markdown"), None], 2),
+        ],
+    )
+    async def test_every_legacy_edit_disables_link_preview_when_configured(
+        self, finalize, edit_side_effect, expected_edits
+    ):
+        """Regression for #61018: disable_link_previews reached sends but not
+        editMessageText, so streamed and finalized replies grew preview cards."""
+        adapter = TelegramAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="fake-token",
+                extra={"disable_link_previews": True},
+            )
+        )
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(side_effect=edit_side_effect)
+
+        result = await adapter.edit_message(
+            "123",
+            "456",
+            "reply https://example.com **bold**",
+            finalize=finalize,
+        )
+
+        assert result.success is True
+        edits = adapter._bot.edit_message_text.await_args_list
+        assert len(edits) == expected_edits
+        for edit in edits:
+            self._assert_link_previews_disabled(edit.kwargs)
 
     @pytest.mark.asyncio
     async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
@@ -507,6 +549,37 @@ class TestEditMessageStreamingSafety:
         # Continuations were sent threaded as replies for visual grouping.
         assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
 
+    @pytest.mark.asyncio
+    async def test_message_too_long_first_chunk_edit_disables_link_preview(self):
+        """The overflow split edits chunk 1 in place; it must honor the same
+        setting as the continuation sends that follow it (#61018)."""
+        adapter = TelegramAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="fake-token",
+                extra={"disable_link_previews": True},
+            )
+        )
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        result = await adapter.edit_message(
+            "123",
+            "456",
+            "https://example.com " + ("x" * 6000),
+            finalize=True,
+        )
+
+        assert result.success is True
+        first_edit = adapter._bot.edit_message_text.await_args_list[0].kwargs
+        self._assert_link_previews_disabled(first_edit)
 
     @pytest.mark.asyncio
     async def test_mid_stream_overflow_truncates_instead_of_splitting(self):

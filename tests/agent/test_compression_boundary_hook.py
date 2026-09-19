@@ -96,6 +96,7 @@ class TestCompressionBoundaryHook:
                 f"Expected new session_id as first positional arg, got {call!r}"
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+            assert call.kwargs.get("session_db") is db
             assert len(comp_calls) == 1
 
     def test_automatic_notification_follows_core_persistence(self):

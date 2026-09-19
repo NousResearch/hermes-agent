@@ -62,6 +62,8 @@ def test_transition_skips_optional_hooks_when_engine_lacks_them():
 
     engine = MinimalEngine()
     agent = _bare_agent()
+    session_db = object()
+    agent._session_db = session_db
     agent.context_compressor = engine
 
     # Should not raise even though on_session_end / carry_over are missing.
@@ -77,10 +79,25 @@ def test_transition_skips_optional_hooks_when_engine_lacks_them():
     new_sid, kw = engine.start_called_with
     assert new_sid == "new"
     assert kw.get("old_session_id") == "old"
+    assert kw.get("session_db") is session_db
 
 
+def test_transition_preserves_explicit_no_session_db_sentinel():
+    """Later lifecycle starts must say explicitly when no durable DB exists."""
+    engine = MagicMock()
+    engine.context_length = 100_000
+    agent = _bare_agent()
+    agent._session_db = None
+    agent.context_compressor = engine
 
+    agent._transition_context_engine_session(
+        old_session_id="old", new_session_id="new", previous_messages=[]
+    )
 
+    calls = engine.on_session_start.call_args_list
+    assert calls
+    assert "session_db" in calls[-1].kwargs
+    assert calls[-1].kwargs["session_db"] is None
 
 
 def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp_path, monkeypatch):

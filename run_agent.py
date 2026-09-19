@@ -389,9 +389,16 @@ class AIAgent(
                 "old_session_id": old_session_id, "carry_over_context": carry_over_context,
                 "platform": _session_source_for_agent(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""), "context_length": getattr(engine, "context_length", None),
-                "conversation_id": getattr(self, "_gateway_session_key", None), **extra_context,
+                "conversation_id": getattr(self, "_gateway_session_key", None),
+                "session_db": getattr(self, "_session_db", None), **extra_context,
             }
-            start_context = {k: v for k, v in start_context.items() if v not in (None, "")}
+            # session_db=None is an explicit host contract: this session has no
+            # durable store. Preserve that sentinel so engines do not reopen
+            # HERMES_HOME/state.db behind the host's back.
+            start_context = {
+                k: v for k, v in start_context.items()
+                if k == "session_db" or v not in (None, "")
+            }
             _call_engine_hook(engine, "on_session_start", target_session_id, **start_context)
         if carry_over_context and old_session_id and target_session_id:
             _call_engine_hook(engine, "carry_over_new_session_context", old_session_id, target_session_id)

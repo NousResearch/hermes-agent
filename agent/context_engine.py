@@ -178,7 +178,12 @@ class ContextEngine(ABC):
         return True
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
-        """Session begins: load persisted state. kwargs may include hermes_home, platform, model."""
+        """Session begins: load persisted state.
+
+        ``kwargs`` may include ``hermes_home``, ``platform``, ``model``,
+        ``conversation_id``, and the host-owned ``session_db`` handle. Engines must
+        not close a host-owned database handle.
+        """
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""

@@ -7,6 +7,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 from unittest.mock import MagicMock, patch
 
 from agent.context_engine import ContextEngine
+from hermes_state import SessionDB
 
 
 class _StubEngine(ContextEngine):
@@ -65,6 +66,44 @@ def test_plugin_engine_gets_context_length_on_init():
     assert agent.context_compressor is engine
     assert engine.context_length == 204_800
     assert engine.threshold_tokens == int(204_800 * engine.threshold_percent)
+
+
+def test_plugin_engine_session_start_receives_host_session_db(tmp_path):
+    """Initial binding exposes the same host-owned SessionDB later reused on rotation."""
+    engine = _StubEngine()
+    engine.on_session_start = MagicMock()
+    db = SessionDB(db_path=tmp_path / "state.db")
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            session_db=db,
+            session_id="durable-session",
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    try:
+        engine.on_session_start.assert_called_once()
+        args, kwargs = engine.on_session_start.call_args
+        assert args == ("durable-session",)
+        assert kwargs["session_db"] is db
+        assert agent._session_db is db
+    finally:
+        db.close()
 
 
 def test_active_context_engine_tools_survive_explicit_platform_toolsets():

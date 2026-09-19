@@ -2457,6 +2457,7 @@ def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: s
             new_session_id, boundary_reason="compression", old_session_id=old_session_id,
             platform=getattr(agent, "platform", None) or "cli",
             conversation_id=getattr(agent, "_gateway_session_key", None),
+            session_db=getattr(agent, "_session_db", None),
         )
         return True
     except Exception:

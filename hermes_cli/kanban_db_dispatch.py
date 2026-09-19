@@ -312,8 +312,8 @@ def _pid_alive(pid: Optional[int]) -> bool:
 
     Zombies (exited, not yet reaped) still pass the existence check, so a
     worker would look "alive" forever between exit and reap. Linux: peek at
-    ``/proc/<pid>/status`` and treat ``State: Z`` as dead; macOS: ask ``ps``
-    for the BSD ``stat`` field and treat ``Z`` as dead.
+    ``/proc/<pid>/status`` and treat ``State: Z`` as dead; macOS: read the
+    process status in-process via psutil and treat a zombie as dead.
     """
     if not pid or pid <= 0:
         return False
@@ -333,20 +333,17 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # proc entry gone → already reaped; treat as dead.
             pass
     elif sys.platform == "darwin":
+        # In-process: spawning ``ps`` from the threaded dispatcher fork()s, and a probe that
+        # crashed before exec (-11, #97296) read as "dead".
         try:
-            proc = subprocess.run(
-                ["ps", "-o", "stat=", "-p", str(int(pid))],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=1,
-                check=False,
-            )
-            if proc.returncode != 0:
+            import psutil
+            if psutil.Process(int(pid)).status() == psutil.STATUS_ZOMBIE:
                 return False
-            if "Z" in (proc.stdout or "").strip():
-                return False
-        except (OSError, subprocess.SubprocessError, TimeoutError):
+        except ImportError:
+            pass  # keep the kill(0) answer
+        except psutil.NoSuchProcess:  # includes ZombieProcess
+            return False
+        except psutil.Error:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
@@ -2837,8 +2834,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    from hermes_cli._subprocess_compat import fork_safe_popen
     try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+        proc = fork_safe_popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,

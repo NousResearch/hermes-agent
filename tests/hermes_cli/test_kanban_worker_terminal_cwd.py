@@ -54,6 +54,7 @@ def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", fake_popen)
     kbd._default_spawn(_make_task(kb), workspace)
     return captured
 

@@ -153,7 +153,8 @@ function statusFromRefusal(refusal: BillingRefusal): BillingChargeStatusResult {
     error: refusal.kind,
     message: refusal.message,
     ok: false,
-    payload: refusal.payload ?? null,
+    // Back onto the wire's opaque JSON: the client-side error payload has optional keys, JSON has none.
+    payload: refusal.payload ? Object.fromEntries(Object.entries(refusal.payload).filter(([, v]) => v !== undefined)) : null,
     portal_url: refusal.portalUrl ?? null,
     reason: null,
     recovery: refusal.recovery ?? null,

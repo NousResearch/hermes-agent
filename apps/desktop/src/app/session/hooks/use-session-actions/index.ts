@@ -1350,7 +1350,7 @@ export function useSessionActions({
                 pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[cachedRuntimeId]
 
               const staleClarifyAtActivateStart = clarifyAuthoritativelyAbsent
-                ? Boolean(settlePendingClarifyToolCall(cachedViewState.messages, {}, false).streamId)
+                ? Boolean(settlePendingClarifyToolCall(cachedViewState.messages, null, false).streamId)
                 : false
 
               const runtimeInfo = applyRuntimeInfo(activated.info)
@@ -1534,7 +1534,7 @@ export function useSessionActions({
               const clearedClarifyProjection = clarifyAuthoritativelyAbsent
                 ? settlePendingClarifyToolCall(
                     activatedMessages,
-                    pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+                    pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : null,
                     running
                   )
                 : null
@@ -1968,7 +1968,7 @@ export function useSessionActions({
         const clearedClarifyProjection = clarifyAuthoritativelyAbsent
           ? settlePendingClarifyToolCall(
               messagesForView,
-              pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+              pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : null,
               resumedRunning
             )
           : null

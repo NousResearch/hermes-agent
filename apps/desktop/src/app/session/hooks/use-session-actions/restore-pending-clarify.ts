@@ -1,4 +1,5 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { ToolStartPayload } from '@hermes/shared'
+
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
@@ -52,14 +53,14 @@ export function restorePendingClarifyFromSnapshot(
   return { authoritativeAbsent: false, cleared: null, request: parked?.requestId === pending.id ? parked : null }
 }
 
-export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {
+export function pendingClarifyToolPayload(request: ClarifyRequest): ToolStartPayload {
   return {
     args:
       request.kind === 'batch'
         ? {
             questions: request.questions.map(question => ({
-              choices: question.choices ?? undefined,
-              multi_select: question.multi_select || undefined,
+              ...(question.choices ? { choices: question.choices } : {}),
+              ...(question.multi_select ? { multi_select: true } : {}),
               question: question.question
             }))
           }
@@ -68,6 +69,10 @@ export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEvent
             ...(request.multi_select ? { multi_select: true } : {}),
             question: request.question
           },
+    args_text: null,
+    context: null,
+    name: 'clarify',
+    preview: null,
     tool_id: request.requestId
   }
 }

@@ -2,7 +2,7 @@ import type { GatewayEvent } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { ToolRowPayload } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 
 import type { ClientSessionState } from '../../../../types'
@@ -47,7 +47,7 @@ export interface GatewayEventDeps {
   ) => ClientSessionState
   upsertToolCall: (
     sessionId: string,
-    payload: GatewayEventPayload | undefined,
+    payload: ToolRowPayload,
     phase: 'running' | 'complete',
     sourceEventType?: string,
     occurredAt?: number
@@ -59,7 +59,6 @@ export interface GatewayEventDeps {
 export interface GatewayEventContext {
   deps: GatewayEventDeps
   event: GatewayEvent
-  payload: GatewayEventPayload | undefined
   /** Routed session id (explicit, pinned unscoped stream, or active fallback). */
   sessionId: null | string
   /** The raw `session_id` on the event ('' when unscoped). */

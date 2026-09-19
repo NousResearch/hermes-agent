@@ -11,12 +11,12 @@ import {
   type ChatMessagePart,
   chatMessageText,
   completeOpenTimelineParts,
-  type GatewayEventPayload,
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
   toolCallOwnerMessageId,
+  type ToolRowPayload,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -469,7 +469,7 @@ export function useMessageStream({
   const upsertToolCall = useCallback(
     (
       sessionId: string,
-      payload: GatewayEventPayload | undefined,
+      payload: ToolRowPayload,
       phase: 'running' | 'complete',
       sourceEventType?: string,
       occurredAt = Date.now() / 1000
@@ -484,7 +484,7 @@ export function useMessageStream({
 
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
-      if (payload && isTodoToolName(payload.name)) {
+      if (isTodoToolName(payload.name)) {
         const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
 
         if (todos) {

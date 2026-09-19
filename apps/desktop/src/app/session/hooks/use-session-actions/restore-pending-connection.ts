@@ -1,4 +1,6 @@
-import { type ChatMessage, type GatewayEventPayload, restorePendingBlockingToolCall } from '@/lib/chat-messages'
+import type { ToolStartPayload } from '@hermes/shared'
+
+import { type ChatMessage, restorePendingBlockingToolCall } from '@/lib/chat-messages'
 import {
   $connectionRequests,
   clearConnectionRequest,
@@ -45,13 +47,16 @@ export function restorePendingConnectionFromSnapshot(
 }
 
 /** Tool row for a pending operation whose `tool.start` event was missed. */
-export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
+export function connectionRequestToolPayload(request: ConnectionRequest): ToolStartPayload {
   return {
     args: {
       action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),
       connectors: request.targets.map(target => ({ mcp: target.kind === 'mcp', name: target.name }))
     },
+    args_text: null,
+    context: null,
     name: 'manage_connections',
+    preview: null,
     tool_id: request.toolCallId
   }
 }

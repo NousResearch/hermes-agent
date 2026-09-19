@@ -1,5 +1,3 @@
-import type { GatewayEvent } from '@hermes/shared'
-
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -7,7 +5,6 @@ import {
   notifyPlatformsChanged,
   notifySessionsChanged,
   notifySetupReady,
-  type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { markRuntimeGone } from '@/store/runtime-gone'
@@ -20,10 +17,10 @@ import type { GatewayEventContext } from './types'
 
 /** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, fromActiveSource } = ctx
+  const { deps, event, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
-    const ready = (event as GatewayEvent<'gateway.ready'>).payload
+    const ready = event.payload
     // Seed the active skin into the desktop theme registry without applying,
     // so a fresh connect never overrides the user's persisted desktop theme.
     ingestBackendSkin(ready?.skin, { apply: false })
@@ -35,6 +32,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'setup.ready') {
+    const payload = event.payload
+
     // The boot bootstrap (hermes_cli/free_tier_bootstrap.py) resolved the
     // free-tier identity and the inference route, and broadcast once. The
     // payload is only a hint — the status snapshot re-reads `setup.status` /
@@ -49,11 +48,12 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'skin.changed') {
+    const payload = event.payload
+
     // A runtime skin switch (Hermes activating an authored skin, or `/skin`
     // on another surface). Only the active source+profile's change repaints.
     if (fromActiveSource()) {
-      // SAFETY: `event.type === 'skin.changed'` was checked above; GatewayEvent<K> keys payload by type.
-      ingestBackendSkin((event as GatewayEvent<'skin.changed'>).payload, { apply: true })
+      ingestBackendSkin(event.payload, { apply: true })
     }
 
     return true
@@ -73,7 +73,9 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // gateways) watch their own homes.
     if (fromActiveSource()) {
       if (event.type === 'pet.changed') {
-        notifyPetChanged(payload as PetChangeMeta | undefined)
+        const payload = event.payload
+
+        notifyPetChanged(payload)
       } else if (event.type === 'cron.changed') {
         notifyCronChanged()
       } else if (event.type === 'platforms.changed') {
@@ -89,13 +91,15 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'session.reclaimed') {
+    const payload = event.payload
+
     // The backend reclaimed a live session we may still be holding (idle
     // TTL, LRU cap, or the WS-orphan reap). Without this the runtime id
     // stays cached until something fails against it, which reads as the
     // session vanishing rather than being reclaimed. Drop the cached state
     // now — the stored row is untouched, so the sidebar keeps the
     // conversation and reopening it resumes from the DB.
-    const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
+    const reclaimedRuntimeId = payload?.session_id ?? ''
 
     if (reclaimedRuntimeId) {
       // Heal while the cached stored-id mapping is still intact, then drop.

@@ -11,9 +11,11 @@ import type { GatewayEventContext } from './types'
  *  reveal, layouts and message reactions. The read-back REQUESTS the agent
  *  blocks on (terminal/preview/window/tour) live in `server-requests.ts`. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, isActiveEvent } = ctx
 
   if (event.type === 'agent.terminal.output') {
+    const payload = event.payload
+
     // Live chunk from a background process → its read-only agent terminal tab.
     writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
 
@@ -21,6 +23,8 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'terminal.close') {
+    const payload = event.payload
+
     // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
     // The process is untouched — this only drops the view.
     closeAgentTerminalByProc(payload?.process_id ?? '')
@@ -29,6 +33,8 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'tip.show') {
+    const payload = event.payload
+
     // tip tool: point the accent bubble at something and say one line about
     // it. Fire-and-forget — a tip is not a question, and blocking the turn on
     // one would stall the sentence the agent is in the middle of, so there is
@@ -55,6 +61,8 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'pane.reveal') {
+    const payload = event.payload
+
     // Agent revealed a pane via the desktop-gated focus_pane tool, in
     // response to an explicit user request. Active session only — a
     // background turn must never move the user's focus (desktop AGENTS.md:
@@ -67,6 +75,8 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'layout.apply') {
+    const payload = event.payload
+
     // Agent applied a layout preset via the desktop-gated apply_layout
     // tool. Same contract as pane.reveal: active session only, and the
     // preset resolves against the SAME layouts registry the picker reads,
@@ -79,6 +89,8 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.reaction') {
+    const payload = event.payload
+
     // The agent reacted to a message via the desktop-gated
     // react_to_message tool. Already persisted — this only paints it now
     // instead of at the next resume. Fresh ChatMessage object per change:

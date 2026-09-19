@@ -1,12 +1,14 @@
+import type { ToolCompletePayload, ToolStartPayload } from '@hermes/shared'
+
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
-import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
+import type { ChatMessage, ChatMessagePart, ToolRowPayload } from './types'
 
-function toolId(payload: GatewayEventPayload | undefined): string {
-  return payload?.tool_id || payload?.tool_call_id || payload?.id || ''
+function toolId(payload: ToolRowPayload | undefined): string {
+  return payload?.tool_id ?? ''
 }
 
 let liveToolCounter = 0
@@ -59,29 +61,11 @@ function firstNonEmptyObject(...values: unknown[]): Record<string, unknown> {
   return {}
 }
 
-function liveToolArgs(payload: GatewayEventPayload | undefined): Record<string, unknown> {
-  const direct = firstNonEmptyObject(payload?.args, payload?.arguments)
-  const input = firstNonEmptyObject(payload?.input)
-  const fn = recordFromUnknown(input.function)
-
-  const nested = firstNonEmptyObject(
-    input.args,
-    input.arguments,
-    input.parameters,
-    input.input,
-    fn?.arguments,
-    fn?.args,
-    fn?.parameters
-  )
-
-  return {
-    ...input,
-    ...nested,
-    ...direct
-  }
+function liveToolArgs(payload: ToolRowPayload | undefined): Record<string, unknown> {
+  return firstNonEmptyObject(payload?.args)
 }
 
-function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): string[] {
+function toolPayloadMatchValues(payload: ToolRowPayload | undefined): string[] {
   const payloadArgs = liveToolArgs(payload)
 
   // `question` is clarify's identifying arg: a synthetic row hydrated from
@@ -93,10 +77,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
     firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
-  const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
-  const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
+  const start = payload && 'context' in payload ? payload : undefined
 
-  return collectToolMatchValues(query, context, preview)
+  return collectToolMatchValues(query, start?.context?.trim() ?? '', start?.preview?.trim() ?? '')
 }
 
 /**
@@ -159,7 +142,7 @@ function findToolPartIndex(
   parts: ChatMessagePart[],
   name: string,
   stableId: string,
-  payload: GatewayEventPayload | undefined,
+  payload: ToolRowPayload | undefined,
   phase: 'running' | 'complete'
 ): number {
   const matchValues = toolPayloadMatchValues(payload)
@@ -248,8 +231,8 @@ function findToolPartIndex(
 
 // Carry todo state across sparse progress payloads: if this todo event lacks
 // a `todos` field, fall back to whatever we previously stored on the part.
-function carryTodos(payload: GatewayEventPayload | undefined, ...prev: unknown[]): { todos: unknown } | undefined {
-  if (payload && Object.hasOwn(payload, 'todos')) {
+function carryTodos(payload: ToolRowPayload | undefined, ...prev: unknown[]): { todos: unknown } | undefined {
+  if (payload && 'todos' in payload && payload.todos !== null) {
     const next = parseTodos(payload.todos)
 
     return next === null ? undefined : { todos: next }
@@ -270,34 +253,43 @@ function carryTodos(payload: GatewayEventPayload | undefined, ...prev: unknown[]
   return undefined
 }
 
-function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown): Record<string, unknown> {
+function toolArgs(payload: ToolRowPayload | undefined, prevArgs?: unknown): Record<string, unknown> {
   const prev = parseMaybeJsonObject(prevArgs)
   const eventArgs = liveToolArgs(payload)
+  const start = payload && 'context' in payload ? payload : undefined
 
   return {
     ...prev,
     ...eventArgs,
-    ...(payload?.context ? { context: payload.context } : {}),
-    ...(payload?.preview ? { preview: payload.preview } : {}),
+    ...(start?.context ? { context: start.context } : {}),
+    ...(start?.preview ? { preview: start.preview } : {}),
     ...carryTodos(payload, prevArgs)
   }
 }
 
+/** The wire has no failure flag on `tool.complete`: a failed tool call answers with a result
+ *  object whose `error` is a non-empty string (the field the gateway's own previews read). */
+export function toolResultErrorText(result: unknown): string {
+  const error = recordFromUnknown(result)?.error
+
+  return typeof error === 'string' ? error.trim() : ''
+}
+
 function toolResultMetadata(
-  payload: GatewayEventPayload | undefined,
+  payload: ToolCompletePayload | undefined,
   previous: ToolResultMetadata | undefined,
   prevResult?: unknown,
   prevArgs?: unknown
 ): ToolResultMetadata {
+  const error = toolResultErrorText(payload?.result)
+
   return {
     ...previous,
-    ...(payload?.inline_diff !== undefined ? { inline_diff: payload.inline_diff } : {}),
-    ...(payload?.summary !== undefined ? { summary: payload.summary } : {}),
-    ...(payload?.message !== undefined ? { message: payload.message } : {}),
-    ...(payload?.preview !== undefined ? { preview: payload.preview } : {}),
-    ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
+    ...(payload?.inline_diff != null ? { inline_diff: payload.inline_diff } : {}),
+    ...(payload?.summary != null ? { summary: payload.summary } : {}),
+    ...(payload?.duration_s != null ? { duration_s: payload.duration_s } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
-    ...(payload?.error !== undefined ? { error: payload.error } : {})
+    ...(error ? { error } : {})
   }
 }
 
@@ -317,7 +309,7 @@ function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number):
 
 export function upsertToolPart(
   parts: ChatMessagePart[],
-  payload: GatewayEventPayload | undefined,
+  payload: ToolRowPayload | undefined,
   phase: 'running' | 'complete',
   occurredAt = Date.now() / 1000
 ): ChatMessagePart[] {
@@ -333,6 +325,7 @@ export function upsertToolPart(
   const prevArgs = prev && 'args' in prev ? prev.args : undefined
   const prevResult = prev && 'result' in prev ? prev.result : undefined
   const args = toolArgs(payload, prevArgs)
+  const complete = payload && 'result' in payload ? payload : undefined
 
   const id =
     stableId ||
@@ -348,10 +341,12 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: payload?.result !== undefined ? payload.result : prevResult,
-      toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
+      result: complete?.result != null ? complete.result : prevResult,
+      toolResultMetadata: toolResultMetadata(complete, prev?.toolResultMetadata, prevResult, prevArgs),
       isError:
-        payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)
+        complete?.result != null
+          ? toolResultErrorText(complete.result) !== ''
+          : Boolean(prev && 'isError' in prev && prev.isError)
     })
   } satisfies ChatMessagePart
 
@@ -402,10 +397,7 @@ export interface SettledClarifyProjection {
  * the owner of an in-flight call is the most recent message that carries the
  * id without a result.
  */
-export function toolCallOwnerMessageId(
-  messages: ChatMessage[],
-  payload: GatewayEventPayload | undefined
-): string | null {
+export function toolCallOwnerMessageId(messages: ChatMessage[], payload: ToolRowPayload | undefined): string | null {
   const stableId = toolId(payload)
 
   if (!stableId) {
@@ -432,11 +424,11 @@ interface PendingClarifyLocation {
 
 function findPendingClarifyLocation(
   messages: ChatMessage[],
-  payload: GatewayEventPayload,
+  payload: ToolStartPayload | null,
   toolName = 'clarify'
 ): PendingClarifyLocation | null {
-  const stableId = toolId(payload)
-  const matchValues = toolPayloadMatchValues(payload)
+  const stableId = toolId(payload ?? undefined)
+  const matchValues = toolPayloadMatchValues(payload ?? undefined)
   let solePending: PendingClarifyLocation | null = null
   let pendingCount = 0
 
@@ -501,12 +493,11 @@ function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call'
  * open for subsequent deltas while the clarify part itself becomes settled. */
 export function settlePendingClarifyToolCall(
   messages: ChatMessage[],
-  payload: GatewayEventPayload,
+  payload: ToolStartPayload | null,
   keepMessageRunning: boolean,
   occurredAt = Date.now() / 1000
 ): SettledClarifyProjection {
-  const clarifyPayload = { ...payload, name: 'clarify' }
-  const location = findPendingClarifyLocation(messages, clarifyPayload)
+  const location = findPendingClarifyLocation(messages, payload)
 
   if (!location) {
     return { messages, streamId: null }
@@ -588,17 +579,17 @@ export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], r
  */
 export function restorePendingClarifyToolCall(
   messages: ChatMessage[],
-  payload: GatewayEventPayload,
+  payload: ToolStartPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
+  return restorePendingBlockingToolCall(messages, payload, occurredAt)
 }
 
 /** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
  *  existing pending part's message live, or append a row when the transcript has none. */
 export function restorePendingBlockingToolCall(
   messages: ChatMessage[],
-  clarifyPayload: GatewayEventPayload & { name: string },
+  clarifyPayload: ToolStartPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
   const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)

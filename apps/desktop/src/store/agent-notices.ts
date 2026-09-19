@@ -1,10 +1,11 @@
+import type { NotificationLevel, NotificationShowPayload } from '@hermes/shared'
+
 import type { NativeNotificationInput } from '@/store/native-notifications'
 import { dismissNotification, type NotificationInput, type NotificationKind, notify } from '@/store/notifications'
 
 /**
- * Wire shape of a `notification.show` payload — the driver-agnostic
- * `AgentNotice` spine (`agent/credits_tracker.py`) as forwarded by
- * `tui_gateway/server.py`. Snake_case to match the wire.
+ * `notification.show` (generated `NotificationShowPayload`) is the driver-agnostic
+ * `AgentNotice` spine (`agent/credits_tracker.py`) as forwarded by `tui_gateway`.
  *
  * The `text` carries its own leading severity glyph (• ⚠ ✕ ✓) from the Python
  * policy — that's how the CLI/TUI render it (glyph in a status line, no separate
@@ -17,16 +18,7 @@ import { dismissNotification, type NotificationInput, type NotificationKind, not
  * - `kind` is lifetime: `sticky` (stays until an explicit clear) or `ttl`
  *   (self-expires after `ttl_ms`).
  */
-export interface AgentNoticePayload {
-  text?: string
-  level?: string
-  kind?: string
-  ttl_ms?: null | number
-  key?: string
-  id?: string
-}
-
-const LEVEL_TO_TOAST_KIND: Record<string, NotificationKind> = {
+const LEVEL_TO_TOAST_KIND: Record<NotificationLevel, NotificationKind> = {
   error: 'error',
   info: 'info',
   success: 'success',
@@ -71,7 +63,7 @@ export function usageFraction(text: string | undefined): null | number {
  * These reuse the app's existing usage palette (`--ui-*`; see the
  * `--context-usage-*` block in styles.css) — no new colors are introduced.
  */
-export function noticeAccent(payload: AgentNoticePayload | undefined): string | undefined {
+export function noticeAccent(payload: NotificationShowPayload | undefined): string | undefined {
   if (payload?.key === 'credits.depleted') {
     return 'var(--ui-red)'
   }
@@ -108,7 +100,7 @@ export function noticeAccent(payload: AgentNoticePayload | undefined): string | 
  *   REPLACES the prior toast — the credits 50→75→90 line escalates in place
  *   instead of stacking, and a key-matched `notification.clear` can dismiss it.
  */
-export function noticeToToast(payload: AgentNoticePayload | undefined): NotificationInput | null {
+export function noticeToToast(payload: NotificationShowPayload | undefined): NotificationInput | null {
   const text = payload?.text?.trim()
 
   if (!text) {
@@ -132,8 +124,8 @@ export function noticeToToast(payload: AgentNoticePayload | undefined): Notifica
     // sticky → 0 (never auto-dismiss); ttl with a ttl_ms → that value; a ttl
     // without a usable ttl_ms falls back to notify()'s per-kind default.
     durationMs: isTtl ? ttl : 0,
-    id: payload?.key || payload?.id,
-    kind: LEVEL_TO_TOAST_KIND[payload?.level ?? 'info'] ?? 'info',
+    id: payload?.key || payload?.id || undefined,
+    kind: LEVEL_TO_TOAST_KIND[payload?.level ?? 'info'],
     message: primary,
     meta
   }
@@ -155,7 +147,7 @@ export function splitMeta(text: string): [primary: string, meta: string | undefi
 }
 
 /** Render a `notification.show` notice as a toast (no-op when it has no text). */
-export function showAgentNotice(payload: AgentNoticePayload | undefined): void {
+export function showAgentNotice(payload: NotificationShowPayload | undefined): void {
   const toast = noticeToToast(payload)
 
   if (toast) {
@@ -188,7 +180,7 @@ const NATIVE_NOTICE_KEYS = new Set(['credits.depleted', 'credits.restored'])
  * already carries its glyph and is passed through as the raw body.
  */
 export function nativeNoticeInput(
-  payload: AgentNoticePayload | undefined,
+  payload: NotificationShowPayload | undefined,
   title: string
 ): NativeNotificationInput | null {
   const text = payload?.text?.trim()

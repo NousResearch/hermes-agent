@@ -1,6 +1,6 @@
-import type { SubagentStatus } from '@hermes/shared'
+import type { SessionInfoPayload, SubagentStatus } from '@hermes/shared'
 
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { ToolRowPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { isTodoToolName } from '@/lib/todos'
 import type { SubagentPayload } from '@/store/subagents'
@@ -14,7 +14,7 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
+export function sessionInfoStatePatch(payload: SessionInfoPayload | undefined): SessionRuntimeStatePatch {
   const patch: SessionRuntimeStatePatch = {}
 
   if (typeof payload?.model === 'string') {
@@ -139,16 +139,9 @@ export const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.complete'
 ])
 
-// Anonymous progress events that carry todos but no name still belong to the
-// todo stream; named todo events are obviously routed there too.
-export function toTodoPayload(payload: GatewayEventPayload | undefined): GatewayEventPayload | undefined {
-  if (!payload) {
-    return undefined
-  }
-
-  const isTodo = isTodoToolName(payload.name) || (!payload.name && Object.hasOwn(payload, 'todos'))
-
-  return isTodo ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
+/** Todo tools are one live row under a stable id, whatever tool name produced the snapshot. */
+export function toTodoPayload(payload: ToolRowPayload): ToolRowPayload | undefined {
+  return isTodoToolName(payload.name) ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -178,7 +171,7 @@ const firstString = (...candidates: unknown[]): string => {
 }
 
 export function delegateTaskPayloads(
-  payload: GatewayEventPayload | undefined,
+  payload: ToolRowPayload | undefined,
   phase: 'running' | 'complete',
   sourceEventType?: string
 ): SubagentPayload[] {
@@ -186,21 +179,24 @@ export function delegateTaskPayloads(
     return []
   }
 
-  const args = parseMaybeRecord(payload.args ?? payload.input)
-  const result = parseMaybeRecord(payload.result)
+  const start = 'context' in payload ? payload : undefined
+  const complete = 'result' in payload ? payload : undefined
+  const args = parseMaybeRecord(payload.args)
+  const result = parseMaybeRecord(complete?.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
   const tasks = rawTasks.length ? rawTasks.map(parseMaybeRecord) : [args]
   const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
-  const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
+  const resultError = typeof result.error === 'string' && result.error.trim() !== ''
+  const failedResult = resultError || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
   const status: SubagentStatus = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
-  const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
-  const progressText = firstString(payload.preview, payload.message, payload.context)
+  const toolId = payload.tool_id || 'delegate_task'
+  const progressText = firstString(start?.preview, start?.context)
   const starting = phase === 'running' && sourceEventType === 'tool.start'
   const progressing = phase === 'running' && !starting
 
   return tasks.map((task, index) => {
-    const goal = firstString(task.goal, args.goal, payload.context) || 'Delegated task'
-    const summary = firstString(result.summary, payload.summary, payload.message)
+    const goal = firstString(task.goal, args.goal, start?.context) || 'Delegated task'
+    const summary = firstString(result.summary, complete?.summary)
     // Per-child spend and the classified verdict live on the child's own entry
     // (delegate_task returns ``{results: [...]}``); fall back to the flat result
     // for single-task payloads. The row still renders without either.
@@ -225,12 +221,12 @@ export function delegateTaskPayloads(
       files_read: null,
       files_written: null,
       output_tail:
-        phase === 'complete' && summary ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_task' }] : null,
+        phase === 'complete' && summary ? [{ is_error: failedResult, preview: summary, tool: 'delegate_task' }] : null,
       tool_name: starting ? 'delegate_task' : null,
       text: progressing ? progressText || goal : null,
       status,
       summary: summary || null,
-      duration_seconds: payload.duration_s ?? null,
+      duration_seconds: complete?.duration_s ?? null,
       tool_preview: starting ? progressText || null : null,
       cost_usd: typeof childEntry.cost_usd === 'number' ? childEntry.cost_usd : null,
       failure_reason: firstString(childEntry.failure_reason) || null

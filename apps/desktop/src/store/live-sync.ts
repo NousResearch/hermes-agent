@@ -22,12 +22,6 @@ export const $sessionsChangeTick = atom(0)
 export const $platformsChangeTick = atom(0)
 export const $pairingChangeTick = atom(0)
 
-/** `pet.changed` carries a `pet.info.meta`-shaped payload — lets the pet skip
- *  the heavy sprite refetch when the broadcast already says enabled=false.
- *  Transitional name: the gateway-event lifecycle handler still imports it;
- *  remove once that consumer reads `PetChangedPayload` directly. */
-export type PetChangeMeta = PetChangedPayload
-
 export const $petChange = atom<{ meta?: PetChangedPayload; tick: number }>({ tick: 0 })
 
 /** `setup.ready` — the boot bootstrap (free-tier identity + provider resolution)

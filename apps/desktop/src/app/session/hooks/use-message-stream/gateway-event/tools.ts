@@ -1,6 +1,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
+import { toolResultErrorText } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
@@ -23,12 +24,12 @@ const isSubagentEvent = (event: GatewayEvent): event is GatewayEvent<SubagentEve
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
+  const { deps, event, sessionId, isActiveEvent, occurredAt } = ctx
   const { flushQueuedDeltas, nativeSubagentSessionsRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'todo.updated') {
     if (sessionId && !sessionInterrupted(sessionId)) {
-      restoreSessionTodosFromSnapshot(sessionId, payload, true)
+      restoreSessionTodosFromSnapshot(sessionId, event.payload, true)
     }
 
     return true
@@ -48,7 +49,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
+    setSessionDraftingTool(sessionId, event.payload?.name ?? '')
 
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
@@ -58,7 +59,9 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'tool.start') {
-    if (!sessionId) {
+    const payload = event.payload
+
+    if (!sessionId || !payload) {
       return true
     }
 
@@ -73,6 +76,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'tool.complete') {
+    const payload = event.payload
+
+    if (!payload) {
+      return true
+    }
+
+    const error = toolResultErrorText(payload.result)
+
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
@@ -86,7 +97,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
         // A tool can fail without ending the turn when the agent recovers
         // and continues. Surface that failure as a short pet beat too;
         // otherwise only turn-level errors ever reach the failed state.
-        if (payload?.error) {
+        if (error) {
           flashPetActivity({ error: true })
         }
       }
@@ -99,7 +110,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
       // terminal/process tool calls are the only things that spawn or reap
       // background processes — sync the composer status stack right after.
-      if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
+      if (!sessionInterrupted(sessionId) && (payload.name === 'terminal' || payload.name === 'process')) {
         void refreshBackgroundProcesses(sessionId)
       }
     }
@@ -108,7 +119,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     // its `/name` command. Drop the composer's cached `/` list so the new
     // skill is offerable now rather than after the hour-long TTL — and the
     // skill-suggestion provider's index with it.
-    if (payload?.name === 'skill_manage') {
+    if (payload.name === 'skill_manage') {
       invalidateSlashCompletions()
       invalidateSkillSuggestionIndex()
     }
@@ -116,23 +127,23 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     // MCP tool outcomes feed the connection-repair suggestion provider:
     // an auth/connection-shaped failure offers a reconnect pill; a later
     // success against the same server withdraws it.
-    if (sessionId && typeof payload?.name === 'string' && payload.name.startsWith('mcp__')) {
+    if (sessionId && payload.name.startsWith('mcp__')) {
       reportMcpToolResult(
         sessionId,
         payload.name,
-        Boolean(payload.error),
-        [payload.error, payload.result].filter(part => typeof part === 'string').join(' ')
+        error !== '',
+        [error, payload.result].filter(part => typeof part === 'string' && part !== '').join(' ')
       )
     }
 
-    if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
-      recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
+    if (payload.inline_diff?.trim()) {
+      recordToolDiff(payload.tool_id || payload.name, payload.inline_diff)
     }
 
     // A file-mutating tool just finished — nudge the git-mirroring surfaces
     // (coding rail, review pane, file tree) to refresh. Event-driven, not
     // polled: fires exactly when the agent touches the tree.
-    if (payload && toolMayMutateFiles(payload)) {
+    if (toolMayMutateFiles(payload)) {
       notifyWorkspaceChanged(toolChangedPath(payload))
     }
 

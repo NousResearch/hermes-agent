@@ -38,8 +38,10 @@ class ProcessCheckpointMixin:
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
-            from utils import atomic_json_write
-            atomic_json_write(_checkpoint_path(), entries)
+                # Snapshot and replace are one transaction: an older writer must
+                # not publish after a newer snapshot and erase live processes.
+                from utils import atomic_json_write
+                atomic_json_write(_checkpoint_path(), entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 

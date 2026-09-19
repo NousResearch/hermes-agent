@@ -106,6 +106,33 @@ function codexMessageItemText(message: SessionMessage): { commentary: string[]; 
   return { commentary, reply: replies.join('') }
 }
 
+// Only typed steer rows carry this model-facing envelope. Quoted markers in ordinary
+// messages remain user text, and only one outer envelope is removed.
+const STEER_OPEN =
+  '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]'
+
+const STEER_CLOSE = '[/OUT-OF-BAND USER MESSAGE]'
+
+function steerDisplayContent(message: SessionMessage, content: unknown): unknown {
+  if (message.role !== 'user' || message.display_kind !== 'steer' || message.display_content !== undefined) {
+    return content
+  }
+
+  const text = textFromUnknown(content).trimEnd()
+
+  const start = text.startsWith(`${STEER_OPEN}\r\n`)
+    ? STEER_OPEN.length + 2
+    : text.startsWith(`${STEER_OPEN}\n`)
+      ? STEER_OPEN.length + 1
+      : 0
+
+  if (!start || !text.endsWith(STEER_CLOSE)) {
+    return content
+  }
+
+  return text.slice(start, -STEER_CLOSE.length).trim()
+}
+
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
   const rawText = textFromUnknown(content)
 
@@ -424,7 +451,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const rawDisplayContent = transcriptContent(
       message.display_kind,
       message.role,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+      timelineDisplayContent(message, displayContentForMessage(message.role, steerDisplayContent(message, content)))
     )
 
     const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role

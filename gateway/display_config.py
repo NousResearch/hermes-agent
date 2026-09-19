@@ -31,6 +31,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # Background self-improvement notices in chat: "off" (the review still runs, nothing is
+    # published) | "on" (the generic update line) | "verbose" (content previews). Overrideable per
+    # platform, so a profile that serves both the operator and a client can silence the notice on the
+    # client's surface alone — see resolve_memory_notifications.
+    "memory_notifications": "on",
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -92,6 +97,22 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     if val is None:
         val = _GLOBAL_DEFAULTS.get(setting)
     return fallback if val is None else val
+
+
+def resolve_memory_notifications(user_config: dict, platform_key: str) -> str:
+    """Resolve ``display.memory_notifications`` for ONE surface: ``"off"`` | ``"on"`` | ``"verbose"``.
+
+    The per-platform override (``display.platforms.<platform>.memory_notifications``) wins over the
+    profile-wide ``display.memory_notifications`` and the platform default (``"on"``) applies when
+    neither is declared, so a profile that serves both the operator and a client can silence the
+    notice on the client's surface while its sibling surfaces keep reporting. ``"off"`` suppresses
+    the notice's publication only: the background review itself keeps running. Resolution reads the
+    session's configuration and surface — no environment variable takes part.
+    """
+    value = resolve_display_setting(user_config, platform_key, "memory_notifications", "on")
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return str(value).strip().lower() or "on"
 
 
 def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:

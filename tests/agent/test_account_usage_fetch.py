@@ -158,6 +158,10 @@ def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_depreca
             label="API key quota",
             used_percent=30.0,
             detail="$70.00 of $100.00 remaining • resets monthly",
+            label_key="api_key_quota",
+            limit=100.0,
+            limit_remaining=70.0,
+            reset_interval="monthly",
         ),
     )
     assert "Credits balance: $289.08" in snapshot.details

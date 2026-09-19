@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router'
 import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
+import { useAccountUsageStatusbarItem } from '@/app/shell/account-usage-statusbar-item'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -14,6 +15,7 @@ import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/st
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { accountUsageCacheIdentity, createAccountUsageRequester, type GatewayRequester } from '@/hooks/use-account-usage'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import {
@@ -47,6 +49,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentProvider,
   $currentUsage,
   $selectedStoredSessionId,
   $sessions,
@@ -55,7 +58,12 @@ import {
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  knownOwnerForSession
+} from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -85,7 +93,7 @@ interface StatusbarItemsOptions {
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequester
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
 }
@@ -122,6 +130,7 @@ export function useStatusbarItems({
   // primary (or a draft with no runtime slice yet). A focused TILE keeps its
   // own cwd in `$sessionStates` and must not paint the primary's workspace.
   const primaryCwd = useStore($currentCwd)
+  const primaryProvider = useStore($currentProvider)
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
@@ -174,6 +183,7 @@ export function useStatusbarItems({
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
   const focusedStateCwd = useStoreSelector($focusedSessionState, state => state?.cwd?.trim() || '')
+  const focusedProvider = useStoreSelector($focusedSessionState, state => state?.provider ?? null)
 
   // Runtime slices carry the stored id they were bound for. During a primary
   // tab switch the runtime id can lag a frame behind the new selection — the
@@ -186,6 +196,7 @@ export function useStatusbarItems({
 
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
   const busy = primaryFocused ? primaryBusy : focusedBusy
+  const provider = primaryFocused ? (primaryProvider ?? '') : (focusedProvider ?? '')
 
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
   // a fresh `{...}` each render would bust the usage-label memos below.
@@ -305,6 +316,29 @@ export function useStatusbarItems({
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
+
+  const sessionOwner = knownOwnerForSession(activeSessionId)
+  // * Cache key must agree with the owner route the RPC uses — ambient
+  // * connection/profile would collide two sessions on different backends.
+  const accountUsageCache = accountUsageCacheIdentity(sessionOwner, {
+    connectionScope: `${connection?.mode ?? 'unknown'}:${connection?.baseUrl ?? ''}`,
+    profile: activeGatewayProfile
+  })
+  const requestAccountUsage = useMemo(
+    () => createAccountUsageRequester(sessionOwner, requestGateway),
+    [requestGateway, sessionOwner]
+  )
+
+  const accountUsageItem = useAccountUsageStatusbarItem({
+    connectionScope: accountUsageCache.connectionScope,
+    gatewayState,
+    owner: sessionOwner,
+    profile: accountUsageCache.profile,
+    provider,
+    requestGateway: requestAccountUsage,
+    sessionId: activeSessionId,
+    usage: currentUsage
+  })
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -638,6 +672,7 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
       },
+      accountUsageItem,
       {
         icon: <Layers3 className="size-3" />,
         id: 'cache-hit-rate',
@@ -690,6 +725,7 @@ export function useStatusbarItems({
       busy,
       cacheHit,
       chatOpen,
+      accountUsageItem,
       clientVersionItem,
       contextBar,
       contextBreakdown,

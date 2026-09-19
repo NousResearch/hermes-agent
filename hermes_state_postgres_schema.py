@@ -5,7 +5,34 @@ from hermes_state_common import FTS_TOOL_CONTENT_PREFIX_CHARS
 SEARCH_CONTENT_CHARS = 8_192
 SEARCH_TOOL_CALLS_CHARS = 4_096
 SEARCH_TOOL_NAME_CHARS = 256
-POSTGRES_SCHEMA_VERSION = 1
+POSTGRES_SCHEMA_VERSION = 2
+
+DELIVERY_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS delivery_obligations (
+    obligation_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    thread_id TEXT,
+    content TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts BIGINT NOT NULL DEFAULT 0,
+    created_at DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL,
+    owner_pid BIGINT,
+    owner_started_at BIGINT,
+    last_error TEXT,
+    adapter_profile TEXT,
+    owner_token TEXT,
+    lease_expires_at DOUBLE PRECISION
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_obligations_recovery
+    ON delivery_obligations(state, lease_expires_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_obligations_runtime
+    ON delivery_obligations(platform, adapter_profile, owner_token)
+    WHERE state = 'failed';
+"""
 
 POSTGRES_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -241,6 +268,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
 """
+
+POSTGRES_SCHEMA_SQL += DELIVERY_SCHEMA_SQL
 
 FUNCTION_SQL = """
 CREATE FUNCTION json_valid(raw TEXT) RETURNS INTEGER

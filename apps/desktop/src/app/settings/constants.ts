@@ -253,8 +253,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
-  // gpt-live branch (one full-duplex voice model delegating to Hermes).
-  'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  // gpt-live branch (one full-duplex voice model delegating to Hermes);
+  // gemini-live connects directly to Google Multimodal Live from the desktop client.
+  'voice.voice_chat_mode': ['chained', 'gpt-live', 'gemini-live'],
+  'voice.gemini_live.voice': ['Puck', 'Charon', 'Aoede', 'Kore', 'Fenrir'],
+  'voice.gemini_live.model': ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-2.5-flash'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -376,6 +379,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 export const FREE_INPUT_KEYS = new Set([
   'tts.edge.voice',
   'voice.gpt_live.voice',
+  'voice.gemini_live.voice',
+  'voice.gemini_live.model',
   'tts.openai.model',
   'tts.openai.voice',
   'tts.elevenlabs.voice_id',
@@ -741,6 +746,8 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Mic,
     keys: [
       'voice.voice_chat_mode',
+      'voice.gemini_live.voice',
+      'voice.gemini_live.model',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
       'tts.provider',

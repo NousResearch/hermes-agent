@@ -57,9 +57,11 @@ raise SystemExit(0)
 
 
 def _write_unsupported_explicit_pythons(bin_dir: Path, *except_names: str) -> None:
-    for name in ("python3.11", "python3.12", "python3.13"):
+    # Report an out-of-window version so the candidate scan skips these names
+    # even though their binary names look supported (3.14 is in-window).
+    for name in ("python3.11", "python3.12", "python3.13", "python3.14"):
         if name not in except_names and not (bin_dir / name).exists():
-            _write_fake_python(bin_dir, name, "3.14.6")
+            _write_fake_python(bin_dir, name, "3.15.0")
 
 
 def _write_termux_command_stubs(bin_dir: Path) -> None:
@@ -132,7 +134,7 @@ def _run_setup(tmp_path: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_install_stage_prefers_compatible_minor_over_unsupported_default(
+def test_install_stage_prefers_pinned_minor_over_newer_supported_default(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
@@ -146,7 +148,9 @@ def test_install_stage_prefers_compatible_minor_over_unsupported_default(
     assert "Python found: Python 3.11.15" in result.stdout
 
 
-def test_install_stage_rejects_post_install_unsupported_default(tmp_path: Path) -> None:
+def test_install_stage_accepts_314_default(tmp_path: Path) -> None:
+    """3.14 is inside requires-python since the ceiling lift — a Termux box
+    whose default `python` is 3.14 must be accepted, not refused."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_fake_python(bin_dir, "python", "3.14.6")
@@ -154,9 +158,21 @@ def test_install_stage_rejects_post_install_unsupported_default(tmp_path: Path) 
 
     result = _run_install_prerequisites(tmp_path)
 
+    assert result.returncode == 0, result.stdout
+    assert "Python found: Python 3.14.6" in result.stdout
+
+
+def test_install_stage_rejects_post_install_unsupported_default(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_fake_python(bin_dir, "python", "3.15.0")
+    _write_unsupported_explicit_pythons(bin_dir)
+
+    result = _run_install_prerequisites(tmp_path)
+
     assert result.returncode == 1
-    assert "Termux Python Python 3.14.6 is not supported" in result.stdout
-    assert "Hermes requires Python >=3.11,<3.14" in result.stdout
+    assert "Termux Python Python 3.15.0 is not supported" in result.stdout
+    assert "Hermes requires Python >=3.11,<3.15" in result.stdout
     assert "pkg install tur-repo && pkg install python3.13" in result.stdout
 
 
@@ -166,9 +182,9 @@ def test_install_stage_provisions_supported_python_from_tur(tmp_path: Path) -> N
     `pkg install python3.13` provides."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_fake_python(bin_dir, "python", "3.14.6")
-    # Shadow any host python3.11/3.12/3.13 so the candidate scan can't find a
-    # supported interpreter before the TUR fallback runs.
+    _write_fake_python(bin_dir, "python", "3.15.0")
+    # Shadow any host python3.11/3.12/3.13/3.14 so the candidate scan can't
+    # find a supported interpreter before the TUR fallback runs.
     _write_unsupported_explicit_pythons(bin_dir)
 
     # Stateful pkg stub: `pkg install -y python3.13` drops a supported fake
@@ -191,12 +207,12 @@ def test_install_stage_provisions_supported_python_from_tur(tmp_path: Path) -> N
     assert "Python installed from TUR: Python 3.13.7" in result.stdout
 
 
-def test_setup_script_prefers_compatible_minor_over_unsupported_default(
+def test_setup_script_prefers_supported_minor_over_newer_default(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_fake_python(bin_dir, "python3.11", "3.14.6")
+    _write_fake_python(bin_dir, "python3.11", "3.15.0")
     _write_fake_python(bin_dir, "python3.12", "3.12.11")
     _write_fake_python(bin_dir, "python", "3.14.6")
 
@@ -210,11 +226,11 @@ def test_setup_script_prefers_compatible_minor_over_unsupported_default(
 def test_setup_script_rejects_unsupported_default(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_fake_python(bin_dir, "python", "3.14.6")
+    _write_fake_python(bin_dir, "python", "3.15.0")
     _write_unsupported_explicit_pythons(bin_dir)
 
     result = _run_setup(tmp_path)
 
     assert result.returncode == 1
-    assert "Termux Python Python 3.14.6 is not supported" in result.stdout
-    assert "Hermes requires Python >=3.11,<3.14" in result.stdout
+    assert "Termux Python Python 3.15.0 is not supported" in result.stdout
+    assert "Hermes requires Python >=3.11,<3.15" in result.stdout

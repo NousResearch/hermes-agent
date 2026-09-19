@@ -2757,14 +2757,12 @@ async function findSystemPython() {
   //      that didn't check the launcher option, so PATH-only checks
   //      miss real Python 3.13 installs (user-reported case).
   //
-  // We also restrict ourselves to Python 3.11–3.13. 3.14 is the latest
-  // CPython but several Hermes deps (notably pywinpty's Rust-built
-  // windows_x86_64_msvc crate) don't yet publish 3.14 wheels, and
-  // `pip install -e .` falls back to source-build, which fails without
-  // a Rust toolchain. install.ps1 sidesteps this by pinning to 3.11
-  // via uv; until we add the same uv-managed Python pathway here, the
-  // simplest fix is to refuse 3.14 detection and let the NSIS prereq
-  // page offer to install 3.11 alongside.
+  // We also restrict ourselves to the requires-python window
+  // (>=3.11,<3.15). Interpreters outside it can leave us on a version
+  // whose locked deps have no matching wheels. install.ps1 sidesteps
+  // this by pinning to 3.11 via uv; until we add the same uv-managed
+  // Python pathway here, the safest fix is explicit-version detection
+  // and letting the NSIS prereq page offer to install 3.11 alongside.
   //
   // Strategy: probe in three passes, in order from most-precise to
   // least-precise, and ONLY use PATH lookup as a last resort after
@@ -2774,18 +2772,18 @@ async function findSystemPython() {
   //          installer registers itself at SOFTWARE\Python\PythonCore.
   //          The MS Store stub does NOT register here, so a hit means
   //          a real Python install. Versions are explicit so we
-  //          inherently filter 3.14 out.
+  //          inherently filter out-of-window releases out.
   //  Pass 2: Filesystem probe of standard install locations
   //          (Program Files, LocalAppData\Programs\Python). Same
   //          version filtering by directory name.
   //  Pass 3: PATH lookup of `py.exe` (the launcher itself never
   //          triggers the Store) — but call it with a version flag so
   //          we resolve to a SPECIFIC supported version, not whatever
-  //          py.exe's default is (which on a 3.14-only box would be
-  //          3.14).
+  //          py.exe's default is (which on a box whose newest install
+  //          is out-of-window would resolve outside the range).
 
-  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13']
-  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313']
+  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13', '3.14']
+  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313', '314']
 
   // Pass 1: registry. Use `reg query` since main process doesn't have
   // a reliable in-process registry API across all electron versions.
@@ -2863,9 +2861,10 @@ async function findSystemPython() {
   // We deliberately do NOT fall back to plain `python.exe` on PATH.
   // Without a way to verify the version safely (running `python -V`
   // risks the Microsoft Store popup), accepting whatever's there
-  // could land us on 3.14 and trigger the Rust-build-from-source
-  // failure. Better to return null and let the NSIS prereq page
-  // offer to install a known-good 3.11 via winget.
+  // could land us outside the supported window and trigger a
+  // source-build failure on a dep with no matching wheel. Better to
+  // return null and let the NSIS prereq page offer to install a
+  // known-good 3.11 via winget.
   return null
 }
 

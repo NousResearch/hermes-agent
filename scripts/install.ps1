@@ -390,7 +390,7 @@ $PythonVersion = "3.11"
 # available, in preference order. Only checkout-private uv-managed interpreters
 # are eligible. Single source of truth shared by Test-Python's fallback and
 # Resolve-AvailablePythonVersion.
-$PythonFallbackVersions = @("3.12", "3.13", "3.10")
+$PythonFallbackVersions = @("3.12", "3.13", "3.14", "3.10")
 $PythonFindTimeoutMs = 30000
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
@@ -2774,10 +2774,10 @@ function Install-Venv {
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
-    # silently delete this 3.11 venv and recreate it at the inherited version
-    # -- building Rust transitives that have no wheel for that version from
-    # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
-    # just created forces every subsequent uv command onto it.
+    # silently delete this venv and recreate it at the inherited version --
+    # surprising the user with an interpreter they never asked for. Pinning
+    # UV_PYTHON to the interpreter we just created forces every subsequent
+    # uv command onto it.
     $env:UV_PYTHON = $venvPythonExe
     } catch {
         $originalError = $_
@@ -2898,9 +2898,9 @@ function Install-Dependencies {
     # but the bootstrap runs install stages (venv, python-deps) as separate
     # processes, so the env var set in Install-Venv does NOT survive into a
     # separate python-deps invocation. Re-deriving it here covers that path.
-    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
-    # tiers below recreate the venv at 3.14 and fail the maturin source build
-    # (no cp314 wheels yet).
+    # Without it, an inherited $env:UV_PYTHON (e.g. = "3.14") makes the uv
+    # sync/pip tiers below silently recreate the venv at the inherited
+    # version.
     if (-not $NoVenv) {
         $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
         if (Test-Path $venvPythonExe) {

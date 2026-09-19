@@ -7,12 +7,13 @@ concurrent.futures.thread._threads_queues, whose atexit hook joins every
 worker unconditionally — even after shutdown(wait=False).
 """
 
+import inspect
 import subprocess
 import sys
 import threading
 import time
 
-from concurrent.futures.thread import _threads_queues
+from concurrent.futures.thread import _threads_queues, _worker
 
 import tools.daemon_pool as daemon_pool
 from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -151,6 +152,49 @@ def test_worker_gets_initializer_when_executor_stores_initializer_fields(monkeyp
     assert executor_ref() is pool
     assert work_queue is pool._work_queue
     assert (initializer, initargs) == (init, (1, 2))
+
+
+def test_ctx_detection_matches_worker_signature():
+    """The ``_create_worker_context`` feature check must agree with the
+    stdlib ``_worker`` contract: 3 params (ctx shape) iff the executor
+    exposes the context factory, 4 params (initializer shape) iff it does
+    not. If a future CPython changes one side without the other, this
+    fails here instead of silently mis-branching at pool spawn."""
+    params = len(inspect.signature(_worker).parameters)
+    # _create_worker_context is bound per-instance in __init__ on 3.14+
+    # (via type(self).prepare_context), so probe an instance, not the class.
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        has_ctx_factory = hasattr(pool, "_create_worker_context")
+    finally:
+        pool.shutdown(wait=True)
+    if params == 3:
+        assert has_ctx_factory
+    elif params == 4:
+        assert not has_ctx_factory
+    else:
+        raise AssertionError(
+            f"Unexpected _worker signature: {params} params (expected 3 or 4)"
+        )
+
+
+def test_initializer_runs_in_worker():
+    """initializer/initargs must actually execute in the worker on every
+    interpreter — on 3.14+ they travel inside the WorkerContext, on
+    3.11–3.13 as explicit worker args; both paths must honour them."""
+    seen: list = []
+
+    def _init(tag: str) -> None:
+        seen.append(tag)
+
+    pool = DaemonThreadPoolExecutor(
+        max_workers=1, initializer=_init, initargs=("tag-58596",)
+    )
+    try:
+        pool.submit(lambda: None).result(timeout=10)
+        assert seen == ["tag-58596"]
+    finally:
+        pool.shutdown(wait=True)
 
 
 def _repo_root():

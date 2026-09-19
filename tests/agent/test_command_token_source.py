@@ -200,6 +200,33 @@ class TestResolutionYieldsACallable:
         )
         assert runtime["api_key"] == "sk-explicit-override"
 
+    def test_explicit_callable_survives_named_custom_reresolution(self, monkeypatch):
+        """A live key_cmd source passed back through the main resolver must
+        remain callable instead of raising or becoming an object repr."""
+        from hermes_cli import runtime_provider as rp
+
+        config = {
+            "providers": {
+                "dbx": {
+                    "base_url": "https://example.invalid/v1",
+                    "api_mode": "chat_completions",
+                    "model": "m1",
+                    "key_cmd": "printf minted-token",
+                }
+            }
+        }
+        monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+        token_provider = CommandTokenSource("printf forwarded-token", "dbx")
+        runtime = rp.resolve_runtime_provider(
+            requested="custom:dbx",
+            explicit_api_key=token_provider,
+            target_model="m1",
+        )
+
+        assert runtime["api_key"] is token_provider
+
 
 class TestCallableKeyGetsBearerAuth:
     """A callable api_key must reach the Anthropic bearer-hook client path.
@@ -291,7 +318,7 @@ class TestAbsoluteExpiry:
         assert src._expires_at is not None, "cache must carry a deadline"
         src._expires_at = time.monotonic() - 1  # simulate crossing it
         src()
-        assert len(counter.read_text()) == 2, "expired cache must re-run the helper"
+        assert len(counter.read_text(encoding="utf-8")) == 2, "expired cache must re-run the helper"
 
 
 class TestAuxiliaryResolverHonoursKeyCmd:

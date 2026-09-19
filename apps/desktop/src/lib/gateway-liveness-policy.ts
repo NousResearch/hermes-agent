@@ -34,10 +34,10 @@
  * (mirroring gateway-liveness usage in use-gateway-boot).
  */
 
-/** Consecutive unanswered probes tolerated while work is in flight. */
 /** Ping budget for a liveness probe (primary and secondary sockets share it). */
 export const LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
+/** Consecutive unanswered probes tolerated while work is in flight. */
 export const LIVENESS_PROBE_FAILURE_STREAK = 2
 
 /** How long after a deferred probe we try again (bounded, coalesced). */

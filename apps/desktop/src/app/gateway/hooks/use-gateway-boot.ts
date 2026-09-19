@@ -908,7 +908,8 @@ export function useGatewayBoot({
       // primary thread or a just-created session's owner hold is bound to
       // (#93892).
       foregroundScopes: foregroundSessionScopes,
-      liveScopes: liveSessionScopes,
+      // Defined further down the effect body; read at call time, never during boot.
+      liveScopes: () => liveWorkScopes(),
       onLocalProfileRetired: forgetProfileOnlyRuntimeOwners,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
@@ -1157,19 +1158,27 @@ export function useGatewayBoot({
     // and its backend is free to idle-reap. The active profile is always spared.
     // Do not key this off `entry.retained` — that flag only skips dispose-after-
     // RPC; idle prune is what reclaims hover-warmed sockets after you leave.
-    const recomputeKeptGateways = () => {
+    // Scopes with a running or needs-input session: registry-scoped
+    // (connectionId, profile) keys plus the bare profile of every live local
+    // session. Two sources can expose the same profile name (every source has
+    // a 'default'), so bare profile names can't represent a non-local
+    // source's liveness without keeping the wrong gateway alive. Feeds the
+    // pruner's keep-set and the wake probe's in-flight-work signal.
+    const liveWorkScopes = (): Set<string> => {
       const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      // Registry-scoped (connectionId, profile) scopes with live work. Two
-      // sources can expose the same profile name (every source has a
-      // 'default'), so bare profile names can't represent a non-local
-      // source's liveness without keeping the wrong gateway alive.
-      const keep = new Set([...liveSessionScopes(), ...foregroundSessionScopes()])
+      const scopes = liveSessionScopes()
 
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {
-          keep.add(normalizeProfileKey(session.profile))
+          scopes.add(normalizeProfileKey(session.profile))
         }
       }
+
+      return scopes
+    }
+
+    const recomputeKeptGateways = () => {
+      const keep = new Set([...liveWorkScopes(), ...foregroundSessionScopes()])
 
       for (const scope of openTileGatewayScopes()) {
         keep.add(scope)

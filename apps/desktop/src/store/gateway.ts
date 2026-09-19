@@ -99,9 +99,11 @@ interface RegistryConfig {
    */
   foregroundScopes?: () => ReadonlySet<string>
   /**
-   * Scopes with a running or needs-input session runtime. The wake-path
-   * liveness probe counts these as in-flight work: prompt.submit returns
-   * before the turn ends, so `activeRequests` is 0 during most of a turn.
+   * Scopes with a running or needs-input session runtime, in the same key
+   * language as `foregroundScopes` (composite registry keys, bare profiles
+   * for local/legacy entries). The wake-path liveness probe counts these as
+   * in-flight work: prompt.submit returns before the turn ends, so
+   * `activeRequests` is 0 during most of a turn.
    */
   liveScopes?: () => ReadonlySet<string>
 }
@@ -1980,7 +1982,9 @@ function probeSecondaryLiveness(entry: Secondary): void {
       // Counted RPCs alone under-report in-flight work: prompt.submit returns
       // before the turn ends, so a foreground turn mid tool call shows
       // activeRequests 0. The registry's live-scope hook supplies the turn.
-      const turnInFlight = g.config?.liveScopes?.().has(entry.scope) ? 1 : 0
+      const liveScopes = g.config?.liveScopes?.()
+      const turnInFlight =
+        liveScopes && (liveScopes.has(entry.scope) || (!entry.connectionId && liveScopes.has(entry.profile))) ? 1 : 0
 
       const decision = decideLivenessForceClose({
         workingSessionCount: entry.activeRequests + turnInFlight,

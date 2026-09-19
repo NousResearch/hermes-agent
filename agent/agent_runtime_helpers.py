@@ -2962,30 +2962,46 @@ def looks_like_codex_intermediate_ack(
 
 
 # Degenerate-final detector (#103483): after real tool work a text stop whose ENTIRE answer is a
-# fragment — a stray wrong-script word ("пар"), a token starting mid-punctuation ("?warming up") —
-# is a provider-side collapse, not an answer, yet the loop accepted it and the turn reported
-# completed. Shape alone cannot PROVE a collapse, so this is deliberately narrower than "short":
-# a terse legitimate answer ("42", "SQLite", "report.csv", "€12.50", "你好。", "Done.") never
-# matches, and the re-prompt it triggers asks for the same answer again if it was complete.
+# fragment — a stray wrong-script word ("пар" in an English conversation), a token starting
+# mid-punctuation ("?warming up") — is a provider-side collapse, not an answer, yet the loop
+# accepted it and the turn reported completed. Shape alone cannot PROVE a collapse, so this is
+# deliberately narrower than "short": a terse legitimate answer ("42", "SQLite", "report.csv",
+# "€12.50", "你好。", "Done.", ":8080", "да" to a Russian prompt) never matches, English-script
+# fragments ("the", "ing") are knowingly not covered, and the re-prompt it triggers asks for the
+# same answer again if it was complete. ``turn_finalizer._SENTENCE_END`` encodes the same
+# "≤ 24 chars, no terminal" heuristic for the finish explainer.
 _DEGENERATE_FINAL_MAX_CHARS = 24
 _SENTENCE_TERMINALS = (".", "!", "?", "\u3002", "\uff01", "\uff1f")
-# Punctuation no answer begins with; "$5", "#123", "-1", "/tmp", ".env", "(a)" all stay answers.
+# Punctuation no answer begins with when a letter follows ("?warming"); "$5", "#123", "-1",
+# "/tmp", ".env", "(a)", ":8080", ":)", ";;" all stay answers.
 _DEGENERATE_LEADING_PUNCT = "?!,;:)]}"
 
 
-def looks_like_degenerate_final(text: str) -> bool:
-    """Whether a text stop reads as a collapsed fragment rather than a (terse) answer."""
+def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
+    """Whether a text stop reads as a collapsed fragment rather than a (terse) answer.
+
+    "Wrong script" is judged against the conversation: when the user's own message carries
+    non-ASCII letters, a terse non-Latin reply ("是", "Готово") is an answer, not a collapse.
+    """
     t = (text or "").strip()
     if not t or len(t) > _DEGENERATE_FINAL_MAX_CHARS or t.endswith(_SENTENCE_TERMINALS):
         return False
-    if t[0] in _DEGENERATE_LEADING_PUNCT:
+    if t[0] in _DEGENERATE_LEADING_PUNCT and len(t) > 1 and t[1].isalpha():
         return True
-    # A word with letters but no ASCII letter or digit at all: the wrong-script fragment.
-    return any(ch.isalpha() for ch in t) and not any(ch.isascii() and ch.isalnum() for ch in t)
+    if not any(ch.isalpha() for ch in t) or any(ch.isascii() and ch.isalnum() for ch in t):
+        return False
+    from agent.codex_responses_adapter import _summarize_user_message_for_log
+    user_text = _summarize_user_message_for_log(user_message) if user_message else ""
+    return not any(ch.isalpha() and not ch.isascii() for ch in user_text)
 
 
 def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
-    """Tool-result rows after the most recent user row — whether the turn did real tool work."""
+    """Tool-result rows after the most recent user row — whether the turn did real tool work.
+
+    ANY user row ends the window, the continuation nudges included: that is what bounds the
+    degenerate-final guard to one re-prompt per collapse. Skipping synthetic user rows here
+    would turn it into a two-nudge loop.
+    """
     count = 0
     for msg in reversed(messages or ()):
         if not isinstance(msg, dict):

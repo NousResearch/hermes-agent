@@ -167,14 +167,20 @@ def finish_text_response(
     # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
     # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge
     # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
+    _tool_rows = tool_results_this_turn(messages)
     _degenerate_final = (
         bool(getattr(agent, "_stall_guards", True))
         and _ack_mode != "off"
         and codex_ack_continuations < 2
-        and tool_results_this_turn(messages) > 0
-        and looks_like_degenerate_final(_stall_text)
+        and _tool_rows > 0
+        and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
-    if _stall_continue_intent or _degenerate_final or (
+    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
+    if _stall_continue_intent:
+        _continuation_kind = "stall"
+    elif _degenerate_final:
+        _continuation_kind = "degenerate"
+    elif (
         _ack_mode != "off"
         and agent.valid_tool_names
         and codex_ack_continuations < 2
@@ -183,17 +189,21 @@ def finish_text_response(
             require_workspace=(_ack_mode == "codex_only"),
         )
     ):
-        if _stall_continue_intent:
+        _continuation_kind = "ack"
+    else:
+        _continuation_kind = None
+    if _continuation_kind:
+        if _continuation_kind == "stall":
             logger.info(
                 "Stall guard: turn ending on trailing continue-"
                 "intent with no tool calls — re-prompting to act "
                 "(%d/2)", codex_ack_continuations + 1,
             )
-        elif _degenerate_final:
+        elif _continuation_kind == "degenerate":
             logger.warning(
                 "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
-                "re-prompting (%d/2)", len(_stall_text), _stall_text[:40],
-                tool_results_this_turn(messages), codex_ack_continuations + 1,
+                "re-prompting (%d/2)", len(_stall_text), _stall_text[:40], _tool_rows,
+                codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
@@ -206,7 +216,7 @@ def finish_text_response(
         append_message(messages, {
             "role": "user",
             "content": (
-                _DEGENERATE_FINAL_NUDGE if _degenerate_final and not _stall_continue_intent
+                _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
                 else _CODEX_ACK_CONTINUATION_NUDGE
             ),
         })

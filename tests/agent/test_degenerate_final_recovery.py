@@ -106,15 +106,27 @@ class TestFragmentAfterToolWork:
 
 
 class TestLooksLikeDegenerateFinal:
-    @pytest.mark.parametrize("text", ["пар", "?warming up", ",and", "ошибка", "你好", "):"])
-    def test_fragments(self, text):
-        assert looks_like_degenerate_final(text)
+    EN = "Build the workbook and report back."
+
+    @pytest.mark.parametrize("text", ["пар", "?warming up", ",and", "ошибка", "!warming"])
+    def test_fragments_in_an_english_conversation(self, text):
+        assert looks_like_degenerate_final(text, user_message=self.EN)
 
     @pytest.mark.parametrize("text", [
         # Terse legitimate answers that reviewers showed a shape-only guard re-prompting (#111472).
         "42", "SQLite", "report.csv", "3.14159", "€12.50", "你好。", "Done.", "True", "a51143fbbe",
         "2026-09-19", "/tmp/out.log", "$5", "#123", "-1", "(a)", ".env", "~/x", "+1", "✅",
+        ":8080", "::1", ":)", ";;", ":=", "}", "N/A", "**Done**", "`ok`", "{}", "null",
         "Reading is a skill", "The answer is 43.", "x" * 25, "",
     ])
     def test_terse_answers_are_not_fragments(self, text):
-        assert not looks_like_degenerate_final(text)
+        assert not looks_like_degenerate_final(text, user_message=self.EN)
+
+    @pytest.mark.parametrize("prompt, text", [
+        ("把工作簿建好然后告诉我", "是"), ("把工作簿建好然后告诉我", "已完成"),
+        ("Собери таблицу и отчитайся", "Готово"), ("Собери таблицу и отчитайся", "да"),
+        ("ワークブックを作って報告して", "はい"), ("أنشئ المصنف ثم أخبرني", "تم"),
+        ([{"type": "text", "text": "Собери таблицу"}], "нет"),  # multi-part user content
+    ])
+    def test_terse_answers_in_the_users_own_script_are_not_fragments(self, prompt, text):
+        assert not looks_like_degenerate_final(text, user_message=prompt)

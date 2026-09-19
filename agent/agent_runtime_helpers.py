@@ -2968,7 +2968,7 @@ def looks_like_codex_intermediate_ack(
 # deliberately narrower than "short": a terse legitimate answer ("42", "SQLite", "report.csv",
 # "€12.50", "你好。", "Done.", ":8080", "да" to a Russian prompt) never matches, English-script
 # fragments ("the", "ing") are knowingly not covered, and the re-prompt it triggers asks for the
-# same answer again if it was complete. ``turn_finalizer._SENTENCE_END`` encodes the same
+# same answer again if it was complete. ``turn_finalizer._SENTENCE_END`` encodes a sibling
 # "≤ 24 chars, no terminal" heuristic for the finish explainer.
 _DEGENERATE_FINAL_MAX_CHARS = 24
 _SENTENCE_TERMINALS = (".", "!", "?", "\u3002", "\uff01", "\uff1f")

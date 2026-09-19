@@ -647,6 +647,52 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
     return content_blocks
 
 
+def _squash_whitespace(text) -> str:
+    return "".join(text.split()) if isinstance(text, str) else ""
+
+
+def _sidecar_is_replayable(ordered_blocks: List, content, tool_calls) -> bool:
+    """Whether a ``bedrock_content_blocks`` sidecar is the turn Bedrock actually produced.
+
+    The running-counter stream parser (#108200; parser fix in #107472) keyed text and reasoning deltas by
+    arrival count instead of ``contentBlockIndex``: text came out one fragment per delta, the toolUse
+    start overwrote one fragment and sorted into the middle, and anything streamed after the tool's stop
+    event was bolted onto the toolUse dict as stray keys. Claude 5 on Bedrock rejects the resulting
+    ``[text, toolUse, text]`` replay as "assistant message prefill", and because the sidecar lives only
+    in-process (state.db has no column for it) every later request of that process fails until restart.
+    Any fingerprint of that damage — text after a toolUse, adjacent or whitespace-only text blocks, extra
+    keys on a toolUse dict — or a sidecar that disagrees with the message's own ``content`` /
+    ``tool_calls`` disqualifies it; the caller then builds the turn from those fields, the path every
+    DB-reloaded turn already takes. The ``content`` comparison also fires when storage rewrote the text
+    (think-tag stripping, secret redaction) or post-call dedup dropped a tool call (#108584): in those cases
+    the stored fields, not the raw sidecar, are what must reach the wire. A well-formed sidecar whose text
+    and tool ids match passes untouched."""
+    texts: List[str] = []
+    tool_ids: List[str] = []
+    previous = ""
+    for block in ordered_blocks:
+        if not isinstance(block, dict):
+            continue
+        if "toolUse" in block:
+            if len(block) != 1 or not isinstance(block["toolUse"], dict):
+                return False
+            tool_ids.append(str(block["toolUse"].get("toolUseId", "")))
+            previous = "toolUse"
+        elif isinstance(block.get("text"), str):
+            if tool_ids or previous == "text" or not block["text"].strip():
+                return False
+            texts.append(block["text"])
+            previous = "text"
+        else:
+            previous = "reasoningContent"
+    expected_ids = [str(tc.get("id", "")) for tc in (tool_calls or []) if isinstance(tc, dict)]
+    if sorted(tool_ids) != sorted(expected_ids):
+        return False
+    if content is not None and not isinstance(content, str):
+        return True  # multimodal content lists have no single text to compare against
+    return _squash_whitespace(content) == _squash_whitespace("".join(texts))
+
+
 def _parse_tool_args(args) -> Any:
     """JSON-decode a tool-call argument string; {} on failure; non-str passes through."""
     try:
@@ -655,17 +701,28 @@ def _parse_tool_args(args) -> Any:
         return {}
 
 
-def _assistant_blocks(msg: Dict, content) -> List[Dict]:
-    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative;
-    otherwise redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
-    ordered_blocks = msg.get("bedrock_content_blocks")
-    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
-        return content_blocks
+def _reasoning_blocks(msg: Dict, replayed_sidecar: List[Dict]) -> List[Dict]:
+    """Reasoning blocks for a turn rebuilt from its flat fields. A disqualified sidecar still holds the
+    turn's ``reasoningContent`` blocks in order (thinking text the flat fields never carried), so those are
+    kept; without a sidecar, redacted thinking comes from ``reasoning_details`` byte-for-byte."""
+    if replayed_sidecar:
+        return [block for block in replayed_sidecar if "reasoningContent" in block]
     redacted = [
         _decode_redacted(d.get("data") or d.get("redactedContentBase64"))
         for d in (msg.get("reasoning_details") or []) if isinstance(d, dict) and d.get("type") == "redacted_thinking"
     ]
-    content_blocks: List[Dict] = [{"reasoningContent": {"redactedContent": r}} for r in redacted if r is not None]
+    return [{"reasoningContent": {"redactedContent": r}} for r in redacted if r is not None]
+
+
+def _assistant_blocks(msg: Dict, content) -> List[Dict]:
+    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative
+    while it passes ``_sidecar_is_replayable``; otherwise reasoning (``_reasoning_blocks``), then text from
+    ``content``, then ``tool_calls``."""
+    ordered_blocks = msg.get("bedrock_content_blocks")
+    replayed = _replay_ordered_blocks(ordered_blocks) if isinstance(ordered_blocks, list) else []
+    if replayed and _sidecar_is_replayable(ordered_blocks, content, msg.get("tool_calls")):
+        return replayed
+    content_blocks: List[Dict] = _reasoning_blocks(msg, replayed)
     if isinstance(content, str) and content.strip():
         content_blocks.append({"text": content})
     elif isinstance(content, list):

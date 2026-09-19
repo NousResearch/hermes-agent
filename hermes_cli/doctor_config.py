@@ -427,9 +427,16 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
 # kanban_ops._cmd_dispatch) fall back to the default with no log, while bool() (kanban_diagnostics
 # auto_decompose, tools/kanban_tools auto_subscribe_on_create) takes every non-empty string as true —
 # bool("false") is True flips a user's "off" to "on". Doctor flags these raw-file forms warn-only; keys
-# outside these two closed sets are never examined.
-_KANBAN_INT_SETTINGS = ("max_in_progress", "max_in_progress_per_profile")
-_KANBAN_BOOL_SETTINGS = ("auto_decompose", "auto_subscribe_on_create")
+# outside these closed sets are never examined. The int floor follows each consumer's _positive_int
+# minimum: 1 everywhere except worker_log_backup_count, where 0 is legal (rotate but keep no backups).
+_KANBAN_INT_SETTINGS = (
+    "max_in_progress",
+    "max_in_progress_per_profile",
+    "max_spawn",
+    "worker_log_rotate_bytes",
+    "worker_log_backup_count",
+)
+_KANBAN_BOOL_SETTINGS = ("auto_decompose", "auto_subscribe_on_create", "review_dispatch")
 
 
 def collect_kanban_config_findings(raw_config: dict | None) -> list[tuple[str, str, str]]:
@@ -452,6 +459,7 @@ def collect_kanban_config_findings(raw_config: dict | None) -> list[tuple[str, s
     for key in _KANBAN_INT_SETTINGS:
         if key not in kanban or kanban[key] is None:  # explicit null counts as unset by design too
             continue
+        min_floor = 0 if key == "worker_log_backup_count" else 1  # backup_count 0 = rotate, keep none
         key_path = f"kanban.{key}"
         value = kanban[key]
         if isinstance(value, bool):  # BEFORE the int logic — isinstance(True, int) is True
@@ -459,6 +467,8 @@ def collect_kanban_config_findings(raw_config: dict | None) -> list[tuple[str, s
                 findings.append((key_path, f"{key_path} is not a plain integer",
                                  "(int(True) == 1 coerces today, but a boolean in a number slot reads as a "
                                  "slip — write the integer you mean)"))
+            elif min_floor == 0:
+                continue  # a 0 floor accepts int(False) == 0: legal "rotate but keep no backups" form
             else:
                 findings.append((key_path, f"{key_path} must be a positive integer",
                                  "(int(False) == 0 is below the >= 1 floor — the runtime falls back to the "
@@ -466,15 +476,22 @@ def collect_kanban_config_findings(raw_config: dict | None) -> list[tuple[str, s
             continue
         try:
             coerced = int(value)
-        except (TypeError, ValueError, OverflowError):  # YAML .inf parses to float('inf'): int() overflows
+        except OverflowError:  # YAML .inf parses to float('inf'): int() overflows
             findings.append((key_path, f"{key_path} is not a plain integer",
-                             f"(int({value!r}) raises — the value is silently ignored and the runtime falls "
-                             "back to the default)"))
+                             f"(int({value!r}) raises OverflowError — the gateway consumer catches only "
+                             "(TypeError, ValueError), so the error propagates instead of falling back "
+                             "to the default; write the plain integer you mean)"))
             continue
-        if coerced < 1:
-            findings.append((key_path, f"{key_path} must be a positive integer",
-                             f"(int({value!r}) == {coerced} is below the >= 1 floor — the runtime falls back "
-                             "to the default)"))
+        except (TypeError, ValueError):
+            findings.append((key_path, f"{key_path} is not a plain integer",
+                             f"(int({value!r}) raises — the value is silently ignored and the runtime "
+                             "falls back to the default)"))
+            continue
+        if coerced < min_floor:
+            floor_word = "non-negative" if min_floor == 0 else "positive"
+            findings.append((key_path, f"{key_path} must be a {floor_word} integer",
+                             f"(int({value!r}) == {coerced} is below the >= {min_floor} floor — the runtime "
+                             "falls back to the default)"))
         elif not isinstance(value, int):
             findings.append((key_path, f"{key_path} is not a plain integer",
                              f"(int({value!r}) == {coerced} coerces today, but quoted numbers and floats are "

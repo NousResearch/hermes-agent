@@ -160,6 +160,7 @@ def _(rid, params: dict) -> dict:
             kind=str(params.get("kind") or ""),
             label=str(params.get("label") or ""),
             origin=(str(params.get("origin")) if params.get("origin") else None),
+            origin_match=str(params.get("origin_match") or "exact"),
             secret=secret,
         )
         return _ok(rid, {"id": meta.id})

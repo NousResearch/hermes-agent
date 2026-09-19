@@ -72,6 +72,9 @@ def _cmd_add(args) -> None:
                 password = getpass.getpass("Password (hidden): ")
             otp_secret = getpass.getpass(
                 "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
+            widen = input(
+                "Allow filling on HTTPS subdomains of the same registrable domain? [y/N]: "
+            ).strip().lower() in {"y", "yes"}
             # identifier_type/identifier are stored as metadata (not secret);
             # add_item moves them out of the encrypted payload.
             secret = {
@@ -81,7 +84,8 @@ def _cmd_add(args) -> None:
                 **({"otp_secret": otp_secret} if otp_secret.strip() else {}),
             }
             meta = get_vault_store().add_item(
-                kind="login", label=label, secret=secret, origin=origin
+                kind="login", label=label, secret=secret, origin=origin,
+                origin_match="registrable_domain" if widen else "exact",
             )
         else:
             from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
@@ -128,10 +132,13 @@ def _cmd_list(args) -> None:
         from rich.table import Table
 
         table = Table(title=f"Vault items ({len(rows)})")
-        for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin"):
+        for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin scope"):
             table.add_column(col, style="bold" if col == "Handle" else None)
         for source, meta in rows:
-            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
+            scope = meta.origin or "-"
+            if meta.origin_match == "registrable_domain":
+                scope += " (HTTPS registrable domain)"
+            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", scope)
         c.print(table)
         c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
     for name in locked:

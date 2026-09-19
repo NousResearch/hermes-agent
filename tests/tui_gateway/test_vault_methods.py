@@ -48,7 +48,7 @@ _LOGIN_PARAMS = {
 
 
 def test_add_then_list_is_password_free(home):
-    out = _result(srv._methods["vault.add"](1, dict(_LOGIN_PARAMS)))
+    out = _result(srv._methods["vault.add"](1, {**_LOGIN_PARAMS, "origin_match": "registrable_domain"}))
     assert out["id"].startswith("vault_")
     # add's own envelope must not echo the secret back
     assert "s3cret-pw-9000" not in json.dumps(out)
@@ -60,6 +60,7 @@ def test_add_then_list_is_password_free(home):
     assert item["kind"] == "login"
     assert item["label"] == "Example login"
     assert item["origin"] == "https://example.com"
+    assert item["origin_match"] == "registrable_domain"
     assert item["created_at"]
     # Identifier is agent-visible metadata (design: only the password is secret).
     assert item["identifier"] == "user@example.com"

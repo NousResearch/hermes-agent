@@ -264,7 +264,7 @@ class TurnRunner:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -704,7 +704,7 @@ class TurnRunner:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -928,7 +928,7 @@ class TurnRunner:
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
-                adapter = self._runner._adapter_for_source(ctx.source)
+                adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
@@ -1597,7 +1597,7 @@ class TurnRunner:
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._adapter_for_source(self._ctx.source), "interactive_resume", True))
+        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
@@ -1897,6 +1897,10 @@ class TurnRunner:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )
+            # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+            # fallback was resolved before any agent exists (#74349); one-shot per turn.
+            pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
+            runner._pre_agent_fallback_notice = None
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1905,6 +1909,12 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from hermes_cli.auth import is_rate_limited_auth_error
+            if is_rate_limited_auth_error(exc.__cause__):
+                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                from gateway.run import _gateway_provider_error_reply
+                return {"final_response": _gateway_provider_error_reply(str(exc)),
+                        "messages": [], "api_calls": 0, "tools": []}
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
@@ -1921,6 +1931,9 @@ class TurnRunner:
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if pending_fallback_notice:
+            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+            agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

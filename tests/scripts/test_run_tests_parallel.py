@@ -516,3 +516,38 @@ def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
         f"drive letter split off as a phantom root:\n{proc.stdout}"
     )
     assert "Discovered 1 test files" in proc.stdout, proc.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal death; Windows has no SIGSEGV exit")
+def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: Path) -> None:
+    """A file whose interpreter dies by signal is classified as CRASHED (#113186).
+
+    A native fault after some tests passed leaves no pytest summary line, so
+    every count parses to 0. The runner used to file that under "no tests ran
+    (collection/import error)" beneath a summary reading ``0 failed`` — two
+    wrong diagnoses for one real bug. The crash must be named on the summary
+    line and in the failure buckets, and the run must still exit non-zero.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_crash.py").write_text(
+        textwrap.dedent(
+            """
+            import os, signal
+
+            def test_before():
+                assert True
+
+            def test_crash():
+                os.kill(os.getpid(), signal.SIGSEGV)
+            """
+        )
+    )
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode != 0
+    assert "1 file CRASHED" in proc.stdout
+    assert "SIGSEGV" in proc.stdout
+    assert "where no tests ran" not in proc.stdout
+    assert "NO TESTS RAN" not in proc.stdout

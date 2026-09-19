@@ -22,7 +22,7 @@ import type * as DataModule from './data'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
-interface SkillsViewProps {
+interface CapabilitiesViewProps {
   fixedConnection?: string
   fixedProfile?: string
 }
@@ -32,19 +32,19 @@ const mocks = vi.hoisted(() => ({
   createCanonicalChat: vi.fn(async () => 'session-1'),
   deleteBot: vi.fn(async () => undefined),
   /** Flipped off to model a desktop build that predates the live surface. */
-  hasSkillsView: { value: true },
+  hasCapabilitiesView: { value: true },
   notify: vi.fn(),
   notifyError: vi.fn(),
   request: vi.fn(),
   requestProfile: vi.fn(async () => ({})),
   saveBotMeta: vi.fn(),
-  skillsView: [] as SkillsViewProps[]
+  skillsView: [] as CapabilitiesViewProps[]
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const original = await importOriginal<typeof HermesSdk>()
 
-  const SkillsViewStub = (props: SkillsViewProps) => {
+  const CapabilitiesViewStub = (props: CapabilitiesViewProps) => {
     mocks.skillsView.push(props)
 
     return null
@@ -52,7 +52,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   // Builds that route `fixedConnection` get the live Capabilities tab for
   // remote targets too, pinned to the target machine's backend.
-  SkillsViewStub.supportsFixedConnection = true
+  CapabilitiesViewStub.supportsFixedConnection = true
 
   const mocked: Record<string, unknown> = {
     ...original,
@@ -68,10 +68,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     usePluginI18n: () => translateBots
   }
 
-  Object.defineProperty(mocked, 'SkillsView', {
+  Object.defineProperty(mocked, 'CapabilitiesView', {
     configurable: true,
     enumerable: true,
-    get: () => (mocks.hasSkillsView.value ? SkillsViewStub : undefined)
+    get: () => (mocks.hasCapabilitiesView.value ? CapabilitiesViewStub : undefined)
   })
 
   return mocked
@@ -101,8 +101,8 @@ function withQueryClient(children: ReactNode) {
   )
 }
 
-async function renderDialog(hasSkillsView: boolean) {
-  mocks.hasSkillsView.value = hasSkillsView
+async function renderDialog(hasCapabilitiesView: boolean) {
+  mocks.hasCapabilitiesView.value = hasCapabilitiesView
   vi.resetModules()
 
   const { CreateAgentDialog } = await import('./create-dialog')

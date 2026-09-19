@@ -76,8 +76,9 @@ from hermes_cli.auth_codex import (  # noqa: F401  re-exported
     _codex_access_token_is_expiring, _codex_device_code_login, _codex_http_client,
     _codex_pool_rate_limit_status, _codex_quota_probe_cache, _codex_usage_probe_url,
     _import_codex_cli_tokens, _is_codex_rate_limit_shaped, _login_openai_codex,
-    _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens, _save_codex_tokens,
-    clear_codex_pool_quota_cooldowns, refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
+    _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
+    _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
+    refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
 from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
     _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
     resolve_spotify_runtime_credentials)
@@ -778,7 +779,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 _POOL_STATUS_FIELDS = (
     "last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message",
-    "last_error_reset_at")
+    "last_error_reset_at", "status_cleared_at")
 
 
 def _merge_disk_cooldown_state(
@@ -788,7 +789,10 @@ def _merge_disk_cooldown_state(
 
     ``write_credential_pool`` persists an in-memory snapshot that may predate another process
     marking the same credential exhausted/dead; without this merge the later rewrite resurrects a
-    rate-limited key as healthy and both processes resume hammering it."""
+    rate-limited key as healthy and both processes resume hammering it. The mirror image is a
+    ``hermes auth reset`` that postdates the snapshot's cooldown (``status_cleared_at`` newer than
+    its ``last_status_at``): the disk row wins there too, or a live session's next ordinary flush
+    would write the reset cooldown straight back (#89415)."""
     if not isinstance(disk_entry, dict):
         return entry
     try:
@@ -801,7 +805,12 @@ def _merge_disk_cooldown_state(
         from agent.credential_pool_model_cooldowns import merge_model_cooldowns
         merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
         merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
+        disk_status_fields = {f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}
 
+        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
+        cleared_ts = _parse_absolute_timestamp(disk_entry.get("status_cleared_at")) or 0.0
+        if entry.get("last_status") in (STATUS_DEAD, STATUS_EXHAUSTED) and cleared_ts > mem_ts:
+            return {**merged, **disk_status_fields}
         disk_status = disk_entry.get("last_status")
         if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
             return merged
@@ -812,14 +821,13 @@ def _merge_disk_cooldown_state(
         if mem_access and disk_access and mem_access != disk_access:
             return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
-        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
         if disk_ts <= mem_ts:
             return merged
         if disk_status == STATUS_EXHAUSTED:
             until = _exhausted_until(PooledCredential.from_dict(provider_id, disk_entry))
             if until is None or until <= time.time():
                 return merged
-        return {**merged, **{f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}}
+        return {**merged, **disk_status_fields}
     except Exception:  # pragma: no cover - best-effort merge
         return entry
 
@@ -1187,6 +1195,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "go": "opencode-go", "opencode-go-sub": "opencode-go",
     "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
+    "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
     "vllm": "custom", "llamacpp": "custom",
@@ -1726,10 +1735,13 @@ def _codex_pool_rate_limited_status() -> Optional[Dict[str, Any]]:
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
-    """Status snapshot for Codex auth (pool first, then legacy provider state)."""
+    """Status snapshot for Codex auth (pool first, then legacy provider state).
+
+    Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
     return _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
-        resolve=resolve_codex_runtime_credentials, on_pool_miss=_codex_pool_rate_limited_status)
+        resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
+        on_pool_miss=_codex_pool_rate_limited_status)
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
@@ -1737,7 +1749,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
     # unconditionally (auth.json may still carry a legacy ``oauth_pkce`` label).
     return _pool_first_oauth_status(
         "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
-        resolve=resolve_xai_oauth_runtime_credentials)
+        resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:

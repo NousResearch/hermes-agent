@@ -117,7 +117,7 @@ class GatewayNotificationsMixin:
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.run import _is_slack_ignored_channel
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if not adapter:
             return
         config = getattr(self, "config", None)
@@ -969,7 +969,7 @@ class GatewayNotificationsMixin:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    return self._restored_source(entry)
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
             cached_source = self._get_cached_session_source(session_key)

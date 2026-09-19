@@ -254,7 +254,7 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
+    "--tmpfs", "/tmp:rw,nosuid,size=512m",  # no-tmp: ok — container tmpfs mount spec
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m"]
 
 _DEFAULT_PIDS_LIMIT = "256"  # applied only when the pids cgroup controller is available

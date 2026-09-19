@@ -282,7 +282,7 @@ class MicroCompactionMixin:
     def _next_exchange(self, messages: List[Dict[str, Any]]) -> Optional[tuple[int, int]]:
         """The next un-absorbed exchange inside the compressible window, or None."""
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start, allow_split_turn=False)
         if compress_start >= compress_end:
             return None
         cursor = self._resolve_compact_cursor(messages, compress_start, compress_end)

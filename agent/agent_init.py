@@ -1059,6 +1059,9 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
+    from agent.oneshot_footprint import prune_oneshot_tools
+    agent.tools = prune_oneshot_tools(agent.tools or [])
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
@@ -1337,6 +1340,13 @@ def _apply_agent_section(agent, _agent_cfg):
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # Responses `text.verbosity`: "" / unknown value = not sent (never flips the provider default).
+    _verbosity = str(_agent_section.get("text_verbosity") or "").strip().lower()
+    if _verbosity and _verbosity not in {"low", "medium", "high"}:
+        logger.warning("Unknown agent.text_verbosity %r; expected low, medium or high — ignoring", _verbosity)
+        _verbosity = ""
+    agent.text_verbosity = _verbosity or None
+
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (
@@ -1362,6 +1372,12 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+    # Bounded post-exhaustion auto-recovery cycles once retries AND the fallback chain are spent
+    # on a transient outage (agent/turn_recovery_autorecover.py). 0 disables the ladder.
+    try:
+        agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
+    except (TypeError, ValueError):
+        agent._auto_recovery_cycles = 5
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
@@ -1747,6 +1763,9 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     # Persisted for switch_model / fallback AFTER the custom_providers branch (per-model overrides).
     agent._config_context_length = _config_context_length
+    if _config_context_length is not None:
+        from agent.context_pin import warn_once_on_pin_disagreement
+        warn_once_on_pin_disagreement(agent.model, agent.base_url or "", _config_context_length)
 
     _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(_config_context_length)
     if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
@@ -1912,6 +1931,11 @@ def _enforce_minimum_context(agent):
     # Reject windows below the 64K floor needed for reliable tool-calling; an explicit
     # positive model.context_length on LM Studio is allowed below the floor.
     _ctx = getattr(agent.context_compressor, "context_length", 0)
+    # A local Ollama server serves num_ctx, not the GGUF's advertised window: a Modelfile or
+    # model.ollama_num_ctx at 64K+ is a usable window even when the metadata says 40K (#100437).
+    # Only a local endpoint can honour num_ctx, so a stale override never admits a hosted model.
+    if agent._ollama_num_ctx and agent.base_url and is_local_endpoint(agent.base_url):
+        _ctx = max(_ctx or 0, agent._ollama_num_ctx)
     _allow_lmstudio_explicit_below_floor = (
         str(agent.provider or "").strip().lower() == "lmstudio"
         and isinstance(agent._config_context_length, int)
@@ -1919,14 +1943,28 @@ def _enforce_minimum_context(agent):
         and agent._config_context_length > 0
     )
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
+        floor_k = MINIMUM_CONTEXT_LENGTH // 1000
+        if agent.base_url and is_local_endpoint(agent.base_url):
+            # Any OpenAI-compatible local server (llama.cpp, vLLM, Ollama, ...) — the window is the
+            # server's runtime setting, not the model's; never assume Ollama here (#87075).
+            remedy = (
+                f"Your local server is serving a {_ctx:,}-token window.  Start it with at least "
+                f"{floor_k}K context (llama.cpp: -c {MINIMUM_CONTEXT_LENGTH}; vLLM: --max-model-len; "
+                f"Ollama: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} or a Modelfile num_ctx), "
+                f"or set model.ollama_num_ctx in config.yaml to the window it really serves "
+                f"(at least {floor_k}K)."
+            )
+        else:
+            remedy = (
+                f"Choose a model with at least {floor_k}K context.  If your server "
+                f"reports a window smaller than the model's true window, set "
+                f"model.context_length in config.yaml to the real value "
+                f"(this must be at least {floor_k}K)."
+            )
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-            f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
-            f"reports a window smaller than the model's true window, set "
-            f"model.context_length in config.yaml to the real value "
-            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
+            f"by Hermes Agent.  {remedy}"
         )
 
 
@@ -2019,7 +2057,7 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
             if _detected and _detected > 0:
                 agent._ollama_num_ctx = _detected
         except Exception as exc:
-            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
+            _ra().logger.debug("Local server num_ctx detection failed: %s", exc)
     # Cap auto-detected num_ctx to the explicit context_length (GGUF metadata can advertise
     # 256K+ and Ollama would allocate that much VRAM); never override an explicit num_ctx.
     if (
@@ -2034,10 +2072,15 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
         )
         agent._ollama_num_ctx = _config_context_length
     if agent._ollama_num_ctx and not agent.quiet_mode:
+        # Name the real source: a config override is honoured on any local server, /api/show is Ollama-only.
         _ra().logger.info(
-            "Ollama num_ctx: will request %d tokens (model max from /api/show)",
+            "Local server num_ctx: will request %d tokens (%s)",
             agent._ollama_num_ctx,
+            "model.ollama_num_ctx" if _override is not None else "model max from Ollama /api/show",
         )
+
+
+def _clamp_compressor_to_ollama_num_ctx(agent):
     # Recalibrate the compressor to the served window: every request runs at num_ctx, so a
     # trigger derived from the probed model window could sit above it and never fire.
     # A config that sets only model.ollama_num_ctx (without model.context_length) previously left the
@@ -2081,7 +2124,9 @@ def _emit_compression_summary(agent, cs):
             # The active engine's own threshold — a plugin's differs from cs.threshold.
             _pct = getattr(_cc, "threshold_percent", cs.threshold)
             _cap = getattr(_cc, "threshold_tokens_cap", None)
-            _cap_note = f" (capped at {_cap:,} tokens)" if _cap and _cap > 0 else ""
+            # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
+            _cap_binds = bool(_cap) and _cap > 0 and _cc.threshold_tokens == min(_cap, _cc.context_length)
+            _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
             print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
@@ -2326,11 +2371,12 @@ def init_agent(
         agent, _agent_cfg, base_url
     )
     _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
+    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
     _init_usage_state(agent)
-    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
+    _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)
 

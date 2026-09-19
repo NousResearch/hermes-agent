@@ -3,6 +3,7 @@
 
 import logging
 import os
+from dataclasses import replace
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.model_metadata import is_local_endpoint
@@ -101,6 +102,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
         "category": "security",
     },
+    "auth.adopt_external_logins": {
+        "type": "boolean",
+        "description": (
+            "Borrow and refresh the Codex CLI / Claude Code logins when Hermes has no usable login of its own. "
+            "Off: Hermes uses only its own logins (`hermes auth add <provider>`)."
+        ),
+        "category": "security",
+    },
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
@@ -197,6 +206,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "session": "general",
     "nous": "agent",
     "connections": "agent",
+    "auth": "security",
 }
 
 
@@ -467,6 +477,17 @@ def _validated_main_model_selection(
         custom_providers=get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
+    if is_bare_custom and base_url.strip():
+        # The submitted endpoint IS the route this pick asked for; the credential step may have
+        # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
+        # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
+        # wire protocol it mandates: ``model.base_url`` and ``model.api_mode`` are persisted
+        # together, so a mode derived from the displaced host would route the submitted endpoint
+        # over the wrong wire.
+        from hermes_cli.providers import determine_api_mode
+        url = base_url.strip()
+        result = replace(result, base_url=url,
+                         api_mode=determine_api_mode(result.target_provider, url))
     return result
 
 

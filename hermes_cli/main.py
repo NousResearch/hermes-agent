@@ -380,6 +380,7 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
@@ -392,6 +393,7 @@ from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.browser import build_browser_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
+from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
 from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
@@ -624,6 +626,14 @@ def _apply_profile_override() -> None:
 
 
 _apply_profile_override()
+# ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
+# at THIS home's scratch dir (a user-set TMPDIR is still left alone).
+try:
+    from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
+
+    _export_scratch_tmp_env()
+except Exception:
+    pass  # an unwritable home leaves the system temp dir in place; never block startup
 
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since
@@ -815,6 +825,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_dist_exists,
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
+    _desktop_stamp_path,
     _install_rebuilt_desktop_app,
 )
 from hermes_cli.main_web_build import (
@@ -2375,6 +2386,15 @@ def cmd_update(args):
         describe_holder,
     )
 
+    # A child spawned off hermes.exe: the parent still holds the shim (and the venv python)
+    # until it exits — nothing below may scan holders, pause gateways or rename shims before.
+    # Waiting BEFORE the lock matters: the parent's exit releases ITS marker, so a child that
+    # merely ran under the parent's claim would finish the install with no lock at all
+    # (#101600); once the parent is gone the child claims a marker of its own.
+    from hermes_cli.update_handoff import wait_for_shim_parent_exit
+
+    wait_for_shim_parent_exit()
+
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
@@ -2438,7 +2458,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs",
+        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2720,7 +2740,7 @@ def cmd_console(args):
 # entry would let a plugin command silently fail to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
@@ -2732,7 +2752,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "vault",
+        "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -3304,6 +3324,7 @@ def _build_cli_parser():
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
     build_egress_parser(subparsers)
     build_migrate_parser(subparsers)
+    build_codex_runtime_parser(subparsers)
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
@@ -3374,6 +3395,7 @@ def _build_cli_parser():
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
     build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+    build_usage_parser(subparsers)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
     build_vault_parser(subparsers)

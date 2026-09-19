@@ -268,6 +268,37 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_agent_receives_configured_reasoning():
+    """#85153 class: the throwaway /compress agent is an ``AIAgent()`` built from gateway config, so
+    ``agent.reasoning_effort: none`` must reach it like a normal gateway turn — otherwise the transport
+    applies its default effort (a 400 on non-reasoning models)."""
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
+
+    with (
+        patch("gateway.run._load_gateway_config", return_value={"agent": {"reasoning_effort": "none"}}),
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"),
+        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    assert mock_agent.call_count == 1
+    _, kwargs = mock_agent.call_args
+    assert kwargs["reasoning_config"] == {"enabled": False}
+
+
+@pytest.mark.asyncio
 async def test_compress_command_passes_tool_messages_to_compressor():
     """Tool results must reach _compress_context (#3854).
 

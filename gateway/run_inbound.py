@@ -29,7 +29,7 @@ from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -62,6 +62,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
+
+    _route_pending_approval_response: Callable[..., Awaitable[Optional[str]]]
 
     def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
@@ -603,6 +605,14 @@ class GatewayInboundMixin:
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
+
+        # If the message looks like an approval/denial reply but did not
+        # resolve as a recognized slash command (e.g. a quoted reply where
+        # the command is on the last line), route it before the busy
+        # queue/steer/interrupt logic consumes it.
+        _approval_reply = await self._route_pending_approval_response(event, _quick_key)
+        if _approval_reply is not None:
+            return True, _approval_reply
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.

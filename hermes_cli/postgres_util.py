@@ -18,7 +18,6 @@ _POOL_LOCK = threading.RLock()
 def store_schema(base: str, namespace: str) -> str:
     readable = re.sub(r'[^a-z0-9_]+', '_', namespace.lower()).strip('_') or 'store'
     suffix = '_' + readable[:20] + '_' + hashlib.sha256(namespace.encode()).hexdigest()[:10]
-    # Include the complete base in the digest so long profile schemas stay distinct.
     digest = hashlib.sha256((base + ':' + namespace).encode()).hexdigest()[:12]
     return base[:63 - len(suffix) - 13] + suffix + '_' + digest
 

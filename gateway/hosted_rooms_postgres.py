@@ -12,8 +12,6 @@ def open_database(path):
 
 def _initialize(connection):
     from gateway import hosted_rooms, hosted_room_policy_checkpoint, hosted_room_replicas, hosted_room_driver
-    # These schemas use portable constraints. PostgreSQL needs 64-bit timestamps;
-    # SQLite's REAL is double precision while PostgreSQL's REAL is only 32-bit.
     for statement in hosted_rooms._SCHEMA_DDL:
         connection.execute(statement.replace(' REAL', ' DOUBLE PRECISION'))
     connection.execute('CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)')

@@ -232,7 +232,7 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
             "unsupported unpublished hosted-room driver schema; "
             "recreate the driver tables before starting the driver")
     if getattr(conn, "backend", "sqlite") == "postgres":
-        return  # Foreign keys are declared in the PostgreSQL schema initialization.
+        return
     for table in ("hosted_room_driver_leases", "hosted_room_driver_tasks"):
         if not any(
             row[2] == "hosted_rooms" and row[3] == "room_id" and row[4] == "room_id"

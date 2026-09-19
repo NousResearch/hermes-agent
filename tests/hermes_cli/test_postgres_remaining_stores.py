@@ -178,6 +178,7 @@ def test_auxiliary_ledgers_and_plugin_storage(stores_home, monkeypatch):
         assert connection.execute('SELECT value FROM values_store WHERE key=?', ('key',)).fetchone()[0] == 'value'
     finally:
         connection.close()
+    assert not (stores_home / 'plugin-data' / 'sample' / 'data.db').exists()
 
 
 def test_optional_memory_stores_use_postgres(stores_home):

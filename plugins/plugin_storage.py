@@ -39,8 +39,9 @@ def plugin_db(name: str, filename: str = "data.db") -> sqlite3.Connection:
     if Path(filename).name != filename or not filename:
         raise ValueError(f"invalid plugin db filename: {filename!r}")
     path = plugin_data_dir(name) / filename
+    from hermes_constants import get_hermes_home
     from hermes_state_backend import resolve_database_settings
-    settings = resolve_database_settings(path)
+    settings = resolve_database_settings(get_hermes_home() / "state.db")
     if settings.backend == "postgres":
         from hermes_cli.postgres_util import connect
         return connect(settings, f"plugin_{name}_{filename}")

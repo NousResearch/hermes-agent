@@ -10,7 +10,6 @@ import re
 
 from tools import desktop_ui
 from tools.registry import tool_error
-from tui_gateway.contracts.events import PreviewOpenPayload
 
 
 def _normalize_target(raw: str) -> str:
@@ -31,6 +30,8 @@ def _normalize_target(raw: str) -> str:
 
 def open_preview_tool(url: str, label: str = "") -> str:
     """Ask the desktop GUI to show ``url`` in the preview pane beside the chat."""
+    from tui_gateway.contracts.events import PreviewOpenPayload  # lazy: contracts pkg is ~200ms cold
+
     target = _normalize_target(url or "")
     if not target:
         return tool_error(

@@ -6,7 +6,6 @@ reply. Lives in ``desktop_ui`` and withdraws itself when the user turns tips off
 import json
 
 from tools import desktop_ui
-from tui_gateway.contracts.events import TipShowPayload
 from tools.registry import registry, tool_error
 
 SIDES = ("top", "right", "bottom", "left")
@@ -14,6 +13,8 @@ SIDES = ("top", "right", "bottom", "left")
 
 def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
     """Show one tip bubble anchored to ``selector``."""
+    from tui_gateway.contracts.events import TipShowPayload  # lazy: contracts pkg is ~200ms cold
+
     text = (text or "").strip()
     selector = (selector or "").strip()
     if not text:

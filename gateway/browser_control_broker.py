@@ -165,7 +165,10 @@ class _PendingCommand:
 
 
 def _cancel_frame(pending: _PendingCommand) -> dict:
-    return {"method": FRAME_CANCEL, "params": BrowserControllerCancelPayload(command_id=pending.command_id, tool_call_id=pending.tool_call_id)}
+    # Frames are plain JSON dicts: validate through the contract model, serialise once here so
+    # every sink (aiohttp ws, TUI transport) forwards ``params`` as-is.
+    return {"method": FRAME_CANCEL, "params": BrowserControllerCancelPayload(
+        command_id=pending.command_id, tool_call_id=pending.tool_call_id).model_dump(mode="json")}
 
 
 class BrowserControlBroker:
@@ -348,7 +351,7 @@ class BrowserControlBroker:
         command_id = secrets.token_hex(16)
         frame = {"method": FRAME_COMMAND, "params": BrowserControllerCommandPayload(
             command_id=command_id, action=action, arguments=arguments, controller_id=scope.controller_id,
-            browser_profile_id=scope.browser_profile_id, tool_call_id=tool_call_id)}
+            browser_profile_id=scope.browser_profile_id, tool_call_id=tool_call_id).model_dump(mode="json")}
         pending = _PendingCommand(scope=controller.scope, command_id=command_id, tool_call_id=tool_call_id)
         with controller.send_lock:
             with self._lock:

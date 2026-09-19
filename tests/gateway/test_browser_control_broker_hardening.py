@@ -112,7 +112,7 @@ def test_completion_requires_the_same_scope_as_the_pending_command():
     broker = BrowserControlBroker(command_timeout=1.0)
     scope = _scope()
     thread, outcome, frames = _start_pending(broker, scope)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
 
     assert broker.complete(
         command_id,
@@ -137,7 +137,7 @@ def test_same_identity_reattach_preserves_pending_work_and_completes_on_new_owne
     broker = BrowserControlBroker(command_timeout=1.0)
     scope = _scope()
     thread, outcome, frames = _start_pending(broker, scope)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
     replacement_frames = []
 
     broker.attach(scope, replacement_frames.append, owner="replacement-owner")
@@ -161,7 +161,7 @@ def test_same_stable_identity_can_renegotiate_capabilities_without_ambiguity():
     broker = BrowserControlBroker(command_timeout=1.0)
     original = _scope()
     thread, outcome, frames = _start_pending(broker, original)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
     refreshed = _scope(capabilities=frozenset({"controller.noop", "browser_snapshot"}))
 
     broker.attach(refreshed, lambda _frame: None, owner="replacement-owner")
@@ -185,7 +185,7 @@ def test_transport_disconnect_parks_pending_and_reconnect_completes_it():
     broker = BrowserControlBroker(command_timeout=1.0)
     scope = _scope()
     thread, outcome, frames = _start_pending(broker, scope)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
 
     assert broker.disconnect_owner("owner-fixture") == 1
     assert thread.is_alive()
@@ -209,7 +209,7 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
     broker = BrowserControlBroker(command_timeout=0.02)
     scope = _scope()
     thread, outcome, frames = _start_pending(broker, scope)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
 
     assert broker.disconnect_owner("owner-fixture") == 1
     thread.join(timeout=1.0)
@@ -224,7 +224,7 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
             "params": BrowserControllerCancelPayload(
                 command_id=command_id,
                 tool_call_id="tool-call-fixture",
-            ),
+            ).model_dump(mode="json"),
         }
     ]
 
@@ -246,7 +246,7 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
         second_thread.join(timeout=0.01)
     assert replacement_frames[1]["method"] == "browser.controller.command"
     assert broker.complete(
-        replacement_frames[1]["params"].command_id,
+        replacement_frames[1]["params"]["command_id"],
         scope=scope,
         ok=True,
         result={"second": True},
@@ -259,7 +259,7 @@ def test_old_transport_owner_cannot_complete_after_same_identity_reconnect():
     broker = BrowserControlBroker(command_timeout=1.0)
     scope = _scope()
     thread, outcome, frames = _start_pending(broker, scope)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
     refreshed_scope = _scope(capabilities=frozenset({"controller.noop", "browser_snapshot"}))
 
     broker.attach(refreshed_scope, lambda _frame: None, owner="replacement-owner")
@@ -304,9 +304,9 @@ def test_cancel_with_pre_reconnect_scope_still_cancels_same_stable_identity():
         {
             "method": "browser.controller.cancel",
             "params": BrowserControllerCancelPayload(
-                command_id=frames[0]["params"].command_id,
+                command_id=frames[0]["params"]["command_id"],
                 tool_call_id="tool-call-before-reconnect",
-            ),
+            ).model_dump(mode="json"),
         }
     ]
 
@@ -315,7 +315,7 @@ def test_different_stable_identity_hard_replaces_and_cancels_pending_work():
     broker = BrowserControlBroker(command_timeout=1.0)
     original = _scope()
     thread, outcome, frames = _start_pending(broker, original)
-    command_id = frames[0]["params"].command_id
+    command_id = frames[0]["params"]["command_id"]
     replacement = _scope(controller_id="different-controller")
 
     broker.attach(replacement, lambda _frame: None, owner="replacement-owner")
@@ -523,7 +523,7 @@ def test_completion_winning_at_timeout_boundary_is_not_misreported_as_timeout():
 
     def send(frame):
         nonlocal command_id
-        command_id = frame["params"].command_id
+        command_id = frame["params"]["command_id"]
         broker._pending[command_id].event = BoundaryEvent()
 
     command_id = ""
@@ -559,7 +559,7 @@ def test_non_boolean_success_values_fail_closed():
 
     def send(frame):
         assert broker.complete(
-            frame["params"].command_id,
+            frame["params"]["command_id"],
             scope=scope,
             ok="false",
             result={"spoofed": True},

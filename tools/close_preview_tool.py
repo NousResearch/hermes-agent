@@ -4,11 +4,12 @@ the whole pane when no url is given — only for the window that asked."""
 
 from tools import desktop_ui
 from tools.open_preview_tool import _normalize_target
-from tui_gateway.contracts.events import PreviewClosePayload
 
 
 def close_preview_tool(url: str = "") -> str:
     """Ask the desktop GUI to close the preview pane, or the tab for ``url``."""
+    from tui_gateway.contracts.events import PreviewClosePayload  # lazy: contracts pkg is ~200ms cold
+
     target = _normalize_target(url or "")
     return desktop_ui.emit_or_error(
         "preview.close", PreviewClosePayload(url=target), "Failed to close the preview pane: ",

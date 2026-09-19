@@ -6,11 +6,15 @@ defaults to the triggering message and emits ``message.reaction`` for live paint
 
 import contextlib
 import json
+import logging
 
 from gateway.session_context import get_session_env
 from tools import desktop_ui
-from tui_gateway.contracts.events import MessageReactionPayload
 from tools.registry import registry, tool_error
+
+logger = logging.getLogger(__name__)
+# Declared fields of ``tui_gateway.contracts.common.MessageReaction``.
+_REACTION_FIELDS = ("emoji", "author", "at", "seen")
 
 
 def _open_session_db():
@@ -24,6 +28,8 @@ def _open_session_db():
 
 def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
+    from tui_gateway.contracts.events import MessageReactionPayload  # lazy: contracts pkg is ~200ms cold
+
     emoji = (emoji or "").strip()
     session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env("HERMES_SESSION_ID", "")
     if not session_key:
@@ -50,8 +56,18 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
             return tool_error(f"Message {row_id} is not part of this conversation.")
         # Paint it live; a missing bridge (non-desktop) is not an error — the reaction is
         # persisted. `role` lets the renderer match a live message without a durable row id.
-        with contextlib.suppress(Exception):
-            desktop_ui.emit("message.reaction", MessageReactionPayload(row_id=int(row_id), reactions=reactions, role=target_role))
+        # Project stored rows onto the declared wire fields: the contract forbids extras, so a
+        # legacy/foreign column in a persisted row must not abort the live paint.
+        projected = [
+            {k: r.get(k) for k in _REACTION_FIELDS if k in r} for r in reactions if isinstance(r, dict)
+        ]
+        try:
+            payload = MessageReactionPayload(row_id=int(row_id), reactions=projected, role=target_role)
+        except Exception as exc:
+            logger.warning("message.reaction payload rejected for row %s: %s", row_id, exc)
+        else:
+            with contextlib.suppress(Exception):
+                desktop_ui.emit("message.reaction", payload)
         return json.dumps({"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False)
     finally:
         with contextlib.suppress(Exception):

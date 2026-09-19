@@ -7,13 +7,14 @@ a background turn never moves the user's focus. URLs/files go through `desktop_p
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
-from tui_gateway.contracts.events import PaneRevealPayload
 
 PANES = ("chat", "files", "terminal", "review", "sessions")
 
 
 def focus_pane_tool(pane: str) -> str:
     """Ask the desktop GUI to reveal and focus ``pane``."""
+    from tui_gateway.contracts.events import PaneRevealPayload  # lazy: contracts pkg is ~200ms cold
+
     name = (pane or "").strip().lower()
     if name not in PANES:
         return tool_error(f"pane must be one of: {', '.join(PANES)}.")

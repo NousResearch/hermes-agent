@@ -6,13 +6,16 @@ stays ``None`` and tools report "desktop only". Routing keys off ``HERMES_UI_SES
 so the event lands on the window that owns the turn (the sink is lock-guarded).
 """
 
-import json
-from typing import Callable, Optional
+from __future__ import annotations
 
-from tui_gateway.contracts.base import Payload
+import json
+from typing import TYPE_CHECKING, Callable, Optional
 
 from gateway.session_context import get_session_env
 from tools.registry import tool_error
+
+if TYPE_CHECKING:
+    from tui_gateway.contracts.base import Payload
 
 # (sid, event, payload) sink, installed by the desktop gateway.
 _emit: Optional[Callable[[str, str, Payload], None]] = None

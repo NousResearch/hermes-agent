@@ -9,11 +9,12 @@ can self-correct without a registry-listing tool.
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
-from tui_gateway.contracts.events import LayoutApplyPayload
 
 
 def apply_layout_tool(preset: str) -> str:
     """Ask the desktop GUI to apply layout preset ``preset``."""
+    from tui_gateway.contracts.events import LayoutApplyPayload  # lazy: contracts pkg is ~200ms cold
+
     name = (preset or "").strip()
     if not name:
         return tool_error("preset is required — a layout preset id, e.g. 'default' or 'focus'.")

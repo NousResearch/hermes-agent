@@ -10,10 +10,11 @@ Lives in the ``desktop_ui`` toolset — desktop-app sessions only.
 from tools import desktop_ui
 from tools.open_preview_tool import _normalize_target, open_preview_tool
 from tools.registry import registry, tool_error
-from tui_gateway.contracts.events import PreviewClosePayload
 
 
 def preview_close(url: str = "") -> str:
+    from tui_gateway.contracts.events import PreviewClosePayload  # lazy: contracts pkg is ~200ms cold
+
     target = _normalize_target(url or "")
     return desktop_ui.emit_or_error(
         "preview.close",

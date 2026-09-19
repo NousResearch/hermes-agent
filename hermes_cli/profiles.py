@@ -751,6 +751,20 @@ def read_profile_meta(profile_dir: Path) -> dict:
     }
 
 
+def read_profile_ui_meta(profile_dir: Path) -> dict:
+    """Read ``profile.yaml`` -> ``ui_meta`` (``{}`` when missing/unreadable/not a mapping).
+
+    ``ui_meta`` is client-owned presentation state keyed by the owning client, and it is
+    where a profile's roster GROUP already lives: the Desktop roster files bots into
+    user-made sections by ``ui_meta['hermes-bots'].sectionId``. Returning the block as-is is
+    the whole grouping contract — a consumer groups by the key it knows, and a profile that
+    declares nothing is indistinguishable from one written before this existed.
+    """
+    data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
+    ui_meta = data.get("ui_meta")
+    return ui_meta if isinstance(ui_meta, dict) else {}
+
+
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
     display_name: Optional[str] = None,

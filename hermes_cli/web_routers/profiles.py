@@ -78,7 +78,7 @@ _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gatew
 
 def _profile_to_dict(info) -> Dict[str, Any]:
     attr = functools.partial(getattr, info)
-    return {
+    row = {
         "name": attr("name", ""), "path": str(attr("path", "")),
         "is_default": bool(attr("is_default", False)),
         "model": attr("model", None), "provider": attr("provider", None),
@@ -93,6 +93,16 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
         "has_alias": attr("alias_path", None) is not None}
+    # A profile's declared roster GROUP, mirroring the gateway's ``profiles.list`` row (same
+    # source, same key): the sidebar and its profile pickers otherwise cannot group, since
+    # membership rides profile.yaml and nothing here read it. Omitted when undeclared, so
+    # every existing client sees the payload it saw before.
+    from hermes_cli import profiles as _profiles_mod
+
+    ui_meta = _profiles_mod.read_profile_ui_meta(Path(str(attr("path", "") or "")))
+    if ui_meta:
+        row["ui_meta"] = ui_meta
+    return row
 
 
 def _profile_setup_command(name: str) -> str:

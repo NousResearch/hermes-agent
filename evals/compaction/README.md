@@ -69,6 +69,25 @@ kwargs plus optional attribute overrides applied post-construction (e.g.
 `tail_token_budget`). Add new policies there — the runner picks them up by
 name.
 
+A policy with `"engine": "jev"` bypasses `ContextCompressor` and runs
+`jev_arm.py`, a Python port of
+[fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction): no
+summary at all — TypeSafe's Jev decision model scores every tool call/result
+(`noul` keep probabilities over the whole history) and stale ones are dropped
+or truncated while user/assistant text stays verbatim. Transport is
+OpenRouter's Decisions API (`~typesafe/jev-latest`, needs
+`OPENROUTER_API_KEY`); `"jev": {...}` overrides `JevOptions` (threshold,
+pinned tail, state/request ceilings). When the fitted state cannot get under
+the 25K-token ceiling the arm records `jev_fallback` (the plugin throws and
+Claude Code falls back to its built-in summary) instead of scoring.
+
+Every arm's result carries its compaction spend: `compaction_calls`,
+`compaction_input_tokens` / `compaction_output_tokens`, `compaction_model`
+and `compaction_cost_usd` (Jev reports cost directly; summary calls are
+priced at the OpenRouter list price of the model that answered). The run
+also writes `eval_usage.json` — the harness's own question/answer/judge
+token bill.
+
 ## Notes
 
 - Question generation and judging use `agent.auxiliary_client.call_llm`

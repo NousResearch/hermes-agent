@@ -153,6 +153,9 @@ def keyword_search(archive: list, query: str, top_k: int = 4, excerpt_chars: int
     return "\n\n".join(hits) if hits else "(no results)"
 
 
+EVAL_USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0}
+
+
 def _call(prompt: str, max_tokens: int = 2000) -> str:
     from agent.auxiliary_client import call_llm
 
@@ -161,6 +164,13 @@ def _call(prompt: str, max_tokens: int = 2000) -> str:
         task="compression",
         max_tokens=max_tokens,
     )
+    usage = getattr(resp, "usage", None)
+    if usage is not None:
+        EVAL_USAGE["calls"] += 1
+        EVAL_USAGE["prompt_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+        EVAL_USAGE["completion_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        details = getattr(usage, "prompt_tokens_details", None)
+        EVAL_USAGE["cached_tokens"] += int(getattr(details, "cached_tokens", 0) or 0) if details else 0
     if hasattr(resp, "choices"):
         return resp.choices[0].message.content or ""
     return str(resp)
@@ -216,17 +226,122 @@ def generate_questions(messages, n: int, cache_path: Path) -> list:
     return questions
 
 
-def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
-               with_recovery: bool = False) -> dict:
+_PRICES: dict = {}
+
+
+def openrouter_price_usd(model: str, input_tokens: int, output_tokens: int):
+    """Price a call from OpenRouter's public catalog (per-token USD); None when unknown.
+
+    Used as a common yardstick across arms — a summary routed through another
+    provider is priced at the OpenRouter list price for that model id.
+    """
+    if not _PRICES:
+        try:
+            import urllib.request
+            with urllib.request.urlopen("https://openrouter.ai/api/v1/models", timeout=30) as r:
+                for m in json.load(r)["data"]:
+                    _PRICES[m["id"]] = m.get("pricing") or {}
+        except Exception:
+            _PRICES["__failed__"] = {}
+    p = _PRICES.get(model) or _PRICES.get(model.split(":")[0])
+    if not p:
+        return None
+    return input_tokens * float(p.get("prompt") or 0) + output_tokens * float(p.get("completion") or 0)
+
+
+class _AuxMeter:
+    """Wraps the compressor's module-level ``call_llm`` binding to total summary usage."""
+
+    def __init__(self):
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.models: list = []
+
+    def __enter__(self):
+        import agent.context_compressor as cc
+        self._cc, self._orig = cc, cc.call_llm
+
+        def metered(*args, **kwargs):
+            resp = self._orig(*args, **kwargs)
+            self.calls += 1
+            usage = getattr(resp, "usage", None) or (resp.get("usage") if isinstance(resp, dict) else None)
+            if usage is not None:
+                get = (lambda k: getattr(usage, k, None)) if not isinstance(usage, dict) else usage.get
+                self.input_tokens += int(get("prompt_tokens") or 0)
+                self.output_tokens += int(get("completion_tokens") or 0)
+            route = kwargs.get("route_info") or {}
+            model = route.get("model") or kwargs.get("model") or getattr(resp, "model", None)
+            if model and model not in self.models:
+                self.models.append(model)
+            return resp
+
+        cc.call_llm = metered
+        return self
+
+    def __exit__(self, *exc):
+        self._cc.call_llm = self._orig
+
+    def summary(self) -> dict:
+        model = self.models[0] if self.models else EVAL_MODEL
+        return {
+            "compaction_calls": self.calls,
+            "compaction_input_tokens": self.input_tokens,
+            "compaction_output_tokens": self.output_tokens,
+            "compaction_model": model,
+            "compaction_cost_usd": openrouter_price_usd(model, self.input_tokens, self.output_tokens),
+        }
+
+
+def _compress_with_policy(spec: dict, messages) -> tuple:
+    """Run one policy; returns (compressed, compressor, compaction-cost dict)."""
+    if spec.get("engine") == "jev":
+        from evals.compaction.jev_arm import JevCompactor, JevOptions
+
+        comp = JevCompactor(options=JevOptions(**(spec.get("jev") or {})))
+        try:
+            compressed = comp.compress(copy.deepcopy(messages), current_tokens=total_tokens(messages), force=True)
+        except ValueError as e:
+            # The plugin throws here and Claude Code falls back to its built-in
+            # summary; record the fallback rather than scoring an uncompressed arm.
+            comp._last_summary_error = str(e)
+            return None, comp, {"jev_fallback": str(e), "compaction_calls": comp.usage.requests,
+                                "compaction_cost_usd": comp.usage.cost_usd}
+        cost = {
+            "compaction_calls": comp.usage.requests,
+            "compaction_input_tokens": comp.usage.input_tokens,
+            "compaction_output_tokens": comp.usage.output_tokens,
+            "compaction_model": comp.usage.models[0] if comp.usage.models else "jev",
+            "compaction_cost_usd": comp.usage.cost_usd,
+            "jev_stats": comp.stats,
+        }
+        return compressed, comp, cost
+
     from agent.context_compressor import ContextCompressor
 
-    before = copy.deepcopy(messages)
     comp = apply_policy(ContextCompressor(model=EVAL_MODEL, quiet_mode=True), spec)
     for key, value in (spec.get("ctor") or {}).items():
         setattr(comp, key, value)
+    with _AuxMeter() as meter:
+        compressed = comp.compress(copy.deepcopy(messages), current_tokens=total_tokens(messages), force=True)
+    return compressed, comp, meter.summary()
+
+
+def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
+               with_recovery: bool = False) -> dict:
+    before = copy.deepcopy(messages)
     t0 = time.time()
-    compressed = comp.compress(copy.deepcopy(messages), current_tokens=total_tokens(messages), force=True)
+    compressed, comp, compaction_cost = _compress_with_policy(spec, messages)
     elapsed = time.time() - t0
+    label = f"{name}+recovery" if with_recovery else name
+    if compressed is None:
+        summary = {"policy": label, "before_tokens": total_tokens(before), "after_tokens": None,
+                   "recall_pct": None, "compress_seconds": round(elapsed, 1),
+                   "summary_error": comp._last_summary_error, **compaction_cost}
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{label.replace('+', '_')}.json").write_text(
+            json.dumps({"summary": summary, "results": []}, indent=1), encoding="utf-8")
+        return summary
 
     # The archived region = original messages that did not survive verbatim.
     surviving = set()
@@ -277,7 +392,6 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
         results.append(entry)
 
     scored = [r["score"] for r in results]
-    label = f"{name}+recovery" if with_recovery else name
     summary = {
         "policy": label,
         "before_tokens": total_tokens(before),
@@ -287,6 +401,7 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
         "recall_pct": round(100 * sum(scored) / (2 * len(scored)), 1) if scored else 0.0,
         "scores": scored,
         "summary_error": getattr(comp, "_last_summary_error", None),
+        **compaction_cost,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{label.replace('+', '_')}.json").write_text(json.dumps({"summary": summary, "results": results}, indent=1), encoding="utf-8")
@@ -305,7 +420,7 @@ def main():
 
     messages = load_transcript(args.transcript, cap_tokens=args.cap_tokens)
     out_dir = Path(args.out)
-    tid = hashlib.md5(args.transcript.encode()).hexdigest()[:10]
+    tid = hashlib.md5(f"{args.transcript}@{args.cap_tokens}".encode()).hexdigest()[:10]
     qcache = out_dir / f"questions-{tid}.json"
     questions = generate_questions(messages, args.questions, qcache)
     print(f"{len(questions)} questions ready ({qcache})")
@@ -349,7 +464,9 @@ def main():
         print(json.dumps(s, indent=1))
 
     (out_dir / "scorecard.json").write_text(json.dumps(summaries, indent=1), encoding="utf-8")
+    (out_dir / "eval_usage.json").write_text(json.dumps(EVAL_USAGE, indent=1), encoding="utf-8")
     print(f"\nscorecard -> {out_dir}/scorecard.json")
+    print(f"eval LLM usage (questions+answers+judge): {EVAL_USAGE}")
 
 
 if __name__ == "__main__":

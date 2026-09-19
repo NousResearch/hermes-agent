@@ -69,13 +69,13 @@ _VAR_MAP = {var.name: var for var in (
 )}
 
 
-def _runtime_cwd(func: str, *args: Any) -> None:
+def _runtime_cwd(func: str, *args: Any) -> Any:
     """Best-effort call of ``agent.runtime_cwd.<func>``; import/runtime failures are ignored."""
     try:
         from agent import runtime_cwd
-        getattr(runtime_cwd, func)(*args)
+        return getattr(runtime_cwd, func)(*args)
     except Exception:
-        pass
+        return None
 
 
 def set_current_session_id(session_id: str) -> None:
@@ -140,8 +140,20 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
-    _runtime_cwd("set_session_cwd", cwd)
+    if (cwd_token := _runtime_cwd("set_session_cwd", cwd)) is not None:
+        tokens.append(cwd_token)
     return tokens
+
+
+def restore_session_vars(tokens: list) -> None:
+    """Restore a nested session binding from the tokens returned by ``set_session_vars``.
+
+    Unlike ``clear_session_vars``, this is only for a local scope that must preserve an outer
+    binding.  Reset in reverse order so every ContextVar, including runtime cwd, regains its
+    exact prior value.
+    """
+    for token in reversed(tokens):
+        token.var.reset(token)
 
 
 def clear_session_vars(tokens: list) -> None:

@@ -45,3 +45,11 @@ describe('view.cycleSidebarGrouping keybind action', () => {
     expect(KEYBIND_ACTIONS.filter(action => action.id === 'view.cycleSidebarGrouping')).toHaveLength(1)
   })
 })
+
+describe('composer.dictation keybind action', () => {
+  it('is configurable without changing the voice-conversation shortcut', () => {
+    expect(keybindAction('composer.dictation')).toMatchObject({ category: 'composer', defaults: [] })
+    expect(keybindAction('composer.voice')).toMatchObject({ id: 'composer.voice', category: 'composer' })
+    expect(defaultBindings()['composer.dictation']).toEqual([])
+  })
+})

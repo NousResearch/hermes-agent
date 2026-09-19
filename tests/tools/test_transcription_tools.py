@@ -85,6 +85,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.delenv("META_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -1511,3 +1512,21 @@ class TestExplicitOpenaiSelectionError:
 
         assert result["success"] is False
         assert "No STT provider available" in result["error"]
+
+
+class TestTranscribeMuse:
+    def test_uploads_completed_audio_with_meta_credentials(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("META_API_KEY", "meta-test-key")
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"text": "editable dictated text"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"muse": {}}), \
+             patch("requests.post", return_value=response) as post:
+            from tools.transcription_tools import _transcribe_muse
+            result = _transcribe_muse(sample_ogg, "muse-voice-transcribe-1.0")
+
+        assert result == {"success": True, "transcript": "editable dictated text", "provider": "muse"}
+        assert post.call_args.args[0] == "https://api.meta.ai/v1/asr/transcribe"
+        assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer meta-test-key"}
+        assert post.call_args.kwargs["data"]["model"] == "muse-voice-transcribe-1.0"

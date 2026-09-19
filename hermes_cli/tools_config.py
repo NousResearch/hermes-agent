@@ -256,6 +256,9 @@ TOOL_CATEGORIES = {
             _row("xAI", tag="grok-stt — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
                  stt_provider="elevenlabs"),
+            _row("Meta Muse Voice Transcribe", "paid", "Fast transcription through the Meta Model API",
+                 [_key("META_API_KEY", "Meta Model API key", "https://developer.meta.com/ai/models/muse-voice-transcribe/")],
+                 stt_provider="muse"),
             # Mistral Voxtral STT intentionally omitted — mistralai PyPI package quarantined (malicious 2.4.6
             # release, 2026-05-12). Restore alongside the dashboard stt.provider option.
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),

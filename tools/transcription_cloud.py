@@ -20,7 +20,7 @@ from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
+    MUSE_STT_BASE_URL, OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
     _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
 
 # Log-record parity with the origin module.
@@ -324,6 +324,34 @@ def _transcribe_elevenlabs(
                     Path(file_path).name, model_name, len(transcript_text))
 
     return _rest_provider(file_path, "elevenlabs", "ElevenLabs STT", _post, _elevenlabs_error_detail,
+                          _extract_transcript_text, _log)
+
+
+def _transcribe_muse(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe a completed recording with Meta Muse Voice Transcribe's REST API."""
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
+    if prompt:
+        _log_prompt_unsupported("STT provider 'muse'")
+    api_key = _resolve_provider_key("META_API_KEY", "muse")
+    if not api_key:
+        return _error_result("META_API_KEY not set")
+    stt_config = _load_stt_config()
+    muse_config = stt_config.get("muse") or {}
+    base_url = str(muse_config.get("base_url") or MUSE_STT_BASE_URL).strip().rstrip("/")
+    language = language or _resolve_stt_language("muse", stt_config) or ""
+
+    def _post() -> Any:
+        data = {"model": model_name, **({"language": language} if language else {})}
+        return _post_audio_multipart(f"{base_url}/asr/transcribe", {"Authorization": f"Bearer {api_key}"}, file_path, data)
+
+    def _log(transcript_text: str, _body: Dict[str, Any]) -> None:
+        logger.info("Transcribed %s via Meta Muse Voice Transcribe (%s, %d chars)",
+                    Path(file_path).name, model_name, len(transcript_text))
+
+    return _rest_provider(file_path, "muse", "Meta Muse Voice Transcribe", _post,
+                          lambda body: body.get("error", {}).get("message", ""),
                           _extract_transcript_text, _log)
 
 

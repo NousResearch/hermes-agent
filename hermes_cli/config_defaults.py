@@ -1134,6 +1134,11 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
         },
+        "muse": {
+            "model": "muse-voice-transcribe-1.0",
+            "language": "",  # auto-detect; set a language name or code to force
+            "base_url": "https://api.meta.ai/v1",
+        },
     },
 
     "voice": {

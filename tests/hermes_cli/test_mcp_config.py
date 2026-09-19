@@ -109,6 +109,7 @@ class TestMcpList:
         assert "ink" in out
         assert "github" in out
         assert "2 selected" in out  # ink has 2 in include
+        assert "all" in out  # github has no tools block: default filter renders "all"
         assert "disabled" in out  # github is disabled
 
     def test_list_enabled_default_true(self, tmp_path, capsys):
@@ -122,6 +123,99 @@ class TestMcpList:
         out = capsys.readouterr().out
         assert "myserver" in out
         assert "enabled" in out
+
+    def test_list_scalar_include_shows_one_selected(self, tmp_path, capsys):
+        """#93313: a scalar-string include is enforced at registration (a
+        one-tool filter) — the list display must not claim "all"."""
+        _seed_config(tmp_path, {
+            "ink": {
+                "url": "https://mcp.ml.ink/mcp",
+                "enabled": True,
+                "tools": {"include": "create_service"},
+            },
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "1 selected" in out
+        assert "all" not in out
+
+    def test_list_empty_include_block_all_still_renders_zero_selected(self, tmp_path, capsys):
+        """#12865 guard for this display block: an explicit ``include: []``
+        registers nothing (block-all), so it must render "0 selected", never
+        collapse to "all" — the scalar-normalization rework must not reopen
+        the truthiness hole b70e0f4603 closed."""
+        _seed_config(tmp_path, {
+            "ink": {
+                "url": "https://mcp.ml.ink/mcp",
+                "enabled": True,
+                "tools": {"include": []},
+            },
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "0 selected" in out
+        assert "all" not in out
+        assert "pattern" not in out
+
+    def test_list_scalar_exclude_counts_as_one_pattern(self, tmp_path, capsys):
+        """#93313: scalar exclude mirrors the same normalization shape —
+        one configured pattern. #98067: an exclude count must say
+        "patterns", never imply a blocked-tool count."""
+        _seed_config(
+            tmp_path,
+            {
+                "ink": {
+                    "url": "https://mcp.ml.ink/mcp",
+                    "enabled": True,
+                    "tools": {"exclude": "debug_tool"},
+                },
+            },
+        )
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "1 pattern" in out
+        assert "1 patterns" not in out
+        assert "all" not in out
+        assert "excluded" not in out
+
+    def test_list_exclude_counts_patterns_not_tools(self, tmp_path, capsys):
+        """#98067: offline list can't know blocked-tool counts; a 9-pattern
+        config that matches nothing must not read as "9 tools excluded"."""
+        _seed_config(
+            tmp_path,
+            {
+                "betterstack": {
+                    "url": "https://mcp.betterstack.com",
+                    "enabled": True,
+                    "tools": {
+                        "exclude": [
+                            "execute_query",
+                            "Execute query",
+                            "search_documentation",
+                            "*instructions*",
+                            "create_cloud_connection",
+                            "*team_member*",
+                            "monitors",
+                            "docs",
+                            "*radar*",
+                        ]
+                    },
+                },
+            },
+        )
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "betterstack" in out
+        assert "9 patterns" in out
+        assert "excluded" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -906,10 +1000,12 @@ class TestMcpReauth:
 
 def test_tool_filters_keeps_explicit_empty_include():
     """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
-    "no filter"; only an absent/non-list key is None (#12865)."""
+    "no filter"; only an absent/non-list key is None (#12865). A scalar string is the
+    single-filter shape `config set` writes — normalized, not dropped (#93313)."""
     from hermes_cli.mcp_config import _tool_filters
 
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
-    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (["bad"], ["x"])
+    assert _tool_filters({"tools": {"exclude": "debug_tool"}}) == (None, ["debug_tool"])
     assert _tool_filters({}) == (None, None)
 

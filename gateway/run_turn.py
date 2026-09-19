@@ -3569,6 +3569,11 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            # A message that arrived mid-turn was queued by the adapter BEFORE the direct path
+            # ran pre_gateway_dispatch, so plugins never saw it. Run the same hook at the drain:
+            # skip drops it, rewrite replaces its text, allow/None proceeds — same contract.
+            if pending_event is not None:
+                pending_event = self._hm_pre_gateway_dispatch_hook(pending_event, source)
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):

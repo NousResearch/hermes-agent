@@ -1709,6 +1709,9 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
+# ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
+# opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
+_codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
@@ -1739,8 +1742,9 @@ def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
-    fingerprint (windows vary by entitlement). An in-process hit reports False: not a fresh
-    provider confirmation, must not drive persistent writes."""
+    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
+    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
+    fresh provider confirmation, must not drive persistent writes."""
     now = time.time()
     cache_key = _codex_oauth_token_fingerprint(access_token)
     cached = _codex_oauth_context_cache.get(cache_key)
@@ -1761,12 +1765,16 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
     result: Dict[str, int] = {}
+    max_result: Dict[str, int] = {}
     for item in data.get("models", []) if isinstance(data, dict) else []:
-        slug, ctx = (item.get("slug"), item.get("context_window")) if isinstance(item, dict) else (None, None)
+        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
         if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx
+            if isinstance(max_ctx, int) and max_ctx > 0:
+                max_result[slug.strip()] = max_ctx
     if result:
         _codex_oauth_context_cache[cache_key] = (result, now)
+        _codex_oauth_max_context_cache[cache_key] = max_result
     return result, True
 
 
@@ -1777,10 +1785,12 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None, ""
-    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only."""
+    def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> Tuple[int, str]:
+        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
+        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
@@ -1792,12 +1802,11 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token), {})
         # Exact slug, then case-insensitive in case casing drifts.
-        hit = live.get(lookup_bare)
-        if hit is None:
-            hit = next((ctx for slug, ctx in live.items() if slug.lower() == lookup_bare.lower()), None)
-        if hit is not None:
-            return _apply_verified_bump(hit, "live" if fresh_probe else "memory")
+        slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
+        if slug is not None:
+            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
 

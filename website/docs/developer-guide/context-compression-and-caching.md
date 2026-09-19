@@ -365,7 +365,10 @@ To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
 `gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
 the model id is sent to the backend, and pricing/usage accounting treats them
 as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
-have no `-900k` variant.
+have no `-900k` variant. When the authenticated Codex catalog publishes a
+`max_context_window` below 900K for the base slug (e.g. 872K), the `-900k`
+variant resolves to that live maximum instead; 900K remains the offline
+fallback and a published maximum above 900K does not raise it.
 
 Compaction thresholds follow the window: base slugs (272K) get the **85%
 autoraise** described above, while `-900k` variants keep your global

@@ -349,6 +349,23 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_skill_guidance_requires_smallest_relevant_set_and_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "release-checklist"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: release-checklist\ndescription: Release checks\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        # Required: smallest task-relevant loading with a fail-closed floor.
+        assert "smallest task-relevant set" in result
+        assert "MUST load" in result
+        # Removed: mandatory partial-adjacency and "context you do not need" loading.
+        assert "even partially relevant" not in result
+        assert "better to have context you don't need" not in result
+        assert "genuinely none are relevant" not in result
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

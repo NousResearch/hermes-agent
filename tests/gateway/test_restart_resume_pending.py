@@ -43,6 +43,7 @@ from gateway.run import (
     _last_transcript_timestamp,
     _prepare_resume_pending_message,
     _should_clear_resume_pending_after_turn,
+    _should_continue_goal_after_turn,
     build_resume_recovery_note,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -72,6 +73,31 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"failed": True}) is False
     assert _should_clear_resume_pending_after_turn({"partial": True}) is False
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
+
+
+def test_goal_continuation_requires_successful_turn():
+    """Only genuinely successful turns may enqueue a goal continuation.
+
+    Regression for the standing-goal loop after a provider failure: an empty,
+    failed, partial, interrupted, or ``completed=False`` result is normalized
+    into non-empty user-facing text, and gating continuation on that text alone
+    let the goal judge re-enqueue the same synthetic continuation until the
+    session grew without bound.
+    """
+    # Successful turns continue the goal.
+    assert _should_continue_goal_after_turn({"final_response": "done"}, "done") is True
+    assert _should_continue_goal_after_turn({"completed": True}, "done") is True
+    # Bare string results (no dict envelope) keep the legacy text-only behaviour.
+    assert _should_continue_goal_after_turn("done", "done") is True
+    # No user-facing text: nothing to continue on.
+    assert _should_continue_goal_after_turn({"final_response": "done"}, "") is False
+    assert _should_continue_goal_after_turn({"final_response": "done"}, "   ") is False
+    # Non-empty text but a failed/partial/interrupted/incomplete turn must not continue.
+    assert _should_continue_goal_after_turn({"interrupted": True}, "err") is False
+    assert _should_continue_goal_after_turn({"failed": True}, "err") is False
+    assert _should_continue_goal_after_turn({"partial": True}, "err") is False
+    assert _should_continue_goal_after_turn({"error": "boom"}, "err") is False
+    assert _should_continue_goal_after_turn({"completed": False}, "err") is False
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

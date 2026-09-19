@@ -535,8 +535,11 @@ class SessionDB(
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
     def __init__(self, db_path: Path = None, read_only: bool = False, conversation_store=None):
-        uses_default_path = db_path is None
         self.db_path = db_path or _default_db_path()
+        try:
+            uses_canonical_path = Path(self.db_path).resolve() == Path(_default_db_path()).resolve()
+        except OSError:
+            uses_canonical_path = Path(self.db_path) == Path(_default_db_path())
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
         self._conversation_store = conversation_store
@@ -616,7 +619,7 @@ class SessionDB(
                     self._retire_connection = _prepare_connection_retirement()
                 self._open_writer()
             self._record_db_file_identity()
-            if uses_default_path and self._conversation_store is None:
+            if uses_canonical_path and self._conversation_store is None:
                 from plugins.conversation_store import load_configured_conversation_store
                 self._conversation_store = load_configured_conversation_store()
             initialization_complete = True

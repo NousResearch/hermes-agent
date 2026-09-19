@@ -770,8 +770,37 @@ class SessionSessionsMixin:
         """Persisted YOLO flag; False on any parse failure (resume must never enable the bypass)."""
         return bool(_parse_model_config((session_meta or {}).get("model_config")).get("yolo_mode"))
 
+    def _merge_external_session_rows(
+        self, external_rows: List[Dict[str, Any]], *, compact_rows: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Overlay canonical provider rows onto local operational session shadows."""
+        rows = [dict(row) for row in external_rows]
+        ids = [row.get("id") for row in rows if row.get("id")]
+        if not ids:
+            return rows
+        self.flush_token_counts()
+        local_by_id: Dict[str, Dict[str, Any]] = {}
+        for start in range(0, len(ids), 900):
+            chunk = ids[start:start + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            if compact_rows:
+                sql = f"SELECT {self._compact_session_cols()} FROM sessions s WHERE s.id IN ({placeholders})"
+            else:
+                sql = (
+                    "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+                    "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                    f"WHERE s.id IN ({placeholders})")
+            for local in self._read_all(sql, chunk):
+                decoded = self._session_row_dict(local)
+                local_by_id[decoded["id"]] = decoded
+        merged = [{**local_by_id.get(row.get("id"), {}), **row} for row in rows]
+        return merged
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID (drains queued token deltas first so cost readers see exact totals)."""
+        if self._conversation_store is not None:
+            external = self._conversation_store.get_conversation(session_id)
+            return self._merge_external_session_rows([external])[0] if external else None
         self.flush_token_counts()
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
@@ -804,6 +833,8 @@ class SessionSessionsMixin:
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Exact id, else the single unambiguous prefix match, else None."""
+        if self._conversation_store is not None:
+            return self._conversation_store.resolve_conversation_id(session_id_or_prefix)
         exact = self.get_session(session_id_or_prefix)
         if exact:
             return exact["id"]
@@ -1253,6 +1284,21 @@ class SessionSessionsMixin:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        if self._conversation_store is not None:
+            external = self._conversation_store.list_conversations(
+                source=source, sources=sources, exclude_sources=exclude_sources,
+                cwd_prefix=cwd_prefix, limit=limit, offset=offset, include_children=include_children,
+                min_message_count=min_message_count, project_compression_tips=project_compression_tips,
+                order_by_last_active=order_by_last_active, include_archived=include_archived,
+                archived_only=archived_only, id_query=id_query, search_query=search_query,
+                compact_rows=compact_rows, include_pinned=include_pinned, session_key=session_key,
+                include_hidden=include_hidden,
+            )
+            rows = self._merge_external_session_rows(external, compact_rows=compact_rows)
+            for row in rows:
+                if "unread" not in row:
+                    row["unread"] = self.session_unread(row)
+            return rows
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
@@ -1386,11 +1432,15 @@ class SessionSessionsMixin:
             raise ValueError("max_messages must be non-negative")
         if max_messages == 0:
             return 0
-        row = self._read_one(
-            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT ?)",
-            (session_id, max_messages + 1),
-        )
-        message_count = int(row[0] if row else 0)
+        if self._conversation_store is not None:
+            message_count = len(self._conversation_store.list_messages(
+                session_id, limit=max_messages + 1))
+        else:
+            row = self._read_one(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT ?)",
+                (session_id, max_messages + 1),
+            )
+            message_count = int(row[0] if row else 0)
         if message_count > max_messages:
             raise SessionExportTooLargeError(session_id, message_count, max_messages)
         return message_count
@@ -1425,6 +1475,10 @@ class SessionSessionsMixin:
     ) -> List[Dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several."""
+        if self._conversation_store is not None:
+            external = self._conversation_store.search_conversations(
+                source=source, limit=limit, offset=offset, workspace_key=workspace_key)
+            return self._merge_external_session_rows(external)
         where_clauses = []
         params: list = []
         if source:
@@ -1450,6 +1504,13 @@ class SessionSessionsMixin:
         exclude_children: bool = False, exclude_sources: List[str] = None,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        if self._conversation_store is not None:
+            return self._conversation_store.count_conversations(
+                source=source, sources=sources, cwd_prefix=cwd_prefix,
+                min_message_count=min_message_count, include_archived=include_archived,
+                archived_only=archived_only, exclude_children=exclude_children,
+                exclude_sources=exclude_sources,
+            )
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,

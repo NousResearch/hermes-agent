@@ -1,9 +1,8 @@
 """Provider-neutral durable conversation-store contract.
 
 Hermes keeps hermes_state.SessionDB as its public state facade. This contract
-is only for the canonical, user-visible conversation/history authority;
-SQLite remains responsible for Hermes operational state unless a later
-contract explicitly says otherwise.
+is only for canonical, user-visible conversation/history authority; SQLite
+remains responsible for Hermes operational state unless explicitly delegated.
 """
 
 from __future__ import annotations
@@ -34,12 +33,7 @@ class ConversationRevision:
 
 
 class ConversationStore(ABC):
-    """Exclusive canonical conversation-history provider.
-
-    Phase 1 owns only selection and lifecycle. Read/write methods are added as
-    Hermes delegates each behaviour in later phases; provider-specific storage
-    primitives must not leak through this boundary.
-    """
+    """Exclusive canonical conversation-history provider."""
 
     @property
     @abstractmethod
@@ -48,10 +42,9 @@ class ConversationStore(ABC):
 
     @abstractmethod
     def is_available(self) -> bool:
-        """Return whether required local configuration/dependencies are ready."""
+        """Return whether required configuration/dependencies are ready."""
 
     def unavailable_reason(self) -> str:
-        """User-facing explanation when is_available() is false."""
         return ""
 
     def initialize(self, *, hermes_home: Path) -> None:
@@ -59,3 +52,74 @@ class ConversationStore(ABC):
 
     def close(self) -> None:
         """Release provider resources. Must be idempotent."""
+
+    # Phase 2: canonical read surface.
+    def get_conversation(self, conversation_id: str):
+        raise NotImplementedError
+
+    def resolve_conversation_id(self, conversation_id_or_prefix: str):
+        raise NotImplementedError
+
+    def list_conversations(self, **filters):
+        raise NotImplementedError
+
+    def search_conversations(self, **filters):
+        raise NotImplementedError
+
+    def count_conversations(self, **filters) -> int:
+        raise NotImplementedError
+
+    def find_conversation_by_title(self, title: str):
+        raise NotImplementedError
+
+    def resolve_conversation_by_title(self, title: str):
+        raise NotImplementedError
+
+    def list_messages(
+        self, conversation_id: str, *, include_inactive: bool = False,
+        include_compacted: bool = False, limit=None, offset: int = 0,
+        latest: bool = False, after_id=None,
+    ):
+        raise NotImplementedError
+
+    def messages_around(self, conversation_id: str, message_id: int, *, window: int = 5):
+        raise NotImplementedError
+
+    def conversation_history(
+        self, conversation_id: str, *, include_ancestors: bool = False,
+        include_inactive: bool = False, include_row_ids: bool = False,
+        include_compacted: bool = False,
+    ):
+        raise NotImplementedError
+
+    def resume_histories(self, conversation_id: str):
+        raise NotImplementedError
+
+    def resolve_resume_conversation_id(self, conversation_id: str) -> str:
+        raise NotImplementedError
+
+    def resume_message_count(self, conversation_id: str, *, tip_only: bool = False) -> int:
+        raise NotImplementedError
+
+    def count_messages(self, conversation_id=None) -> int:
+        raise NotImplementedError
+
+    def search_messages(self, query: str, **filters):
+        raise NotImplementedError
+
+    def anchored_view(
+        self, conversation_id: str, message_id: int, *, window: int = 5,
+        bookend: int = 3, keep_roles=("user", "assistant"),
+    ):
+        raise NotImplementedError
+
+    def recent_user_messages(
+        self, conversation_id: str, *, limit: int = 20, include_inactive: bool = False,
+    ):
+        raise NotImplementedError
+
+    def message_storage_state(self, message_id: int):
+        raise NotImplementedError
+
+    def latest_message_preview(self, conversation_id: str) -> str:
+        raise NotImplementedError

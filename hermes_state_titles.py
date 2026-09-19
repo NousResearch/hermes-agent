@@ -139,11 +139,17 @@ class SessionTitlesMixin:
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
+        if self._conversation_store is not None:
+            row = self._conversation_store.get_conversation(session_id)
+            return row.get("title") if row else None
         row = self._read_one("SELECT title FROM sessions WHERE id = ?", (session_id,))
         return row["title"] if row else None
 
     def get_session_title_source(self, session_id: str) -> Optional[str]:
         """Get the provenance of a session's title, or None when untitled."""
+        if self._conversation_store is not None:
+            row = self._conversation_store.get_conversation(session_id)
+            return row.get("title_source") if row and row.get("title") is not None else None
         row = self._read_one("SELECT title, title_source FROM sessions WHERE id = ?", (session_id,))
         return row["title_source"] if row and row["title"] is not None else None
 
@@ -158,6 +164,8 @@ class SessionTitlesMixin:
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
+        if self._conversation_store is not None:
+            return self._conversation_store.find_conversation_by_title(title)
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
@@ -166,6 +174,8 @@ class SessionTitlesMixin:
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
+        if self._conversation_store is not None:
+            return self._conversation_store.resolve_conversation_by_title(title)
         exact = self.get_session_by_title(title)
         # Exception to the "#N continuation" preference: the canonical Bot Chat's identity
         # IS its exact title (Bot Mode re-resolves it by name on every open, no id pointer).

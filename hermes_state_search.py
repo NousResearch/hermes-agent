@@ -714,6 +714,10 @@ class SessionSearchMixin:
         window (empty when it overlaps the head/tail). Empty result when the anchor isn't
         in the session."""
         bookend = max(bookend, 0)
+        if self._conversation_store is not None:
+            return self._conversation_store.anchored_view(
+                session_id, around_message_id, window=window, bookend=bookend,
+                keep_roles=keep_roles)
         primitive = self.get_messages_around(session_id, around_message_id, window=window)
         window_rows = primitive["window"]
         if not window_rows:
@@ -758,6 +762,9 @@ class SessionSearchMixin:
         with NO display_kind — invisible to SQL — so fetch with headroom and drop them in the
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
+        if self._conversation_store is not None:
+            return self._conversation_store.recent_user_messages(
+                session_id, limit=limit, include_inactive=include_inactive)
         active_clause = "" if include_inactive else " AND active = 1"
         # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
         # with the in-memory user_originated_turn_view count.
@@ -1043,6 +1050,12 @@ class SessionSearchMixin:
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
         path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
+        if self._conversation_store is not None:
+            return self._conversation_store.search_messages(
+                query, source_filter=source_filter, exclude_sources=exclude_sources,
+                role_filter=role_filter, limit=limit, offset=offset, sort=sort,
+                include_inactive=include_inactive, fields=fields,
+                after_ts=after_ts, before_ts=before_ts)
         started = time.time()
         rows = None
         try:

@@ -476,6 +476,27 @@ class SessionMessagesMixin:
             return pending
         return self._execute_write(_do)
 
+    def message_storage_state(self, message_id: int) -> Optional[Dict[str, Any]]:
+        """Owning session and visibility flags for one stable Hermes message id."""
+        if self._conversation_store is not None:
+            return self._conversation_store.message_storage_state(message_id)
+        row = self._read_one(
+            "SELECT session_id, active, compacted FROM messages WHERE id = ?", (message_id,))
+        return dict(row) if row else None
+
+    def latest_message_preview(self, session_id: str) -> str:
+        """At most 80 chars from the newest active user/assistant message."""
+        if self._conversation_store is not None:
+            return self._conversation_store.latest_message_preview(session_id)
+        row = self._read_one(
+            "SELECT content FROM messages WHERE session_id = ? "
+            "AND role IN ('user', 'assistant') AND active = 1 "
+            "AND content IS NOT NULL AND TRIM(content) != '' ORDER BY id DESC LIMIT 1",
+            (session_id,))
+        value = self._decode_content(row[0]) if row else ""
+        text = " ".join(value.split()).strip() if isinstance(value, str) else ""
+        return text[:77] + "..." if len(text) > 80 else text
+
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:
         """Row id of the most recent active *role* message, or ``None``. ``offset`` steps back; ``require_text``
@@ -949,6 +970,10 @@ class SessionMessagesMixin:
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
+        if self._conversation_store is not None:
+            return self._conversation_store.list_messages(
+                session_id, include_inactive=include_inactive, include_compacted=include_compacted,
+                limit=limit, offset=offset, latest=latest, after_id=after_id)
         active_clause = self._active_clause(include_inactive, include_compacted)
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
             direction = "DESC" if latest else "ASC"
@@ -1001,6 +1026,9 @@ class SessionMessagesMixin:
         """Up to *window* messages either side of an anchor id (ascending). ``messages_before``/``_after`` count
         strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor."""
         window = max(window, 0)
+        if self._conversation_store is not None:
+            return self._conversation_store.messages_around(
+                session_id, around_message_id, window=window)
         with self._read_ctx() as conn:
             if not conn.execute("SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
                                 (around_message_id, session_id)).fetchone():
@@ -1029,6 +1057,8 @@ class SessionMessagesMixin:
         """
         if not session_id:
             return session_id
+        if self._conversation_store is not None:
+            return self._conversation_store.resolve_resume_conversation_id(session_id)
         try:
             session_id = self.get_compression_tip(session_id) or session_id
         except Exception:
@@ -1074,6 +1104,16 @@ class SessionMessagesMixin:
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
+        if self._conversation_store is not None:
+            messages = [dict(m) for m in self._conversation_store.conversation_history(
+                session_id, include_ancestors=include_ancestors, include_inactive=include_inactive,
+                include_row_ids=include_row_ids, include_compacted=include_compacted)]
+            for message in messages:
+                message[_DB_PERSISTED_MARKER_KEY] = True
+            if repair_alternation and messages:
+                from agent.agent_runtime_helpers import repair_message_sequence
+                repair_message_sequence(None, messages)
+            return messages
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False)
@@ -1178,6 +1218,16 @@ class SessionMessagesMixin:
         read as deleted even though every row is still on disk, and the REST transcript read (which has
         always included them) disagreed with this one about the same session (#92080).
         """
+        if self._conversation_store is not None:
+            model_history, display_history = self._conversation_store.resume_histories(session_id)
+            model_history = [dict(m) for m in model_history]
+            display_history = [dict(m) for m in display_history]
+            for message in (*model_history, *display_history):
+                message[_DB_PERSISTED_MARKER_KEY] = True
+            if model_history:
+                from agent.agent_runtime_helpers import repair_message_sequence
+                repair_message_sequence(None, model_history)
+            return model_history, display_history
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id), _DISPLAY_ACTIVE_CLAUSE, with_session_id=True)
         # The model projection stays active-only: it is the compressed working context.
@@ -1202,6 +1252,8 @@ class SessionMessagesMixin:
 
     def get_resume_message_count(self, session_id: str, *, tip_only: bool = False) -> int:
         """Count the rows a resume would materialize (see ``_resume_count_scope``)."""
+        if self._conversation_store is not None:
+            return self._conversation_store.resume_message_count(session_id, tip_only=tip_only)
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
         return int(self._read_one(
             f"SELECT COUNT(*) FROM messages WHERE session_id IN ({_placeholders(session_ids)}) AND {active_clause}",
@@ -1218,6 +1270,13 @@ class SessionMessagesMixin:
             raise ValueError("max_messages must be non-negative")
         if max_messages == 0:
             return 0
+        if self._conversation_store is not None:
+            message_count = self.get_resume_message_count(session_id, tip_only=tip_only)
+            if message_count > max_messages:
+                raise SessionResumeTooLargeError(
+                    message_count, max_messages,
+                    scope="in its tip segment" if tip_only else "across its lineage")
+            return message_count
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
         message_count = int(self._read_one("SELECT COUNT(*) FROM ("
             f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
@@ -1373,6 +1432,8 @@ class SessionMessagesMixin:
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
+        if self._conversation_store is not None:
+            return self._conversation_store.count_messages(session_id)
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
         return self._read_one(sql, (session_id,) if session_id else ())[0]
 

@@ -1186,6 +1186,11 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+  # Mid-stream reconnect attempts when a stream drops on a transient error, for
+  # both the chat-completions and Codex/Responses streaming paths. 0 disables
+  # reconnects after the first attempt. HERMES_STREAM_RETRIES is the equivalent
+  # env var and is used when this key is absent (default 2).
+  # max_stream_retries: 2
 
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. Off by default (false). Set true to force it on

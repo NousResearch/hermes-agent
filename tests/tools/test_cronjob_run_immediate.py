@@ -144,6 +144,31 @@ class TestCronjobRunExecutesImmediately:
             extra_prompt=None,
         )
 
+    def test_execute_job_now_delivers_through_owner_profile_adapters(self):
+        """Under multiplex a manual run fired from a secondary profile must deliver through THAT
+        profile's adapters, not the default profile's ``runner.adapters`` (wrong Telegram bot)."""
+        from pathlib import Path
+
+        default_adapters = {"telegram": object()}
+        work_adapters = {"telegram": object()}
+        gateway_loop = object()
+        runner = SimpleNamespace(
+            adapters=default_adapters,
+            _gateway_loop=gateway_loop,
+            _adapters_for_profile=lambda profile: work_adapters if profile == "work" else default_adapters,
+        )
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/work")), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        assert m_run.call_args.kwargs["adapters"] is work_adapters
+
     def test_execute_job_now_remains_standalone_without_gateway(self):
         """CLI-only runs retain the standalone delivery path."""
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}

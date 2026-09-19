@@ -129,10 +129,24 @@ def _persist_lock(agent):
 
 # --- flush phases (module-level so the flush also works bound onto duck-typed agents) ---
 
+def _persistence_session_id(agent) -> Optional[str]:
+    """Return the session that admitted the active turn, if any.
+
+    Session switching commands may retarget the shared agent while a turn is still
+    running.  The turn's admission binding is authoritative for every remaining
+    flush; falling back to the live agent identity is safe only when no turn is in
+    flight.
+    """
+    return (
+        getattr(agent, "_inflight_turn_session_id", None)
+        or getattr(agent, "session_id", None)
+    )
+
+
 def _db_flush_seed_ids(agent) -> set:
     """One-shot ``_flushed_db_message_ids`` seed (same session, after a non-empty flush); the scan translates
     it to markers and the flush clears it."""
-    current_session_id = getattr(agent, "session_id", None)
+    current_session_id = _persistence_session_id(agent)
     same_session = getattr(agent, "_flushed_db_message_session_id", None) == current_session_id
     seed_ids = getattr(agent, "_flushed_db_message_ids", None) if same_session and agent._last_flushed_db_idx != 0 else None
     agent._flushed_db_message_session_id = current_session_id
@@ -222,7 +236,7 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
     if not batch_rows:
         return
     agent._session_db.append_messages_batch(
-        session_id=agent.session_id, messages=batch_rows,
+        session_id=_persistence_session_id(agent), messages=batch_rows,
         compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
         turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,

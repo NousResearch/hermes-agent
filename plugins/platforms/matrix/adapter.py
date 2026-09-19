@@ -823,6 +823,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
+        # YAML parses an unquoted `off` as False.
+        raw_reply_mode = getattr(config, "reply_to_mode", "first")
+        reply_to_mode = "off" if raw_reply_mode is False else str(raw_reply_mode or "first").strip().lower()
+        self._reply_to_mode = reply_to_mode if reply_to_mode in {"off", "first", "all"} else "first"
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
@@ -1388,9 +1392,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        chunks = self.truncate_message(self.format_message(content), self.max_message_length)
+        for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            # Default to one quote; explicit modes change fallback, not thread routing.
+            self._apply_relation_metadata(
+                msg_content, reply_to=reply_to, metadata=metadata,
+                include_reply_fallback=self._chunk_include_reply_fallback(i))
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1773,7 +1781,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["info"]["duration"] = audio_metadata["duration"]
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
-        self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+        self._apply_relation_metadata(
+            msg_content, reply_to=reply_to, metadata=metadata,
+            include_reply_fallback=self._chunk_include_reply_fallback(0))
         return await self._send_content_event(room_id, msg_content)
 
     async def _room_needs_encrypted_upload(self, room_id: str) -> bool:
@@ -2734,20 +2744,32 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["formatted_body"] = html
         return msg_content
 
+    def _chunk_include_reply_fallback(self, index: int) -> bool:
+        """Whether chunk *index* (0 = first) should carry reply fallback."""
+        mode = getattr(self, "_reply_to_mode", "first")
+        if mode == "off":
+            return False
+        if mode == "all":
+            return True
+        return index == 0
+
     def _apply_relation_metadata(
         self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> None:
+        metadata: Optional[Dict[str, Any]] = None, include_reply_fallback: bool = True) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
+        include_reply_fallback = include_reply_fallback and getattr(self, "_reply_to_mode", "first") != "off"
         thread_id = str((metadata or {}).get("thread_id") or "")
-        if reply_to:
+        if reply_to and include_reply_fallback:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            # A bare thread relation must not claim to carry reply fallback.
+            # send() selects fallback per chunk according to reply_to_mode.
+            if include_reply_fallback:
+                relates_to["is_falling_back"] = True
+                relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

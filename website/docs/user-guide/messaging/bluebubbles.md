@@ -139,7 +139,7 @@ The setup uses two URLs that point in opposite directions — don't confuse them
 
 ### How the webhook is registered
 
-You do **not** need to create a webhook in the BlueBubbles UI. When the gateway connects, Hermes registers the webhook itself via the BlueBubbles REST API (`/api/v1/webhook`) for the `new-message` and `updated-message` events, and removes the registration again on clean shutdown.
+You do **not** need to create a webhook in the BlueBubbles UI. When the gateway connects, Hermes registers the webhook itself via the BlueBubbles REST API (`/api/v1/webhook`) for the `new-message` event only, and removes the registration again on clean shutdown. `updated-message` is deliberately left out: those events carry delivery/read receipts rather than new messages, and listening to them is what made Hermes reply twice ([#30708](https://github.com/NousResearch/hermes-agent/issues/30708), [#34372](https://github.com/NousResearch/hermes-agent/issues/34372)).
 
 Two details worth knowing:
 

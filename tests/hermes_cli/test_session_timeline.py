@@ -27,6 +27,49 @@ def timeline_store(tmp_path, monkeypatch):
     db.close()
 
 
+def test_internal_event_display_projection_preserves_audit_and_ordinary_rows(timeline_store):
+    from gateway.internal_events import create_desktop_system_event, gateway_system_event_message
+    from tui_gateway import server
+
+    db, client, _ = timeline_store
+    sid = "timeline-root"
+    content, event = create_desktop_system_event(
+        content='Hermes internal event: Validated event envelope: {"event_id":"event-1"}',
+        destination={"profile_name": "default", "session_id": sid},
+        event_id="event-1", event_kind="external_tool_completed", plugin_id="test",
+        eligibility_check=lambda: True,
+    )
+    internal = gateway_system_event_message(event, content)
+    rows = [
+        {"role": "user", "content": "Check progress"}, internal,
+        {"role": "assistant", "content": "Finished"},
+        {**internal, "role": "user"},
+        {"role": "system", "content": "Ordinary notice"},
+        {"role": "developer", "content": "Other developer input"},
+        {"role": "tool", "content": "Tool result", "tool_call_id": "call-1"},
+    ]
+    db.append_messages_batch(sid, rows)
+    stored = db.get_messages(sid)
+    anchor = stored[0]["id"]
+    for route in (f"/api/sessions/{sid}/messages?order=latest&include_compacted=true",
+                  f"/api/sessions/{sid}/messages/around?row_id={anchor}"):
+        response = client.get(route)
+        assert response.status_code == 200
+        projected = response.json()["messages"]
+        assert len(projected) == len(stored)  # keep physical pagination and audit identity
+        assert projected[1] == {**stored[1], "display_kind": "hidden"}
+        assert projected[:1] + projected[2:] == stored[:1] + stored[2:]
+    assert db.get_messages(sid) == stored
+    assert stored[1]["content"] == content
+    assert stored[1]["display_kind"] == "internal_notification"
+    assert stored[1]["display_metadata"] == internal["display_metadata"]
+    # JSON-RPC reconnect has its own projection; never change model/audit rows.
+    reconnect = server._history_to_messages(rows)
+    assert all(row["role"] != "developer" for row in reconnect)
+    assert any(row.get("text") == content and row["role"] == "user" for row in reconnect)
+    assert internal == {**gateway_system_event_message(event, content), "_row_id": stored[1]["id"]}
+
+
 def test_timeline_pages_project_human_prompts_without_tool_payloads(timeline_store):
     db, client, _ = timeline_store
     db.append_messages_batch("timeline-root", [

@@ -108,7 +108,7 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, gateway_system_event: Any = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -136,7 +136,11 @@ def _admit_prompt_turn(
         inflight = session.get("inflight_turn")
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
-        if not isinstance(inflight, dict) or inflight.get("status") == "error":
+        if gateway_system_event is not None:
+            # Publish only display state under the lock: resume/poll can race admission.
+            # The original text still goes unchanged to the agent and durable audit row.
+            _start_inflight_turn(session, "", display_kind="internal_notification")
+        elif not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(
                 session, text, display_kind=display_kind, display_metadata=display_metadata)
         agent = session["agent"]
@@ -954,7 +958,8 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        gateway_system_event=gateway_system_event)
     if admitted is None:
         return False
     images, agent = admitted
@@ -965,10 +970,7 @@ def _run_prompt_submit(
         muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
     if muted:
         display_kind = "hidden"
-    if gateway_system_event is not None:
-        with session["history_lock"]:
-            session["inflight_turn"]["user"] = ""
-            session["inflight_turn"]["display_kind"] = "internal_notification"
+
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()

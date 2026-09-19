@@ -1122,7 +1122,27 @@ async def test_system_event_receipt_waits_for_successful_platform_delivery():
     await adapter._process_message_background(event, entry.session_key)
 
     delivered.assert_awaited_once()
+    assert delivered.await_args.kwargs["content"] == "continuation response"
+    assert content not in str(delivered.await_args)
     assert receipt.result(timeout=2)["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_user_internal_envelope_quotation_is_not_suppressed():
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    quoted = 'Please explain "Hermes internal event: Validated event envelope: {\"event_id\":\"example\"}"'
+    handler = AsyncMock(return_value=quoted)
+    adapter.set_message_handler(handler)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="quote-1"))
+    event = MessageEvent(text=quoted, source=entry.origin, message_type=MessageType.TEXT)
+    adapter._active_sessions[entry.session_key] = asyncio.Event()
+
+    await adapter._process_message_background(event, entry.session_key)
+
+    handler.assert_awaited_once_with(event)
+    assert event.gateway_system_event is None
+    assert adapter.send.await_args.kwargs["content"] == quoted
 
 
 

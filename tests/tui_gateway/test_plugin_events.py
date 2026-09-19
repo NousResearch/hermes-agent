@@ -115,6 +115,19 @@ def test_native_prompt_carries_typed_event_and_receipt_follows_transport(
     content, event = create_desktop_system_event(content="External task finished @untrusted-reference", plugin_id="example",
         event_id="event-3", event_kind="external_tool_completed", destination={"profile_name": "default", "session_id": "physical-1"},
         eligibility_check=lambda: True)
+    # Observe the first unlocked boundary after admission, before message.start.
+    # A concurrent reconnect must never see internal input as a user prompt.
+    from agent import notification_presentation
+    from tui_gateway.session_auto_continue import _inflight_snapshot
+    original_snapshot = notification_presentation.notification_config_snapshot
+    def notification_snapshot():
+        snapshot = _inflight_snapshot(record)
+        assert snapshot is not None
+        assert snapshot["user"] == ""
+        assert snapshot["display_kind"] == "internal_notification"
+        assert snapshot["streaming"] is True
+        return original_snapshot()
+    monkeypatch.setattr(notification_presentation, "notification_config_snapshot", notification_snapshot)
     results = []
     def terminal(result):
         order.append("receipt")

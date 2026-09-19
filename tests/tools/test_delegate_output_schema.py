@@ -21,6 +21,7 @@ from tools.delegate_tool import (
     _run_single_child,
     delegate_task,
 )
+from tools.delegate_tool_child_run import _ChildRun
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
@@ -320,6 +321,52 @@ class TestRunSingleChildSchemaValidation:
         _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
         assert seen == [True]
         assert is_delegated_child_context() is False
+
+    def test_completion_event_keeps_truncated_for_schema_less_child(self):
+        """Core completion metadata remains present without schema verdicts."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        events = []
+        run = _ChildRun(
+            child, _StubParent(), 0, "produce the address", None,
+            lambda *args, **kwargs: events.append((args, kwargs)),
+        )
+        entry = _run(child)
+        run.emit_complete({"final_response": entry["summary"], "messages": []}, entry, 1.25)
+
+        assert events and events[0][0] == ("subagent.complete",)
+        assert events[0][1]["truncated"] is False
+        assert "schema_valid" not in events[0][1]
+        assert "schema_retries" not in events[0][1]
+
+    def test_completion_event_propagates_known_cost_status(self):
+        """Cost confidence reaches the event without exposing an unknown zero as actual."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        child.session_estimated_cost_usd = 0.25
+        child.session_cost_status = "actual"
+        events = []
+        run = _ChildRun(
+            child, _StubParent(), 0, "produce the address", None,
+            lambda *args, **kwargs: events.append((args, kwargs)),
+        )
+        entry = _run(child)
+        run.emit_complete({"final_response": entry["summary"], "messages": []}, entry, 1.25)
+
+        assert events[0][1]["cost_usd"] == 0.25
+        assert events[0][1]["cost_status"] == "actual"
+
+    def test_completion_event_omits_legacy_cost_status_when_absent(self):
+        """Events from children without the optional field remain legacy-compatible."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        child.session_estimated_cost_usd = 0.25
+        events = []
+        run = _ChildRun(
+            child, _StubParent(), 0, "produce the address", None,
+            lambda *args, **kwargs: events.append((args, kwargs)),
+        )
+        entry = _run(child)
+        run.emit_complete({"final_response": entry["summary"], "messages": []}, entry, 1.25)
+
+        assert "cost_status" not in events[0][1]
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,36 @@ describe('subagent store', () => {
     expect(item?.summary).toBe('done')
   })
 
+  it('keeps optional terminal observability fields without changing legacy fields', () => {
+    upsertSubagent('s1', { goal: 'A', status: 'running', subagent_id: 'a', task_index: 0 })
+    upsertSubagent(
+      's1',
+      {
+        status: 'completed',
+        subagent_id: 'a',
+        task_index: 0,
+        cost_usd: 0.25,
+        cost_status: 'estimated',
+        input_tokens: 100,
+        output_tokens: 50,
+        schema_valid: true,
+        schema_retries: 1,
+        truncated: true
+      },
+      false,
+      'subagent.complete'
+    )
+
+    expect(listFor('s1')[0]).toMatchObject({
+      costUsd: 0.25,
+      costStatus: 'estimated',
+      inputTokens: 100,
+      outputTokens: 50,
+      schemaValid: true,
+      schemaRetries: 1,
+      truncated: true
+    })
+  })
   it('keeps completed children retired across turn pruning, late frames, and roster refreshes', () => {
     const finished = { subagent_id: 'finished', goal: 'Finished task', status: 'running' }
     const live = { subagent_id: 'live', goal: 'Background task', status: 'queued' }

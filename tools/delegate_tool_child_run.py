@@ -24,6 +24,14 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+_COST_STATUSES = frozenset(("actual", "estimated", "included", "unknown"))
+
+
+def _optional_cost_status(child: Any) -> Optional[str]:
+    """Return only the canonical confidence values, preserving absent legacy fields."""
+    status = getattr(child, "session_cost_status", None)
+    return status if isinstance(status, str) and status in _COST_STATUSES else ("unknown" if status is not None else None)
+
 def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default
@@ -530,7 +538,7 @@ def _build_result_entry(
         status = "completed" if usable_summary else "failed"
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
-    _cost_status = getattr(child, "session_cost_status", None)
+    _cost_status = _optional_cost_status(child)
     # Result entry contract: see the _run_single_child docstring.
     entry: Dict[str, Any] = {
         "task_index": task_index,
@@ -908,14 +916,24 @@ class _ChildRun:
             "files_read": _files_read,
             "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
+            # Truncation is a core completion field, including for schema-less
+            # children. Schema verdict fields below remain opt-in.
+            "truncated": entry["truncated"],
         }
+        if "schema_valid" in entry:
+            complete_kwargs.update(
+                {key: entry[key] for key in ("schema_valid", "schema_retries") if key in entry}
+            )
         if entry.get("failure_reason"):
             # Classified verdict rides the event so every surface glosses the failure the same way.
             complete_kwargs["failure_reason"] = entry["failure_reason"]
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
+        _cost_status = _optional_cost_status(child)
         if _cost_usd is not None:
             with _quiet(None):
                 complete_kwargs["cost_usd"] = float(_cost_usd)
+        if _cost_status is not None:
+            complete_kwargs["cost_status"] = _cost_status
         _safe_progress(self.child_progress_cb, "subagent.complete", **complete_kwargs)
 
     def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:

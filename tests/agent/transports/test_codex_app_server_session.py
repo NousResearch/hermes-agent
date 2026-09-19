@@ -164,17 +164,23 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
-        """thread/start carries cwd. We intentionally do NOT pass `permissions`
-        on this codex version (experimentalApi-gated + requires matching
-        config.toml [permissions] table). Letting codex use its default
-        (read-only unless user configures otherwise) is the documented path."""
+    def test_thread_start_carries_hermes_prompt_and_disables_codex_personality(self):
+        """thread/start carries cwd, Hermes' composed prompt as developerInstructions and
+        personality "none" (#74712, #72104, #26035). We intentionally do NOT pass `permissions`
+        (experimentalApi-gated + requires a matching config.toml [permissions] table)."""
         client = FakeClient()
-        s = make_session(client, permission_profile="workspace-write")
+        s = make_session(client, permission_profile="workspace-write", developer_instructions="SOUL: be terse")
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
-        assert params["cwd"] == "/tmp"
-        assert "permissions" not in params  # see session.ensure_started() comment
+        assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none"}
+
+    def test_thread_start_omits_developer_instructions_when_prompt_empty(self):
+        """No prompt (or a blank one) never sends an empty developerInstructions field."""
+        client = FakeClient()
+        make_session(client, developer_instructions="   ").ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert "developerInstructions" not in params
+        assert params["personality"] == "none"
 
     def test_close_idempotent(self):
         client = FakeClient()

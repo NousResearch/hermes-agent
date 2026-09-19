@@ -183,9 +183,30 @@ describe('listSidebarSessions remote ownership', () => {
       recentsExclude: [],
       cronLimit: 20,
       messagingLimit: 40,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 50
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+
+  it('treats a missing kanban key as an empty slice (older backend), not an error', async () => {
+    hermesApi.mockResolvedValue({
+      cron: { sessions: [] },
+      messaging: { sessions: [] },
+      recents: { sessions: [] }
+    } as never)
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 40,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 40,
+      messagingExclude: [],
+      kanbanLimit: 50
+    })
+
+    expect(result.kanban?.sessions).toEqual([])
   })
 })

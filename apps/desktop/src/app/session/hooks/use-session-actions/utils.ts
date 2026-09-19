@@ -13,6 +13,7 @@ import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
   $currentCwd,
+  $kanbanSessions,
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
@@ -31,6 +32,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setKanbanSessions,
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
@@ -1407,7 +1409,7 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
   return (session?.message_count ?? 0) > 0
 }
 
-export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
+export type ListedSessionSlice = 'cron' | 'kanban' | 'messaging' | 'sessions'
 
 export function findListedSession(
   storedSessionId: string
@@ -1417,6 +1419,12 @@ export function findListedSession(
 
   if (fromMessaging) {
     return { session: fromMessaging, slice: 'messaging' }
+  }
+
+  const fromKanban = $kanbanSessions.get().find(match)
+
+  if (fromKanban) {
+    return { session: fromKanban, slice: 'kanban' }
   }
 
   const fromCron = $cronSessions.get().find(match)
@@ -1440,6 +1448,7 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
+  setKanbanSessions(prev => prev.filter(keep))
   setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
@@ -1448,7 +1457,9 @@ export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
     ? 'messaging'
     : normalizeSessionSource(session.source) === 'cron'
       ? 'cron'
-      : 'sessions'
+      : normalizeSessionSource(session.source) === 'kanban'
+        ? 'kanban'
+        : 'sessions'
 }
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
@@ -1467,6 +1478,12 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 
   if (target === 'cron') {
     setCronSessions(prepend)
+
+    return
+  }
+
+  if (target === 'kanban') {
+    setKanbanSessions(prepend)
 
     return
   }
@@ -1503,6 +1520,7 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   setSessions(target === 'sessions' ? prepend : evict)
   setMessagingSessions(target === 'messaging' ? prepend : evict)
   setCronSessions(target === 'cron' ? prepend : evict)
+  setKanbanSessions(target === 'kanban' ? prepend : evict)
 }
 
 // Every session row reachable through the profile-scoped project tree —
@@ -1527,6 +1545,7 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
     ...$sessions.get(),
     ...$cronSessions.get(),
     ...$messagingSessions.get(),
+    ...$kanbanSessions.get(),
     ...projectTreeSessions()
   ].filter(session => sessionMatchesStoredId(session, storedSessionId))
 

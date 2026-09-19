@@ -112,6 +112,51 @@ class TestTelegramSendClarify:
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_oversized_choice_set_fits_after_html_escaping(self):
+        """The rendered card (question + escaped choices) must fit Telegram's 4096-char cap,
+        like the exec-approval and slash-confirm cards — mirrors
+        test_telegram_approval_buttons.test_oversized_escaped_approval_text_keeps_inline_keyboard.
+        Before the fix each choice was escaped individually with no total budget, so a long
+        question or many/long choices (both model-controlled) could exceed the cap and Telegram
+        would answer "Message is too long" instead of sending the prompt at all."""
+        from gateway.platforms.base import utf16_len
+
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_clarify(
+            chat_id="12345",
+            question="&" * 200,  # escapes to 5x length ("&amp;")
+            choices=["<" * 500 for _ in range(10)],  # each "<" escapes to "&lt;" (4x)
+            clarify_id="cid6",
+            session_key="sk6",
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
+        assert "cid6" in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_emoji_dense_clarify_card_fits_in_utf16_units(self):
+        """Telegram counts UTF-16 code units (astral emoji = 2), like the adapter's chunker and
+        the exec-approval/slash-confirm budgeting."""
+        from gateway.platforms.base import utf16_len
+
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=105))
+
+        await adapter.send_clarify(
+            chat_id="12345", question="😀" * 3000, choices=["ok"], clarify_id="cid7",
+            session_key="sk7")
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
+
 
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes

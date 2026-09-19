@@ -2745,46 +2745,80 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
     return (slug or None), declared_name
 
 
-def _check_unavailable_skill(command_name: str) -> str | None:
-    """Hint when a command matches a skill that is disabled or optional-install only; else None."""
-    normalized = command_name.lower().replace("_", "-")
-    try:
-        from tools.skills_tool import _get_disabled_skill_names
-        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-        disabled = _get_disabled_skill_names()
+_UNAVAILABLE_SKILL_INDEX_TTL_SECS = 30.0
+_UNAVAILABLE_SKILL_INDEX_MAX_PROFILES = 8
+_unavailable_skill_indexes: OrderedDict[
+    tuple[tuple[str, ...], str], tuple[float, dict[str, set[str]], dict[str, str]]
+] = OrderedDict()
+_unavailable_skill_index_lock = threading.Lock()
 
-        for skills_dir in get_all_skills_dirs():
+
+def _unavailable_skill_index(
+    skills_dirs: list[Path], optional_dir: Path, is_excluded_skill_path: Callable[[Path], bool]
+) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """Return a short-lived, profile-specific index for unavailable-skill hints.
+
+    The installed directory list is profile-aware. The disabled setting is deliberately
+    excluded from this cache so a config change takes effect on the next command.
+    """
+    key = (tuple(str(path.resolve()) for path in skills_dirs), str(optional_dir.resolve()))
+    now = time.monotonic()
+    with _unavailable_skill_index_lock:
+        cached = _unavailable_skill_indexes.get(key)
+        if cached is not None and now - cached[0] < _UNAVAILABLE_SKILL_INDEX_TTL_SECS:
+            _unavailable_skill_indexes.move_to_end(key)
+            return cached[1], cached[2]
+
+        installed: dict[str, set[str]] = {}
+        optional: dict[str, str] = {}
+        for skills_dir in skills_dirs:
             if not skills_dir.exists():
                 continue
             for skill_md in skills_dir.rglob("SKILL.md"):
                 if is_excluded_skill_path(skill_md):
                     continue
                 slug, declared_name = _skill_slug_from_frontmatter(skill_md)
-                if not slug or not declared_name:
-                    continue
-                # disabled is keyed by the declared frontmatter name (what skills.disabled stores).
-                if slug == normalized and declared_name in disabled:
-                    return (
-                        f"The **{command_name}** skill is installed but disabled.\n"
-                        f"Enable it with: `hermes skills config`")
+                if slug and declared_name:
+                    installed.setdefault(slug, set()).add(declared_name)
 
-        # Check optional skills (shipped with repo but not installed)
-        from hermes_constants import get_optional_skills_dir
-        repo_root = Path(__file__).resolve().parent.parent
-        optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
                 if is_excluded_skill_path(skill_md):
                     continue
-                slug, _declared = _skill_slug_from_frontmatter(skill_md)
-                if not slug or slug != normalized:
-                    continue
-                # Install path: official/<category>/<name>
-                rel = skill_md.parent.relative_to(optional_dir)
-                install_path = f"official/{'/'.join(rel.parts)}"
-                return (
-                    f"The **{command_name}** skill is available but not installed.\n"
-                    f"Install it with: `hermes skills install {install_path}`")
+                slug, _declared_name = _skill_slug_from_frontmatter(skill_md)
+                if slug:
+                    rel = skill_md.parent.relative_to(optional_dir)
+                    optional[slug] = f"official/{'/'.join(rel.parts)}"
+
+        _unavailable_skill_indexes[key] = (now, installed, optional)
+        _unavailable_skill_indexes.move_to_end(key)
+        while len(_unavailable_skill_indexes) > _UNAVAILABLE_SKILL_INDEX_MAX_PROFILES:
+            _unavailable_skill_indexes.popitem(last=False)
+        return installed, optional
+
+
+def _check_unavailable_skill(command_name: str) -> str | None:
+    """Hint when a command matches a skill that is disabled or optional-install only; else None."""
+    normalized = command_name.lower().replace("_", "-")
+    try:
+        from tools.skills_tool import _get_disabled_skill_names
+        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+        from hermes_constants import get_optional_skills_dir
+        repo_root = Path(__file__).resolve().parent.parent
+        optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
+        installed, optional = _unavailable_skill_index(
+            list(get_all_skills_dirs()), optional_dir, is_excluded_skill_path
+        )
+        disabled = _get_disabled_skill_names()
+        # disabled is keyed by the declared frontmatter name (what skills.disabled stores).
+        if any(name in disabled for name in installed.get(normalized, set())):
+            return (
+                f"The **{command_name}** skill is installed but disabled.\n"
+                f"Enable it with: `hermes skills config`")
+        if install_path := optional.get(normalized):
+            return (
+                f"The **{command_name}** skill is available but not installed.\n"
+                f"Install it with: `hermes skills install {install_path}`")
     except Exception:
         pass
     return None

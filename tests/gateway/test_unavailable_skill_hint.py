@@ -100,3 +100,42 @@ def test_unknown_command_still_returns_none(
         assert gateway_run._check_unavailable_skill("no-such-skill") is None
 
 
+def test_unavailable_skill_index_is_reused_for_disabled_optional_and_unknown_commands(
+    tmp_skills: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated slash hints reuse one profile-specific scan (#111091)."""
+    from gateway import run as gateway_run
+
+    optional_dir = tmp_path / "optional-skills"
+    _write_skill(tmp_skills, "tools/disabled-dir", "Disabled Skill")
+    _write_skill(optional_dir, "media/optional-dir", "Optional Skill")
+    gateway_run._unavailable_skill_indexes.clear()
+
+    rglob_calls: list[Path] = []
+    original_rglob = Path.rglob
+
+    def track_rglob(path: Path, pattern: str):
+        rglob_calls.append(path)
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", track_rglob)
+    with patch(
+        "tools.skills_tool._get_disabled_skill_names", return_value={"Disabled Skill"}
+    ), patch(
+        "agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
+    ), patch("hermes_constants.get_optional_skills_dir", return_value=optional_dir):
+        assert "disabled" in gateway_run._check_unavailable_skill("disabled-skill").lower()
+        assert "not installed" in gateway_run._check_unavailable_skill("optional-skill").lower()
+        assert gateway_run._check_unavailable_skill("unknown-skill") is None
+
+    assert rglob_calls == [tmp_skills, optional_dir]
+
+
+def test_known_command_skips_unavailable_skill_lookup() -> None:
+    """Known commands do not trigger a filesystem-backed hint lookup (#111091)."""
+    from gateway.run_inbound import GatewayInboundMixin
+    from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+
+    command = next(iter(GATEWAY_KNOWN_COMMANDS))
+    with patch("gateway.run._check_unavailable_skill", side_effect=AssertionError):
+        assert GatewayInboundMixin._hm_unknown_slash_reply(command, object()) is None

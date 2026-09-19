@@ -203,8 +203,28 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                                 pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+        # Generated plists wrap the gateway in the stderr-timestamp logger, so launchd's service
+        # PID is the WRAPPER while the gateway runs as its child. Without the descendants, the
+        # update's manual-gateway sweep classifies the freshly respawned gateway as a manual
+        # process and kills it right after the launchd restart (it comes back via KeepAlive, at
+        # the cost of a needless extra restart cycle). Over-inclusion is safe: these PIDs are
+        # only ever protected from the kill sweep, never targeted.
+        pids |= _descendant_pids(pids)
 
     return pids
+
+
+def _descendant_pids(pids: set) -> set:
+    """All descendant PIDs of ``pids`` (best effort, psutil; failures yield fewer)."""
+    descendants: set = set()
+    for pid in pids:
+        try:
+            import psutil
+
+            descendants.update(child.pid for child in psutil.Process(pid).children(recursive=True))
+        except Exception:
+            continue
+    return descendants
 
 
 def _get_parent_pid(pid: int) -> int | None:

@@ -111,17 +111,25 @@ def _dotenv_value(env_var: str) -> str:
 
 
 def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = "",
-                            env_getter=None) -> str:
-    """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
-    ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
-    ``hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
-    active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
-    than borrowing another profile's env or pool. Never raises.
+                            env_getter=None, *, ignore_process_env: bool = False) -> str:
+    """Resolve a provider secret from explicit config, profile scope, dotenv, then its pool.
 
-    Resolution order (fixes #68003 — keys added via ``hermes auth add <provider>`` were invisible to the
-    voice tools, which only consulted env/.env):
+    ``ignore_process_env`` is used when an auth removal suppressed ``env:<name>``. It
+    preserves an explicitly scoped/profile-owned value and ``.env`` while excluding a
+    stale value inherited by a long-running parent process. This keeps source suppression
+    effective without mutating ``os.environ`` around a nested resolver call.
     """
-    key = str(config_value or "").strip() or _scoped_credential(env_var)
+    if str(config_value or "").strip():
+        key = str(config_value).strip()
+    elif ignore_process_env:
+        try:
+            from agent.secret_scope import current_secret_scope
+            scope = current_secret_scope()
+            key = str((scope or {}).get(env_var) or "").strip()
+        except Exception:
+            key = ""
+    else:
+        key = _scoped_credential(env_var)
     if key:
         return key
     try:
@@ -130,7 +138,14 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
             return ""
     except Exception:  # pragma: no cover — secret_scope is in-repo
         pass
-    key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
+    if ignore_process_env:
+        try:
+            from hermes_cli.config import load_env
+            key = str((load_env() or {}).get(env_var) or "").strip()
+        except Exception:
+            key = ""
+    else:
+        key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
     if key or not provider_id:
         return key
     try:

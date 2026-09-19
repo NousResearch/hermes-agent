@@ -159,13 +159,22 @@ def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
 
 
 def _resolve_explicit_xai_api_key() -> str:
-    """Read ``XAI_API_KEY`` via ``resolve_provider_secret`` (config → profile scope → env/.env → pool).
+    """Resolve the explicit xAI API-key source without reviving a removed env credential.
 
-    Both the preferred-key and the no-OAuth fallback paths go through here so scope policy
-    (incl. failing closed in a multiplexed gateway turn) is never re-implemented per caller.
+    ``hermes auth remove xai`` records ``env:XAI_API_KEY`` in the suppression list. A
+    gateway restarted from the old process can still inherit that variable, so the
+    resolver must exclude only the process-environment source while retaining profile,
+    dotenv, and pool credentials. The resolver owns that source boundary; callers do
+    not need to mutate global process state.
     """
+    from hermes_cli.auth import is_source_suppressed
     from tools.tool_backend_helpers import resolve_provider_secret
-    return resolve_provider_secret("XAI_API_KEY", "xai")
+
+    return resolve_provider_secret(
+        "XAI_API_KEY",
+        "xai",
+        ignore_process_env=is_source_suppressed("xai", "env:XAI_API_KEY"),
+    )
 
 
 def _xai_base_url_override() -> str:

@@ -184,3 +184,38 @@ def test_prefer_api_key_honors_profile_scope_only_key(tmp_path, monkeypatch):
         secret_scope.reset_secret_scope(token)
         secret_scope.set_multiplex_active(previous_multiplex)
         invalidate_env_cache()
+
+
+def test_prefer_api_key_ignores_suppressed_process_env_and_uses_oauth(monkeypatch):
+    """A stale inherited key must not override xai-oauth after auth removal."""
+    import os
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.setenv("XAI_API_KEY", "stale-creditless-key")
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed",
+        lambda provider, source: provider == "xai" and source == "env:XAI_API_KEY",
+    )
+    monkeypatch.setattr("hermes_cli.config.load_env", lambda: {})
+    _install_fake_oauth_pool(monkeypatch, "oauth-token-x1")
+
+    credentials = resolve_xai_http_credentials(prefer_api_key=True)
+
+    assert credentials["provider"] == "xai-oauth"
+    assert credentials["api_key"] == "oauth-token-x1"
+    assert os.environ["XAI_API_KEY"] == "stale-creditless-key"
+
+
+def test_prefer_api_key_keeps_unsuppressed_process_env(monkeypatch):
+    """An active env source keeps its existing precedence."""
+    from tools.xai_http import resolve_xai_http_credentials
+
+    live_key = "live-api-key"
+    monkeypatch.setenv("XAI_API_KEY", live_key)
+    monkeypatch.setattr("hermes_cli.auth.is_source_suppressed", lambda *_: False)
+    _install_fake_oauth_pool(monkeypatch, "oauth-token-x1")
+
+    credentials = resolve_xai_http_credentials(prefer_api_key=True)
+
+    assert credentials["provider"] == "xai"
+    assert credentials["api_key"] == live_key

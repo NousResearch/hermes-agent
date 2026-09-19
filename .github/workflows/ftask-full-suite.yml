@@ -2,6 +2,13 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      via_ci:
+        description: Run the canonical suite from the CI orchestrator.
+        required: false
+        type: boolean
+        default: false
+  pull_request:
 
 permissions:
   contents: read
@@ -14,6 +21,10 @@ concurrency:
 jobs:
   full-suite:
     name: Run tests
+    # The pull_request trigger makes this canonical gate statically visible to
+    # release tooling. CI still owns the single real invocation; the direct
+    # trigger is skipped so the 96-core suite never runs twice.
+    if: github.event_name != 'pull_request' || inputs.via_ci
     # One 96-core runner for the whole suite. There is no slicing. Slicing
     # existed to spread the suite over 4-core runners. It cost a matrix job, a
     # duration cache, a per-slice artifact and a merge job to do it.

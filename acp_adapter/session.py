@@ -143,9 +143,6 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
-    # Per-session allocator for ACP assistant messageIds (lazily created by
-    # the server so streamed chunks group into distinct assistant replies).
-    message_ids: Any = None
 
 
 class SessionManager:
@@ -159,9 +156,6 @@ class SessionManager:
         the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
         self._sessions: Dict[str, SessionState] = {}
         self._lock = threading.Lock()
-        # Serializes DB restores: session construction runs off the event loop, so two
-        # overlapping session/load for one id must share a single agent build.
-        self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
 
@@ -181,12 +175,7 @@ class SessionManager:
         a process restart) when it is not in memory; ``None`` if unknown."""
         with self._lock:
             state = self._sessions.get(session_id)
-        if state is not None:
-            return state
-        with self._restore_lock:
-            with self._lock:
-                state = self._sessions.get(session_id)  # a concurrent restore may have installed it
-            return state if state is not None else self._restore(session_id)
+        return state if state is not None else self._restore(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
@@ -277,15 +266,15 @@ class SessionManager:
         return state
 
     def _get_db(self):
-        """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
-        error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
-        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
-        registry handle is the one in-process tools (delegation, session_search, goals) also
-        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
+        """Lazily initialise the SessionDB via the process-wide registry so the ACP adapter
+        shares the gateway's writer connection instead of opening a second one that the
+        registry will adopt (and then clear) on the next acquire() call — leaving this
+        instance with _conn=None and a stale ProgrammingError on next use (#105567)."""
         if self._db_instance is None:
             try:
+                from hermes_state import SessionDB
                 from hermes_state_registry import acquire
-                self._db_instance = acquire(get_hermes_home() / "state.db")
+                self._db_instance = acquire(db_path=get_hermes_home() / "state.db")
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         return self._db_instance
@@ -381,10 +370,7 @@ class SessionManager:
     # ---- internal -----------------------------------------------------------
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
-                    requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
-                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
-        """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
-        them from the config-declared MCP servers (fresh session)."""
+                    requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None):
         if self._agent_factory is not None:
             return self._agent_factory()
 
@@ -406,15 +392,11 @@ class SessionManager:
         ]
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": (list(enabled_toolsets) if enabled_toolsets is not None
-                                 else _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers)),
-            "disabled_toolsets": list(disabled_toolsets) if disabled_toolsets is not None else None,
+            "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
             "model": model or default_model,
-            "cwd": cwd,
         }
         try:
-            runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
@@ -439,6 +421,9 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
+        # Codex app-server sessions spawn lazily on the first turn; stamp the ACP
+        # workspace so the Codex runtime starts from the editor cwd, not ours.
+        agent.session_cwd = cwd
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent

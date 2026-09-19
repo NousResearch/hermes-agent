@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
+_canonical_sqlite_path = canonical_sqlite_path
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )

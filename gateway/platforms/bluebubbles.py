@@ -196,6 +196,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.server_url or not self.password:
             logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
             return False
+        # Prevent two profiles from registering webhooks on the same BlueBubbles
+        # server (and double-responding to the same thread). Shared-listener
+        # secondaries bind nothing, so they must not contend on the default's lock.
+        from gateway.platforms.shared_ingress import shared_ingress_profile
+
+        if not shared_ingress_profile(self) and not self._acquire_platform_lock(
+            "bluebubbles", self.server_url, "BlueBubbles server"
+        ):
+            return False
         from aiohttp import web
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # See #18451.
@@ -212,6 +221,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
+            self._release_platform_lock()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
         # with no Content-Length.
@@ -247,6 +257,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
+        self._release_platform_lock()
         self._mark_disconnected()
 
     @property

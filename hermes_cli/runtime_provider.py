@@ -913,7 +913,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
-    return runtime
+    return _apply_model_extra_body(runtime, _get_model_config())
 
 
 def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
@@ -934,6 +934,20 @@ def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict
         provider=requested_provider,
         code="missing_api_key",
     )
+
+
+def _apply_model_extra_body(runtime: Dict[str, Any], model_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Layer ``model.extra_body`` over provider defaults without discarding nested fields."""
+    configured = model_cfg.get("extra_body") if isinstance(model_cfg, dict) else None
+    if not isinstance(configured, dict) or not configured:
+        return runtime
+    overrides = dict(runtime.get("request_overrides") or {})
+    existing = overrides.get("extra_body")
+    overrides["extra_body"] = (
+        _config_mod._deep_merge(existing, configured)
+        if isinstance(existing, dict) else dict(configured)
+    )
+    return {**runtime, "request_overrides": overrides}
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):

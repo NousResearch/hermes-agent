@@ -273,7 +273,7 @@ class TestPortalBodyFields:
     transport consults — so the Anthropic branch has to merge them in itself.
     """
 
-    def _build(self, provider="nous", session_id="sess-abc123"):
+    def _build(self, provider="nous", session_id="sess-abc123", request_overrides=None):
         from agent.chat_completion_helpers import build_api_kwargs
         from agent.transports.anthropic import AnthropicTransport
 
@@ -286,7 +286,7 @@ class TestPortalBodyFields:
             tools=None,
             max_tokens=1024,
             reasoning_config=None,
-            request_overrides={},
+            request_overrides=request_overrides or {},
             context_compressor=None,
             _ephemeral_max_output_tokens=None,
             _is_anthropic_oauth=False,
@@ -314,6 +314,23 @@ class TestPortalBodyFields:
 
         assert extra_body["session_id"] == "sess-abc123"
         assert "conversation=sess-abc123" in extra_body["tags"]
+
+    def test_configured_extra_body_is_merged_with_messages_body(self):
+        extra_body = self._build(request_overrides={
+            "extra_body": {"guardrail": {"enabled": True}, "session_id": "configured-session"}
+        })["extra_body"]
+
+        assert extra_body["guardrail"] == {"enabled": True}
+        assert extra_body["session_id"] == "configured-session"
+        assert "product=hermes-agent" in extra_body["tags"]
+
+    def test_configured_none_keeps_transport_extra_body_mapping(self):
+        from agent.chat_completion_helpers import _deep_merge_extra_body
+
+        assert _deep_merge_extra_body(
+            {"guardrail": {"enabled": True}},
+            {"guardrail": None},
+        ) == {"guardrail": {"enabled": True}}
 
 
 

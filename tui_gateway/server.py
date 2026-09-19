@@ -3032,7 +3032,18 @@ def _spawn_trees_root():
 
 
 def _spawn_tree_session_dir(session_id: str):
-    d = _spawn_trees_root() / ("".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
+    root = _spawn_trees_root()
+    encoded = safe.encode("utf-8")
+    if len(encoded) > 64:
+        # Keep previously saved trees reachable under their original directory.
+        legacy = root / safe
+        if os.path.isdir(legacy):
+            return legacy
+        # Bound bytes as well as characters; keep distinct long IDs stable across calls.
+        digest = hashlib.sha256(encoded).hexdigest()[:12]
+        safe = f"{encoded[:48].decode('utf-8', errors='ignore')}-{digest}"
+    d = root / safe
     d.mkdir(parents=True, exist_ok=True)
     return d
 

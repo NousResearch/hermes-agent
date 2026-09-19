@@ -658,6 +658,11 @@ class WebhookAdapter(BasePlatformAdapter):
                                    user_id=f"webhook:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
+        # Name the session after its route BEFORE the run starts (see _name_delivery_session).
+        # Inside the routed profile's scope: the store resolves its handle from the active scope,
+        # so a /p/<profile>/ route must name the session in THAT profile's state.db.
+        with self._profile_scope(profile):
+            self._name_delivery_session(source, route_name)
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
@@ -666,6 +671,38 @@ class WebhookAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def _name_delivery_session(self, source, route_name: str) -> None:
+        """Title the one-shot delivery session after its route (``webhook:<route>``).
+
+        The session key bakes in the delivery id, so nothing outside the delivery can name its
+        session: a user replying "send that to Sam" in their DM has no referent for the event
+        processed seconds earlier, and the only workaround was grepping gateway.log for the
+        session id (#112274). A route-derived title makes the session addressable from ANY
+        session — ``session_search(query="webhook:<route>")`` resolves the name, and the store's
+        ``#N`` continuation keeps every delivery of one route reachable, newest first. Written
+        before the run starts so the session is named by its origin, not by a content-derived
+        auto-title that would win the name by provenance. Best-effort: never affects delivery.
+        """
+        runner = self.gateway_runner
+        store = getattr(runner, "session_store", None)
+        if runner is None or store is None:
+            return
+        try:
+            session_db = getattr(store, "_db", None)  # the store's own handle (never the async wrapper)
+            if session_db is None:
+                return
+            # Same deterministic key the run keys on, so this creates the row it will use.
+            session_id = getattr(store.get_or_create_session(source), "session_id", None)
+            if not session_id:
+                return
+            base = f"webhook:{route_name}"
+            try:
+                session_db.set_auto_title(session_id, base, source="llm")
+            except ValueError:  # an earlier delivery of this route already holds the name
+                session_db.set_auto_title(session_id, session_db.get_next_title_in_lineage(base), source="llm")
+        except Exception as e:
+            logger.debug("[webhook] Could not name the delivery session for route %s: %s", route_name, e)
 
     async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so

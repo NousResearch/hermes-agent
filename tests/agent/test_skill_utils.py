@@ -1,5 +1,6 @@
 """Tests for agent/skill_utils.py."""
 
+import time
 from unittest.mock import patch
 
 import pytest
@@ -409,4 +410,71 @@ class TestBOMToleranceSiblingSites:
         fm = _split_frontmatter("\ufeff---\nname: bp\n---\nbody")
         assert fm is not None
         assert fm.get("name") == "bp"
+
+
+def test_find_project_root_memoises_walk_per_cwd(tmp_path, monkeypatch):
+    """A fresh cache entry is served without re-walking: removing `.git` inside
+    the TTL must NOT change the answer, because the second call never hits disk."""
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_PROJECT_ROOT_CACHE_TTL", "30")
+    skill_utils._project_root_cache_clear()
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    sub = proj / "sub"
+    sub.mkdir()
+
+    assert skill_utils.find_project_root(sub) == proj
+    (proj / ".git").rmdir()
+    assert skill_utils.find_project_root(sub) == proj
+    skill_utils._project_root_cache_clear()
+
+
+def test_find_project_root_cache_disabled_by_zero_ttl(tmp_path, monkeypatch):
+    """`HERMES_PROJECT_ROOT_CACHE_TTL=0` disables the memoisation entirely."""
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_PROJECT_ROOT_CACHE_TTL", "0")
+    skill_utils._project_root_cache_clear()
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+
+    assert skill_utils.find_project_root(proj) == proj
+    (proj / ".git").rmdir()
+    assert skill_utils.find_project_root(proj) is None
+    assert skill_utils._PROJECT_ROOT_CACHE == {}
+
+
+def test_find_project_root_cache_expires_after_ttl(tmp_path, monkeypatch):
+    """Past the TTL the walk runs again, so a changed filesystem is observed."""
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_PROJECT_ROOT_CACHE_TTL", "0.05")
+    skill_utils._project_root_cache_clear()
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+
+    assert skill_utils.find_project_root(proj) == proj
+    (proj / ".git").rmdir()
+    time.sleep(0.12)
+    assert skill_utils.find_project_root(proj) is None
+    skill_utils._project_root_cache_clear()
+
+
+def test_find_project_root_cache_is_keyed_per_cwd(tmp_path, monkeypatch):
+    """Two cwds memoise independently — no cross-talk between entries."""
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_PROJECT_ROOT_CACHE_TTL", "30")
+    skill_utils._project_root_cache_clear()
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert skill_utils.find_project_root(proj) == proj
+    assert skill_utils.find_project_root(plain) is None
+    assert skill_utils.find_project_root(proj) == proj
+    assert len(skill_utils._PROJECT_ROOT_CACHE) == 2
+    skill_utils._project_root_cache_clear()
 

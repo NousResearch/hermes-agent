@@ -274,7 +274,7 @@ def _coerce_int(value: Any, default: int) -> int:
     """Best-effort integer coercion for tool pagination inputs."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

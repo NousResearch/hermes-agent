@@ -169,6 +169,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "recorded-cwd restore)."))
     add("--continue", "-c", dest="continue_last", nargs="?", const=True, default=None,
         metavar="SESSION_NAME", help="Resume a session by name, or the most recent if no name given")
+    add("--create-if-missing", action="store_true", default=False, help=(
+        "With -c/--continue <name>: if no session matches the name, "
+        "create a new titled session and proceed instead of failing. "
+        "For programmatic callers (e.g. the -z one-shot path)."))
     add("--worktree", "-w", action="store_true", default=False,
         help="Run in an isolated git worktree (for parallel agents)")
     inherited(parser, "--accept-hooks", action="store_true", default=False, help=(

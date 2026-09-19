@@ -953,13 +953,15 @@ class TestClassifyOAuthFailure:
             ("internal error: workspace initialization failed", "ChatGPT plugin prewarm failed: HTTP 401 Unauthorized", False),
             ("", "plugin discovery: oauth handshake returned 401 unauthorized", False),
             ("HTTP 401 Unauthorized", "", True),
+            ("request body exceeded limit by 401 bytes", "", False),
             ("internal error", "token refresh failed: invalid_grant", True),
         ],
-        ids=["plugin-401-stderr-keeps-rpc-error", "plugin-401-stderr-keeps-timeout", "primary-401", "strong-stderr-signal"],
+        ids=["plugin-401-stderr-keeps-rpc-error", "plugin-401-stderr-keeps-timeout", "primary-401", "bare-401-token-is-not-auth", "strong-stderr-signal"],
     )
     def test_generic_auth_words_count_only_in_primary_error(self, primary, stderr, expected):
         """#75167: ambient plugin 401/oauth stderr must not become the re-login hint; the
-        primary error's own 401 and strong stderr credential signals still do."""
+        primary error's own 401 Unauthorized and strong stderr credential signals still do,
+        while a bare `401` token in an unrelated primary error does not."""
         from agent.transports.codex_app_server_session import _classify_oauth_failure
 
         assert (_classify_oauth_failure(primary, stderr=stderr) is not None) is expected

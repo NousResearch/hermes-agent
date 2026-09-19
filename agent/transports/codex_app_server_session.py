@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -128,7 +127,7 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
 # Generic auth words are authoritative only in the primary error. codex writes
 # independent ChatGPT plugin prewarm failures ("HTTP 401 Unauthorized") to stderr,
 # so there they must not mask an unrelated RPC error or timeout (#75167).
-_PRIMARY_ONLY_OAUTH_HINTS = ("unauthorized", "oauth", "auth profile")
+_PRIMARY_ONLY_OAUTH_HINTS = ("401 unauthorized", "unauthorized", "oauth", "auth profile")
 
 _OAUTH_REAUTH_HINT = (
     "Codex authentication failed — your ChatGPT/Codex login looks expired or invalid. Run `codex login` to refresh, "
@@ -140,7 +139,7 @@ def _classify_oauth_failure(primary: str = "", *, stderr: str = "") -> Optional[
     """Re-auth hint when ``primary`` (the operation's own error) or ``stderr`` proves the codex login is broken."""
     primary_l = (primary or "").lower()
     stderr_l = (stderr or "").lower()
-    if any(n in primary_l for n in _OAUTH_REFRESH_FAILURE_HINTS + _PRIMARY_ONLY_OAUTH_HINTS) or re.search(r"\b401\b", primary_l):
+    if any(n in primary_l for n in _OAUTH_REFRESH_FAILURE_HINTS + _PRIMARY_ONLY_OAUTH_HINTS):
         return _OAUTH_REAUTH_HINT
     return _OAUTH_REAUTH_HINT if any(n in stderr_l for n in _OAUTH_REFRESH_FAILURE_HINTS) else None
 

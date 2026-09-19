@@ -58,11 +58,23 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     for entry in candidates():
         try:
             if entry.is_file() and (st := entry.stat()).st_mtime < cutoff:
+                if os.name == "nt":
+                    # git writes its pack/index temp files read-only (0444); Windows' unlink
+                    # refuses a read-only file with WinError 5, and the OSError branch below
+                    # swallowed that at debug level — so this sweep silently removed nothing
+                    # for real debris (#116384). Clear the write bit before unlinking.
+                    try:
+                        os.chmod(entry, 0o666)
+                    except OSError:
+                        pass
                 entry.unlink()
                 removed.append(str(entry))
                 log_removed(entry, st.st_size)
-        except OSError:
-            logger.debug("Could not clear %s (skipping)", entry, exc_info=True)
+        except OSError as exc:
+            # A cleaner that fails silently is worse than none: this branch logged at debug
+            # and therefore hid a Windows read-only unlink failure (EACCES/13) for months,
+            # letting aborted-fetch debris grow to gigabytes. Surface every skip.
+            logger.warning("Could not clear %s (skipping): %s", entry, exc)
     return removed
 
 

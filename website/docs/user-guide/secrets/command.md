@@ -2,6 +2,8 @@
 
 Resolve credentials by running your own helper command at startup — any secret store with a CLI works: `keepassxc-cli`, `secret-tool` (GNOME Keyring), `pass`, `gpg`, Vaultwarden's CLI, or a script that cats a tmpfs env file. The helper prints `KEY=VALUE` lines on stdout; Hermes applies them through the same orchestrator as [Bitwarden](./bitwarden) and [1Password](./onepassword), so you can enable any combination of sources simultaneously.
 
+For a complete worked example against HashiCorp Vault, including a last-known-good cache that keeps the agent booting while Vault is sealed or unreachable, see the [HashiCorp Vault guide](/guides/hashicorp-vault-secrets).
+
 ## How it works
 
 1. You configure a helper command in `config.yaml` (never in `.env` — the command is configuration, `.env` holds values).

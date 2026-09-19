@@ -1168,10 +1168,17 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     # Class-level patch: survives reconnects that might create new
     # references to the bound method, unlike instance-level patch.
     # Guarded because some tests inject a fake ``lark_oapi.ws.client``
-    # module that has no ``Client`` class.
+    # module that has no ``Client`` class.  The original handler is kept
+    # aside and restored when the WS run tears down (see the finally
+    # below), so the SDK class is never left patched after shutdown.
+    original_handle_data_frame = None
     if _ws_client_cls is not None and hasattr(_ws_client_cls, "_handle_data_frame"):
-        _ws_client_cls._handle_data_frame = _patched_handle_data_frame
-        logger.info("[Feishu] Patched _handle_data_frame (class-level) for CARD callback support")
+        if _ws_client_cls._handle_data_frame is not _patched_handle_data_frame:
+            original_handle_data_frame = _ws_client_cls._handle_data_frame
+            _ws_client_cls._handle_data_frame = _patched_handle_data_frame
+            logger.info("[Feishu] Patched _handle_data_frame (class-level) for CARD callback support")
+        else:
+            logger.debug("[Feishu] _handle_data_frame already patched — leaving in place")
     else:
         logger.debug("[Feishu] lark_oapi.ws.client.Client unavailable — skipping CARD patch")
     # ── End patch ─────────────────────────────────────────────────────────
@@ -1185,6 +1192,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _ws_isolation_state.connect_kwargs = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
+        if _ws_client_cls is not None and original_handle_data_frame is not None:
+            _ws_client_cls._handle_data_frame = original_handle_data_frame
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
             task.cancel()

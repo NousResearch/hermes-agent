@@ -1,0 +1,14 @@
+[Unit]
+Description=noVNC websocket on WireGuard BIND_IP only
+After=hermes-takeover-vnc.service
+Wants=hermes-takeover-vnc.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.hermes/takeover/env
+ExecStart=/usr/bin/websockify --web /usr/share/novnc ${BIND_IP}:${NOVNC_PORT} 127.0.0.1:${VNC_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

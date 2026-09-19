@@ -212,6 +212,45 @@ def _persist_pending_completion(event):
     })
 
 
+@pytest.mark.parametrize("count", [1, 3])
+def test_sqlite_acceptance_is_delivered_and_never_restored(monkeypatch, isolated_registry, count):
+    """Exercise the SQLite-only rail, without a JSON outbox or mocked receipt."""
+    import time
+    from tools import async_delegation as ad
+
+    events = [_distinct_async_event(f"deleg_sqlite_{i}") for i in range(count)]
+    for event in events:
+        event["dispatched_at"] = time.time() - 12
+        event["completed_at"] = time.time()
+        _persist_pending_completion(event)
+    pending = queue.Queue()
+    # Prove recovery can see these exact rows before consumption; fresh dates
+    # ensure the staleness guard cannot make the post-delivery check vacuous.
+    assert ad.restore_undelivered_completions(pending) == count
+    monkeypatch.setattr(isolated_registry, "completion_queue", pending)
+
+    async def accept(_event):
+        for event in events:
+            row = ad.get_durable_delegation(event["delegation_id"])
+            assert row is not None
+            assert row["delivery_state"] == "pending"
+        _event._gateway_accepted = True
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=accept))
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+    adapter.handle_message.assert_awaited_once()
+    for event in events:
+        row = ad.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert row["delivery_state"] == "delivered"
+        assert row["delivery_attempts"] == 1
+    after_restart = queue.Queue()
+    assert ad.restore_undelivered_completions(after_restart) == 0
+    assert after_restart.empty()
+
+
 def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch):
     import tools.process_registry as pr_module
 

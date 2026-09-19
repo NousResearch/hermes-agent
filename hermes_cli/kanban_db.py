@@ -1110,8 +1110,8 @@ def _check_model_override_route(model: Optional[str], provider: Optional[str]) -
     """Reject a prohibited task route before it enters the durable board."""
     if not model:
         return
-    from hermes_cli.routing_policy import check_outbound_route
-    check_outbound_route(provider=str(provider or ""), model=str(model), base_url="")
+    from hermes_cli.routing_policy import check_persisted_route
+    check_persisted_route(provider=str(provider or ""), model=str(model), base_url="")
 
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:

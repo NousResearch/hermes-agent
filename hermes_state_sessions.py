@@ -279,6 +279,11 @@ class SessionSessionsMixin:
         conn.execute(_INHERIT_PARENT_META_SQL, (session_id,))
         conn.execute(_INHERIT_PARENT_ROUTING_SQL, (session_id,))
 
+    def _routing_policy_home(self) -> Optional[Path]:
+        """Profile home that owns this durable session store, if it is a profile store."""
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        return profile_home_for_session_db(self)
+
     def _insert_session_row(
         self, session_id: str, source: str, model: str = None, model_config: Dict[str, Any] = None,
         system_prompt: str = None, user_id: str = None, session_key: Optional[str] = None,
@@ -315,11 +320,11 @@ class SessionSessionsMixin:
         sidebar even though its transcript is intact (#99222). Stores outside the profile tree (explicit
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
         """
-        from hermes_cli.routing_policy import check_outbound_route
+        from hermes_cli.routing_policy import check_persisted_route
         route = model_config if isinstance(model_config, dict) else {}
-        check_outbound_route(
+        check_persisted_route(
             provider=str(route.get("provider") or ""), model=str(model or route.get("model") or ""),
-            base_url=str(route.get("base_url") or ""),
+            base_url=str(route.get("base_url") or ""), profile_home=self._routing_policy_home(),
         )
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
@@ -634,7 +639,15 @@ class SessionSessionsMixin:
     def update_session_meta(
         self, session_id: str, model_config_json: str, model: Optional[str] = None,
     ) -> None:
-        """Update model_config and (COALESCE) optionally model."""
+        """Update model_config and (COALESCE) optionally model after route admission."""
+        from hermes_cli.routing_policy import check_persisted_route
+
+        config = _parse_model_config(model_config_json)
+        check_persisted_route(
+            provider=str(config.get("provider") or ""),
+            model=str(model or config.get("model") or ""),
+            base_url=str(config.get("base_url") or ""), profile_home=self._routing_policy_home(),
+        )
         self.flush_token_counts()  # barrier against queued token deltas — see update_session_model
         self._write_sql(
             "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
@@ -667,8 +680,11 @@ class SessionSessionsMixin:
         serves it instead of the config.yaml primary provider (#79536). Callers without provider knowledge
         leave any stored provider untouched.
         """
-        from hermes_cli.routing_policy import check_outbound_route
-        check_outbound_route(provider=str(provider or ""), model=str(model or ""), base_url="")
+        from hermes_cli.routing_policy import check_persisted_route
+        check_persisted_route(
+            provider=str(provider or ""), model=str(model or ""), base_url="",
+            profile_home=self._routing_policy_home(),
+        )
         # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
         # first_accounted_route overwrite and resurrect the old route.
         self.flush_token_counts()
@@ -702,7 +718,7 @@ class SessionSessionsMixin:
 
     def _check_session_model_config_route(self, session_id: str, patch: Dict[str, Any]) -> None:
         """Check the effective session route after applying a prospective model-config patch."""
-        from hermes_cli.routing_policy import check_outbound_route
+        from hermes_cli.routing_policy import check_persisted_route
 
         session = self.get_session(session_id) or {}
         config = _parse_model_config(session.get("model_config"))
@@ -711,10 +727,10 @@ class SessionSessionsMixin:
                 config.pop(key, None)
             else:
                 config[key] = value
-        check_outbound_route(
+        check_persisted_route(
             provider=str(config.get("provider") or ""),
             model=str(config.get("model") or session.get("model") or ""),
-            base_url=str(config.get("base_url") or ""),
+            base_url=str(config.get("base_url") or ""), profile_home=self._routing_policy_home(),
         )
 
     def _merge_model_config_json(
@@ -756,6 +772,11 @@ class SessionSessionsMixin:
     ) -> None:
         """Persist a Browser / API-client runtime lock into model_config (lineage markers survive); null
         system_prompt so cached footers cannot lie."""
+        from hermes_cli.routing_policy import check_persisted_route
+        check_persisted_route(
+            provider=str(provider or ""), model=str(model or ""), base_url="",
+            profile_home=self._routing_policy_home(),
+        )
         lock = {
             "provider": provider or "", "model": model or "", "model_options": model_options or {},
             "route_source": route_source or "", "confirmed": bool(confirmed), "updated_at": time.time(),

@@ -145,6 +145,138 @@ def test_denied_persisted_session_route_is_not_written(monkeypatch):
     assert writes == []
 
 
+def test_multiplex_owner_policy_denies_session_writes_and_dispatch_after_a_to_b_to_a(tmp_path, monkeypatch):
+    """A secondary's owner policy wins after the ambient launch profile resumes."""
+    from agent import chat_completion_helpers as helpers
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    secondary = home / "profiles" / "restricted"
+    secondary.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    (secondary / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+    )
+
+    default_db = SessionDB(db_path=home / "state.db")
+    secondary_db = SessionDB(db_path=secondary / "state.db")
+    create = _RecordingCreate()
+    try:
+        # A permits, B denies, then A is ambient again: B's persisted owner must still govern.
+        default_db.create_session("a-before", "cli", model="allowed", model_config={"provider": "openrouter"})
+        with pytest.raises(RoutingPolicyError):
+            secondary_db.create_session(
+                "b-create", "cli", model="z-ai/glm-5.2", model_config={"provider": "openrouter"},
+            )
+        assert secondary_db.get_session("b-create") is None
+
+        secondary_db.create_session("b-update", "cli", model="allowed", model_config={"provider": "openrouter"})
+        with pytest.raises(RoutingPolicyError):
+            secondary_db.update_session_model("b-update", "z-ai/glm-5.2", provider="openrouter")
+        assert secondary_db.get_session("b-update")["model"] == "allowed"
+
+        secondary_db.create_session("b-patch", "cli", model="allowed", model_config={"provider": "openrouter"})
+        with pytest.raises(RoutingPolicyError):
+            secondary_db.patch_session_model_config("b-patch", {"model": "z-ai/glm-5.2"})
+        assert secondary_db.get_session_model_config_value("b-patch", "model") is None
+
+        agent = SimpleNamespace(
+            api_mode="chat_completions", provider="openrouter", model="z-ai/glm-5.2",
+            base_url="https://openrouter.ai/api/v1", _session_db=secondary_db,
+        )
+        with pytest.raises(RoutingPolicyError):
+            helpers._dispatch_nonstreaming_api_request(
+                agent, {"model": "z-ai/glm-5.2"},
+                make_client=lambda *_args, **_kwargs: SimpleNamespace(chat=SimpleNamespace(completions=create)),
+            )
+        assert create.calls == []
+
+        default_db.create_session("a-after", "cli", model="allowed", model_config={"provider": "openrouter"})
+    finally:
+        secondary_db.close()
+        default_db.close()
+
+
+def test_ad_hoc_profile_shaped_session_db_uses_active_policy(tmp_path, monkeypatch):
+    """A copied store cannot select a permissive policy merely by its path shape."""
+    from hermes_cli.routing_policy import (
+        RoutingPolicyError,
+        check_route,
+        current_routing_policy_for_session_db,
+    )
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    ad_hoc = tmp_path / "ad-hoc" / "profiles" / "relaxed"
+    home.mkdir()
+    ad_hoc.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+    )
+    (ad_hoc / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+
+    db = SessionDB(db_path=ad_hoc / "state.db")
+    try:
+        with pytest.raises(RoutingPolicyError):
+            check_route(
+                current_routing_policy_for_session_db(db),
+                provider="openrouter", model="z-ai/glm-5.2", base_url="",
+            )
+    finally:
+        db.close()
+
+
+def test_session_meta_and_runtime_lock_reject_before_write_when_explicit_route_is_required(tmp_path, monkeypatch):
+    """All public session persistence APIs admit a complete route before durable writes."""
+    import json
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  require_explicit: true\n", encoding="utf-8",
+    )
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session("s1", "cli")
+        with pytest.raises(RoutingPolicyError, match="explicit provider"):
+            db.update_session_meta("s1", json.dumps({"model": "permitted-model"}))
+        with pytest.raises(RoutingPolicyError, match="explicit provider"):
+            db.update_session_runtime_lock("s1", model="permitted-model", confirmed=True)
+        row = db.get_session("s1")
+        assert row["model_config"] is None
+        assert row["model"] is None
+    finally:
+        db.close()
+
+
+def test_session_meta_rejects_denied_route_before_write(tmp_path, monkeypatch):
+    """Serialized metadata cannot install a denied route for a later resume."""
+    import json
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+    )
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session("s1", "cli")
+        with pytest.raises(RoutingPolicyError):
+            db.update_session_meta("s1", json.dumps({"provider": "openrouter", "model": "z-ai/glm-5.2"}))
+        assert db.get_session("s1")["model_config"] is None
+    finally:
+        db.close()
+
+
 def test_denied_host_config_is_canonicalized_before_matching():
     """Operator host spelling and case cannot weaken the deny rule."""
     from hermes_cli.routing_policy import RoutingPolicyError, check_route

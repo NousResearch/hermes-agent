@@ -24,7 +24,14 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from hermes_cli.routing_policy import check_route, current_routing_policy
+from hermes_cli.routing_policy import check_route, current_routing_policy, current_routing_policy_for_session_db
+
+
+def _agent_routing_policy(agent: Any):
+    """Prefer the durable session owner's policy; bare test/one-shot agents use active scope."""
+    session_db = getattr(agent, "_session_db", None)
+    return current_routing_policy_for_session_db(session_db) if session_db is not None else current_routing_policy()
+
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
@@ -717,7 +724,8 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
     check_route(
-        current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+        _agent_routing_policy(agent),
+        provider=str(getattr(agent, "provider", "") or ""),
         model=str(api_kwargs.get("model") or getattr(agent, "model", "") or ""),
         base_url=str(getattr(agent, "base_url", "") or ""),
     )
@@ -2159,7 +2167,8 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         check_route(
-            current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+            _agent_routing_policy(agent),
+            provider=str(getattr(agent, "provider", "") or ""),
             model=str(summary_kwargs.get("model") or ""),
             base_url=str(getattr(summary_client, "base_url", "") or ""),
         )
@@ -2811,7 +2820,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         check_route(
-            current_routing_policy(), provider=str(getattr(self.agent, "provider", "") or ""),
+            _agent_routing_policy(self.agent),
+            provider=str(getattr(self.agent, "provider", "") or ""),
             model=str(stream_kwargs.get("model") or getattr(self.agent, "model", "") or ""),
             base_url=str(getattr(self.agent, "base_url", "") or ""),
         )

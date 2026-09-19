@@ -6,6 +6,7 @@ Callers carry policy/provenance to the point they admit or dispatch a route.
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import Any, Mapping
 
 from hermes_cli.providers import normalize_provider
@@ -52,19 +53,67 @@ def _canonical_host(value: str) -> str:
     return base_url_hostname(str(value or "")).lower().rstrip(".")
 
 
-def current_routing_policy() -> Mapping[str, Any]:
-    """Read the active profile policy at an execution boundary."""
+def profile_home_for_session_db(session_db: Any) -> Path | None:
+    """Return a SessionDB profile home only when its path is under this installation's root."""
+    db_path = getattr(session_db, "db_path", None)
+    if db_path is None:
+        return None
+    try:
+        from hermes_constants import get_default_hermes_root, named_profile_home
+
+        home = Path(db_path).expanduser().parent.resolve(strict=False)
+        root = get_default_hermes_root().resolve(strict=False)
+        if home == root:
+            return home
+        profile_home = named_profile_home(home)
+        if profile_home is not None and profile_home.parent.resolve(strict=False) == (root / "profiles").resolve(strict=False):
+            return home
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
+def current_routing_policy(profile_home: str | Path | None = None) -> Mapping[str, Any]:
+    """Read routing policy for the explicit owner profile or the active execution scope."""
     from hermes_cli.config import load_config
 
-    config = load_config()
+    if profile_home is None:
+        config = load_config()
+    else:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(profile_home)
+        try:
+            config = load_config()
+        finally:
+            reset_hermes_home_override(token)
     if isinstance(config, Mapping) and isinstance(config.get("routing_policy"), Mapping):
         return config["routing_policy"]
     return {}
 
 
-def check_outbound_route(*, provider: str, model: str, base_url: str) -> None:
+def current_routing_policy_for_session_db(session_db: Any) -> Mapping[str, Any]:
+    """Resolve policy from a session store's durable owner, not process ambient home."""
+    return current_routing_policy(profile_home_for_session_db(session_db))
+
+
+def _policy_for_profile_home(profile_home: str | Path | None) -> Mapping[str, Any]:
+    return current_routing_policy() if profile_home is None else current_routing_policy(profile_home)
+
+
+def check_outbound_route(*, provider: str, model: str, base_url: str,
+                         profile_home: str | Path | None = None) -> None:
     """Authoritative just-before-send guard used by shared transports."""
-    check_route(current_routing_policy(), provider=provider, model=model, base_url=base_url)
+    check_route(_policy_for_profile_home(profile_home), provider=provider, model=model, base_url=base_url)
+
+
+def check_persisted_route(*, provider: str, model: str, base_url: str,
+                          profile_home: str | Path | None = None) -> None:
+    """Reject an incomplete or denied route before it becomes durable state."""
+    if not any(str(value or "").strip() for value in (provider, model, base_url)):
+        return
+    policy = _policy_for_profile_home(profile_home)
+    check_requested_route(policy, requested_provider=provider, model=model)
+    check_route(policy, provider=provider, model=model, base_url=base_url)
 
 
 def check_requested_route(policy: Mapping[str, Any] | None, *, requested_provider: str, model: str) -> None:

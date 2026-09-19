@@ -846,10 +846,12 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
+    from hermes_cli.routing_policy import profile_home_for_session_db
     check_outbound_route(
         provider=str(getattr(agent, "provider", "") or ""),
         model=str(api_kwargs.get("model") or getattr(agent, "model", "") or ""),
         base_url=str(getattr(agent, "base_url", "") or ""),
+        profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
     )
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError

@@ -336,6 +336,31 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    def test_skill_loading_guidance_requires_a_clear_task_specific_match(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "example"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: example\ndescription: Example procedure\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "its stated trigger clearly matches the requested outcome" in result
+        assert "Topical overlap, shared keywords, issue links" in result
+        assert "load the smallest sufficient, non-overlapping set of skills" in result
+        assert "Proceed without loading a skill when no clear task-specific match exists" in result
+        assert "correct the smallest relevant part after the user's requested outcome is complete" in result
+        assert "record a lesson only when it is non-obvious, reusable" in result
+        assert "Create a new skill only when no existing skill owns that recurring workflow" in result
+        assert "Skill maintenance must not delay, block, or replace the requested outcome" in result
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
+        assert "If a skill has issues, fix it" not in result
+        assert "update it before finishing" not in result
+
 
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):

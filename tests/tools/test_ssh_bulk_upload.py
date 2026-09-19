@@ -265,3 +265,100 @@ class TestSSHBulkUploadEdgeCases:
 
         mock_tar.kill.assert_called_once()
         mock_tar.wait.assert_called_once()
+
+
+class TestSSHBulkUploadWindowsPipes:
+    """`communicate()` must not be handed a stdout we already closed.
+
+    The bulk upload closes tar's stdout so tar sees SIGPIPE if ssh exits
+    early, then calls `communicate()` to drain tar's stderr so a large error
+    stream can't deadlock the pipe. Both intents are right; the combination is
+    only accidentally safe on POSIX.
+
+    CPython's `communicate()` differs by platform. The POSIX branch guards
+    with `not self.stdout.closed` and skips the stream. The Windows branch
+    starts one reader thread per non-None stream with no such check, and that
+    thread calls `fh.read()` on the closed pipe -- `ValueError: read of closed
+    file`.
+
+    The exception dies inside the reader thread, so the upload still succeeds
+    and tar still exits 0. What it produces is a traceback on every bulk
+    upload plus a dead thread: noise that buries the real failure the next
+    time something actually breaks. Measured on a Windows host driving a macOS
+    peer, 2026-09-07 -- nine tracebacks in a single run.
+
+    The existing tests here cannot catch this: their pipes are plain
+    MagicMocks, which have no notion of being closed. This one models the
+    close and makes `communicate()` behave the way CPython does on Windows.
+    """
+
+    def test_tar_stdout_is_detached_before_communicate(self, mock_env, tmp_path):
+        f1 = tmp_path / "a.txt"
+        f1.write_text("aaa")
+        files = [(str(f1), "/home/testuser/.hermes/skills/a.txt")]
+
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess([], 0))
+        procs = []
+
+        def make_proc(cmd, **kwargs):
+            m = MagicMock()
+            stdout = MagicMock()
+            stdout.closed = False
+
+            def _close():
+                stdout.closed = True
+
+            stdout.close.side_effect = _close
+            m.stdout = stdout
+            m.returncode = 0
+            m.poll.return_value = 0
+            m.stderr = MagicMock()
+            m.stderr.read.return_value = b""
+
+            def _communicate(*a, **k):
+                # What CPython does on Windows: a reader thread is started for
+                # any non-None stream, and reading a closed pipe raises.
+                if m.stdout is not None and getattr(m.stdout, "closed", False):
+                    raise ValueError("read of closed file")
+                return (b"", b"")
+
+            m.communicate.side_effect = _communicate
+            procs.append(m)
+            return m
+
+        with patch.object(subprocess, "run", mock_run), \
+             patch.object(subprocess, "Popen", side_effect=make_proc):
+            mock_env._ssh_bulk_upload(files)
+
+        tar_proc = procs[0]
+        assert tar_proc.stdout is None, (
+            "tar's stdout was closed but still referenced when communicate() "
+            "ran; on Windows that starts a reader thread against a closed pipe."
+        )
+
+    def test_the_pipe_is_still_closed_so_tar_can_see_sigpipe(self, mock_env, tmp_path):
+        """Detaching must not replace closing -- the original intent stands."""
+        f1 = tmp_path / "a.txt"
+        f1.write_text("aaa")
+        files = [(str(f1), "/home/testuser/.hermes/skills/a.txt")]
+
+        closed = []
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess([], 0))
+
+        def make_proc(cmd, **kwargs):
+            m = MagicMock()
+            stdout = MagicMock()
+            stdout.close.side_effect = lambda: closed.append(True)
+            m.stdout = stdout
+            m.returncode = 0
+            m.poll.return_value = 0
+            m.communicate.return_value = (b"", b"")
+            m.stderr = MagicMock()
+            m.stderr.read.return_value = b""
+            return m
+
+        with patch.object(subprocess, "run", mock_run), \
+             patch.object(subprocess, "Popen", side_effect=make_proc):
+            mock_env._ssh_bulk_upload(files)
+
+        assert closed, "tar's stdout must still be closed, not merely detached"

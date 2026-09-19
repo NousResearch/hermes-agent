@@ -229,6 +229,8 @@ OpenAI Responses API 格式。通过 `previous_response_id` 支持服务端对�
 
 面向监控和控制平面的已认证就绪检查。它会报告当前 profile 的配置、状态数据库、已配置模型、磁盘空间、gateway/platform 状态、活跃 API run、待处理进程完成通知和活跃 delegation 的有限状态。响应只暴露状态与计数，不包含配置值、凭据、路径、命令、队列载荷或原始错误。
 
+也可通过 **GET /v1/health/detailed** 访问。
+
 公开的 `/health` 路由仍是低开销的存活探针，不运行就绪检查。就绪状态降级时仍返回 HTTP 200；请检查顶层 `status` 和 `readiness.checks` 字段。
 
 ## Runs API（流式友好的替代方案）

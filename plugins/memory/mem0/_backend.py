@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import closing, suppress
 from typing import Any
+
+_QDRANT_INSECURE_WARNING = "Api key is used with an insecure connection"
+
+
+def _apply_qdrant_insecure_warning_filter() -> None:
+    """Silence qdrant-client's api-key-over-HTTP UserWarning for trusted same-network deployments.
+
+    HERMES_QDRANT_ALLOW_INSECURE opts in; the filter targets that exact message only,
+    so genuinely internet-exposed misconfigurations still warn by default.
+    """
+    import os
+
+    if os.environ.get("HERMES_QDRANT_ALLOW_INSECURE", "").lower() not in {"1", "true", "yes"}:
+        return
+    warnings.filterwarnings("ignore", message=_QDRANT_INSECURE_WARNING, category=UserWarning)
 
 
 def _add_kwargs(user_id: str, agent_id: str, infer: bool, metadata: dict | None) -> dict[str, Any]:
@@ -118,6 +134,10 @@ class OSSBackend(Mem0Backend):
         import os
         from mem0 import Memory
         from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS
+
+        # Must run before any QdrantClient construction: both the dims-recreate
+        # probe below and Memory() (which builds its own client) emit the warning.
+        _apply_qdrant_insecure_warning_filter()
 
         def _provider_block(name: str, registry: dict) -> dict:
             """Copy of oss_config[name] with the legacy ``api_base`` key mapped to the provider's canonical base-URL key."""

@@ -1165,6 +1165,12 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     if pdef is None and st.explicit_provider.strip().lower() == "custom":
         pdef = _bare_custom_provider_def(st.current_base_url)
     if pdef is None:
+        # A local-runtime alias only registers while its endpoint resolves, so a stopped or
+        # disabled runtime lands here — where "Unknown provider 'llamacpp'" blames the user's
+        # spelling instead of saying the server is down. Use the runtime's own diagnosis.
+        message = _local_runtime_unavailable_message(st.explicit_provider)
+        if message:
+            return st.fail(message)
         return st.fail(_unknown_provider_message(st.explicit_provider))
 
     st.target_provider, st.provider_label = pdef.id, pdef.name  # label is re-derived in the credential step
@@ -1279,6 +1285,48 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     return True
 
 
+def _managed_local_model_id(model_name: str) -> str:
+    """The managed llama.cpp runtime's own id for ``model_name`` (case-insensitive), else ``""``.
+
+    The router registers one model per ``presets.ini`` section, and the ids are
+    case-sensitive on the wire — so callers need the canonical spelling back, not the typed one.
+    """
+    wanted = (model_name or "").strip().lower()
+    if not wanted:
+        return ""
+    try:
+        from hermes_cli.local_runtime.presets import read_preset_decisions
+        for model_id in read_preset_decisions():
+            if model_id.lower() == wanted:
+                return model_id
+    except Exception:  # noqa: BLE001 — a preset read-back must never break a model switch
+        return ""
+    return ""
+
+
+_LOCAL_RUNTIME_PROVIDER_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
+
+
+def _local_runtime_unavailable_message(provider_name: str) -> str:
+    """The managed runtime's own diagnosis for a local-runtime alias with no resolvable endpoint.
+
+    ``runtime_provider`` already owns the user-facing wording ("turned off" vs "isn't running");
+    this only surfaces it on the switch path. ``""`` for every other provider name, so an
+    unrelated failure can never become the user's message.
+    """
+    name = (provider_name or "").strip().lower()
+    if name not in _LOCAL_RUNTIME_PROVIDER_ALIASES:
+        return ""
+    try:
+        from hermes_cli.runtime_provider import _resolve_named_custom_runtime
+        _resolve_named_custom_runtime(requested_provider=name)
+    except ValueError as err:
+        return str(err)
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     """PATH B (no ``--provider``): MoA preset / alias on the current provider (a) -> alias
     fallback (b) or ``vendor:model`` conversion (c) -> aggregator catalog search (d) ->
@@ -1307,6 +1355,16 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
                 return fail
         else:
             _convert_vendor_colon_slug(st)
+
+    # A model served by the MANAGED local runtime must never inherit the session's cloud provider:
+    # an unrouted local id is validated against the cloud catalog and, once that pairing is
+    # persisted, the request itself goes to the cloud API — surfacing as "not found in this
+    # provider's model listing" or a baffling Connection error, for a model that only ever existed
+    # on this machine. Route it to the local provider, whose credential step owns the
+    # "local runtime isn't running" diagnosis.
+    local_model_id = _managed_local_model_id(st.new_model)
+    if local_model_id and st.target_provider == current_provider:
+        st.target_provider, st.new_model = "llamacpp", local_model_id
 
     # Step d: if the CURRENT provider's live catalog resolved the model, step e must not
     # second-guess and switch providers — flat-namespace resellers (opencode-go/zen) return bare

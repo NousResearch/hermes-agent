@@ -2402,6 +2402,8 @@ export interface Translations {
     pinned: string
     sessions: string
     cronJobs: string
+    inboxAndJobs: string
+    toggleInboxAndJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     showProjects: string

@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -159,6 +160,121 @@ def _nvidia_vram() -> tuple[int, int] | None:
     return None
 
 
+# Linux xe DRM device-query ABI. The reply size is discovered from the kernel; the
+# request layout and ioctl number are fixed by the public xe UAPI header.
+_XE_QUERY_MEM_REGIONS = 1
+_XE_MEM_REGION_CLASS_VRAM = 1
+_XE_QUERY_FMT = "<QIIQQQ"
+_XE_QUERY_SIZE = struct.calcsize(_XE_QUERY_FMT)
+_XE_REGION_FMT = "<HHIQQQQ6Q"
+_XE_REGION_SIZE = struct.calcsize(_XE_REGION_FMT)
+_XE_DEVICE_QUERY_IOCTL = (3 << 30) | (ord("d") << 8) | (0x40) | (_XE_QUERY_SIZE << 16)
+_XE_CAP_SYS_ADMIN = 21
+_XE_CAP_PERFMON = 38
+
+
+def _xe_memory_query_allowed() -> bool:
+    """Whether this process can receive reliable xe memory accounting."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        status = Path("/proc/self/status").read_text(encoding="ascii")
+    except (OSError, UnicodeError, ValueError):
+        return False
+    for line in status.splitlines():
+        if line.startswith("CapEff:"):
+            try:
+                effective = int(line.split()[1], 16)
+            except (IndexError, ValueError):
+                return False
+            return bool(effective & (1 << _XE_CAP_SYS_ADMIN)
+                        or effective & (1 << _XE_CAP_PERFMON))
+    return False
+
+
+def _parse_xe_mem_regions(payload: bytes) -> tuple[int, int] | None:
+    """Return (total, free) for VRAM regions in an xe query reply."""
+    if len(payload) < 8:
+        return None
+    count = struct.unpack_from("<I", payload)[0]
+    if count <= 0 or len(payload) < 8 + count * _XE_REGION_SIZE:
+        return None
+
+    total = used = 0
+    for offset in range(8, 8 + count * _XE_REGION_SIZE, _XE_REGION_SIZE):
+        fields = struct.unpack_from(_XE_REGION_FMT, payload, offset)
+        if fields[0] != _XE_MEM_REGION_CLASS_VRAM:
+            continue
+        total += fields[3]
+        used += fields[4]
+    if total <= 0:
+        return None
+    return total, max(0, total - min(used, total))
+
+
+def _query_xe_mem_regions(fd: int) -> tuple[int, int] | None:
+    """Read one xe device's VRAM through the two-phase DRM query ABI."""
+    import ctypes
+
+    class _XeDeviceQuery(ctypes.Structure):
+        _fields_ = (
+            ("extensions", ctypes.c_uint64),
+            ("query", ctypes.c_uint32),
+            ("pad", ctypes.c_uint32),
+            ("size", ctypes.c_uint64),
+            ("data", ctypes.c_uint64),
+            ("reserved", ctypes.c_uint64),
+        )
+
+    if ctypes.sizeof(_XeDeviceQuery) != _XE_QUERY_SIZE:
+        return None
+    libc = ctypes.CDLL(None, use_errno=True)
+    ioctl = libc.ioctl
+    ioctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
+    ioctl.restype = ctypes.c_int
+
+    query = _XeDeviceQuery(query=_XE_QUERY_MEM_REGIONS)
+    if ioctl(fd, _XE_DEVICE_QUERY_IOCTL, ctypes.byref(query)) != 0:
+        return None
+    size = query.size
+    if size <= 0 or size > (1 << 20):
+        return None
+
+    payload = ctypes.create_string_buffer(size)
+    query.size = size
+    query.data = ctypes.addressof(payload)
+    if ioctl(fd, _XE_DEVICE_QUERY_IOCTL, ctypes.byref(query)) != 0:
+        return None
+    return _parse_xe_mem_regions(payload.raw)
+
+
+def _intel_vram() -> tuple[int, int] | None:
+    """Return (total, free) VRAM for the largest accessible Intel xe card.
+
+    xe's query is capability-gated on some kernels. A gated or unavailable query
+    deliberately returns None so probe_budget() keeps its conservative UMA path.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    if not _xe_memory_query_allowed():
+        return None
+
+    candidates: list[tuple[int, int]] = []
+    for node in sorted(Path("/dev/dri").glob("renderD*")):
+        driver = Path("/sys/class/drm") / node.name / "device" / "driver"
+        with suppress(OSError, ValueError):
+            if driver.resolve().name != "xe":
+                continue
+            fd = os.open(node, os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                memory = _query_xe_mem_regions(fd)
+            finally:
+                os.close(fd)
+            if memory is not None:
+                candidates.append(memory)
+    return max(candidates, key=lambda item: item[0], default=None)
+
+
 def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     """(allocator_total_bytes, integrated_or_None) from the CUDA driver API via ctypes against the
     driver's own DLL/SO — no toolkit, no subprocess, ~ms. INTEGRATED is the vendor's own
@@ -266,6 +382,8 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
+    if vram is None:
+        vram = _intel_vram()
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi

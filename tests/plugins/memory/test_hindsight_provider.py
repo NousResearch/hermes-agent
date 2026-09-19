@@ -1323,6 +1323,37 @@ class TestUpdateModeAppendCapability:
         assert kw["document_id"] == "test-session"
         assert kw["items"][0]["update_mode"] == "append"
 
+    def test_deliberate_tool_retain_coalesces_into_session_document(self, provider, monkeypatch):
+        """hindsight_retain (deliberate save) must land in the session's one stable
+        document with append — one document per session, not one UUID per call."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        json.loads(provider.handle_tool_call("hindsight_retain", {"content": "picked branch A"}))
+        json.loads(provider.handle_tool_call("hindsight_retain", {"content": "picked branch B"}))
+
+        assert provider._client.aretain_batch.call_count == 2
+        first, second = (c.kwargs for c in provider._client.aretain_batch.call_args_list)
+        # Both deliberate saves land in the SAME session-scoped document.
+        assert first["document_id"] == "test-session" == second["document_id"]
+        assert first["items"][0]["update_mode"] == "append"
+        assert second["items"][0]["update_mode"] == "append"
+
+    def test_deliberate_tool_retain_legacy_api_falls_back_to_per_process_doc(self, provider, monkeypatch):
+        """Legacy API — the tool keeps the per-process doc id and passes no update_mode."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: None,
+        )
+        json.loads(provider.handle_tool_call("hindsight_retain", {"content": "picked branch A"}))
+
+        kw = provider._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"].startswith("test-session-")
+        assert "update_mode" not in kw["items"][0]
+
 
 # ---------------------------------------------------------------------------
 # System prompt tests

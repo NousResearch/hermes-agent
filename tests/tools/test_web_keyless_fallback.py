@@ -505,6 +505,12 @@ class TestKeylessFailover:
     def _throttled(self, vendor):
         return {"success": False, "error": f"Keyless {vendor} search failed: free MCP rate limit."}
 
+    def _blocked(self, vendor):
+        return {
+            "success": False,
+            "error": f"Keyless {vendor} search failed: Client error '403 Forbidden' for url",
+        }
+
     def _pin(self, monkeypatch, name):
         """Pin *name* so the ring starts there deterministically."""
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == name)
@@ -531,6 +537,14 @@ class TestKeylessFailover:
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
         assert not called  # peer never tried
+
+    def test_search_fails_over_when_pinned_vendor_is_http_403_blocked(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "firecrawl", lambda q, l: self._blocked("Firecrawl"))
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "keenable", lambda q, l: self._ok("keenable"))
+        out = keyless_mcp.search_with_failover("firecrawl", "q")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "keenable"
 
     def test_search_all_throttled_reports_ring(self, monkeypatch):
         self._pin(monkeypatch, "exa")
@@ -611,3 +625,17 @@ class TestKeylessFailover:
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == partial
         assert not called
+
+    def test_extract_fails_over_when_pinned_vendor_is_http_403_blocked(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        blocked = [
+            {"url": url, "title": "", "content": "", "error": "Client error '403 Forbidden' for url"}
+            for url in ("https://a", "https://b")
+        ]
+        good = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "B", "content": "y"},
+        ]
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "firecrawl", lambda urls: blocked)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "keenable", lambda urls: good)
+        assert keyless_mcp.extract_with_failover("firecrawl", ["https://a", "https://b"]) == good

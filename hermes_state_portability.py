@@ -203,8 +203,9 @@ class SessionPortabilityMixin:
         if not include_archived:
             where += " AND archived = 0"
         rows = self._read_rows(
-            "SELECT cwd AS cwd, COUNT(*) AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
-            f"FROM sessions WHERE {where} GROUP BY cwd"
+            "SELECT cwd AS cwd, COUNT(*) AS sessions, "
+            f"MAX(MAX(COALESCE(s.ended_at, 0), COALESCE({_sql_session_last_active('s')}, 0))) AS last_active "
+            f"FROM sessions s WHERE {where} GROUP BY cwd"
         )
         return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
                 for r in rows]

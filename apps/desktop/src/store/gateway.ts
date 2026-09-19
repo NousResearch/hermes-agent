@@ -441,7 +441,9 @@ async function isAttachedSharedRemote(
     rearmSecondary(parked, spawnPriority)
   }
 
-  if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
+  // ponytail: local profiles (including saved overrides) need their own route,
+  // never the attached primary's shared-remote fallback on a failed lookup.
+  if (!id || id === 'local' || !g.primaryConnectionId || id !== g.primaryConnectionId) {
     return false
   }
 

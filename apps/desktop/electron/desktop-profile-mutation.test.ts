@@ -85,3 +85,53 @@ for (const method of ['PATCH', 'DELETE']) {
     }
   })
 }
+
+// ---------------------------------------------------------------------------
+// Regression: null vs 'local' connectionId mismatch on rename/delete
+// ---------------------------------------------------------------------------
+//
+// The renderer stores defaultRoute with connectionId:null (legacy local path).
+// When a rename or delete goes through the registry IPC path, afterProfileRequest
+// receives connectionId:'local'. The old guard used strict equality, so
+// null !== 'local' → profileChanged bailed out without updating defaultRoute.
+// On the next restart, connectDesktopProfileRoute(defaultRoute) tried the old
+// profile name and the backend crashed with "Profile does not exist".
+
+for (const method of ['PATCH', 'DELETE']) {
+  test(`${method}: null-stored defaultRoute is updated when afterProfileRequest fires with connectionId 'local'`, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-null-local-'))
+    const target = path.join(root, 'active-profile.json')
+    const preferences = createDesktopProfilePreferences(target)
+
+    const request = {
+      connectionId: 'local',
+      method,
+      path: '/api/profiles/work',
+      body: method === 'PATCH' ? { new_name: 'renamed' } : undefined
+    }
+
+    try {
+      // Simulate what the renderer does: stores defaultRoute with connectionId:null
+      // (the legacy local path — namedProfileConnectionId is null on standard setups).
+      preferences.remember('work')
+      preferences.setDefault({ connectionId: null, profile: 'work' })
+
+      // Rename/delete comes through the registry IPC path with connectionId:'local'.
+      preferences.afterProfileRequest('local', request, { ok: true }, 'local')
+
+      const restarted = createDesktopProfilePreferences(target)
+
+      if (method === 'PATCH') {
+        // defaultRoute must be updated to the new name so boot uses 'renamed', not 'work'.
+        assert.deepEqual(restarted.getDefault(), { connectionId: null, profile: 'renamed' })
+        assert.equal(restarted.readActive(), 'renamed')
+      } else {
+        // defaultRoute must be cleared so boot falls back to startHermes().
+        assert.equal(restarted.getDefault(), null)
+        assert.equal(restarted.readActive(), 'default')
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+}

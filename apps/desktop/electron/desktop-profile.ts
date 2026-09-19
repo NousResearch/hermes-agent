@@ -1,9 +1,19 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { LOCAL_CONNECTION_ID } from './connection-registry'
 import { profileNameFromDeleteRequest } from './profile-delete-routing'
 import { profileRenameFromRequest, type ProfileRenameRequest } from './profile-rename-routing'
 import type { WindowConnectionRoute } from './window-connection-route'
+
+// Both null and LOCAL_CONNECTION_ID ('local') mean "this machine's local
+// backend". The renderer stores defaultRoute with connectionId:null on the
+// legacy path, but the registry IPC path sends connectionId:'local'. Treat
+// them as the same so profileChanged() can match a 'local'-tagged rename or
+// delete against a null-stored defaultRoute and vice-versa.
+function normalizeLocalConnectionId(id: null | string): null | string {
+  return id === LOCAL_CONNECTION_ID ? null : id
+}
 
 export interface DesktopProfileRoute {
   connectionId: null | string
@@ -161,7 +171,7 @@ export function createDesktopProfilePreferences(
 
     const route = getDefault()
 
-    if (route?.connectionId !== connectionId || route?.profile !== oldName) {
+    if (normalizeLocalConnectionId(route?.connectionId ?? null) !== normalizeLocalConnectionId(connectionId) || route?.profile !== oldName) {
       return
     }
 

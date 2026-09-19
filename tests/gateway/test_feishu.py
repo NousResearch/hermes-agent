@@ -1330,6 +1330,145 @@ class TestAdapterBehavior(unittest.TestCase):
 
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_thread_create_rejection_retries_as_thread_reply(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"creates": [], "replies": []}
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["creates"].append(request)
+                return SimpleNamespace(success=lambda: False, code=99992402, msg="field validation failed")
+
+            def list(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(items=[SimpleNamespace(message_id="om_thread_last")]),
+                )
+
+            def reply(self, request):
+                captured["replies"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_file_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF-1.4 test")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        metadata={"thread_id": "omt-thread"},
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["replies"]), 1)
+        reply_request = captured["replies"][0]
+        self.assertTrue(reply_request.request_body.reply_in_thread)
+        self.assertIn("file_123", reply_request.request_body.content)
+
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_thread_reply_failure_retries_plain_chat_send(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"creates": [], "replies": []}
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["creates"].append(request)
+                if len(captured["creates"]) == 1:
+                    return SimpleNamespace(success=lambda: False, code=99992402, msg="field validation failed")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_plain_file"),
+                )
+
+            def list(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(items=[SimpleNamespace(message_id="om_thread_last")]),
+                )
+
+            def reply(self, request):
+                captured["replies"].append(request)
+                return SimpleNamespace(success=lambda: False, code=230002, msg="reply failed")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF-1.4 test")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        metadata={"thread_id": "omt-thread"},
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["replies"]), 1)
+        self.assertEqual(len(captured["creates"]), 2)
+        plain_request = captured["creates"][1]
+        self.assertEqual(plain_request.request_body.receive_id, "oc_chat")
+        self.assertIn("file_123", plain_request.request_body.content)
+
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
         """Regression for #26841: when a long Markdown message is split
         across multiple chunks, every chunk must go out as

@@ -1887,10 +1887,15 @@ class FeishuAdapter(BasePlatformAdapter):
                     upload_response, default_message="image upload failed",
                     override_error="Feishu image upload missing image_key",
                 )
+            key_payload = {"image_key": image_key}
+            media_tag = {"tag": "img", "image_key": image_key}
             message_response = await self._send_uploaded_key(
                 chat_id=chat_id, reply_to=reply_to, metadata=metadata, caption=caption,
-                key_msg_type="image", key_payload={"image_key": image_key},
-                media_tag={"tag": "img", "image_key": image_key},
+                key_msg_type="image", key_payload=key_payload, media_tag=media_tag,
+            )
+            message_response = await self._retry_thread_rejected_media_send(
+                chat_id=chat_id, message_response=message_response, metadata=metadata,
+                key_msg_type="image", key_payload=key_payload, media_tag=media_tag, caption=caption,
             )
             return self._finalize_send_result(message_response, "image send failed")
         except Exception as exc:
@@ -3640,32 +3645,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
 
             key_payload = {"file_key": file_key}
+            media_tag = {"tag": "media", "file_key": file_key, "file_name": display_name}
             message_response = await self._send_uploaded_key(
                 chat_id=chat_id, reply_to=reply_to, metadata=metadata, caption=caption,
                 key_msg_type=resolved_message_type, key_payload=key_payload,
-                media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
+                media_tag=media_tag,
             )
-            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
-            # thread's last message, then fall back to a plain chat_id send.
-            if (not caption
-                    and not self._response_succeeded(message_response)
-                    and getattr(message_response, "code", None) == 99992402
-                    and resolved_message_type == "audio"
-                    and (metadata or {}).get("thread_id")):
-                payload = json.dumps(key_payload, ensure_ascii=False)
-                thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                if not thread_msg_id:
-                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
-                if thread_msg_id:
-                    logger.info("[Feishu] Audio: retrying via reply API in thread")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
-                    )
-                if not self._response_succeeded(message_response):
-                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
-                    )
+            message_response = await self._retry_thread_rejected_media_send(
+                chat_id=chat_id, message_response=message_response, metadata=metadata,
+                key_msg_type=resolved_message_type, key_payload=key_payload, media_tag=media_tag, caption=caption,
+            )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -3685,6 +3674,39 @@ class FeishuAdapter(BasePlatformAdapter):
         return await self._feishu_send_with_retry(
             chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
         )
+
+    async def _retry_thread_rejected_media_send(
+        self, *, chat_id: str, message_response: Any, metadata: Optional[Dict[str, Any]],
+        key_msg_type: str, key_payload: Dict[str, str], media_tag: Dict[str, str], caption: Optional[str],
+    ) -> Any:
+        """Retry media rejected by direct thread routing as a thread reply, then plain chat send."""
+        thread_id = (metadata or {}).get("thread_id")
+        if (self._response_succeeded(message_response)
+                or getattr(message_response, "code", None) != 99992402
+                or not thread_id):
+            return message_response
+
+        # Feishu rejects media message.create(receive_id_type="thread_id") in topics. Replying to
+        # the thread's last message preserves topic placement; plain chat_id send is the last resort.
+        msg_type = "post" if caption else key_msg_type
+        payload = (
+            self._build_media_post_payload(caption=caption, media_tag=media_tag)
+            if caption else json.dumps(key_payload, ensure_ascii=False)
+        )
+        thread_msg_id = (metadata or {}).get("reply_to_message_id")
+        if not thread_msg_id:
+            thread_msg_id = await self._fetch_last_message_in_thread(thread_id)
+        if thread_msg_id:
+            logger.info("[Feishu] Media send rejected in thread (99992402); retrying via reply API")
+            message_response = await self._feishu_send_with_retry(
+                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=thread_msg_id, metadata=metadata,
+            )
+        if not self._response_succeeded(message_response):
+            logger.warning("[Feishu] Media send failed in thread, retrying with chat_id")
+            message_response = await self._feishu_send_with_retry(
+                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=None, metadata=None,
+            )
+        return message_response
 
     async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
         """Fetch the last message_id in a thread for reply-based routing."""

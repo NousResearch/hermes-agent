@@ -16266,6 +16266,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
 
         def set_session_title(self, key, title):
             seen["title"] = title
+            seen["title_set"] = True
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -16308,7 +16309,8 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
     assert seen.get("title") == "My Parent Session #2"
-    assert seen.get("title_source") == "derived"
+    # Production now uses set_session_title (not set_auto_title) for branch titles.
+    assert seen.get("title_set") is True
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
@@ -22108,7 +22110,6 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
         # Cut before second user turn (row_ids[2]) — leave first exchange only.
@@ -22136,7 +22137,14 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
         # Durable active transcript matches the cut plus the prompt just sent, which is durable at
         # submit (#111868) — before the turn runs (archive_dropped keeps inactive rows;
         # get_messages_as_conversation returns active only).
+        # Poll for the DB write to land (background flush may lag thread join).
+        import time as _time
         active = db.get_messages_as_conversation(session_key)
+        for _ in range(50):
+            if [m["content"] for m in active] == ["first", "reply 1", "rewound second"]:
+                break
+            _time.sleep(0.1)
+            active = db.get_messages_as_conversation(session_key)
         assert [m["content"] for m in active] == ["first", "reply 1", "rewound second"]
         # Heal stamps for subsequent rewinds when memory lined up with DB.
         assert sess["history"][0].get("_row_id") is not None
@@ -22307,7 +22315,6 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
         resp = server.handle_request(
@@ -22471,7 +22478,6 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         lambda *_args, **_kwargs: server._ok("host", {"status": "streaming"}),
     )
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
         # Rewind 1: cut before "third" (last user turn). Survivors: turns
@@ -22546,7 +22552,14 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         assert resp2.get("error") is None, resp2
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
+        # Poll for the DB write to land (background flush may lag thread join).
+        import time as _time
         active = db.get_messages_as_conversation(session_key)
+        for _ in range(50):
+            if [m["content"] for m in active] == ["first", "reply 1", "rewound second (fresh id)"]:
+                break
+            _time.sleep(0.1)
+            active = db.get_messages_as_conversation(session_key)
         # The cut, plus the prompt just sent (durable at submit, #111868).
         assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (fresh id)"]
         # And the second response rebinds again: one surviving user turn.
@@ -22592,7 +22605,6 @@ def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
         response = server.handle_request(

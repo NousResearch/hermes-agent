@@ -449,13 +449,15 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
     from hermes_state_user_copy import describe_storage_failure
+    from tui_gateway.server import _db_error
     try:
         if _ensure_session_db_row(session) is False:
             return _err(
                 rid, 5072,
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
-                "was not saved; repair state.db with `hermes doctor --fix` and try again")
+                "was not saved; repair state.db with `hermes doctor --fix` and try again",
+                data={"code": "storage_unavailable", "cause": "encoding", "details": _db_error or ""})
         _bind_conversation_worktree_on_submit(session)
         _persist_branch_seed(session)
     except Exception as exc:

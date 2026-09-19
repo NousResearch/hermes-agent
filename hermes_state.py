@@ -456,6 +456,11 @@ class SessionDB(
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
+    backend = "sqlite"
+    database_errors = (sqlite3.Error,)
+    database_operational_errors = (sqlite3.OperationalError,)
+    _unlimited_sql_limit = -1
+
     # Only these state-owned producers join automatic stale-open reconciliation; messaging/UI
     # sources have their own lifecycle owners; unknown sources fail closed.
     # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
@@ -504,7 +509,7 @@ class SessionDB(
             return None
         prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
         conn.execute(
-            "INSERT OR IGNORE INTO system_prompts (hash, prompt) VALUES (?, ?)",
+            "INSERT INTO system_prompts (hash, prompt) VALUES (?, ?) ON CONFLICT DO NOTHING",
             (prompt_hash, system_prompt),
         )
         return prompt_hash

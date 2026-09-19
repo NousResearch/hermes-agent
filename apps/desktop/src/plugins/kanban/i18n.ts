@@ -149,6 +149,8 @@ type KanbanMessages = {
   activity: (n: number) => string
   runs: (n: number) => string
   workerLog: string
+  openTranscript: string
+  openTranscriptTip: (sessionId: string) => string
   workerLogTail: string
   attachments: (n: number) => string
   noAttachments: string
@@ -370,6 +372,8 @@ export const en: KanbanMessages = {
   activity: n => `Activity · ${n}`,
   runs: n => `Runs · ${n}`,
   workerLog: 'Worker log',
+  openTranscript: 'Transcript',
+  openTranscriptTip: sessionId => `Open this run's agent session (${sessionId}) in a new tab`,
   workerLogTail: 'Worker log · tail',
   attachments: n => `Attachments · ${n}`,
   noAttachments: 'No attachments yet.',
@@ -583,6 +587,8 @@ const ja: KanbanMessages = {
   activity: n => `アクティビティ・${n}`,
   runs: n => `実行・${n}`,
   workerLog: 'ワーカーログ',
+  openTranscript: '記録',
+  openTranscriptTip: sessionId => `この実行のエージェントセッション (${sessionId}) を新しいタブで開く`,
   workerLogTail: 'ワーカーログ・末尾',
   attachments: n => `添付・${n}`,
   noAttachments: 'まだ添付はありません。',
@@ -794,6 +800,8 @@ const zh: KanbanMessages = {
   activity: n => `活动・${n}`,
   runs: n => `运行・${n}`,
   workerLog: '工作单元日志',
+  openTranscript: '记录',
+  openTranscriptTip: sessionId => `在新标签页中打开此运行的代理会话 (${sessionId})`,
   workerLogTail: '工作单元日志・末尾',
   attachments: n => `附件・${n}`,
   noAttachments: '暂无附件。',
@@ -1004,6 +1012,8 @@ const zhHant: KanbanMessages = {
   activity: n => `活動・${n}`,
   runs: n => `執行・${n}`,
   workerLog: '工作單元日誌',
+  openTranscript: '記錄',
+  openTranscriptTip: sessionId => `在新分頁中開啟此執行的代理工作階段 (${sessionId})`,
   workerLogTail: '工作單元日誌・末尾',
   attachments: n => `附件・${n}`,
   noAttachments: '尚無附件。',

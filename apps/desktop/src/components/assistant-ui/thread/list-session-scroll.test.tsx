@@ -86,6 +86,7 @@ function sessionMessages(key: string, turns = 1): ThreadMessage[] {
 }
 
 interface ScrollHarnessProps {
+  isRunning?: boolean
   messages: ThreadMessage[]
   sessionKey: string | null
   scrollProfile?: string
@@ -93,9 +94,9 @@ interface ScrollHarnessProps {
   window?: TranscriptWindowValue
 }
 
-function ScrollHarness({ messages, sessionKey, scrollProfile, sessionId, window }: ScrollHarnessProps) {
+function ScrollHarness({ isRunning = false, messages, sessionKey, scrollProfile, sessionId, window }: ScrollHarnessProps) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    isRunning: false,
+    isRunning,
     messages,
     onNew: async () => {}
   })
@@ -110,6 +111,76 @@ function ScrollHarness({ messages, sessionKey, scrollProfile, sessionId, window 
 }
 
 describe('list session-scroll restore', () => {
+  it('lets a reader escape bottom-follow when a running transcript grows during the scroll gesture', async () => {
+    // #116273: a pending clarify keeps the turn running while the transcript
+    // can still resize. If that resize lands in the same frame as scroll-up,
+    // the reader's intent must win over bottom-follow.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const messages = sessionMessages('pending')
+    const { container, unmount } = render(<ScrollHarness isRunning messages={messages} sessionKey="pending" />)
+
+    try {
+      const vp = viewportEl(container)
+      await settleScroll(10)
+
+      const deliverContentResize = (height: number) => {
+        for (const observer of observers) {
+          const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+          if (targets.length) {
+            observer.callback(
+              targets.map(target => ({ target, contentRect: { height } })) as ResizeObserverEntry[],
+              observer as unknown as ResizeObserver
+            )
+          }
+        }
+      }
+
+      act(() => deliverContentResize(scrollHeightValue))
+      await settleScroll(3)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      const readingTop = scrollHeightValue - CLIENT_H - 900
+
+      act(() => {
+        vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -160 }))
+        vp.scrollTop = readingTop
+        vp.dispatchEvent(new Event('scroll'))
+        scrollHeightValue += 120
+        deliverContentResize(scrollHeightValue)
+      })
+
+      await settleScroll(10)
+
+      expect(vp.scrollTop).toBeLessThan(scrollHeightValue - CLIENT_H - 100)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(readingTop - 1)
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('restores a reading offset on return after switching away', async () => {
     saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' })
 

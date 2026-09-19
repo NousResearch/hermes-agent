@@ -1065,6 +1065,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
 
+      // A wheel/trackpad scroll-up is explicit reading intent. Break the
+      // bottom-follow synchronously, before a same-frame content resize can
+      // ask use-stick-to-bottom to re-pin while its delayed scroll handler
+      // still considers the thread locked.
+      if (event.deltaY < 0) {
+        stopScroll()
+      }
+
       if (event.deltaY !== 0) {
         cancelRestore()
       }

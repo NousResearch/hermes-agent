@@ -1278,7 +1278,17 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                # Prefetch timeout is provider-latency dependent, hence
+                # configurable. A junk value must not break startup: fall back
+                # to MemoryManager's own default.
+                try:
+                    _raw = (mem_config or {}).get("external_prefetch_timeout")
+                    _prefetch_timeout = float(_raw) if _raw and float(_raw) > 0 else None
+                except (TypeError, ValueError):
+                    _prefetch_timeout = None
+                agent._memory_manager = _MemoryManager(
+                    external_prefetch_timeout=_prefetch_timeout
+                )
                 _mp = _load_mem(_mem_provider_name)
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.

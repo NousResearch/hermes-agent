@@ -1,6 +1,8 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
+
 // Connection lifecycle for registry-scoped secondary gateways:
 //
 //  1. Removing a connection must dispose its secondaries — remote/cloud
@@ -77,6 +79,7 @@ const {
   parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  requestGatewayForAgent,
   retainGatewayForAgent,
   retainGatewayForSessionTurn,
   retireLocalProfileGateways,
@@ -511,16 +514,34 @@ describe('reconnectSecondaryGateways', () => {
     expect(socket.close).not.toHaveBeenCalled()
     expect(socket.connectionState).toBe('open')
 
-    // Dead transport: the probe rejects with a non-RPC error (timeout family)
-    // and the socket is torn down so its reconnect backoff can heal it.
+    // Mid-turn: an in-flight request holds the entry's lease, and the backend
+    // — alive, but starved past the probe budget by a long tool call — cannot
+    // answer the ping. ONE unanswered probe must NOT close it: force-closing
+    // feeds the backend's ws_orphan_reap and interrupts the valid turn
+    // (#94769 review). The first failure defers behind a bounded re-probe.
+    socket.request = vi.fn(() => new Promise(() => {}))
+    void requestGatewayForAgent('homelab', 'default', 'prompt.submit', {})
+    await vi.waitFor(() => {
+      expect(socket.request).toHaveBeenCalled()
+    })
+
+    vi.useFakeTimers()
     socket.request = vi.fn(async () => {
       throw new Error('probe timeout')
     })
 
     reconnectSecondaryGateways({ forceOpenSockets: true })
-    await vi.waitFor(() => {
-      expect(socket.close).toHaveBeenCalledOnce()
-    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(socket.close).not.toHaveBeenCalled()
+    expect(socket.connectionState).toBe('open')
+
+    // The bounded re-probe also goes unanswered: the failure streak is
+    // exhausted and the socket is torn down so its reconnect backoff can
+    // heal it — a persistently unresponsive backend is never trusted forever.
+    await vi.advanceTimersByTimeAsync(LIVENESS_REPROBE_DELAY_MS)
+
+    expect(socket.close).toHaveBeenCalledOnce()
     expect(socket.connectionState).toBe('closed')
   })
 })

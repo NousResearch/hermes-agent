@@ -89,16 +89,20 @@ after changing backend settings so existing shared handles can close.
 
 This backend stores sessions, messages, model usage, conversation generations,
 routing, compression/turn leases, async delegations, gateway delivery obligations,
-and optional Telegram topic bindings. History, resume, search, analytics, profile
-session readers, and gateway delivery recovery retain their existing APIs and field
-names. Cron, Kanban, and other application stores retain their existing SQLite
-storage. Local profile files are still required; this setting does not make an
-entire deployment stateless.
+optional Telegram topic bindings, and cron's execution, incident, delivery, and
+notepad tables. History, resume, search, analytics, profile session readers,
+gateway delivery recovery, and cron commands retain their existing APIs and field
+names. Kanban and other application stores retain their existing SQLite storage.
+Cron job definitions, output files, scripts, and scheduler lock files remain in the
+profile filesystem. Local profile files are still required; this setting does not
+make an entire deployment stateless.
 
-PostgreSQL delivery owners use a process token and an expiring lease because a
-PID cannot establish whether a process on another container host is alive. Claiming
-an expired delivery uses a row lock, so competing gateway replicas cannot both
-spend the same retry attempt. SQLite retains its PID and process-start checks.
+PostgreSQL delivery and cron execution owners use a process token and an expiring
+lease because a PID cannot establish whether a process on another container host
+is alive. Active cron runs and sends renew their leases. Expired execution attempts
+become `unknown`, and expired in-progress cron sends also become `unknown` without
+being retried. Store-scoped transaction locks prevent competing replicas from
+claiming the same send. SQLite retains its PID and process-start checks.
 
 The PostgreSQL implementation uses native SQL and a bounded connection pool.
 Each write callback runs in one transaction under a per-schema advisory lock,
@@ -133,6 +137,20 @@ Active leases and heartbeats are not copied. Migrated delivery rows have no acti
 PostgreSQL owner lease, so unfinished responses can be recovered after startup.
 Restart the destination profile after a successful copy.
 
+To copy the three cron SQLite databases, keep both profiles stopped and run:
+
+```bash
+python scripts/migrate_cron_sqlite_to_postgres.py /path/to/source/cron \
+  --profile-home /path/to/destination/profile
+```
+
+The command reads `executions.db`, `deliveries.db`, and `notepad.db` without
+modifying them. It copies execution history, failure incidents, queued sends,
+delivery tombstones, and per-job notepad entries in one PostgreSQL transaction.
+The destination cron tables must be empty. An interrupted execution or delivery
+has no live PostgreSQL lease after migration, so normal startup recovery marks its
+outcome `unknown` instead of repeating possible side effects.
+
 ### Test the backend
 
 The normal suite needs no PostgreSQL server. Backend integration tests opt in
@@ -144,6 +162,7 @@ or its driver is unavailable.
 ```bash
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_state/test_postgres_*.py
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/gateway/test_postgres_delivery_ledger.py
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/cron/test_postgres_cron_stores.py
 ```
 
 ### Desktop profile isolation and compaction generations

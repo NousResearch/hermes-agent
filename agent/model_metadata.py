@@ -716,6 +716,12 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
+    # A hosted provider (api.openai.com, api.anthropic.com, ...) never runs Ollama/LM Studio/llama.cpp/vLLM:
+    # skip the waterfall so egress logs do not fill with 404s for /api/tags, /v1/props, /version (#61421).
+    # Local addresses are never in that table, and ollama.com is the one hosted host that does speak
+    # Ollama's /api/tags, so it keeps the probe.
+    if _infer_provider_from_url(normalized) not in (None, "ollama-cloud"):
+        return None
     server_url = _server_root(normalized)
     lmstudio_url = _lmstudio_server_root(normalized)
     cached = _endpoint_probe_path_cache.get(server_url)

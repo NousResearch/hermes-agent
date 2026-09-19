@@ -57,7 +57,7 @@ async def test_real_output_consumer_authorizes_new_on_exact_fenced_owner(files_t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['absent', 'foreign', 'replacement', 'owner_db', 'registry',
-                                   'evidence_owner', 'evidence_adapter', 'evidence_record'])
+                                   'evidence_owner', 'evidence_adapter', 'evidence_record', 'evidence_missing'])
 async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_target, monkeypatch, change):
     from gateway import session_api_turn, session_peer_output
     from gateway.platforms import api_server_runs
@@ -67,10 +67,16 @@ async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_tar
     issued = await invite(t)
     original = session_api_turn.admit_session_input
     entered = []
+    if change == 'evidence_missing':
+        capture = session_peer_output.capture_output_consent
+
+        def missing_at_probe(*args, **kwargs):
+            return capture(*args, **kwargs) if kwargs.get('connection') is not None else None
+        monkeypatch.setattr(session_peer_output, 'capture_output_consent', missing_at_probe)
 
     def interleave(*args, **kwargs):
         entered.append(True)
-        assert kwargs['payload']['api_turn_v1']['output_consent']
+        assert bool(kwargs['payload']['api_turn_v1'].get('output_consent')) == (change != 'evidence_missing')
         if change == 'absent':
             t.adapter._room_output_admission = None
         elif change == 'foreign':
@@ -81,7 +87,7 @@ async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_tar
             t.adapter._peer_output_owner = (t.authority, object(), *t.adapter._peer_output_owner[2:])
         elif change == 'registry':
             t.runner.session_authorities._by_key.clear()
-        else:
+        elif change != 'evidence_missing':
             capture = session_peer_output.capture_output_consent
 
             def changed(*args, **kwargs):

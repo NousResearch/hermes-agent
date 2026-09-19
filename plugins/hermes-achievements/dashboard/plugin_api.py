@@ -16,16 +16,32 @@ from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 
 router = APIRouter()
 
 SNAPSHOT_TTL_SECONDS = 120
-_SCAN_LOCK = threading.Lock()
-_SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
-_SNAPSHOT_CACHE_AT = 0
-# Key order is part of the /scan-status wire shape.
-_SCAN_STATUS: Dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "last_error": None, "last_duration_ms": None, "run_count": 0}
+_RUNTIME_STATES_LOCK = threading.Lock()
+_RUNTIME_STATES: Dict[str, Dict[str, Any]] = {}
+
+
+def _new_runtime_state() -> Dict[str, Any]:
+    return {
+        "scan_lock": threading.Lock(),
+        "snapshot_cache": None,
+        "snapshot_cache_at": 0,
+        # Key order is part of the /scan-status wire shape.
+        "scan_status": {"state": "idle", "started_at": None, "finished_at": None, "last_error": None, "last_duration_ms": None, "run_count": 0},
+        "background_thread": None,
+        "background_lock": threading.Lock(),
+    }
+
+
+def _runtime() -> Dict[str, Any]:
+    """In-process scan/cache state, isolated by the active Hermes profile home."""
+    key = hermes_home_key()
+    with _RUNTIME_STATES_LOCK:
+        return _RUNTIME_STATES.setdefault(key, _new_runtime_state())
 
 ERROR_RE = re.compile(r"\b(error|failed|failure|traceback|exception|permission denied|not found|eaddrinuse|already in use|timed out|blocked)\b", re.I)
 PORT_RE = re.compile(r"\b(port\s+)?(3000|5173|8000|8080|9119)\b.*\b(in use|already|taken|eaddrinuse)\b|\beaddrinuse\b", re.I)
@@ -220,7 +236,8 @@ def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _cache_is_fresh(now: int) -> bool:
-    return _SNAPSHOT_CACHE is not None and (now - _SNAPSHOT_CACHE_AT) <= SNAPSHOT_TTL_SECONDS
+    runtime = _runtime()
+    return runtime["snapshot_cache"] is not None and (now - runtime["snapshot_cache_at"]) <= SNAPSHOT_TTL_SECONDS
 
 
 def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = None) -> bool:
@@ -230,14 +247,23 @@ def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = 
 
 def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
     current = int(now or time.time())
-    snap = _SNAPSHOT_CACHE if isinstance(_SNAPSHOT_CACHE, dict) else None
+    runtime = _runtime()
+    snap = runtime["snapshot_cache"] if isinstance(runtime["snapshot_cache"], dict) else None
     generated_at = int(snap.get("generated_at") or 0) if snap else 0
     return {
-        **_SCAN_STATUS,
+        **runtime["scan_status"],
         "ttl_seconds": SNAPSHOT_TTL_SECONDS,
         "snapshot_generated_at": generated_at or None,
         "snapshot_age_seconds": (current - generated_at) if generated_at else None,
         "snapshot_stale": _is_snapshot_stale(snap, current)}
+
+
+def _public_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Stable UI contract: evaluated badges + scan state, never raw sessions/aggregates."""
+    payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
+    payload["is_stale"] = _is_snapshot_stale(data)
+    payload["scan_meta"] = {**(data.get("scan_meta") or {}), "status": _scan_status_payload()}
+    return payload
 
 
 # ---- Per-session analysis ----
@@ -744,10 +770,6 @@ def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 2
     return _compute_from_scan(scan, is_partial=False)
 
 
-_BACKGROUND_SCAN_THREAD: Optional[threading.Thread] = None
-_BACKGROUND_SCAN_LOCK = threading.Lock()
-
-
 def _build_pending_snapshot(now: int) -> Dict[str, Any]:
     """Structurally-complete placeholder served while the first-ever scan runs, so the UI
     renders an empty list + spinner without special-casing "no data"."""
@@ -761,19 +783,31 @@ def _build_pending_snapshot(now: int) -> Dict[str, Any]:
 
 
 def _set_cache(snapshot: Dict[str, Any], at: int) -> None:
-    global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
-    _SNAPSHOT_CACHE = _json_safe(snapshot)
-    _SNAPSHOT_CACHE_AT = at
+    runtime = _runtime()
+    runtime["snapshot_cache"] = _json_safe(snapshot)
+    runtime["snapshot_cache_at"] = at
 
 
-def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
-    """Execute a scan + snapshot update (synchronously or from a thread). With
-    ``publish_partial_snapshots`` (background scans) the scanner periodically publishes
-    in-progress snapshots to ``_SNAPSHOT_CACHE`` so a long cold scan unlocks badges
-    incrementally; synchronous /rescan callers pass ``False`` since they block on the result."""
-    with _SCAN_LOCK:
+def _run_scan_and_update_cache(publish_partial_snapshots: bool = True, home: Optional[Path] = None) -> None:
+    """Execute a scan + snapshot update (synchronously or from a thread).
+
+    Background threads do not inherit request contextvars, so ``home`` explicitly
+    re-enters the profile's Hermes-home scope before touching state, snapshots, or
+    SessionDB. With ``publish_partial_snapshots`` the scanner publishes incremental
+    results while it runs.
+    """
+    if home is not None:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(home)
+        try:
+            return _run_scan_and_update_cache(publish_partial_snapshots=publish_partial_snapshots)
+        finally:
+            reset_hermes_home_override(token)
+    runtime = _runtime()
+    with runtime["scan_lock"]:
+        status = runtime["scan_status"]
         started = int(time.time())
-        _SCAN_STATUS.update(state="running", started_at=started, last_error=None)
+        status.update(state="running", started_at=started, last_error=None)
 
         def _publish_partial(partial_sessions, scanned_so_far, total):
             try:
@@ -782,7 +816,7 @@ def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
                     "aggregate": aggregate_stats(partial_sessions),
                     "scan_meta": _scan_meta("in_progress", scanned_so_far, scanned_so_far=scanned_so_far, expected_total=total),
                 }
-                # _SNAPSHOT_CACHE_AT stays 0 so partials remain in the 'stale' regime: the UI
+                # snapshot_cache_at stays 0 so partials remain in the 'stale' regime: the UI
                 # keeps polling /scan-status and never mistakes an in-flight result for a finished one.
                 _set_cache(_compute_from_scan(partial_scan, is_partial=True), 0)
             except Exception:
@@ -791,43 +825,54 @@ def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
         try:
             computed = _json_safe(compute_all(progress_callback=_publish_partial if publish_partial_snapshots else None))
             _set_cache(computed, int(computed.get("generated_at") or int(time.time())))
-            _write_json(SNAPSHOT_FILE, _SNAPSHOT_CACHE)
-            _SCAN_STATUS["state"] = "idle"
+            _write_json(SNAPSHOT_FILE, runtime["snapshot_cache"])
+            status["state"] = "idle"
         except Exception as exc:
-            _SCAN_STATUS.update(state="failed", last_error=str(exc))
+            status.update(state="failed", last_error=str(exc))
         finally:
             finished = int(time.time())
-            _SCAN_STATUS.update(finished_at=finished, last_duration_ms=int((finished - started) * 1000), run_count=int(_SCAN_STATUS.get("run_count", 0)) + 1)
+            status.update(finished_at=finished, last_duration_ms=int((finished - started) * 1000), run_count=int(status.get("run_count", 0)) + 1)
 
 
-def _start_background_scan() -> None:
+def _start_background_scan(force: bool = False) -> None:
     """Kick off a daemon-thread scan unless one is already running (idempotent)."""
-    global _BACKGROUND_SCAN_THREAD
-    with _BACKGROUND_SCAN_LOCK:
-        existing = _BACKGROUND_SCAN_THREAD
+    runtime = _runtime()
+    with runtime["background_lock"]:
+        existing = runtime["background_thread"]
         if existing is not None and existing.is_alive():
             return
-        thread = threading.Thread(target=_run_scan_and_update_cache, kwargs={"publish_partial_snapshots": True}, name="hermes-achievements-scan", daemon=True)
-        _BACKGROUND_SCAN_THREAD = thread
+        if force:
+            # Keep the current snapshot visible, but make it stale so callers poll
+            # until the new scan publishes a final cache.
+            runtime["snapshot_cache_at"] = 0
+        home = get_hermes_home()
+        thread = threading.Thread(
+            target=_run_scan_and_update_cache,
+            kwargs={"publish_partial_snapshots": True, "home": home},
+            name="hermes-achievements-scan",
+            daemon=True)
+        runtime["background_thread"] = thread
         thread.start()
 
 
 def evaluate_all(force: bool = False) -> Dict[str, Any]:
-    """Return the current achievements payload: a fresh in-memory cache is returned as is;
-    a stale on-disk snapshot is served while a background rescan runs (UI decorates it with
-    ``is_stale=True``); with no snapshot yet an empty-but-valid "pending" payload is served
-    while the first scan runs; ``force=True`` (manual /rescan) scans synchronously. Cold
-    scans on 8000+ session databases take minutes, hence the background thread."""
-    global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
+    """Return the current achievements payload.
+
+    A fresh in-memory cache is returned as is; a stale on-disk snapshot is served
+    while a background rescan runs; with no snapshot yet a structurally complete
+    pending payload is served. ``force=True`` remains for internal/tests that need
+    a synchronous final result; HTTP callers enqueue background scans instead.
+    """
+    runtime = _runtime()
     now = int(time.time())
     if not force and _cache_is_fresh(now):
-        return _SNAPSHOT_CACHE or {}
+        return runtime["snapshot_cache"] or {}
     # Lazy-load the persisted snapshot so fresh process starts serve cached data.
-    if _SNAPSHOT_CACHE is None:
+    if runtime["snapshot_cache"] is None:
         persisted = _read_json(SNAPSHOT_FILE)
         if isinstance(persisted, dict):
-            _SNAPSHOT_CACHE = persisted
-            _SNAPSHOT_CACHE_AT = int(persisted.get("generated_at") or 0) or now
+            runtime["snapshot_cache"] = persisted
+            runtime["snapshot_cache_at"] = int(persisted.get("generated_at") or 0) or now
     if force:
         # No partial publishing: the caller is blocking on the final result.
         _run_scan_and_update_cache(publish_partial_snapshots=False)
@@ -835,57 +880,81 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
         # Serve what we have (stale is fine) and refresh in the background; on a first-ever
         # run the UI polls /scan-status and re-fetches when the scan completes.
         _start_background_scan()
-    return _SNAPSHOT_CACHE if _SNAPSHOT_CACHE is not None else _build_pending_snapshot(now)
+    cached = runtime["snapshot_cache"]
+    return cached if cached is not None else _build_pending_snapshot(now)
 
 
 # ---- Routes ----
 
 @router.get("/achievements")
-async def achievements():
-    data = evaluate_all()
-    payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
-    payload["is_stale"] = _is_snapshot_stale(data)
-    payload["scan_meta"] = {**(data.get("scan_meta") or {}), "status": _scan_status_payload()}
-    return payload
+async def achievements(profile: Optional[str] = None):
+    from hermes_cli.web_routers._common import scoped_to_thread
+    data = await scoped_to_thread(profile, evaluate_all)
+    return await scoped_to_thread(profile, lambda: _public_payload(data))
 
 
 @router.get("/scan-status")
-async def scan_status():
-    return _scan_status_payload()
+async def scan_status(profile: Optional[str] = None):
+    from hermes_cli.web_routers._common import scoped_to_thread
+    return await scoped_to_thread(profile, _scan_status_payload)
 
 
 @router.get("/recent-unlocks")
-async def recent_unlocks():
-    data = evaluate_all()
-    return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
+async def recent_unlocks(profile: Optional[str] = None):
+    from hermes_cli.web_routers._common import scoped_to_thread
+
+    def _read():
+        data = evaluate_all()
+        return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
+
+    return await scoped_to_thread(profile, _read)
 
 
 @router.get("/sessions/{session_id}/badges")
-async def session_badges(session_id: str):
-    data = evaluate_all()
-    session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
-    if not session:
-        return {"session_id": session_id, "badges": []}
-    aggregate = aggregate_stats([session])
-    results = [(d, evaluate_definition(d, aggregate)) for d in ACHIEVEMENTS]
-    return {"session_id": session_id, "badges": [display_achievement({**d, **r}) for d, r in results if r["unlocked"]]}
+async def session_badges(session_id: str, profile: Optional[str] = None):
+    from hermes_cli.web_routers._common import scoped_to_thread
+
+    def _read():
+        data = evaluate_all()
+        session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
+        if not session:
+            return {"session_id": session_id, "badges": []}
+        aggregate = aggregate_stats([session])
+        results = [(d, evaluate_definition(d, aggregate)) for d in ACHIEVEMENTS]
+        return {"session_id": session_id, "badges": [display_achievement({**d, **r}) for d, r in results if r["unlocked"]]}
+
+    return await scoped_to_thread(profile, _read)
 
 
-@router.post("/rescan")
-async def rescan():
-    return {"ok": True, **evaluate_all(force=True)}
+@router.post("/rescan", status_code=202)
+async def rescan(profile: Optional[str] = None):
+    """Enqueue a non-blocking rescan and return the same sanitized contract as GET."""
+    from hermes_cli.web_routers._common import scoped_to_thread
+
+    def _enqueue():
+        _start_background_scan(force=True)
+        cached = _runtime()["snapshot_cache"]
+        data = cached if cached is not None else _build_pending_snapshot(int(time.time()))
+        return {"ok": True, **_public_payload(data)}
+
+    return await scoped_to_thread(profile, _enqueue)
 
 
 @router.post("/reset-state")
-async def reset_state():
-    global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
-    save_state({"unlocks": {}})
-    _SNAPSHOT_CACHE = None
-    _SNAPSHOT_CACHE_AT = 0
-    _SCAN_STATUS.update(state="idle", started_at=None, finished_at=None, last_error=None, last_duration_ms=None)
-    for name in (SNAPSHOT_FILE, CHECKPOINT_FILE):
-        try:
-            _data_file(name).unlink(missing_ok=True)
-        except Exception:
-            pass
-    return {"ok": True}
+async def reset_state(profile: Optional[str] = None):
+    from hermes_cli.web_routers._common import scoped_to_thread
+
+    def _reset():
+        runtime = _runtime()
+        save_state({"unlocks": {}})
+        runtime["snapshot_cache"] = None
+        runtime["snapshot_cache_at"] = 0
+        runtime["scan_status"].update(state="idle", started_at=None, finished_at=None, last_error=None, last_duration_ms=None)
+        for name in (SNAPSHOT_FILE, CHECKPOINT_FILE):
+            try:
+                _data_file(name).unlink(missing_ok=True)
+            except Exception:
+                pass
+        return {"ok": True}
+
+    return await scoped_to_thread(profile, _reset)

@@ -107,6 +107,12 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     repo = _make_repo(tmp_path)
     occupied = _add_worktree(repo, repo / ".worktrees" / "sibling", "wt/sibling")
+    (repo / "README.md").write_text("new base\n", encoding="utf-8")
+    _git(repo, "commit", "-am", "new base")
+    start_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
 
     with kbc.connect() as conn:
         tid = kb.create_task(
@@ -114,12 +120,17 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
             title="second sibling",
             workspace_kind="worktree",
             workspace_path=str(occupied),  # inherited shared/stale path
+            start_ref=start_commit,
         )
         task = kb.get_task(conn, tid)
 
     workspace, branch = kbw._resolve_worktree_workspace(task)
     assert workspace == (repo / ".worktrees" / tid).resolve()
     assert branch == f"wt/{tid}"
+    assert subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip() == start_commit
     # The sibling's checkout is untouched, still on its own branch.
     assert (occupied / "README.md").exists()
     head = subprocess.run(

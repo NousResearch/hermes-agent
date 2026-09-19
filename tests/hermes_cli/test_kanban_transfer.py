@@ -70,6 +70,7 @@ def _seed_board(slug: str = "alpha") -> dict[str, str]:
         ids["worktree"] = kb.create_task(
             conn, title="worktree task", assignee="coder",
             workspace_kind="worktree", workspace_path="/exporter/repo",
+            start_ref="release/base",
         )
         kb.add_comment(conn, ids["scratch"], "brooklyn", "a comment")
         kb.link_tasks(conn, ids["scratch"], ids["worktree"])
@@ -129,6 +130,7 @@ def test_round_trip_preserves_content(kanban_root, tmp_path):
     assert set(tasks) == {"scratch task", "worktree task"}
     assert tasks["scratch task"]["body"] == "body"
     assert tasks["scratch task"]["assignee"] == "coder"
+    assert tasks["worktree task"]["start_ref"] == "release/base"
 
 
 def test_attachment_blob_travels_and_is_readable(kanban_root, tmp_path):

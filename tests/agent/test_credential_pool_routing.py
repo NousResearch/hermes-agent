@@ -494,8 +494,11 @@ class TestFailureAttribution:
     def test_unmatched_key_does_not_retry_only_pool_entry(
         self, tmp_path, monkeypatch
     ):
-        """Legacy agents without a stable id must stop when an unmatched key
-        has no different credential to rotate to."""
+        """Legacy agents without a stable id: an unmatched key gets exactly
+        ONE adoption of the lone entry's (different) token — the pool may
+        have been rotated underneath the agent by another process (single-use
+        OAuth refresh) — and a second unmatched failure stops without
+        quarantining the healthy entry."""
         pool = self._make_pool(
             tmp_path, monkeypatch,
             [self._entry(0, "pool-runtime-key")],
@@ -505,6 +508,20 @@ class TestFailureAttribution:
 
         from agent.agent_runtime_helpers import recover_with_credential_pool
 
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=401, has_retried_429=False
+        )
+
+        # First pass: the pool's only entry holds a token the agent is NOT
+        # using — adopting it is a real credential change, so retry once.
+        assert recovered is True
+        agent._swap_credential.assert_called_once()
+        assert agent._swap_credential.call_args.args[0].id == "cred-0"
+        assert self._statuses(pool)["cred-0"] != "exhausted"
+
+        # Second pass with the agent STILL on the wrapper key (swap did not
+        # change what it dispatches with): bounded — stop, no quarantine.
+        agent._swap_credential.reset_mock()
         recovered, _ = recover_with_credential_pool(
             agent, status_code=401, has_retried_429=False
         )

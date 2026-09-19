@@ -1903,7 +1903,55 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
         return entry
 
-    def _rotate_unmatched(self) -> Optional[PooledCredential]:
+    def _adopt_rotated_entry_unlocked(
+        self,
+        entry: PooledCredential,
+        api_key_hint: Optional[str],
+    ) -> Optional[PooledCredential]:
+        """Return *entry* when it carries a usable token DIFFERENT from the key
+        that just failed; ``None`` when adopting it would change nothing.
+
+        The stale-key case: the agent was built with token T1, another
+        process/profile consumed the single-use refresh token and wrote T2 to
+        auth.json, and the pool (singleton-seeded entries resync from the
+        store) now holds T2. T1 gets a 401/403, matches no entry, and the only
+        "rotation" that can recover is *adopt T2*. Refreshing here would be
+        wrong twice over — it burns the fresh single-use refresh token the
+        other holders rely on, and the entry is not the one that failed.
+
+        Singleton-seeded entries are resynced from auth.json first so an
+        in-process pool that has not touched the store since the rotation
+        still sees the newest pair. Nothing is marked exhausted; the caller's
+        unmatched-rotation streak bounds repeat visits.
+        """
+        if not api_key_hint:
+            return None
+        candidate = entry
+        try:
+            synced = self._sync_entry_from_auth_store(entry)
+        except Exception:  # pragma: no cover - defensive; sync is best-effort
+            synced = entry
+        if synced is not entry:
+            candidate = synced
+        runtime_key = candidate.runtime_api_key
+        if not runtime_key or runtime_key == api_key_hint:
+            return None
+        if self._entry_needs_refresh(candidate):
+            # The lone entry's token is itself expiring; handing it back would
+            # just trade one dead key for another. Let the normal
+            # refresh/fallback path own it.
+            return None
+        logger.info(
+            "credential pool: failed %s key matches no entry but the pool's "
+            "only entry %s holds a different, unexpired token (rotated by "
+            "another process) — adopting it for one retry",
+            self.provider,
+            (candidate.label or candidate.id[:8]),
+        )
+        self._current_id = candidate.id
+        return candidate
+
+    def _rotate_unmatched(self, api_key_hint: Optional[str] = None) -> Optional[PooledCredential]:
         """Rotate without marking anything when the failed identity matches no entry.
 
         Falling through to current()/_select_unlocked() would bench an
@@ -1934,9 +1982,22 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._current_id = None
         next_entry, _pending = self._select_unlocked(refresh=False)
         if next_entry is not None and len(self._available_entries()[0]) == 1:
-            # A single-entry pool cannot rotate: returning its only entry would
-            # report a recovery without changing the credential, and the
-            # caller retries the same 401 indefinitely.
+            # A single-entry pool cannot rotate — but it CAN have been rotated
+            # underneath this agent. Single-use OAuth refresh (xai-oauth,
+            # openai-codex) means another process/profile re-mints the pair
+            # and the pool (via its auth.json sync) picks up the new token
+            # while the agent still dispatches with the key it was built with.
+            # That stale key is exactly the one that just failed and matches
+            # nothing. Handing back the lone entry then DOES change the
+            # credential, so try it once; the streak cap above bounds it (a
+            # second unmatched failure with the pool unchanged returns None →
+            # fallback).
+            adopted = self._adopt_rotated_entry_unlocked(next_entry, api_key_hint)
+            if adopted is not None:
+                return adopted
+            # Same token the agent already holds: returning it would report a
+            # recovery without changing the credential, and the caller retries
+            # the same 401 indefinitely.
             self._unmatched_rotation_streak = 0
             self._current_id = None
             return None
@@ -1956,7 +2017,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             identity_supplied = bool(credential_id or api_key_hint)
             entry = self._identify_failed_entry(credential_id, api_key_hint)
             if entry is None and identity_supplied:
-                return self._rotate_unmatched()
+                return self._rotate_unmatched(api_key_hint)
             # A real entry was identified — any prior unmatched streak is stale.
             self._unmatched_rotation_streak = 0
             if entry is None:
@@ -2076,6 +2137,24 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id) if credential_id else None
+            if (
+                entry is not None
+                and api_key_hint
+                and entry.runtime_api_key != api_key_hint
+                and not any(
+                    candidate.runtime_api_key == api_key_hint
+                    for candidate in self._entries
+                )
+            ):
+                # The id-bound entry already holds a token other than the one
+                # that failed: another process/profile rotated the single-use
+                # pair underneath this agent. Force-refreshing would burn the
+                # fresh refresh token every other holder relies on, for a
+                # failure this token never had. Adopt the entry's current
+                # token instead; the caller retries with it.
+                adopted = self._adopt_rotated_entry_unlocked(entry, api_key_hint)
+                if adopted is not None:
+                    return adopted
             if entry is None:
                 if api_key_hint:
                     entry = self._find(lambda e: e.runtime_api_key == api_key_hint)

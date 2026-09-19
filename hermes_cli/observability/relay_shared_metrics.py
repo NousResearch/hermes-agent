@@ -17,7 +17,9 @@ from hermes_cli import __version__
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
-from .shared_metrics_contract import MODEL_CALL_SCOPE, SUBSCRIBER_NAME, TASK_SCOPE
+from .shared_metrics_contract import (
+    COMPUTER_USE_PHASE_SCOPE, MODEL_CALL_SCOPE, SUBSCRIBER_NAME, TASK_SCOPE, computer_use_phase_fields,
+)
 from .shared_metrics_subscriber import SharedMetricsSubscriber
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,14 @@ class _ToolCall:
 
 
 @dataclass
+class _ComputerUsePhase:
+    session: _MetricsSession
+    task: _TaskRun
+    handle: Any
+    phase: str
+
+
+@dataclass
 class _TaskRun:
     task_id: str
     handle: Any
@@ -205,6 +215,39 @@ class _Runtime:
             session, task, self.relay.scope.event, name,
             handle=_scope_handle(session, task), data=data, metadata=self._event_metadata(),
         )
+
+    def start_computer_use_phase(self, event: dict[str, Any]) -> _ComputerUsePhase | None:
+        """Open one safe phase span under the active Hermes task/tool scope."""
+        fields = computer_use_phase_fields(event)
+        session, task = self._task_pair(event, allow_task_id_fallback=True)
+        if session is None or task is None:
+            return None
+        with session.lock:
+            if not self._admits(session, task, event):
+                return None
+            try:
+                handle = self._run_in_task(
+                    task, self.relay.scope.push, f"{COMPUTER_USE_PHASE_SCOPE}.{fields['phase']}",
+                    self.relay.ScopeType.Function, input=fields, metadata=self._event_metadata(),
+                )
+            except Exception:
+                logger.debug("Hermes computer-use phase span start failed", exc_info=True)
+                return None
+            if handle is None:
+                return None
+            return _ComputerUsePhase(session=session, task=task, handle=handle, phase=fields["phase"])
+
+    def finish_computer_use_phase(self, phase: _ComputerUsePhase, event: dict[str, Any]) -> None:
+        """Close a phase span with the same bounded dimensions used at start."""
+        fields = computer_use_phase_fields(event)
+        with phase.session.lock:
+            if phase.session.closing:
+                return
+            self._guarded(
+                "Hermes computer-use phase span close failed",
+                self._run_in_task, phase.task, relay_runtime.pop_relay_scope, self.relay, phase.handle,
+                output=fields, metadata=self._event_metadata(),
+            )
 
     def start_task(self, event: dict[str, Any]) -> _TaskRun | None:
         """Open one Relay function scope for a Hermes task run."""
@@ -984,6 +1027,13 @@ def _run_task_hook(method: str, *, retry_failed: bool = False, **event: Any) -> 
     runtime = _get_runtime(retry_failed=retry_failed)
     if runtime is not None:
         runtime._safe(getattr(runtime, method), event)
+
+
+def get_computer_use_runtime() -> _Runtime | None:
+    """Return the opted-in Relay runtime for content-free computer-use spans."""
+    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+        return None
+    return _get_runtime()
 
 
 def _terminal_flags(result: dict[str, Any] | None, error: BaseException | None) -> dict[str, Any]:

@@ -282,8 +282,11 @@ MEMORY_SCHEMA = {
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "completed-work logs, temporary TODO state (use session_search for those). Procedures, "
+        "workflows, recipes, how-to and troubleshooting guides, and multi-step CLI-or-API "
+        "sequences go via skill_manage create/update of a SKILL.md — not a memory how-to. "
+        "Memory holds declarative facts only, not how-to content. If an existing skill already "
+        "covers the procedure, do not repeat it in memory."
     ),
     "parameters": {
         "type": "object",

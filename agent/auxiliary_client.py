@@ -6486,7 +6486,7 @@ def _build_call_kwargs(
     from agent.auxiliary_reasoning_floor import known_reasoning_floor
     if reasoning_config is None and isinstance(extra_body, dict):
         task_reasoning = extra_body.get("reasoning")
-        if isinstance(task_reasoning, dict):
+        if isinstance(task_reasoning, dict) and "enabled" in task_reasoning:
             reasoning_config = task_reasoning
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))

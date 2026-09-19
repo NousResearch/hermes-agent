@@ -138,3 +138,21 @@ to), set `session_isolated_when_nonpersistent = True`. With
 sandbox identity instead of sharing one — without this, two independent
 ephemeral runs could attach one live VM and delete it out from under each
 other.
+
+## Configuration shaping and cache paths
+
+`container_config` includes the built-in container defaults. Additional keys
+already supplied to the configured-environment factory survive shaping and reach
+`create_environment()` unchanged. This does **not** add arbitrary plugin-key YAML
+loading: `_get_env_config()` still projects known terminal settings. Do not assume
+that adding an unknown `terminal.acmebox_region` key to YAML makes it available to
+the provider. Plugin configuration loading needs its own supported path.
+
+`cache_path_base` controls translation for Hermes-managed cache mounts in both
+directions: host paths become agent-visible paths, and agent-visible cache paths
+map back to host paths. Resolution uses the active profile's terminal scope,
+not a different launch profile's environment. Paths outside the mapped cache roots,
+unknown providers and providers without a cache base are returned unchanged.
+Reverse lookup also leaves the path unchanged if provider lookup fails. This
+mapping does not itself upload files, create runtime mounts, or grant file access;
+the environment must make the corresponding files available.

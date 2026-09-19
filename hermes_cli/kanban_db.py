@@ -4372,6 +4372,7 @@ _PLUGIN_COMPAT_LAZY = {
     'check_respawn_guard': ('hermes_cli.kanban_db_dispatch', 'check_respawn_guard'),
     'claim_unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'claim_unseen_events_for_sub'),
     'configured_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'configured_max_in_progress'),
+    'configured_pre_spawn_fn': ('hermes_cli.kanban_db_dispatch', 'configured_pre_spawn_fn'),
     'connect': ('hermes_cli.kanban_db_connect', 'connect'),
     'connect_closing': ('hermes_cli.kanban_db_connect', 'connect_closing'),
     'count_notify_subs': ('hermes_cli.kanban_db_notify', 'count_notify_subs'),

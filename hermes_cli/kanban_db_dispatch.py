@@ -8,6 +8,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
+import math
 import os
 import re
 import signal
@@ -2717,7 +2719,11 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
-def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+def _default_spawn(
+    task: Task, workspace: str, *, board: Optional[str] = None,
+    pre_spawn_command: Optional[list[str]] = None,
+    pre_spawn_timeout_seconds: float = 300.0,
+) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the child's PID so the dispatcher can detect crashes before the
@@ -2836,6 +2842,28 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     cmd = _restart_safe_worker_argv(task, cmd)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
+    if pre_spawn_command:
+        gate_request = {
+            "task_id": task.id,
+            "run_id": task.current_run_id,
+            "assignee": profile_arg,
+            "board": _kb._normalize_board_slug(board) or _kb.get_current_board(),
+            "workspace": workspace,
+        }
+        supervisor = Path(__file__).with_name("kanban_spawn_supervisor.py")
+        python_path_parts = [p for p in sys.path if p and p != "."]
+        if python_path_parts:
+            env["PYTHONPATH"] = os.pathsep.join(
+                [env.get("PYTHONPATH", "")] + python_path_parts
+            ).lstrip(os.pathsep)
+        cmd = [
+            sys.executable,
+            str(supervisor),
+            json.dumps(pre_spawn_command),
+            str(pre_spawn_timeout_seconds),
+            json.dumps(gate_request),
+            json.dumps(cmd),
+        ]
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
@@ -2859,6 +2887,36 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if _kb._IS_WINDOWS:
         _live_worker_procs[proc.pid] = proc
     return proc.pid
+
+
+def configured_pre_spawn_fn(kanban_config: Mapping[str, Any]):
+    """Build the gateway spawn callable for ``kanban.pre_spawn_command``."""
+    raw_command = kanban_config.get("pre_spawn_command")
+    if raw_command in (None, []):
+        return None
+    if not isinstance(raw_command, list) or not raw_command or not all(
+        isinstance(part, str) and part for part in raw_command
+    ):
+        raise ValueError("kanban.pre_spawn_command must be a non-empty list of strings")
+    try:
+        timeout = float(kanban_config.get("pre_spawn_timeout_seconds", 300))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "kanban.pre_spawn_timeout_seconds must be a positive finite number"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(
+            "kanban.pre_spawn_timeout_seconds must be a positive finite number"
+        )
+    command = list(raw_command)
+
+    def spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+        return _default_spawn(
+            task, workspace, board=board, pre_spawn_command=command,
+            pre_spawn_timeout_seconds=timeout,
+        )
+
+    return spawn
 
 
 # ---------------------------------------------------------------------------

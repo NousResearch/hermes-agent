@@ -9,6 +9,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { THINKING_FONT_COPY } from '@/i18n/thinking-font-copy'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
@@ -24,6 +25,12 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import {
+  $thinkingFontSize,
+  setThinkingFontSize,
+  THINKING_FONT_SIZE_MAX,
+  THINKING_FONT_SIZE_MIN
+} from '@/store/thinking-font-size'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import {
   $titlebarAppActionsSide,
@@ -79,6 +86,7 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 function ResumeLastSessionSetting() {
   const { t } = useI18n()
   const a = t.settings.appearance
+  const thinkingCopy = THINKING_FONT_COPY[locale]
   const configQuery = useHermesConfigRecord()
   const config = configQuery.data
   const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
@@ -399,12 +407,13 @@ function GlassRow({ children, label }: GlassRowProps) {
 }
 
 export function AppearanceSettings() {
-  const { t, isSavingLocale } = useI18n()
+  const { t, isSavingLocale, locale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const thinkingFontSize = useStore($thinkingFontSize)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
@@ -645,6 +654,32 @@ export function AppearanceSettings() {
           <ChatFontSetting />
 
           <TerminalFontSetting />
+
+          <ListRow
+            action={
+              <div className="flex items-center gap-3">
+                <input
+                  aria-label={thinkingCopy.ariaLabel}
+                  className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                  max={THINKING_FONT_SIZE_MAX}
+                  min={THINKING_FONT_SIZE_MIN}
+                  onChange={event => {
+                    triggerHaptic('selection')
+                    setThinkingFontSize(Number(event.target.value))
+                  }}
+                  step={1}
+                  style={{ accentColor: 'var(--dt-primary)' }}
+                  type="range"
+                  value={thinkingFontSize}
+                />
+                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                  {thinkingFontSize}px
+                </span>
+              </div>
+            }
+            description={thinkingCopy.description}
+            title={thinkingCopy.title}
+          />
 
           <ListRow
             action={

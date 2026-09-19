@@ -1249,6 +1249,28 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 row["total_models"] = row.get("total_models", len(models)) + 1
             break
 
+    # Account-scoped OpenRouter presets lead the catalog portion of their row: they exist only in the
+    # account (never in the public /v1/models listing the row is filtered from), and every surface
+    # caps or collapses a row's tail. Deliberately not merged into ``fetch_openrouter_models`` /
+    # ``model_ids`` — that list feeds model-name detection and the silent default, where an account
+    # preset must not shadow a catalog model.
+    try:
+        from hermes_cli.models import fetch_openrouter_presets
+
+        presets = fetch_openrouter_presets()
+    except Exception:
+        presets = []
+    if presets:
+        for row in results:
+            if str(row.get("slug", "")).strip().lower() != "openrouter":
+                continue
+            models = list(row.get("models") or [])
+            extra = [mid for mid, _ in presets if mid not in models]
+            if extra:
+                row["models"] = extra + models
+                row["total_models"] = row.get("total_models", len(models)) + len(extra)
+            break
+
     # Current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
     return results
@@ -1295,6 +1317,10 @@ def list_picker_providers(
                 live_ids = [mid for mid, _ in fetch_openrouter_models()]
             except Exception:
                 live_ids = list(p.get("models", []))
+            # Presets arrive on the row from ``list_authenticated_providers`` and are absent from the
+            # catalog list this branch rebuilds, so keep them in front of it.
+            preset_ids = [str(mid) for mid in (p.get("models") or []) if str(mid).startswith("@preset/")]
+            live_ids = preset_ids + [mid for mid in live_ids if mid not in set(preset_ids)]
             p = dict(p)
             p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)

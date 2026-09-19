@@ -191,6 +191,196 @@ def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
             {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
     except Exception as exc:
         logger.debug("openrouter curated catalog disk write failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter account presets (``@preset/<slug>``)
+#
+# Presets exist only behind the authenticated ``/presets`` endpoint — the public ``/v1/models``
+# catalog this module filters against has no preset rows — so they are fetched and cached
+# separately, keyed on the credential fingerprint. The curated disk cache is shared per profile and
+# carries no fingerprint, so merging presets into it would surface one account's preset names to the
+# next key the profile is configured with.
+# ---------------------------------------------------------------------------
+
+_OPENROUTER_PRESETS_SLOT = "_openrouter_presets_cache"
+# ``(credential fingerprint, presets)`` for this process — the fingerprint rides along so a rotated
+# key cannot keep serving the previous account's preset names from this slot.
+_openrouter_presets_cache: Optional[tuple[str, list[tuple[str, str]]]] = None
+# One failed refresh suppresses the next ones for this long: the picker path also runs model-name
+# detection, so an account that keeps failing (401, offline) must not pay the fetch timeout on every
+# call. Mirrors the reasoning-capability catalogs' ``*_failed_at`` suppression; keyed by credential
+# fingerprint so a key switch is not suppressed by the previous account's failure.
+_OPENROUTER_PRESETS_RETRY_SUPPRESSION = 60.0
+_openrouter_presets_failed_at: Optional[tuple[str, float]] = None
+
+
+def _openrouter_presets_url(base_url: str = "") -> str:
+    """``{base}/presets`` for the configured endpoint, defaulting to the catalog endpoint's base."""
+    base = (base_url or "").strip() or _OPENROUTER_CATALOG_URL.rsplit("/", 1)[0]
+    return base.rstrip("/") + "/presets"
+
+
+def _openrouter_presets_disk_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "openrouter_presets.json"
+
+
+def _read_openrouter_presets_disk(fingerprint: str) -> Optional[list[tuple[str, str]]]:
+    """Presets cached for THIS credential fingerprint, or None (missing, other key, expired)."""
+    obj = _read_json_cache(_openrouter_presets_disk_path())
+    if obj is None or str(obj.get("fingerprint") or "") != fingerprint:
+        return None
+    try:
+        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
+            return None
+    except (TypeError, ValueError):
+        return None
+    items = obj.get("presets")
+    if not isinstance(items, list):
+        return None
+    return [(str(it[0]), str(it[1])) for it in items if isinstance(it, (list, tuple)) and len(it) == 2]
+
+
+def _write_openrouter_presets_disk(fingerprint: str, presets: list[tuple[str, str]]) -> None:
+    try:
+        _write_json_cache(
+            _openrouter_presets_disk_path(),
+            {"fetched_at": time.time(), "fingerprint": fingerprint,
+             "presets": [list(p) for p in presets]})
+    except Exception as exc:
+        logger.debug("openrouter presets disk write failed: %s", exc)
+
+
+def _fetch_openrouter_presets_remote(
+    api_key: str, base_url: str = "", timeout: float = 8.0
+) -> Optional[list[tuple[str, str]]]:
+    """``("@preset/<slug>", "preset")`` entries from the account's preset listing, or None on failure.
+
+    A preset carrying a ``system_prompt`` is skipped: OpenRouter expands ``@preset/<slug>``
+    server-side, so selecting one would inject a prompt Hermes neither sees nor caches.
+    """
+    payload = _get_json(
+        _openrouter_presets_url(base_url), timeout=timeout,
+        headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"})
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return None
+    out: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        slug = str(entry.get("slug") or "").strip()
+        version = entry.get("designated_version")
+        version = version if isinstance(version, dict) else {}
+        if not slug or version.get("system_prompt"):
+            continue
+        # The preset's own name is what a picker shows beside the id; dedupes multi-version records.
+        out.setdefault(f"@preset/{slug}", str(entry.get("name") or "").strip() or "preset")
+    return sorted(out.items())
+
+
+def _openrouter_preset_credential() -> tuple[str, str]:
+    """``(api_key, base_url)`` for the preset listing — the OpenRouter env var plus the profile's
+    base URL.
+
+    Deliberately not :func:`_api_key_credentials`: OpenRouter is a ``providers/`` profile, not an
+    ``api_key``-type ``PROVIDER_REGISTRY`` entry (it also accepts OAuth), so that resolver raises and
+    reports no credential for it. The credential pool is avoided too — reading it ingests the env var
+    and logs a spend-arming warning, which a read-only picker refresh must not trigger. Accounts with
+    only an OAuth login therefore list no presets; the listing is fail-soft by design.
+    """
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("openrouter")
+    api_key = ""
+    for env_var in (getattr(profile, "env_vars", ()) or ()):
+        value = (get_env_value_prefer_dotenv(env_var) or "").strip()
+        if value:
+            api_key = value
+            break
+    return api_key, (getattr(profile, "base_url", "") or "").strip()
+
+
+def _openrouter_preset_fingerprint(api_key: str) -> str:
+    """Short hash of the credential a preset listing was fetched with.
+
+    :func:`_credential_fingerprint` cannot serve here: OpenRouter is a ``providers/`` profile rather
+    than an ``api_key``-type ``PROVIDER_REGISTRY`` entry, so that fingerprint is identical across key
+    rotations (verified: two different keys produced the same value) and would keep serving the
+    previous account's preset names from both cache layers.
+    """
+    import hashlib
+
+    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+
+def clear_openrouter_presets_cache() -> None:
+    """Drop the account-preset caches: process slot, failure memo, and disk file.
+
+    The explicit refresh path calls this. Presets carry a TTL of their own, so without it a preset
+    created in OpenRouter's dashboard stays invisible in every picker until that TTL expires.
+    """
+    global _openrouter_presets_failed_at  # noqa: PLW0603
+
+    from hermes_cli.models_profile_cache import profile_slot_set
+
+    profile_slot_set(sys.modules[__name__], _OPENROUTER_PRESETS_SLOT, None)
+    _openrouter_presets_failed_at = None
+    try:
+        _openrouter_presets_disk_path().unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("openrouter presets cache unlink failed: %s", exc)
+
+
+def fetch_openrouter_presets(*, force_refresh: bool = False, timeout: float = 8.0) -> list[tuple[str, str]]:
+    """The account's presets as ``("@preset/<slug>", "preset")`` entries; ``[]`` when unavailable.
+
+    Fail-soft by design: no credential, a 401/timeout, or a malformed body all mean "no presets" —
+    the picker must never block on this. Two guards keep that promise cheap and honest: a failed
+    refresh is suppressed for ``_OPENROUTER_PRESETS_RETRY_SUPPRESSION`` seconds (the picker's path
+    also runs model-name detection, so an offline or 401 account must not pay the fetch timeout on
+    every call), and it serves whatever the cache still holds instead of dropping known presets.
+    """
+    from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
+
+    global _openrouter_presets_failed_at  # noqa: PLW0603
+
+    _me = sys.modules[__name__]
+    api_key, base_url = _openrouter_preset_credential()
+    if not api_key:
+        return []
+    fingerprint = _openrouter_preset_fingerprint(api_key)
+    slot = profile_slot_get(_me, _OPENROUTER_PRESETS_SLOT)
+    cached = (list(slot[1]) if isinstance(slot, tuple) and len(slot) == 2 and slot[0] == fingerprint
+              else None)
+    if not force_refresh:
+        if cached is not None:
+            return cached
+        disk = _read_openrouter_presets_disk(fingerprint)
+        if disk is not None:
+            profile_slot_set(_me, _OPENROUTER_PRESETS_SLOT, (fingerprint, disk))
+            return list(disk)
+        if (_openrouter_presets_failed_at is not None
+                and _openrouter_presets_failed_at[0] == fingerprint
+                and time.monotonic() - _openrouter_presets_failed_at[1] < _OPENROUTER_PRESETS_RETRY_SUPPRESSION):
+            return []
+    try:
+        presets = _fetch_openrouter_presets_remote(api_key, base_url, timeout)
+    except Exception as exc:
+        logger.debug("fetch_openrouter_presets: %s", exc)
+        presets = None
+    if presets is None:
+        _openrouter_presets_failed_at = (fingerprint, time.monotonic())
+        return list(cached or [])
+    _openrouter_presets_failed_at = None
+    profile_slot_set(_me, _OPENROUTER_PRESETS_SLOT, (fingerprint, presets))
+    _write_openrouter_presets_disk(fingerprint, presets)
+    return list(presets)
+
+
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -1790,6 +1980,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         # a stale signed-out probe past an explicit refresh.
         global _copilot_acp_session_memo
         _copilot_acp_session_memo = None
+        # Account presets are a second source for the OpenRouter row with a TTL of their own, so an
+        # explicit refresh has to drop them too — otherwise a preset created in OpenRouter's dashboard
+        # stays invisible in every picker until that TTL expires.
+        if provider is None or _normalized_cache_slug(provider) == "openrouter":
+            clear_openrouter_presets_cache()
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():

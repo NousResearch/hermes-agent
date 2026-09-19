@@ -553,14 +553,46 @@ def _active_model_config() -> Tuple[str, Dict[str, Any]]:
     return str(raw_model_id).strip(), model_cfg
 
 
+_ctx_len_cache: Dict[tuple, int] = {}
+_ctx_len_cache_lock = threading.Lock()
+
+
 def _resolve_active_context_length() -> int:
     """Active model's context length for the tool-search gate (0 if unresolvable).
 
-    Order: explicit `model.context_length`; provider-aware resolution (Codex OAuth
-    enforces a smaller window than the direct API for the same slug); the on-disk
-    metadata cache (slightly stale is fine for picking a tier and avoids a ~200 ms
-    /models probe per CLI startup); then the full live resolver.
+    Cached by config.yaml fingerprint (mtime_ns, size) -- the same fingerprint
+    _tool_defs_cache_key uses for the top-level assembly cache -- so a cold
+    assembly doesn't re-pay resolve_runtime_provider() + get_model_context_length()
+    on every call within the same config generation; any config.yaml edit changes
+    the fingerprint and forces a fresh resolution. Ported from autoresearch pilot
+    #3 (branch autoresearch/tool-def-assembly, commit 2845c9701f): 18-23% cold
+    tool-def assembly reduction (608.6ms -> 466-499ms across repeat runs),
+    correctness gate green throughout.
     """
+    try:
+        from hermes_cli.config import get_config_path
+        cfg_fp = None
+        try:
+            cfg_stat = get_config_path().stat()
+            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+        except (FileNotFoundError, OSError, ImportError):
+            pass
+        if cfg_fp is not None:
+            with _ctx_len_cache_lock:
+                cached = _ctx_len_cache.get(cfg_fp)
+            if cached is not None:
+                return cached
+        result = _resolve_active_context_length_uncached()
+        if cfg_fp is not None:
+            with _ctx_len_cache_lock:
+                _ctx_len_cache.setdefault(cfg_fp, result)
+        return result
+    except Exception as e:
+        logger.debug("Could not resolve active context length: %s", e)
+        return 0
+
+
+def _resolve_active_context_length_uncached() -> int:
     try:
         model_id, model_cfg = _active_model_config()
         if not model_id:

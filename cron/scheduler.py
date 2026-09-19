@@ -1831,6 +1831,21 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
             "delivering the response instead of failing the cron run",
             job_name)
 
+    # Some upstream providers/proxies occasionally answer with HTTP 200
+    # whose body is itself a raw quota/session notice (e.g. "You've hit
+    # your session limit · resets 9:30pm (Europe/London)") instead of a
+    # proper 429. That slips past both checks above — the turn
+    # "completed" normally and `failed` was never set — so it would
+    # otherwise be delivered to the user verbatim as if it were a real
+    # answer, with `last_status` recorded as "ok". Two weekly-ops-review
+    # cron runs (2026-08-09, 2026-08-30) shipped exactly this bare
+    # string to Phil; see recurring-issues-log.md. Route the same
+    # distinctive signature through the existing failure path so it
+    # gets a proper classify_cron_failure() message and a failed
+    # last_status instead of a silent pass-through. (recurring-issues-log)
+    if re.match(r"^you'?ve hit your\s+(?:\w+\s+){0,3}limit\b", final_response_text, re.IGNORECASE):
+        raise RuntimeError(final_response_text)
+
     final_response = result.get("final_response", "") or ""
     # Repair model-mangled computer_use media paths before delivery (fail-open, as in gateway).
     if final_response:
@@ -2198,7 +2213,27 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
-    setup.fallback_model = get_fallback_chain(_cfg) or None
+    # Per-job fallback opt-out (#weekly-ops-review incident, 2026-08-23):
+    # a tool-dependent cron job (e.g. one whose prompt tells it to run a
+    # specific script via Bash and read real files) is actively harmed by
+    # silently dropping to a local fallback model on a primary timeout —
+    # the fallback here has no memory toolset and, observed twice
+    # (16 Aug, 23 Aug), made zero tool calls and fabricated a plausible-
+    # looking report instead of erroring. A hallucinated "done" is worse
+    # than an honest failure for jobs like this, so let a job opt out of
+    # the fallback chain entirely via `"no_fallback": true` in jobs.json
+    # (no CLI flag yet — hand-edit the job record). Unset/false preserves
+    # the previous behaviour for every other job.
+    if job.get("no_fallback"):
+        setup.fallback_model = None
+        logger.info(
+            "Job '%s': no_fallback=true — skipping fallback chain on "
+            "primary-provider failure (will error/retry next tick "
+            "instead of silently degrading to a local model)",
+            job_id,
+        )
+    else:
+        setup.fallback_model = get_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)

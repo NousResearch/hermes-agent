@@ -343,6 +343,12 @@ class StreamFallbackMixin:
             # suppress the real final after multiple tool calls.
             if result.success:
                 self._notify_new_message()
+                # Track this commentary bubble's id alongside the streamed-message
+                # ids so cleanup_interim_segments (once the turn-final answer lands)
+                # can best-effort delete it too — commentary is its own standalone
+                # message, never the thing _message_id points at, so it would
+                # otherwise never enter the deletable set.
+                self._track_preview_id(getattr(result, "message_id", None))
                 # Lets run.py confirm whether an interim send carried the final.
                 # Record the exact delivered text so run.py can confirm whether an interim "preview"
                 # actually carried the final response, vs. unrelated commentary delivered during a session

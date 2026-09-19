@@ -164,6 +164,19 @@ reachable to refine.
 
 ### Trust model
 
+Catalog review approves a manifest for distribution; it does not freeze the
+behavior of a hosted service. Manifest version 2 supports an optional top-level
+`trust: untrusted` (or `trust: full`) field, which the installer writes into the
+server's runtime configuration. Version 1 entries remain supported; entries
+declaring `trust` must use version 2 so older clients reject them rather than
+silently dropping this security setting. Update Hermes before installing them.
+
+With `trust: untrusted`, tools whose discovered `readOnlyHint` is not exactly
+`true` require host approval before execution. These annotations are supplied by
+the remote server: this is not a sandbox or a guarantee against a server that
+mislabels a write as read-only. Omitted trust retains the existing `full` default.
+Reinstall an existing catalog entry after updating to apply its declared trust.
+
 Installing a catalog entry runs whatever the manifest specifies — `git clone`,
 the entry's `bootstrap` commands (`pip install`, `npm install`, etc.), and
 ultimately the MCP server's own code. Manifests are gated by PR review into

@@ -333,3 +333,39 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+
+def test_catalog_install_registration_requires_write_approval(tmp_path, monkeypatch):
+    """The shipped entry's trust survives real config I/O and gates registered calls."""
+    from pathlib import Path
+    from hermes_cli import mcp_catalog, config as config_module
+    from tools.registry import ToolRegistry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+    monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda name: None)
+    entry = mcp_catalog._parse_manifest(
+        Path(__file__).resolve().parents[2] / "optional-mcps/clixrx/manifest.yaml")
+    mcp_catalog.install_entry(entry)
+    installed = config_module.load_config()["mcp_servers"][entry.name]
+    server = mcp_tool.MCPServerTask(entry.name)
+    server.session = MagicMock()
+    server.session.call_tool = AsyncMock()
+    server._tools = [SimpleNamespace(
+        name=name, description="write", inputSchema={"type": "object"},
+        annotations=SimpleNamespace(readOnlyHint=False))
+        for name in entry.tools.default_enabled]
+    isolated_registry = ToolRegistry()
+    with patch("tools.registry.registry", isolated_registry), \
+         patch.dict(mcp_tool._servers, {entry.name: server}), \
+         patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+        names = _mcp_registration._register_server_tools(entry.name, server, installed)
+        for tool in server._tools:
+            name = f"mcp__{entry.name}__{tool.name}"
+            assert name in names
+            with patch("tools.approval_prompt.request_elicitation_consent",
+                       return_value="decline") as consent:
+                result = json.loads(isolated_registry.dispatch(name, {}))
+            consent.assert_called_once()
+            assert "did not approve" in result["error"]
+            server.session.call_tool.assert_not_called()

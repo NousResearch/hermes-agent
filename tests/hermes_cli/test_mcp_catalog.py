@@ -102,6 +102,23 @@ def _entry(name: str):
     return e
 
 
+@pytest.mark.parametrize("version, trust, valid", [
+    (2, "untrusted", True), (2, "full", True),
+    (2, None, False), (2, "untrustd", False), (2, [], False),
+    (1, "untrusted", False), (3, "untrusted", False),
+])
+def test_manifest_trust_version_contract(catalog_dir, version, trust, valid):
+    from hermes_cli.mcp_catalog import CatalogError, _parse_manifest, _build_server_config
+
+    path = _write_manifest(catalog_dir, "demo", _basic_manifest(
+        manifest_version=version, trust=trust))
+    if valid:
+        assert _build_server_config(_parse_manifest(path), None)["trust"] == trust
+    else:
+        with pytest.raises(CatalogError):
+            _parse_manifest(path)
+
+
 # ---------------------------------------------------------------------------
 # Manifest parsing
 # ---------------------------------------------------------------------------

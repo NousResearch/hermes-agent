@@ -42,6 +42,7 @@ from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
     _check_disk_usage_warning, _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
+    is_reaped_env,
 )
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
@@ -1121,6 +1122,16 @@ def _run_foreground(
 
     for retry_count in range(max_retries + 1):
         try:
+            # Issue #114362: the idle reaper may have torn this handle down
+            # while the owning conversation was mid provider-call. Fail loudly
+            # (a retry provisions a fresh sandbox) instead of running on it.
+            if is_reaped_env(env):
+                return _error_json(
+                    f"Terminal sandbox for task {eff[:8]} was reclaimed by the idle "
+                    "reaper while the conversation was quiet (e.g. a long provider "
+                    "call); this handle is dead. Retry the command to provision a "
+                    "fresh sandbox."
+                )
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
             )

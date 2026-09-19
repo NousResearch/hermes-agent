@@ -38,6 +38,7 @@ class FailoverReason(enum.Enum):
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
     upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
+    upstream_blocked = "upstream_blocked"  # 403 from a WAF/CDN/proxy in front of the provider — key is healthy, fallback
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
     server_error = "server_error"        # 500/502 — internal server error, retry
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
@@ -409,6 +410,17 @@ _SSL_TRANSIENT_PATTERNS = (
 )
 
 
+# A 403 body written by a WAF/CDN/proxy rather than the provider's API: Cloudflare's browser
+# challenge and block pages, plus the plain-text block relays return when they reject the SDK
+# User-Agent (#53099). Matched only on 403 (see ``_status_403``); a bare "access denied" or
+# "forbidden" stays auth because providers word real permission errors that way too.
+_UPSTREAM_BLOCKED_PATTERNS = (
+    "your request was blocked", "request blocked", "sorry, you have been blocked",
+    "enable javascript and cookies to continue", "cdn-cgi/challenge-platform", "cf-browser-verification",
+    "challenge-error-text", "__cf_chl", "cf-error-details", "attention required! | cloudflare",
+)
+
+
 # ── Verdicts and rule tables ────────────────────────────────────────────
 # A verdict is the ClassifiedError kwargs a stage decided on: ``reason`` plus
 # hint overrides (unlisted hints keep dataclass defaults). Rule tables are
@@ -431,6 +443,7 @@ _V_RATE_LIMIT = _v(_R.rate_limit, **_ROTATE_FALLBACK)
 _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
+_V_UPSTREAM_BLOCKED = _v(_R.upstream_blocked, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
 # A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
@@ -853,7 +866,14 @@ def _status_403(c: _Ctx) -> Verdict:
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
-    return _V_BILLING if billing else _V_AUTH_FALLBACK
+    if billing:
+        return _V_BILLING
+    # A WAF/CDN in front of the provider answered, not the provider: the credential never
+    # reached it, so key guidance and credential rotation are wrong (#53099, #70566). Gated on
+    # 403 and on established block/challenge markers; any other 403 stays auth.
+    if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
+        return _V_UPSTREAM_BLOCKED
+    return _V_AUTH_FALLBACK
 
 
 def _status_404(c: _Ctx) -> Verdict:

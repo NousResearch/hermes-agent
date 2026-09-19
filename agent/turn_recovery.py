@@ -786,6 +786,7 @@ def _welcome_outage_copy(base_url: Any, classified: Any, *, anonymous: bool = Fa
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
+    FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
@@ -848,6 +849,16 @@ def nonretryable_client_error_result(
             _vlines(agent, f"      Did you mean '{_prefix_suggestion}'? It looks like the vendor prefix is missing.")
     elif classified.reason not in _NONRETRYABLE_LABELS:
         _vlines(agent, f"   💡 Fix: pick another model (/model), or check `{display_hermes_home()}/logs/agent.log`.")
+    # A WAF/CDN block (#53099, #70566): the key never reached the provider; the usual cause
+    # is the SDK User-Agent, which the per-provider extra_headers override.
+    if classified.reason == FailoverReason.upstream_blocked:
+        _vlines(
+            agent,
+            "   💡 The endpoint's firewall/CDN blocked the request before it reached the model — your key",
+            "      and model access are probably fine. Relays often reject the SDK's default User-Agent:",
+            "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
+            "      or check the proxy/WAF rules and your network.",
+        )
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.
     if classified.reason == FailoverReason.content_policy_blocked:

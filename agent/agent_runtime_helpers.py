@@ -1323,11 +1323,17 @@ def dump_api_request_debug(
     try:
         body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
         api_key = None
+        # anthropic_messages keeps its SDK client on ``_anthropic_client`` (``client`` is None):
+        # read the key from there so the dump does not say "Bearer None" (#24293).
+        anthropic = agent.api_mode == "anthropic_messages"
         try:
-            api_key = getattr(agent.client, "api_key", None)
+            live = getattr(agent, "_anthropic_client", None) if anthropic else agent.client
+            api_key = getattr(live, "api_key", None) or getattr(live, "auth_token", None)
         except Exception as e:
             _ra().logger.debug("Could not extract API key for debug dump: %s", e)
-        endpoint = "/responses" if agent.api_mode == "codex_responses" else "/chat/completions"
+        endpoint = {"codex_responses": "/responses", "anthropic_messages": "/messages"}.get(
+            agent.api_mode, "/chat/completions"
+        )
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(), "session_id": agent.session_id, "reason": reason,
             "request": {

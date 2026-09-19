@@ -108,7 +108,8 @@ describe('error copy never names a hidden Retry', () => {
     'format_error',
     'ssl_cert_verification',
     'context_overflow',
-    'interpreter_shutdown'
+    'interpreter_shutdown',
+    'upstream_blocked'
   ])
 
   const surfaces: ErrorSurface[] = [
@@ -136,6 +137,16 @@ describe('error copy never names a hidden Retry', () => {
   it('a credential rejection keeps Retry, so its body may still say retry', () => {
     const surface: ErrorSurface = { authKind: 'api_key', code: 'auth', layer: 'auth', provider: 'openai', retryable: false }
     expect(errorRecoveryPlan(surface).retry).toBe(true)
+  })
+
+  it('a WAF block names the firewall and the User-Agent fix, not the key and not a retry', () => {
+    const surface = parseErrorSurface({ code: 'upstream_blocked', layer: 'provider', provider: 'custom', retryable: false })!
+    const { body, title } = errorCardText(thread, surface)
+    expect(title).toBe(en.assistant.thread.errorCodes.upstream_blocked.title)
+    expect(body).toMatch(/firewall/i)
+    expect(body).toMatch(/User-Agent/)
+    expect(body).not.toBe(thread.errorLayerBodies.provider)
+    expect(errorRecoveryPlan(surface).retry).toBe(false)
   })
 })
 

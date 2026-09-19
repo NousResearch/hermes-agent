@@ -4057,6 +4057,11 @@ export const en: Translations = {
           title: 'The reply was cut off',
           body: 'The connection dropped before the reply finished. Retry to send it again.'
         },
+        upstream_blocked: {
+          title: 'A firewall blocked the request',
+          body: provider =>
+            `A firewall or CDN in front of ${provider} blocked the request before it reached the model — your key is probably fine. Set a User-Agent header via the provider's extra_headers in Settings, or switch provider, then send your message again.`
+        },
         ssl_cert_verification: {
           title: 'Secure connection failed',
           body: provider =>

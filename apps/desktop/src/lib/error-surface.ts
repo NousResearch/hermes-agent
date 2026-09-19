@@ -35,6 +35,9 @@ export const ERROR_CODE_KEYS = [
   'timeout',
   'stream_drop',
   'ssl_cert_verification',
+  // A firewall/CDN in front of the endpoint refused the request (usually by
+  // User-Agent) before it reached the model: not a key problem, and not retryable.
+  'upstream_blocked',
   'context_overflow',
   'payload_too_large',
   'model_not_found',

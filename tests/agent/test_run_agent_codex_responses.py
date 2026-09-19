@@ -2201,6 +2201,26 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_reads_the_anthropic_client_and_messages_url(monkeypatch, tmp_path):
+    """anthropic_messages keeps its SDK client on ``_anthropic_client`` (``client`` is None):
+    the dump must show the masked key and /messages, not 'Bearer None' + /chat/completions (#24293)."""
+    import json
+    from types import SimpleNamespace
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "anthropic_messages"
+    agent.base_url = "https://relay.example.com/anthropic"
+    agent.client = None
+    agent._anthropic_client = SimpleNamespace(api_key="sk-ant-api03-abcdefghijklmnopqrstuvwxyz")
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug({"model": "claude", "messages": []}, reason="preflight")
+
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
+    assert payload["request"]["url"] == "https://relay.example.com/anthropic/messages"
+    assert "None" not in payload["request"]["headers"]["Authorization"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in payload["request"]["headers"]["Authorization"]
+
+
 
 
 # --- Reasoning-only response tests (fix for empty content retry loop) ---

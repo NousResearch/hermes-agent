@@ -168,6 +168,11 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label}'s account settings don't allow this model for your request, so it didn't "
         "answer. Check the provider's data/privacy settings, or switch models with /model."
     ),
+    FailoverReason.upstream_blocked.value: (
+        "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
+        "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
+        "the proxy/WAF rules, or switch providers with /model."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
@@ -202,6 +207,7 @@ FAILURE_CAUSE_GLOSS: Dict[str, str] = {
     "billing_unverified": "the AI model service says the account's usage or credit limit is reached",
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
+    FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     "context_overflow": "{possessive} request grew too large for the model",

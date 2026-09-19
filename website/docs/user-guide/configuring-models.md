@@ -192,7 +192,7 @@ providers:
       CF-Access-Client-Secret: "yyyy"
 ```
 
-Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes; the `anthropic_messages` and `bedrock_converse` API modes do not use it.
+Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes and to `anthropic_messages` routes (the main client, `/model` switches, rebuilds and auxiliary clients alike); `bedrock_converse` does not use it. A relay behind a WAF that rejects the SDK's default `User-Agent` (403 "Your request was blocked" or a browser-challenge page) is the typical reason to set one — Hermes reports such a 403 as a firewall/CDN block rather than an API-key rejection.
 
 **`discover_models`** — set to `false` (default `true`) to skip querying the endpoint's `/models` listing and use only the `models` you configured on the entry. Handy for gateways whose model listing is slow, unreliable, or noisy:
 

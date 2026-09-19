@@ -2651,8 +2651,26 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         cmd.extend(["-m", task.model_override])
         # Pin the provider too so the worker resolves the model against the
         # intended backend (model X with provider Y is the classic board-stall).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
+        # A model_override with no provider_override must NOT spawn with a bare
+        # `-m` and let the worker's environment supply whatever provider it
+        # currently defaults to (t_04509175: `set-model claude-sonnet-5` with no
+        # `--provider` inherited openai-codex and died before the first model
+        # turn, 10 times, across two tasks). Fall back to a static-catalog guess
+        # for the model's owning provider; this self-heals rows stored before
+        # this fix, at the cost of leaving truly unrecognized model names
+        # (typos, not-yet-cataloged ids) with the old bare-`-m` behavior, which
+        # the worker's own startup guard already reports clearly.
+        provider = task.provider_override
+        if not provider:
+            try:
+                from hermes_cli.models import detect_static_provider_for_model
+                detected = detect_static_provider_for_model(task.model_override, "auto")
+            except Exception:
+                detected = None
+            if detected:
+                provider = detected[0]
+        if provider:
+            cmd.extend(["--provider", provider])
     # Independent of the model override — a task can run the profile's own
     # model at a different depth.
     if task.reasoning_effort:

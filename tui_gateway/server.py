@@ -3671,6 +3671,7 @@ from .session_reaper import (  # noqa: E402
     _schedule_startup_orphan_sweep,
     _session_is_evictable,
     _session_is_lru_evictable,
+    _sessions_quiescent,
     _session_orphan_reaper_enabled,
     _start_backend_heartbeat_refresher,
     _startup_orphan_sweep_lock,

@@ -173,8 +173,8 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
     write deadline and interrupts their turns (#58576); this is the moment it costs no other session. The
     predicate is advisory (a turn can start right after), so the per-session checks — one may read state.db —
     run outside ``_sessions_lock``."""
-    with _sessions_lock:
-        others = [(sid, s) for sid, s in _sessions.items() if sid != exclude]
+    with srv._sessions_lock:
+        others = [(sid, s) for sid, s in srv._sessions.items() if sid != exclude]
     return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 

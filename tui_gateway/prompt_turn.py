@@ -814,7 +814,7 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     try:  # while the profile HERMES_HOME override is still active (session's own config)
         from hermes_cli.mem_trim import trim_memory
         # The finishing session is still marked running here; every OTHER session must be idle (#58576).
-        if _sessions_quiescent(exclude=sid):
+        if srv._sessions_quiescent(exclude=sid):
             trim_memory(reason="tui turn completion")
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)

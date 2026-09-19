@@ -429,7 +429,7 @@ class TestNamedProfileHintIntegration:
         assert f"under {root}/profiles/<name>/." in prompt
 
 
-def test_build_system_prompt_records_stable_prefix():
+def test_build_system_prompt_records_cacheable_context_prefix():
     agent = _make_agent()
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),
@@ -439,7 +439,23 @@ def test_build_system_prompt_records_stable_prefix():
         prompt = build_system_prompt(agent)
 
     assert prompt.startswith(agent._cached_system_prompt_static)
-    assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
+    assert "context" in agent._cached_system_prompt_static
+    assert agent._cached_system_prompt_static.stable_prefix != agent._cached_system_prompt_static
+
+
+def test_build_system_prompt_records_context_cache_boundary():
+    agent = _make_agent()
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="context files"),
+    ):
+        prompt = build_system_prompt(agent)
+
+    cache_prefix = agent._cached_system_prompt_static
+    assert cache_prefix.startswith(cache_prefix.stable_prefix)
+    assert "context files" in cache_prefix
+    assert prompt.startswith(cache_prefix)
 
 
 def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
@@ -498,7 +514,8 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:6])
+    assert agent._cached_system_prompt_static.stable_prefix == "\n\n".join(expected.split("\n\n")[:4])
 
 
 class TestTelegramRichMessagesHint:

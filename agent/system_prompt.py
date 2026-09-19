@@ -656,6 +656,47 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
+class _ContextTier(str):
+    """Rendered context tier with its byte-stable head retained for caching."""
+
+    def __new__(cls, value: str, cacheable_head: str):
+        instance = super().__new__(cls, value)
+        instance.cacheable_head = cacheable_head
+        return instance
+
+    def __getnewargs__(self):
+        # copy/deepcopy/pickle rebuild str subclasses via __new__; without this the
+        # two-argument constructor raises TypeError on every deepcopy of the parts.
+        return (str(self), self.cacheable_head)
+
+
+class _SystemCachePrefix(str):
+    """Largest reusable system prefix, carrying its stable-tier boundary."""
+
+    def __new__(cls, value: str, stable_prefix: str):
+        instance = super().__new__(cls, value)
+        instance.stable_prefix = stable_prefix
+        return instance
+
+    def __getnewargs__(self):
+        # The prefix lands in ``api_messages`` text parts, which the request path deep-copies
+        # (vision prep, compression snapshots); a bare str subclass would TypeError there.
+        return (str(self), self.stable_prefix)
+
+
+def _static_cache_prefix(parts: Dict[str, str]) -> str:
+    """Return the stable prefix extended through the cacheable context head.
+
+    Workspace snapshots stay outside this boundary: they are process-local probes and
+    can differ when a persisted prompt is resumed by another process.
+    """
+    stable = parts.get("stable", "")
+    context = parts.get("context", "")
+    cacheable_context = getattr(context, "cacheable_head", "")
+    prefix = "\n\n".join(part for part in (stable, cacheable_context) if part)
+    return _SystemCachePrefix(prefix, stable) if prefix else ""
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
@@ -696,6 +737,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if system_message is not None:
         context_parts.append(system_message)
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    # Project context is stable across compaction. Workspace snapshots are not:
+    # they are live, process-local probes and must remain outside this boundary.
+    context_cacheable = _join_tier(context_parts)
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
     else:
@@ -716,7 +760,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Embedder hints are prose too; reserve the delimiter for the renderer.
         environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
-    return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
+    return {
+        "stable": _join_tier(stable_parts),
+        "context": _ContextTier(_join_tier(context_parts), context_cacheable),
+        "volatile": _join_tier(volatile_parts),
+    }
 
 
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
@@ -724,7 +772,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     only rebuilt after compression.  Tiers are ordered stable -> context ->
     volatile so implicit longest-prefix caches keep the unchanged scaffold."""
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    agent._cached_system_prompt_static = parts["stable"]
+    agent._cached_system_prompt_static = _static_cache_prefix(parts)
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
         agent._emit_diagnostic_status(warning)
@@ -770,11 +818,15 @@ def reconstruct_static_prefix(agent: Any, system_message: Optional[str] = None, 
     ):
         return
     try:
-        static = build_system_prompt_parts(agent, system_message=system_message)["stable"]
-        if static and stored.startswith(static):
-            agent._cached_system_prompt_static = static
-            agent._static_rebuild_failed_for = None
-            return
+        parts = build_system_prompt_parts(agent, system_message=system_message)
+        # A context-file change must not discard the stable-tier marker. The
+        # expanded boundary is preferred when it matches; legacy persisted
+        # prompts and changed context safely retain today's stable-only cache.
+        for static in (_static_cache_prefix(parts), parts["stable"]):
+            if static and stored.startswith(static):
+                agent._cached_system_prompt_static = static
+                agent._static_rebuild_failed_for = None
+                return
     except Exception:
         logger.debug("static system-prefix reconstruction failed on %s", log_label, exc_info=True)
     agent._cached_system_prompt_static = None

@@ -2,6 +2,7 @@
 tools/cronjob_tools.py)."""
 
 import logging
+import os
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
@@ -170,14 +171,56 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _configured_whatsapp_home_channel() -> str:
+    try:
+        from cron.scheduler_delivery import _get_home_target_chat_id
+        return str(_get_home_target_chat_id("whatsapp") or "").strip().lower()
+    except Exception:
+        return os.getenv("WHATSAPP_HOME_CHANNEL", "").strip().lower()
+
+
+def _is_configured_whatsapp_home_alias(target_ref: str) -> bool:
+    home = _configured_whatsapp_home_channel()
+    target = str(target_ref or "").strip().lower()
+    home_user, home_sep, home_domain = home.partition("@")
+    target_user, target_sep, target_domain = target.partition("@")
+    return bool(
+        home
+        and home_sep
+        and target_sep
+        and home_user
+        and home_user == target_user
+        and home_domain == "lid"
+        and target_domain == "s.whatsapp.net"
+    )
+
+
+def _normalize_deliver_token(token: str) -> str:
+    text = str(token).strip()
+    lowered = text.lower()
+    if lowered == "whatsapp:home" and _configured_whatsapp_home_channel():
+        return "whatsapp"
+    if lowered.startswith("whatsapp:"):
+        target_ref = text.split(":", 1)[1]
+        if _is_configured_whatsapp_home_alias(target_ref):
+            return "whatsapp"
+    return text
+
+
 def _normalize_deliver_param(value: Any) -> Optional[str]:
     """Canonical string form of ``deliver``; None for None/empty. MCP clients may pass a list
     (``["telegram"]``) which the scheduler's ``str(deliver).split(",")`` would mangle."""
     if value is None:
         return None
     if isinstance(value, (list, tuple)):
-        return ",".join(_clean_str_list(value)) or None
-    return str(value).strip() or None
+        text = ",".join(_clean_str_list(value))
+    else:
+        text = str(value).strip()
+    if not text:
+        return None
+    if "," not in text:
+        return _normalize_deliver_token(text) or None
+    return ",".join(_normalize_deliver_token(part) for part in _clean_str_list(text.split(","))) or None
 
 
 def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:

@@ -191,6 +191,11 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         "on siblings, end your turn after acting on this one.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
+    if evt.get("last_known_status"):
+        lines.append(f"Last persisted unit status: {evt['last_known_status']} (before owner exit; not current liveness). "
+                     "Unrecorded outcomes remain unknown; inspect evidence before retrying side effects.")
+        for index, path in (evt.get("task_transcripts") or {}).items():
+            lines.append(f"Task index {index} transcript (may be incomplete): {path}")
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)

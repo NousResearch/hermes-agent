@@ -224,10 +224,12 @@ class RunIdempotencyStore:
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
 
-    def forget(self, scope: str, key: str) -> None:
+    def forget(self, scope: str, key: str, *, run_id: str | None = None) -> None:
         """Release a reservation whose run was refused before it existed."""
         with self._lock:
-            self._conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
+            self._conn.execute(
+                "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=? AND (? IS NULL OR run_id=?)",
+                (scope, key, run_id, run_id))
             self._conn.commit()
 
     def close(self) -> None:

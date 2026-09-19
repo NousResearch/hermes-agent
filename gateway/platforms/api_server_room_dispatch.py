@@ -81,15 +81,19 @@ async def _normalize_room_dispatch(
         from gateway import hosted_rooms
         from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-        from gateway.platforms.api_server_room_grants import _local_room_catalog
+        from gateway.platforms.api_server_room_grants import _effective_room_profile, _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
-        active_profile = _api_server._api_request_profile.get() or "default"
+        active_profile = _effective_room_profile(_api_server._api_request_profile)
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")
         _, catalog_map = _local_room_catalog(self, active_profile, local_install)
         catalog = GatewayRoomCatalog.from_mapping(catalog_map)
+        if not catalog.text:
+            raise ValueError("canonical_room_peer_unsupported")
+        if dispatch.attachment_manifest_digest is not None and not catalog.attachments:
+            raise ValueError("room attachments are unsupported")
         policy = RoomExecutionPolicy.from_mapping(catalog.execution_policy.as_mapping())
         if not hmac.compare_digest(policy.policy_digest, dispatch.execution_policy_digest):
             raise ValueError("room execution policy changed")
@@ -100,6 +104,12 @@ async def _normalize_room_dispatch(
         expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
+        from gateway.platforms.api_server_room_grants import _canonical_room_peer
+        if _canonical_room_peer(self, active_profile):
+            from gateway.session_peer_target import root_target
+            owner, _ = root_target(self, active_profile)
+            # Transport-private evidence, never normalized/persisted caller JSON.
+            request._hermes_canonical_room_owner = owner
         session_id = await self._ensure_hosted_member_session(dispatch)
         return {
             "input": dispatch.prompt,

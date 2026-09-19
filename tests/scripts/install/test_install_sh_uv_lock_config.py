@@ -27,9 +27,22 @@ def _locked_sync_helper(path: Path) -> str:
     return marker + body + end
 
 
-def _bash_path(path: Path) -> str:
+def _bash_path(path: Path, bash: str) -> str:
+    """Path form to pass to THIS bash on Windows.
+
+    MSYS-family bashes (Git Bash, MSYS2, Cygwin) accept Windows drive
+    paths directly, so probe uname instead of assuming WSL: handing a
+    Git Bash a /mnt/<drive>/... path fails with exit 127 on every
+    developer Windows box, while CI's WSL bash needs exactly that form.
+    """
     if os.name != "nt":
         return str(path)
+    probe = subprocess.run(
+        [bash, "-c", "uname -s"], capture_output=True, text=True, check=False,
+    )
+    uname = probe.stdout.upper()
+    if "MINGW" in uname or "MSYS" in uname or "CYGWIN" in uname:
+        return path.as_posix()
     drive = path.drive.rstrip(":").lower()
     tail = path.as_posix().split(":", 1)[1].lstrip("/")
     return f"/mnt/{drive}/{tail}"
@@ -98,7 +111,8 @@ test "$XDG_CONFIG_DIRS" = /poison/system
     )
 
     result = subprocess.run(
-        [bash, _bash_path(harness), _bash_path(fake_uv), _bash_path(record)],
+        [bash, _bash_path(harness, bash), _bash_path(fake_uv, bash),
+         _bash_path(record, bash)],
         capture_output=True,
         text=True,
         check=False,

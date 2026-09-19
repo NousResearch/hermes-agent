@@ -396,6 +396,36 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
         kwargs["base_url"] = normalized_base_url.rstrip("/")
+    # Build the SDK's httpx client ourselves so the OS *system* proxy is never silently applied.
+    # The Anthropic SDK's default client uses trust_env=True, which on macOS/Windows reads the
+    # system proxy (via urllib.getproxies()). That hijacks requests to endpoints the proxy cannot
+    # reach (e.g. an intranet gateway) and surfaces as an opaque APIConnectionError. Disable
+    # trust_env and route only through hermes's own env-/NO_PROXY-aware resolver: explicit
+    # HTTP(S)_PROXY still applies for users who need egress, and NO_PROXY is honored for hosts
+    # that must bypass it. (#25319 is the same class of bug on the OpenAI wire.)
+    #
+    # Deliberately NOT build_keepalive_http_client() (agent/process_bootstrap.py), which applies
+    # the same env-only proxy policy: that helper is shaped for the OpenAI wire — it pins
+    # read=None for SSE streaming, so reusing it would silently discard this path's
+    # caller-supplied read timeout, and it returns None on failure, which the SDK reads as "no
+    # http_client" and falls straight back to the trust_env default this fix exists to prevent.
+    #
+    # trust_env=False also stops httpx from reading SSL_CERT_FILE/SSL_CERT_DIR into its default
+    # SSL context, so resolve verify explicitly to preserve custom-CA behavior. This routes
+    # through hermes's shared resolver (agent/ssl_verify.py), which honors HERMES_CA_BUNDLE,
+    # SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE — the same env conventions the
+    # OpenAI-wire and auxiliary clients use — falling back to the certifi default. Without this,
+    # users behind a corporate MITM proxy with a custom root CA (a population that overlaps
+    # heavily with proxy users) would hit TLS verification failures on the Anthropic path.
+    import httpx as _httpx
+    from agent.process_bootstrap import _get_proxy_for_base_url
+    from agent.ssl_verify import resolve_httpx_verify
+    kwargs["http_client"] = _httpx.Client(
+        timeout=kwargs["timeout"],
+        trust_env=False,
+        proxy=_get_proxy_for_base_url(base_url),
+        verify=resolve_httpx_verify(base_url=base_url),
+    )
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     style = _auth_style(api_key, base_url, normalized_base_url)
     kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key

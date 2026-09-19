@@ -451,6 +451,10 @@ long transcript or a busy terminal.
 - **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
   in `en.ts` that skips the others is a regression (drifted punctuation,
   stale labels). Keep trailing-punctuation and tone consistent across all four.
+- The type contract is **sharded by topic**: `src/i18n/types_<topic>.ts` owns one
+  domain's members (`interface <Topic>Translations`), and `src/i18n/types.ts`
+  composes them into `Translations`. Add a string surface in its topic shard,
+  not in `types.ts`.
 
 ## State (TypeScript)
 

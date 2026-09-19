@@ -3854,3 +3854,53 @@ class TestChannelCursorPersistence:
         await adapter._poll_channel(CHANNEL)
 
         assert path.stat().st_mtime_ns == before
+
+
+class TestThreadContextBackfill:
+    """A reply in a Buzz thread must carry that thread's prior messages into a NEW session.
+
+    Discord and Slack both backfill thread history into ``MessageEvent.channel_context``
+    (``run_inbound.py`` prepends it as "[New message]"). Buzz did not, so a bare "Please
+    continue." starting a fresh session arrived with no referent at all and the model had
+    to guess which task was meant.
+    """
+
+    @staticmethod
+    def _threaded(event_id, root, content, created_at=1000, pubkey=OTHER_PUBKEY):
+        ev = _event(event_id, pubkey=pubkey, content=content, created_at=created_at)
+        ev["tags"] = [["h", CHANNEL], ["e", root, "", "root"]]
+        return ev
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_backfills_prior_thread_messages(self):
+        adapter = _make_adapter()
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        root_id = "a" * 64
+        cli = _ScriptedCli()
+        # The thread as the relay holds it: the original job, the agent's answer, the new ping.
+        cli.script("messages", "thread", [
+            self._threaded(root_id, root_id, "@Chip job: port the doctrine plugins to Box 1", 100),
+            self._threaded("b" * 64, root_id, "Stopping here — hit the tool-call cap.", 200,
+                           pubkey=SELF_PUBKEY),
+        ])
+        adapter._run_cli = cli
+
+        await adapter._dispatch_message(
+            text="@Chip Please continue.", chat_id=CHANNEL, chat_type="dm",
+            user_id=OTHER_PUBKEY, user_name="David", message_id="c" * 64,
+            thread_id=root_id, created_at=300,
+        )
+
+        assert captured, "message was not dispatched"
+        ctx = captured[0].channel_context
+        assert ctx, "thread reply carried no channel_context — the model has no referent"
+        assert "port the doctrine plugins" in ctx, "original job missing from backfill"
+        assert "hit the tool-call cap" in ctx, "prior agent answer missing from backfill"

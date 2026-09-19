@@ -28,6 +28,15 @@ database:
   # synchronous: FULL
 
 # =============================================================================
+# Computer Use target (set on the agent/backend profile, not the Desktop client)
+# =============================================================================
+computer_use:
+  # auto preserves existing resolution. In WSL, windows selects the Windows host
+  # via interop; linux selects the guest. Explicit targets never cross-fallback.
+  # HERMES_CUA_DRIVER_CMD remains authoritative but must match an explicit target.
+  target: auto
+
+# =============================================================================
 # Runtime Limits
 # =============================================================================
 # Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to

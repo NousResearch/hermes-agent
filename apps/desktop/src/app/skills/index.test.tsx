@@ -22,6 +22,10 @@ const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
 const getSkillContent = vi.fn()
+const getComputerUseStatus = vi.fn()
+const saveHermesConfigRecord = vi.fn()
+const runToolsetPostSetup = vi.fn()
+const getActionStatus = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -38,7 +42,14 @@ vi.mock('@/hermes', async importOriginal => ({
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
   getProfiles: () => getProfiles(),
-  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile)
+  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile),
+  getComputerUseStatus: (profile?: HermesApi.ProfileScope) => getComputerUseStatus(profile),
+  saveHermesConfigRecord: (config: unknown, profile?: HermesApi.ProfileScope) =>
+    saveHermesConfigRecord(config, profile),
+  runToolsetPostSetup: (name: string, key: string, profile?: HermesApi.ProfileScope) =>
+    runToolsetPostSetup(name, key, profile),
+  getActionStatus: (name: string, lines?: number, profile?: HermesApi.ProfileScope) =>
+    getActionStatus(name, lines, profile)
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -292,13 +303,18 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     'disables catalog installation when the installed list contains %s',
     async installedName => {
       const { installHubSkill } = await import('@/store/hub-actions')
-      queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [{
-        name: 'web-research',
-        identifier: 'official/research/web-research',
-        source: 'official',
-        category: 'research',
-        description: 'Research the web'
-      }]))
+      queryClient.setQueryData(
+        ['public-catalog', 'skills'],
+        parseCatalog('skills', [
+          {
+            name: 'web-research',
+            identifier: 'official/research/web-research',
+            source: 'official',
+            category: 'research',
+            description: 'Research the web'
+          }
+        ])
+      )
 
       render(
         <QueryClientProvider client={queryClient}>
@@ -330,56 +346,73 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       identifier: 'clawhub/community-research',
       expectedIdentifier: 'clawhub/community-research'
     }
-  ])('installs $identifier with its source-qualified target in the pinned connection and profile', async ({ source, identifier, expectedIdentifier }) => {
-    const { installHubSkill } = await import('@/store/hub-actions')
-    const entry = {
-      name: 'community-research',
-      identifier,
-      source,
-      category: 'research',
-      description: 'Community research workflow'
-    }
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
-      entry
-    ]))
+  ])(
+    'installs $identifier with its source-qualified target in the pinned connection and profile',
+    async ({ source, identifier, expectedIdentifier }) => {
+      const { installHubSkill } = await import('@/store/hub-actions')
 
-    await act(async () => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills']}>
-            <SkillsView embedded fixedConnection="homelab" fixedProfile="researcher" />
-          </MemoryRouter>
-        </QueryClientProvider>
+      const entry = {
+        name: 'community-research',
+        identifier,
+        source,
+        category: 'research',
+        description: 'Community research workflow'
+      }
+
+      queryClient.setQueryData(
+        ['public-catalog', 'skills'],
+        parseCatalog('skills', [
+          { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
+          entry
+        ])
       )
-    })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
-    expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-    })
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/skills']}>
+              <SkillsView embedded fixedConnection="homelab" fixedProfile="researcher" />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
 
-    expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
-      connectionId: 'homelab', profile: 'researcher'
-    })
-  })
+      fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+      fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+      expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+      })
+
+      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
+        connectionId: 'homelab',
+        profile: 'researcher'
+      })
+    }
+  )
 
   it('keeps a pending install tied to its entry and scope when the pinned target changes', async () => {
     const { installHubSkill } = await import('@/store/hub-actions')
     const identifier = 'clawhub/community-research'
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
-      { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
-    ]))
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
+        { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
+      ])
+    )
     let finishFirst!: () => void
     let finishSecond!: () => void
-    const firstInstall = new Promise<void>(resolve => { finishFirst = resolve })
-    const secondInstall = new Promise<void>(resolve => { finishSecond = resolve })
-    vi.mocked(installHubSkill)
-      .mockReturnValueOnce(firstInstall)
-      .mockReturnValueOnce(secondInstall)
+
+    const firstInstall = new Promise<void>(resolve => {
+      finishFirst = resolve
+    })
+
+    const secondInstall = new Promise<void>(resolve => {
+      finishSecond = resolve
+    })
+
+    vi.mocked(installHubSkill).mockReturnValueOnce(firstInstall).mockReturnValueOnce(secondInstall)
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
@@ -388,6 +421,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         </MemoryRouter>
       </QueryClientProvider>
     )
+
     const view = render(scopedView('homelab', 'researcher'))
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
@@ -397,7 +431,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(pending.querySelector('svg.animate-spin')).not.toBeNull()
     fireEvent.click(pending)
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(identifier, {
-      connectionId: 'homelab', profile: 'researcher'
+      connectionId: 'homelab',
+      profile: 'researcher'
     })
 
     fireEvent.click(screen.getByRole('button', { name: /^other-skill/ }))
@@ -411,7 +446,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(nextInstall.disabled).toBe(false)
     fireEvent.click(nextInstall)
     expect(installHubSkill).toHaveBeenNthCalledWith(2, identifier, {
-      connectionId: 'other-gateway', profile: 'writer'
+      connectionId: 'other-gateway',
+      profile: 'writer'
     })
 
     await act(async () => {
@@ -430,14 +466,17 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('loads the public catalog only on Browse and reuses it across skills and tools tab switches', async () => {
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => [{
-        name: 'catalog-research',
-        identifier: 'official/research/catalog-research',
-        source: 'official',
-        category: 'research',
-        description: 'Research from the public snapshot'
-      }]
+      json: async () => [
+        {
+          name: 'catalog-research',
+          identifier: 'official/research/catalog-research',
+          source: 'official',
+          category: 'research',
+          description: 'Research from the public snapshot'
+        }
+      ]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
 
     await renderSkills() // ?tab=toolsets
@@ -586,23 +625,26 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         provenance: 'bundled'
       }
     ])
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      {
-        name: 'gif-search',
-        description: 'Search GIFs',
-        source: 'optional',
-        installIdentifier: 'official/gifs/gif-search',
-        category: 'gifs',
-        tags: ['gifs']
-      },
-      {
-        name: 'web-research',
-        description: 'Research the web',
-        source: 'optional',
-        identifier: 'official/research/web-research',
-        category: 'research'
-      }
-    ]))
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        {
+          name: 'gif-search',
+          description: 'Search GIFs',
+          source: 'optional',
+          installIdentifier: 'official/gifs/gif-search',
+          category: 'gifs',
+          tags: ['gifs']
+        },
+        {
+          name: 'web-research',
+          description: 'Research the web',
+          source: 'optional',
+          identifier: 'official/research/web-research',
+          category: 'research'
+        }
+      ])
+    )
 
     await act(async () => {
       render(
@@ -635,5 +677,86 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     })
 
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', 'researcher')
+  })
+})
+
+describe('Computer Use target and provider matrix integration', { timeout: 60_000 }, () => {
+  it.each([false, true])('refreshes the real install panel without losing an active setup: %s', async installing => {
+    let target = 'auto'
+    let complete!: (value: { name: string; running: boolean; exit_code: number; lines: string[] }) => void
+
+    const completion = new Promise<{ name: string; running: boolean; exit_code: number; lines: string[] }>(resolve => {
+      complete = resolve
+    })
+
+    getToolsets.mockResolvedValue([toolset({ name: 'computer_use', label: 'Computer Use', tools: ['computer_use'] })])
+    getComputerUseStatus.mockImplementation(async () => ({
+      platform: 'linux',
+      platform_supported: true,
+      is_wsl: true,
+      target,
+      installed: target !== 'windows',
+      ready: target !== 'windows',
+      can_grant: false,
+      checks: [],
+      driver_platform: target === 'windows' ? null : 'linux',
+      driver_command: target === 'windows' ? null : '/usr/bin/cua-driver'
+    }))
+    getToolsetConfig.mockImplementation(async () => ({
+      name: 'computer_use',
+      has_category: true,
+      active_provider: 'cua-driver',
+      providers: [
+        {
+          name: 'cua-driver',
+          badge: 'local',
+          tag: 'Desktop control',
+          env_vars: [],
+          post_setup: 'cua_driver',
+          requires_nous_auth: false,
+          is_active: true,
+          status: target === 'windows' ? 'needs_setup' : 'ready'
+        }
+      ]
+    }))
+    saveHermesConfigRecord.mockImplementation(async (config: { computer_use: { target: string } }) => {
+      target = config.computer_use.target
+
+      return { ok: true }
+    })
+    runToolsetPostSetup.mockResolvedValue({ ok: true, name: 'install-cua' })
+    getActionStatus.mockReturnValue(completion)
+
+    await renderSkills()
+    const rerun = await screen.findByRole('button', { name: 'Re-run setup' })
+    const initialConfigCalls = getToolsetConfig.mock.calls.length
+    const scope = getToolsetConfig.mock.calls.at(-1)?.[1]
+
+    if (installing) {
+      fireEvent.click(rerun)
+      // Wait until the existing runner owns a live poll. A remount would
+      // abandon this poll and reset the busy state despite the running action.
+      await waitFor(() => expect(getActionStatus).toHaveBeenCalled(), { timeout: 5000 })
+    }
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Windows host' }))
+    await waitFor(() => expect(getToolsetConfig.mock.calls.length).toBeGreaterThan(initialConfigCalls))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Windows host' }).getAttribute('aria-pressed')).toBe('true')
+    )
+    expect(saveHermesConfigRecord).toHaveBeenCalledWith({ computer_use: { target: 'windows' } }, scope)
+    expect(getToolsetConfig).toHaveBeenLastCalledWith('computer_use', scope)
+    expect(screen.getByText(/Install the cua-driver backend below/)).toBeTruthy()
+    expect(screen.queryByText('Installed')).toBeNull()
+
+    if (installing) {
+      expect(screen.getByRole('button', { name: 'Installing…' }).hasAttribute('disabled')).toBe(true)
+      await act(async () => complete({ name: 'install-cua', running: false, exit_code: 0, lines: ['finished'] }))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Installing…' })).toBeNull())
+      expect(runToolsetPostSetup).toHaveBeenCalledTimes(1)
+      expect(getActionStatus).toHaveBeenCalledTimes(1)
+    }
+
+    expect(await screen.findByRole('button', { name: 'Run setup' })).toBeTruthy()
   })
 })

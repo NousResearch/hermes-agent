@@ -2333,6 +2333,9 @@ DEFAULT_CONFIG = {
     "paste_collapse_char_threshold": 2000,
 
     "computer_use": {
+        # auto = preserve host-native driver resolution; windows = Windows host (native or via
+        # WSL interop); linux = Linux/WSL guest. Explicit targets reject the other platform's binary.
+        "target": "auto",
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,

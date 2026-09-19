@@ -931,7 +931,16 @@ export const zhHant = defineLocale({
     computerUse: {
       accessibility: '輔助使用',
       screenRecording: '螢幕錄製',
-      driverHealth: '驅動程式健康狀態'
+      driverHealth: '驅動程式健康狀態',
+      targetTitle: '執行 Computer Use 的位置',
+      targetAutomatic: '自動',
+      targetWindows: 'Windows 主機',
+      targetLinux: 'Linux 客體',
+      targetAutomaticDescription: '沿用現有驅動程式解析方式。若要明確尋找 Windows 中的安裝，請選擇 Windows 主機。',
+      targetWindowsDescription: '在 Windows 主機上執行 cua-driver，並透過 WSL 存取。',
+      targetLinuxDescription: '在此 WSL Linux 客體內執行 cua-driver。',
+      effectiveDriver: platform => `實際驅動平台：${platform}`,
+      driverCommand: '驅動命令'
     },
     about: {
       heading: 'Hermes Desktop',

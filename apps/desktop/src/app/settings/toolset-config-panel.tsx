@@ -40,6 +40,8 @@ import { VoiceProviderFields } from './voice-provider-fields'
 
 interface ToolsetConfigPanelProps {
   toolset: string
+  /** Refetch backend truth without dropping in-progress provider setup. */
+  refreshKey?: number
   /** Called after a key is saved/cleared or a provider chosen, so the parent
    *  can refresh the "Configured / Needs keys" pill. */
   onConfiguredChange?: () => void
@@ -523,7 +525,7 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend, profile }:
   )
 }
 
-export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
+export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile, refreshKey }: ToolsetConfigPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
@@ -539,6 +541,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
   const providerChoiceClaimedRef = useRef(false)
   // Guard the Nous Portal sign-in poll loop against unmount/state updates.
   const mountedRef = useRef(true)
+  const configRequestRef = useRef(0)
 
   // eslint-disable-next-line no-restricted-syntax -- mount flag guarding an async poll loop, not an atom mirror
   useEffect(() => {
@@ -550,10 +553,15 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
   }, [])
 
   const refresh = useCallback(async () => {
-    setLoading(true)
+    const request = ++configRequestRef.current
 
     try {
       const next = await getToolsetConfig(toolset, profile)
+
+      if (!mountedRef.current || request !== configRequestRef.current) {
+        return
+      }
+
       setCfg(next)
       const seeded: Record<string, boolean> = {}
 
@@ -565,15 +573,31 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
 
       setEnvState(seeded)
     } catch (err) {
-      notifyError(err, copy.failedLoad)
+      if (mountedRef.current && request === configRequestRef.current) {
+        notifyError(err, copy.failedLoad)
+      }
     } finally {
-      setLoading(false)
+      if (mountedRef.current && request === configRequestRef.current) {
+        setLoading(false)
+      }
     }
   }, [copy.failedLoad, toolset, profile])
 
+  // A scope change clears foreign data. Same-scope refreshes keep the provider
+  // tree mounted, especially PostSetupRunner's live action and polling loop.
+  // eslint-disable-next-line no-restricted-syntax -- invalidate requests from the old config scope
+  useEffect(() => {
+    setCfg(null)
+    setLoading(true)
+
+    return () => {
+      configRequestRef.current += 1
+    }
+  }, [toolset, profile])
+
   useEffect(() => {
     void refresh()
-  }, [refresh])
+  }, [refresh, refreshKey])
 
   const providers = useMemo(() => cfg?.providers ?? [], [cfg])
 

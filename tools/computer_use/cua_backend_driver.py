@@ -29,6 +29,7 @@ _CUA_DRIVER_RUNTIME_CONTRACT_ARGS = {  # key order feeds the "manifest is missin
 }
 _SEMVER_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?")
 _UPSTREAM_SCRIPTS = "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts"
+_COMPUTER_USE_TARGETS = frozenset({"auto", "windows", "linux"})
 
 def _cb():
     """Facade module (config/policy helpers), looked up lazily to avoid the import cycle."""
@@ -58,22 +59,110 @@ def _valid_mcp_args(invocation: Any) -> Optional[List[str]]:
 def _has_path_separator(value: str) -> bool:
     return os.sep in value or (os.altsep is not None and os.altsep in value)
 
+def _runtime_host() -> Tuple[str, bool]:
+    """Python host platform and whether its Linux kernel is WSL."""
+    try:
+        from hermes_constants import is_wsl
+        wsl = bool(is_wsl())
+    except Exception:
+        wsl = False
+    return sys.platform, wsl
+
+def computer_use_target() -> str:
+    """Profile-scoped ``computer_use.target`` (``auto`` when absent)."""
+    try:
+        from hermes_cli.config import load_config
+        raw = ((load_config() or {}).get("computer_use") or {}).get("target", "auto")
+    except Exception:
+        raw = "auto"
+    return str(raw or "auto").strip().lower()
+
+def resolved_cua_driver_platform(driver_cmd: Optional[str], *, host_platform: Optional[str] = None) -> Optional[str]:
+    """Platform of the executable actually reached by *driver_cmd*; follows PATH entries and symlinks."""
+    if not driver_cmd:
+        return None
+    platform = host_platform or _runtime_host()[0]
+    resolved = shutil.which(driver_cmd) or driver_cmd
+    actual = os.path.realpath(resolved)
+    if platform == "win32" or actual.lower().endswith(".exe"):
+        return "windows"
+    return "macos" if platform == "darwin" else "linux"
+
 def _wsl_windows_path_to_posix(path: str) -> str:
     """Translate a Windows absolute manifest command to its DrvFS ``/mnt/<drive>/...`` form when Hermes runs in WSL
     (a Windows cua-driver manifest can report ``C:\\...`` while Hermes spawns via POSIX). Non-Windows paths and
     non-WSL hosts are returned unchanged."""
     if not re.match(r"^[A-Za-z]:[\\/]", path):
         return path
-    try:
-        from hermes_constants import is_wsl
-        wsl = is_wsl()
-    except Exception:
-        wsl = False
+    _, wsl = _runtime_host()
     win = PureWindowsPath(path)
     drive = (win.drive or "").rstrip(":").lower()
-    return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:])) if wsl and drive else path
+    if not wsl or not drive:
+        return path
+    # ``wslpath`` honors nonstandard automount roots; fall back to the historical /mnt mapping.
+    wslpath = shutil.which("wslpath")
+    if wslpath:
+        try:
+            proc = subprocess.run([wslpath, "-u", path], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                  timeout=3.0, encoding="utf-8", errors="replace")
+            converted = (proc.stdout or "").strip()
+            if proc.returncode == 0 and converted.startswith("/") and "\n" not in converted:
+                return converted
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
 
-def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
+class _WslDiscoveryUnavailable(RuntimeError):
+    """A transient or incomplete Windows install-location probe."""
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_wsl_windows_install_paths() -> Tuple[str, ...]:
+    """Official Windows install paths for the current Windows user, translated into WSL paths.
+
+    The PowerShell program is fixed and noninteractive; output is JSON and every returned value is
+    bounded and validated as an absolute drive path before it is used.
+    """
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        raise _WslDiscoveryUnavailable("PowerShell is unavailable through WSL interop")
+    script = ("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+              "@{LocalAppData=[Environment]::GetFolderPath('LocalApplicationData');"
+              "UserProfile=[Environment]::GetFolderPath('UserProfile')}|ConvertTo-Json -Compress")
+    try:
+        proc = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5.0,
+            encoding="utf-8", errors="replace", env=_cb().sanitized_cua_driver_env())
+        data = json.loads((proc.stdout or "").lstrip("\ufeff").strip()) if proc.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        raise _WslDiscoveryUnavailable("Windows install-location probe failed") from exc
+
+    def clean(key: str) -> Optional[str]:
+        value = data.get(key) if isinstance(data, dict) else None
+        if not isinstance(value, str) or len(value) > 1024 or not re.fullmatch(r"[A-Za-z]:[\\/][^\x00-\x1f]*", value):
+            return None
+        return value.rstrip("\\/")
+
+    local, profile = clean("LocalAppData"), clean("UserProfile")
+    if not local or not profile:
+        raise _WslDiscoveryUnavailable("Windows install-location probe returned incomplete paths")
+    windows_paths = [
+        str(PureWindowsPath(local) / "Programs" / "Cua" / "cua-driver" / "bin" / "cua-driver.exe"),
+        str(PureWindowsPath(profile) / ".local" / "bin" / "cua-driver.exe"),
+    ]
+    return tuple(_wsl_windows_path_to_posix(path) for path in windows_paths)
+
+
+def _wsl_windows_install_paths() -> List[str]:
+    """Cache successful discovery only; a failed interop probe remains retryable."""
+    try:
+        return list(_cached_wsl_windows_install_paths())
+    except _WslDiscoveryUnavailable:
+        return []
+
+def _candidate_cua_driver_commands(override: Optional[str] = None, *, target: Optional[str] = None,
+                                   runtime_host: Optional[Tuple[str, bool]] = None) -> List[str]:
     """Candidate commands in resolution order. ``override`` / a non-empty ``HERMES_CUA_DRIVER_CMD`` is authoritative
     (if wrong, report the driver missing rather than silently picking another binary). Otherwise PATH, then
     canonical installer locations — Finder/Dock-launched apps inherit a narrow PATH without ``~/.local/bin``;
@@ -81,21 +170,76 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
     if configured:
         return [configured]
+    target = computer_use_target() if target is None else target
+    platform, wsl = runtime_host or _runtime_host()
     home = os.path.expanduser("~")
-    if sys.platform == "win32":
+    if target == "windows" and platform == "linux" and wsl:
+        return ["cua-driver.exe", *_wsl_windows_install_paths()]
+    if target == "windows" and platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        return ["cua-driver.exe", _CUA_DRIVER_DEFAULT_CMD,
+                os.path.join(local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"),
+                os.path.join(home, ".local", "bin", "cua-driver.exe"), os.path.join(home, ".local", "bin", "cua-driver")]
+    if target == "linux":
+        return ([_CUA_DRIVER_DEFAULT_CMD, os.path.join(home, ".local", "bin", "cua-driver"),
+                 os.path.join(home, ".cargo", "bin", "cua-driver"), "/usr/local/bin/cua-driver"]
+                if platform == "linux" else [])
+    if platform == "win32":
         local_app_data = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
         return [_CUA_DRIVER_DEFAULT_CMD, os.path.join(local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"),
                 os.path.join(home, ".local", "bin", "cua-driver.exe"), os.path.join(home, ".local", "bin", "cua-driver")]
     return [_CUA_DRIVER_DEFAULT_CMD, os.path.join(home, ".local", "bin", "cua-driver"),
             os.path.join(home, ".cargo", "bin", "cua-driver"), "/opt/homebrew/bin/cua-driver", "/usr/local/bin/cua-driver"]
 
-def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
-    """Resolve the cua-driver executable for every runtime/status surface; an override is never silently replaced."""
-    for expanded in map(os.path.expanduser, _candidate_cua_driver_commands(override)):
+def _resolve_cua_driver_selection(override: Optional[str] = None, *,
+                                  runtime_host: Optional[Tuple[str, bool]] = None) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """Return ``(target, driver_platform, command, error)`` for the active profile."""
+    target = computer_use_target()
+    platform, wsl = runtime_host or _runtime_host()
+    configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
+    if target not in _COMPUTER_USE_TARGETS:
+        return target, None, None, f"invalid computer_use.target {target!r}; expected auto, windows, or linux"
+    if target == "windows" and not (platform == "win32" or (platform == "linux" and wsl)):
+        return target, None, None, "computer_use.target 'windows' requires native Windows or WSL"
+    if target == "linux" and platform != "linux":
+        return target, None, None, "computer_use.target 'linux' requires a Linux or WSL guest"
+
+    mismatch: Optional[str] = None
+    mismatch_platform: Optional[str] = None
+    mismatch_command: Optional[str] = None
+    candidates = _candidate_cua_driver_commands(override, target=target, runtime_host=(platform, wsl))
+    for expanded in map(os.path.expanduser, candidates):
+        if wsl:
+            expanded = _wsl_windows_path_to_posix(expanded)
         resolved = shutil.which(expanded)
         if resolved:
-            return expanded if _has_path_separator(expanded) else resolved
-    return None
+            command = expanded if _has_path_separator(expanded) else resolved
+            driver_platform = resolved_cua_driver_platform(command, host_platform=platform)
+            if target != "auto" and driver_platform != target:
+                mismatch_platform, mismatch_command = driver_platform, command
+                mismatch = (f"selected executable {command!r} is a {driver_platform or 'unknown-platform'} driver, "
+                            f"but computer_use.target is {target!r}")
+                continue
+            return target, driver_platform, command, None
+    if configured:
+        prefix = f"{_CUA_DRIVER_CMD_ENV}={configured!r}"
+        return (target, mismatch_platform, mismatch_command,
+                f"{prefix} conflicts with computer_use.target {target!r}: {mismatch}" if mismatch else f"{prefix} was not found")
+    label = "Windows" if target == "windows" else "Linux" if target == "linux" else "compatible"
+    return target, mismatch_platform, mismatch_command, mismatch or f"{label} cua-driver was not found"
+
+def computer_use_selection_identity() -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """Stable identity used by status and live backend-cache invalidation."""
+    return _resolve_cua_driver_selection()
+
+def computer_use_target_error() -> Optional[str]:
+    """Actionable target-selection failure, or ``None`` when a compatible driver resolves."""
+    return computer_use_selection_identity()[3]
+
+def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
+    """Resolve the target-compatible cua-driver; an override is authoritative and fails closed on conflict."""
+    _, _, command, error = _resolve_cua_driver_selection(override)
+    return None if error else command
 
 def cua_driver_binary_available() -> bool:
     """True if `cua-driver` resolves via env, PATH, or known install paths."""
@@ -177,7 +321,8 @@ def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str
     """Report whether a local driver can host Hermes' 0.20 integration."""
     resolved = binary or resolve_cua_driver_cmd()
     version: Optional[str] = None
-    reason = "cua-driver is not installed"
+    reason = computer_use_target_error() if binary is None else None
+    reason = reason or "cua-driver is not installed"
     if resolved:
         try:
             result = _cb()._run_driver(resolved, "manifest", timeout=15.0 if sys.platform == "win32" else 5.0)

@@ -69,12 +69,18 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     """OS-aware readiness for the desktop card; key order is an API payload contract. ``ready`` is the single signal the
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
-    plat, binary = sys.platform, resolve_cua_driver_cmd(driver_cmd)
+    from tools.computer_use.cua_backend_driver import (
+        _resolve_cua_driver_selection, _runtime_host, computer_use_selection_identity)
+    plat = sys.platform
+    target, driver_platform, binary, target_error = (
+        computer_use_selection_identity() if driver_cmd is None else _resolve_cua_driver_selection(driver_cmd))
+    _, wsl = _runtime_host()
     out: Dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
+                           "target": target, "is_wsl": wsl, "driver_platform": driver_platform,
+                           "driver_command": binary, "target_error": target_error,
                            "installed": bool(binary), "version": None, "ready": None, "can_grant": plat == "darwin",
                            "checks": [], "source": None, "error": None, **{k: None for k in _BOOLS}}
-    if not binary:
+    if not binary or target_error:
         return out
     with suppress(Exception):
         out["version"] = (_run(binary, "--version", timeout=5).stdout or "").strip() or None

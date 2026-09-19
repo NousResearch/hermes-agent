@@ -89,3 +89,42 @@ def test_computer_use_backend_not_shared_across_profiles_and_release_finds_it(tw
         reset_hermes_home_override(tok)
         with cu._backend_lock:
             cu._backends.clear(), cu._backend_call_locks.clear(), cu._backend_permission_modes.clear()
+
+
+def test_computer_use_target_change_replaces_only_that_sessions_backend(monkeypatch):
+    import tools.computer_use.tool as cu
+
+    created = []
+    selection = ["linux"]
+
+    class _Backend:
+        def __init__(self):
+            self.stopped = False
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: _Backend())
+    monkeypatch.setattr(cu, "_cua_permission_mode", lambda sid: "bounded")
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend_driver.computer_use_selection_identity",
+        lambda: (selection[0], selection[0], f"/{selection[0]}/cua-driver", None),
+    )
+    with cu._backend_lock:
+        cu._backends.clear(), cu._backend_call_locks.clear(), cu._backend_permission_modes.clear()
+        cu._backend_selection_identities.clear()
+
+    first = cu._get_backend("one")
+    other = cu._get_backend("other")
+    selection[0] = "windows"
+    replacement = cu._get_backend("one")
+
+    assert replacement is not first
+    assert first.stopped is True
+    assert other.stopped is False
+    assert cu._get_backend("other") is not other  # it refreshes only when that scoped backend is next requested
+    assert cu._backend_permission_modes["one"] == "bounded"

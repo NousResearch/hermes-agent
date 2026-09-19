@@ -1217,6 +1217,8 @@ export interface ComputerUseCheck {
   message: string
 }
 
+export type ComputerUseTarget = 'auto' | 'linux' | 'windows'
+
 export interface ComputerUseStatus {
   /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
   platform: string
@@ -1239,6 +1241,16 @@ export interface ComputerUseStatus {
   source: ComputerUsePermissionSource | null
   /** Populated when the status probe itself failed. */
   error: string | null
+  /** Persisted driver target. Absent on older backends; the UI treats it as auto. */
+  target?: ComputerUseTarget
+  /** Whether the Python backend host is running in WSL. */
+  is_wsl?: boolean
+  /** Effective OS on which cua-driver runs after target resolution. */
+  driver_platform?: string | null
+  /** Resolved cua-driver executable/command used for diagnostics. */
+  driver_command?: string | null
+  /** Target-resolution or environment-override conflict from the backend. */
+  target_error?: string | null
 }
 
 export interface SessionSearchResult {

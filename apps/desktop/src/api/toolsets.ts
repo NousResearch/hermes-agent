@@ -125,16 +125,16 @@ export function selectTerminalBackend(backend: string): Promise<{ ok: boolean; b
   })
 }
 
-export function getComputerUseStatus(): Promise<ComputerUseStatus> {
-  return hermesApi<ComputerUseStatus>({
-    ...profileScoped(),
+export function getComputerUseStatus(profile?: ProfileScope): Promise<ComputerUseStatus> {
+  return window.hermesDesktop.api<ComputerUseStatus>({
+    ...capabilityScoped(profile),
     path: '/api/tools/computer-use/status'
   })
 }
 
-export function grantComputerUsePermissions(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
-    ...profileScoped(),
+export function grantComputerUsePermissions(profile?: ProfileScope): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...capabilityScoped(profile),
     path: '/api/tools/computer-use/permissions/grant',
     method: 'POST'
   })

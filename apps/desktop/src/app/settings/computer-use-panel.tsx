@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { getActionStatus, getComputerUseStatus, grantComputerUsePermissions } from '@/hermes'
+import { SegmentedControl } from '@/components/ui/segmented-control'
+import {
+  getActionStatus,
+  getComputerUseStatus,
+  grantComputerUsePermissions,
+  type ProfileScope,
+  saveHermesConfigRecord
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw, X } from '@/lib/icons'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { notify, notifyError } from '@/store/notifications'
-import type { ComputerUseStatus } from '@/types/hermes'
+import type { ComputerUseStatus, ComputerUseTarget } from '@/types/hermes'
 
 import { Pill } from './primitives'
 
@@ -14,6 +21,10 @@ interface ComputerUsePanelProps {
   /** Re-read the parent toolset list after a permission/install change so the
    *  "Configured / Needs keys" pill stays in sync. */
   onConfiguredChange?: () => void
+  /** Invalidate the sibling provider matrix after a target write succeeds. */
+  onTargetChange?: () => void
+  /** The exact Capabilities (connection, profile) scope this panel edits. */
+  profile?: ProfileScope
 }
 
 // Per-OS one-liner shown when there's no TCC grant flow (Windows/Linux). macOS
@@ -21,6 +32,22 @@ interface ComputerUsePanelProps {
 const PLATFORM_NOTE: Record<string, string> = {
   linux: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
   win32: 'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.'
+}
+
+function platformLabel(platform: string): string {
+  if (platform === 'windows' || platform === 'win32') {
+    return 'Windows'
+  }
+
+  if (platform === 'linux') {
+    return 'Linux'
+  }
+
+  if (platform === 'darwin' || platform === 'macos') {
+    return 'macOS'
+  }
+
+  return platform
 }
 
 function tone(granted: boolean | null) {
@@ -61,36 +88,98 @@ function PermissionRow({ granted, label, hint }: { granted: boolean | null; labe
  * Binary install/upgrade stays in the cua-driver provider's post-setup runner
  * below this card (the generic ToolsetConfigPanel).
  */
-export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) {
+export function ComputerUsePanel({ onConfiguredChange, onTargetChange, profile }: ComputerUsePanelProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<ComputerUseStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [granting, setGranting] = useState(false)
+  const [savingTarget, setSavingTarget] = useState(false)
   const activeRef = useRef(false)
+  const requestGenerationRef = useRef(0)
+  const scopeGenerationRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const generation = ++requestGenerationRef.current
+
     try {
-      setStatus(await getComputerUseStatus())
+      const next = await getComputerUseStatus(profile)
+
+      if (activeRef.current && generation === requestGenerationRef.current) {
+        setStatus(next)
+      }
     } catch (err) {
-      notifyError(err, 'Could not read Computer Use status')
+      if (activeRef.current && generation === requestGenerationRef.current) {
+        notifyError(err, 'Could not read Computer Use status')
+      }
     } finally {
-      setLoading(false)
+      if (activeRef.current && generation === requestGenerationRef.current) {
+        setLoading(false)
+      }
     }
-  }, [])
+  }, [profile])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
+    scopeGenerationRef.current += 1
     activeRef.current = true
+    setLoading(true)
+    setStatus(null)
+    setGranting(false)
+    setSavingTarget(false)
     void refresh()
 
-    return () => void (activeRef.current = false)
+    return () => {
+      activeRef.current = false
+      requestGenerationRef.current += 1
+    }
   }, [refresh])
 
+  const selectTarget = useCallback(
+    async (target: ComputerUseTarget) => {
+      if (target === (status?.target ?? 'auto')) {
+        return
+      }
+
+      const scopeGeneration = scopeGenerationRef.current
+      setSavingTarget(true)
+
+      try {
+        const saved = await saveHermesConfigRecord({ computer_use: { target } }, profile)
+
+        if (!saved.ok) {
+          throw new Error('Computer Use target was not saved')
+        }
+
+        if (!activeRef.current || scopeGeneration !== scopeGenerationRef.current) {
+          return
+        }
+
+        onTargetChange?.()
+        onConfiguredChange?.()
+        await refresh()
+      } catch (err) {
+        if (activeRef.current && scopeGeneration === scopeGenerationRef.current) {
+          notifyError(err, 'Could not save Computer Use target')
+        }
+      } finally {
+        if (activeRef.current && scopeGeneration === scopeGenerationRef.current) {
+          setSavingTarget(false)
+        }
+      }
+    },
+    [onConfiguredChange, onTargetChange, profile, refresh, status?.target]
+  )
+
   const grant = useCallback(async () => {
+    const scopeGeneration = scopeGenerationRef.current
     setGranting(true)
 
     try {
-      const started = await grantComputerUsePermissions()
+      const started = await grantComputerUsePermissions(profile)
+
+      if (!activeRef.current || scopeGeneration !== scopeGenerationRef.current) {
+        return
+      }
 
       if (!started.ok) {
         notifyError(new Error('spawn failed'), 'Could not request permissions')
@@ -112,7 +201,12 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
           break
         }
 
-        const polled = await getActionStatus(started.name, 200)
+        const polled = await getActionStatus(started.name, 200, profile)
+
+        if (!activeRef.current || scopeGeneration !== scopeGenerationRef.current) {
+          break
+        }
+
         upsertDesktopActionTask(polled)
 
         if (!polled.running) {
@@ -120,20 +214,20 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
         }
       }
 
-      if (activeRef.current) {
+      if (activeRef.current && scopeGeneration === scopeGenerationRef.current) {
         await refresh()
         onConfiguredChange?.()
       }
     } catch (err) {
-      if (activeRef.current) {
+      if (activeRef.current && scopeGeneration === scopeGenerationRef.current) {
         notifyError(err, 'Could not request permissions')
       }
     } finally {
-      if (activeRef.current) {
+      if (activeRef.current && scopeGeneration === scopeGenerationRef.current) {
         setGranting(false)
       }
     }
-  }, [onConfiguredChange, refresh])
+  }, [onConfiguredChange, profile, refresh])
 
   if (loading) {
     return (
@@ -148,20 +242,71 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
     return null
   }
 
+  const selectedTarget = status.target ?? 'auto'
+  const targetCopy = t.settings.computerUse
+
+  const targetDescription: Record<ComputerUseTarget, string> = {
+    auto: targetCopy.targetAutomaticDescription,
+    windows: targetCopy.targetWindowsDescription,
+    linux: targetCopy.targetLinuxDescription
+  }
+
+  const targetSelector = status.is_wsl === true && (
+    <div className="grid gap-1 px-1">
+      <span className="text-xs font-medium">{targetCopy.targetTitle}</span>
+      <SegmentedControl
+        disabled={savingTarget || granting}
+        onChange={target => void selectTarget(target)}
+        options={[
+          { id: 'auto', label: targetCopy.targetAutomatic },
+          { id: 'windows', label: targetCopy.targetWindows },
+          { id: 'linux', label: targetCopy.targetLinux }
+        ]}
+        value={selectedTarget}
+      />
+      <p className="text-[0.7rem] text-muted-foreground">{targetDescription[selectedTarget]}</p>
+    </div>
+  )
+
+  const driverDiagnostics = (status.driver_platform || status.driver_command || status.target_error) && (
+    <div className="grid gap-0.5 px-1 text-[0.7rem] text-muted-foreground">
+      {status.driver_platform && <p>{targetCopy.effectiveDriver(platformLabel(status.driver_platform))}</p>}
+      {status.driver_command && (
+        <p className="break-all">
+          {targetCopy.driverCommand}: {status.driver_command}
+        </p>
+      )}
+      {status.target_error && (
+        <p>
+          <AlertTriangle className="mr-1 inline size-3" />
+          {status.target_error}
+        </p>
+      )}
+    </div>
+  )
+
   if (!status.platform_supported) {
     return (
-      <p className="px-1 text-xs text-muted-foreground">
-        Computer Use isn&apos;t supported on this platform ({status.platform}).
-      </p>
+      <div className="grid gap-2">
+        {targetSelector}
+        {driverDiagnostics}
+        <p className="px-1 text-xs text-muted-foreground">
+          Computer Use isn&apos;t supported on this platform ({status.platform}).
+        </p>
+      </div>
     )
   }
 
   if (!status.installed) {
     return (
-      <p className="px-1 text-xs text-muted-foreground">
-        Install the cua-driver backend below to drive this machine.
-        {status.can_grant && ' Then grant Accessibility and Screen Recording here.'}
-      </p>
+      <div className="grid gap-2">
+        {targetSelector}
+        {driverDiagnostics}
+        <p className="px-1 text-xs text-muted-foreground">
+          Install the cua-driver backend below to drive this machine.
+          {status.can_grant && ' Then grant Accessibility and Screen Recording here.'}
+        </p>
+      </div>
     )
   }
 
@@ -169,6 +314,8 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   return (
     <div className="grid gap-2">
+      {targetSelector}
+      {driverDiagnostics}
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <div className="min-w-0">
           {status.can_grant ? (
@@ -231,7 +378,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
         </div>
       ) : (
         status.can_grant && (
-          <Button disabled={granting} onClick={() => void grant()} size="sm">
+          <Button disabled={granting || savingTarget} onClick={() => void grant()} size="sm">
             {granting ? <Loader2 className="size-3.5 animate-spin" /> : <ExternalLink className="size-3.5" />}
             {granting ? 'Waiting for approval…' : 'Grant permissions'}
           </Button>

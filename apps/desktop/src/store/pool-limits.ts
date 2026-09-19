@@ -20,7 +20,7 @@ export interface PoolLimits {
 }
 
 export const POOL_LIMITS_DEFAULTS: PoolLimits = {
-  maxBackends: 3,
+  maxBackends: 8,
   idleMs: 10 * 60_000
 }
 

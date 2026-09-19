@@ -6,6 +6,7 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 
 import logging
 import json
+import math
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -61,6 +62,14 @@ _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
 )
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
+_USAGE_ROUTE_COLS = ("model", "billing_provider", "billing_base_url", "billing_mode", "task")
+_USAGE_COST_COLS = ("estimated_cost_usd", "actual_cost_usd")
+_USAGE_METADATA_COLS = ("cost_status", "cost_source", "first_seen", "last_seen")
+_USAGE_EXPORT_COLS = (*_USAGE_ROUTE_COLS, *_IMPORT_INT_COLS, *_USAGE_COST_COLS, *_USAGE_METADATA_COLS)
+_IMPORT_USAGE_SQL = (
+    f"INSERT INTO session_model_usage (session_id, {', '.join(_USAGE_EXPORT_COLS)}) "
+    f"VALUES (:session_id, {', '.join(':' + col for col in _USAGE_EXPORT_COLS)})"
+)
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
@@ -276,9 +285,24 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
+    def _export_model_usage(self, session_ids: List[str]) -> Dict[str, list]:
+        usage = {session_id: [] for session_id in session_ids}
+        for start in range(0, len(session_ids), 900):
+            chunk = session_ids[start:start + 900]
+            rows = self._read_all(
+                f"SELECT session_id, {', '.join(_USAGE_EXPORT_COLS)} FROM session_model_usage "
+                f"WHERE session_id IN ({','.join('?' for _ in chunk)}) "
+                f"ORDER BY session_id, {', '.join(_USAGE_ROUTE_COLS)}", chunk,
+            )
+            for row in rows:
+                item = dict(row)
+                usage[item.pop("session_id")].append(item)
+        return usage
+
     def _with_messages(self, session: Dict[str, Any]) -> Dict[str, Any]:
         messages = self.get_messages(session["id"])
-        return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
+        return {**session, "messages": messages, "timings": _export_timings(messages, session["id"]),
+                "model_usage": self._export_model_usage([session["id"]])[session["id"]]}
 
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
@@ -302,6 +326,7 @@ class SessionPortabilityMixin:
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """Export all sessions (with messages) as dicts, e.g. for JSONL backup."""
+        self.flush_token_counts()
         sessions = self.search_sessions(source=source, limit=100000)
         messages_by_session = {session["id"]: [] for session in sessions}
         session_ids = list(messages_by_session)
@@ -317,7 +342,8 @@ class SessionPortabilityMixin:
                 messages_by_session[row["session_id"]].append(
                     self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True)
                 )
-        return [{**session, "messages": messages_by_session[session["id"]],
+        usage = self._export_model_usage(session_ids)
+        return [{**session, "messages": messages_by_session[session["id"]], "model_usage": usage[session["id"]],
                  "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
@@ -441,6 +467,7 @@ class SessionPortabilityMixin:
         """Type-check one payload session + its messages; raises ValueError."""
         clean_session = dict(raw)
         clean_session["id"] = session_id
+        clean_session["model_usage"] = self._normalize_import_usage(raw.get("model_usage", []), session_id)
         clean_session["model_config"] = self._import_json_object_or_none(clean_session.get("model_config"), "model_config")
         for field in ("parent_session_id", *_IMPORT_SESSION_TEXT_FIELDS):
             clean_session[field] = self._import_text_or_none(clean_session.get(field), field)
@@ -455,6 +482,48 @@ class SessionPortabilityMixin:
             clean_message["token_count"] = self._import_int_or_none(clean_message.get("token_count"), "token_count")
             clean_messages.append(clean_message)
         return {"session": clean_session, "messages": clean_messages}
+
+    def _normalize_import_usage(self, rows: Any, session_id: str) -> list:
+        """Validate route rows before any writes; their bytes share the session import budget."""
+        if not isinstance(rows, list):
+            raise ValueError("model_usage must be a list")
+        normalized, seen = [], set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("model_usage must contain only objects")
+            if "session_id" in row and row["session_id"] != session_id:
+                raise ValueError("model_usage.session_id must match its containing session")
+            item = {}
+            for field in (*_USAGE_ROUTE_COLS, "cost_status", "cost_source"):
+                value = self._import_text_or_none(row.get(field), f"model_usage.{field}")
+                if field == "model" and not value:
+                    raise ValueError("model_usage.model must be a non-empty string")
+                item[field] = (value or "") if field in _USAGE_ROUTE_COLS else value
+            route = tuple(item[field] for field in _USAGE_ROUTE_COLS)
+            if route in seen:
+                raise ValueError("duplicate model_usage route")
+            seen.add(route)
+            for field in _IMPORT_INT_COLS:
+                value = row.get(field, 0)
+                if isinstance(value, bool) or not isinstance(value, int) or not -(2**63) <= value < 2**63:
+                    raise ValueError(f"model_usage.{field} must be a SQLite integer")
+                item[field] = value
+            for field in (*_USAGE_COST_COLS, "first_seen", "last_seen"):
+                value = row.get(field, 0 if field in _USAGE_COST_COLS else None)
+                if value is None and field not in _USAGE_COST_COLS:
+                    item[field] = None
+                    continue
+                try:
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        raise ValueError
+                    value = float(value)
+                    if not math.isfinite(value):
+                        raise ValueError
+                except (ValueError, OverflowError):
+                    raise ValueError(f"model_usage.{field} must be a finite number") from None
+                item[field] = value
+            normalized.append(item)
+        return normalized
 
     def _validate_import_payload(self, sessions: List[Dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
@@ -524,6 +593,11 @@ class SessionPortabilityMixin:
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
+        # Restore detail verbatim, not via update_token_counts: the session summary
+        # above already includes main-loop usage, and auxiliary rows are separate.
+        conn.executemany(_IMPORT_USAGE_SQL, [
+            {**row, "session_id": session_id} for row in raw.get("model_usage", [])
+        ])
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value
         sanitized_messages = [

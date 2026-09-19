@@ -748,6 +748,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        existing = self._pending_text_batches.get(self._text_batch_key(event))
+        super()._enqueue_text_event(event)
+        if existing is None:
+            return
+        # Keep the latest reply anchor while the shared batcher owns text and timers.
+        latest_message_id = event.message_id
+        latest_anchor = latest_message_id or event.reply_to_message_id
+        if latest_message_id is not None:
+            existing.message_id = str(latest_message_id)
+        if latest_anchor is not None:
+            existing.reply_to_message_id = str(latest_anchor)
+
     @staticmethod
     def _classify_bridge_message(data: Dict[str, Any]) -> MessageType:
         media_type = str(data.get("mediaType", "") or "")

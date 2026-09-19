@@ -518,27 +518,6 @@ def _estimate_chunk_bytes(chunk: Any) -> int:
     return size
 
 
-def _codex_wait_notice_recovery(*, stale_timeout: float, ttfb_enabled: bool, ttfb_timeout: float,
-    last_event_ts: Optional[float], last_progress_ts: Optional[float],
-    retry_started_ts: Optional[float], call_start: float, idle_enabled: bool,
-    idle_timeout: float, idle_requires_progress: bool, elapsed: float) -> str:
-    """Describe the earliest enabled Codex watchdog on the call timeline."""
-    deadlines: list[float] = []
-    if math.isfinite(stale_timeout):
-        deadlines.append(stale_timeout)
-    if retry_started_ts is not None:
-        if ttfb_enabled and math.isfinite(ttfb_timeout):
-            deadlines.append(max(0.0, retry_started_ts - call_start) + ttfb_timeout)
-    elif last_event_ts is None:
-        if ttfb_enabled and math.isfinite(ttfb_timeout):
-            deadlines.append(ttfb_timeout)
-    elif (not idle_requires_progress or last_progress_ts is not None) and idle_enabled and math.isfinite(idle_timeout):
-        deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
-    if not deadlines or min(deadlines) <= elapsed:
-        return ""
-    return f"; auto-reconnect at {int(min(deadlines))}s"
-
-
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
 # A session wedged against an unresponsive provider would otherwise hit the
 # stale detector on every call forever. ``agent._consecutive_stale_streams``

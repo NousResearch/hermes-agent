@@ -406,9 +406,9 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
     stale_timeout,
 ):
     """A disabled watchdog must not be advertised as a future reconnect."""
-    from agent import chat_completion_helpers as h
+    from agent import chat_completion_wait_notice as wn
 
-    recovery = h._codex_wait_notice_recovery(
+    recovery = wn.codex_watchdog_deadline(
         stale_timeout=stale_timeout,
         ttfb_enabled=False,
         ttfb_timeout=float("nan"),
@@ -422,7 +422,7 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
         elapsed=30.0,
     )
 
-    assert recovery == ""
+    assert recovery is None
 
 
 
@@ -527,9 +527,11 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
         "_dispatch_nonstreaming_api_request",
         lambda *_args, **_kwargs: response,
     )
+    from agent import chat_completion_wait_notice as wn
+
     monkeypatch.setattr(
-        h,
-        "_codex_wait_notice_recovery",
+        wn,
+        "codex_watchdog_deadline",
         lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad display state")),
     )
 

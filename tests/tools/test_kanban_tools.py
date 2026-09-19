@@ -81,6 +81,30 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_renders_timestamps_in_configured_timezone(monkeypatch, worker_env):
+    """#107400: kanban_show must not hand the model a bare epoch to convert
+    itself — created_at_local should be the wall-clock string in the
+    configured timezone, not the host's local time nor the epoch again."""
+    monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Tokyo")
+    import hermes_time
+    hermes_time.reset_cache()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_show({})
+    d = json.loads(out)
+    task = d["task"]
+    created_at = task["created_at"]
+
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    expected = datetime.fromtimestamp(created_at, ZoneInfo("Asia/Tokyo")).isoformat(
+        sep=" ", timespec="seconds")
+
+    assert task["created_at_local"] == expected
+    assert task["created_at_local"] != str(created_at)
+    hermes_time.reset_cache()
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

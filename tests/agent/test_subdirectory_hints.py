@@ -375,3 +375,97 @@ class TestExcludedDirectories:
         assert result is not None
         assert "Personal backend override" in result
         assert "Committed backend rules" not in result
+
+
+class TestSymlinkedHintTargets:
+    """A hint file's resolved target must stay inside the working tree and off
+    the read deny-list; the link's in-tree name does not sanitize its target."""
+
+    def test_symlinked_hint_outside_tree_not_loaded(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("OUTSIDE-MARKER-9f3a", encoding="utf-8")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        sub = workspace / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").symlink_to(outside / "secret.md")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        assert tracker.check_tool_call("read_file", {"path": str(sub / "f.py")}) is None
+
+    def test_symlink_to_denied_file_inside_tree_not_loaded(self, tmp_path):
+        """In-tree containment is not enough: a symlink to the project .env
+        still hits the canonical read deny-list."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text("API_KEY=SECRET-VALUE-7b2d", encoding="utf-8")
+        sub = workspace / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").symlink_to(workspace / ".env")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        assert tracker.check_tool_call("read_file", {"path": str(sub / "f.py")}) is None
+
+    def test_in_tree_symlink_still_loads(self, tmp_path):
+        """A symlink whose resolved target stays inside the tree keeps working."""
+        workspace = tmp_path / "workspace"
+        docs = workspace / "docs"
+        docs.mkdir(parents=True)
+        (docs / "AGENTS.md").write_text("Shared in-tree instructions", encoding="utf-8")
+        sub = workspace / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").symlink_to(docs / "AGENTS.md")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None and "Shared in-tree instructions" in result
+
+    def test_working_dir_seed_skips_outside_symlink(self, tmp_path):
+        """_first_hint_file applies the same policy: an escaping CWD-level
+        symlink seeds no digest."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "shared.md").write_text("OUTSIDE-MARKER-9f3a", encoding="utf-8")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "AGENTS.md").symlink_to(outside / "shared.md")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        assert tracker._loaded_digests == set()
+        # Same content dropped in a subdirectory is not deduped against a file
+        # that was never legitimately loaded.
+        sub = workspace / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("OUTSIDE-MARKER-9f3a", encoding="utf-8")
+        assert tracker.check_tool_call("read_file", {"path": str(sub / "f.py")}) is not None
+
+    def test_symlink_escape_via_cd_navigation(self, tmp_path):
+        """The realistic route: a terminal cd into a checked-out dir whose
+        planted symlink escapes the tree."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "loot.md").write_text("OUTSIDE-MARKER-9f3a", encoding="utf-8")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        sub = workspace / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").symlink_to(outside / "loot.md")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        assert tracker.check_tool_call("terminal", {"command": f"cd {sub}"}) is None
+
+    def test_real_hint_file_unaffected_by_target_check(self, tmp_path):
+        """A plain (non-symlink) in-tree hint file still loads."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        sub = workspace / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Legit subdirectory rules", encoding="utf-8")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None and "Legit subdirectory rules" in result

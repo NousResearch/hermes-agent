@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import time
+import threading
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -21,6 +22,13 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 logger = logging.getLogger(__name__)
+
+# The supported gateway topology has one dispatcher process per profile; the
+# launcher refuses a second instance because those processes would share mutable
+# session state. This lock serializes competing handler threads inside that
+# process. If multi-process dispatch is ever supported, move check-and-create
+# arbitration into the persistent manager/registry layer.
+_CREATION_LOCK = threading.RLock()
 
 
 _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
@@ -34,9 +42,12 @@ _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
 }
 
 _MANAGER_ACTIONS = frozenset({
+    "goal.create",
     "subgoal.add",
     "subgoal.remove",
     "subgoal.clear",
+    "loop.create",
+    "heartbeat.create",
     "heartbeat.pause",
     "heartbeat.resume",
     "heartbeat.clear",
@@ -242,7 +253,8 @@ def _(rid, params: dict) -> dict:
     if not session_key:
         return _err(rid, 4001, "session has no stored key")
     try:
-        return _ok(rid, {"control": _snapshot_control(session_key)})
+        with _session_profile_runtime_scope(session):
+            return _ok(rid, {"control": _snapshot_control(session_key)})
     except Exception as exc:
         logger.debug("session.control.read failed: %s", exc, exc_info=True)
         return _err(rid, 5031, f"session.control.read failed: {exc}")
@@ -282,18 +294,27 @@ def _(rid, params: dict) -> dict:
             name, arg = _ACTION_COMMAND_MAP[action]
             action_result = _dispatch_command(rid, session_id=params.get("session_id") or "", name=name, arg=arg)
         else:
-            action_result = _execute_manager_action(session_key, action, validated)
+            if action.endswith(".create"):
+                with _CREATION_LOCK, _session_profile_runtime_scope(session):
+                    action_result = _execute_manager_action(session_key, action, validated)
+            else:
+                with _session_profile_runtime_scope(session):
+                    action_result = _execute_manager_action(session_key, action, validated)
     except (RuntimeError, ValueError, IndexError) as exc:
         return _err(rid, 4004, _manager_error_message(action, exc))
 
     if "error" in action_result:
-        return action_result
+        return {**action_result, "id": rid}
 
     try:
-        control = _snapshot_control(session_key)
+        with _session_profile_runtime_scope(session):
+            control = _snapshot_control(session_key)
     except Exception as exc:
         logger.debug("session.control snapshot after %s failed: %s", action, exc, exc_info=True)
         return _err(rid, 5031, f"session.control snapshot failed: {exc}")
+
+    if action.endswith(".create") and control.get(action.split(".", 1)[0]) is None:
+        return _err(rid, 5031, "Automation creation could not be verified. Refresh the controls before trying again.")
 
     # command.dispatch already published the update for goal/loop actions; manager actions publish here.
     if action not in _ACTION_COMMAND_MAP:
@@ -306,6 +327,12 @@ def _(rid, params: dict) -> dict:
 
 def _validate_action_args(rid, action: str, args: dict):
     """Validate the only actions with input before any manager is constructed."""
+    if action == "goal.create":
+        return _validate_goal_create_args(rid, args)
+    if action == "loop.create":
+        return _validate_loop_create_args(rid, args)
+    if action == "heartbeat.create":
+        return _validate_heartbeat_create_args(rid, args)
     if action == "subgoal.add":
         text = args.get("text")
         if not isinstance(text, str) or not (text := text.strip()):
@@ -319,6 +346,73 @@ def _validate_action_args(rid, action: str, args: dict):
             return None, _err(rid, 4004, "subgoal index must be >= 1")
         return {"index": index}, None
     return {}, None
+
+
+_MAX_TURNS_CEILING = 1000
+_INTERVAL_CEILING = 86_400 * 7
+_RUN_LIMIT_CEILING = 10_000
+
+
+def _validate_goal_create_args(rid, args):
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not (prompt := prompt.strip()):
+        return None, _err(rid, 4004, "goal prompt is required")
+    criteria = args.get("criteria")
+    if criteria is not None:
+        if not isinstance(criteria, list) or not all(isinstance(c, str) for c in criteria):
+            return None, _err(rid, 4004, "criteria must be a list of strings")
+        stripped = []
+        for c in criteria:
+            s = c.strip() if isinstance(c, str) else ""
+            if not s:
+                return None, _err(rid, 4004, "criteria items must be non-empty strings")
+            stripped.append(s)
+        criteria = stripped
+    max_turns = args.get("max_turns")
+    if max_turns is not None:
+        if type(max_turns) is not int or max_turns < 1:
+            return None, _err(rid, 4004, "max_turns must be a positive integer")
+        if max_turns > _MAX_TURNS_CEILING:
+            return None, _err(rid, 4004, f"max_turns must be <= {_MAX_TURNS_CEILING}")
+    return {"prompt": prompt, "criteria": criteria or [], "max_turns": max_turns}, None
+
+
+def _validate_loop_create_args(rid, args):
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not (prompt := prompt.strip()):
+        return None, _err(rid, 4004, "loop prompt is required")
+    interval = args.get("interval_seconds")
+    if type(interval) is not int or interval < 1:
+        return None, _err(rid, 4004, "interval_seconds must be a positive integer")
+    if interval > _INTERVAL_CEILING:
+        return None, _err(rid, 4004, f"interval_seconds must be <= {_INTERVAL_CEILING}")
+    run_limit = args.get("run_limit")
+    if run_limit is not None:
+        if type(run_limit) is not int or run_limit < 1:
+            return None, _err(rid, 4004, "run_limit must be a positive integer")
+        if run_limit > _RUN_LIMIT_CEILING:
+            return None, _err(rid, 4004, f"run_limit must be <= {_RUN_LIMIT_CEILING}")
+    stop_condition = args.get("stop_condition")
+    if stop_condition is not None and (not isinstance(stop_condition, str) or not stop_condition.strip()):
+        return None, _err(rid, 4004, "stop_condition must be a non-empty string")
+    return {
+        "prompt": prompt,
+        "interval_seconds": interval,
+        "run_limit": run_limit,
+        "stop_condition": (stop_condition or "").strip(),
+    }, None
+
+
+def _validate_heartbeat_create_args(rid, args):
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not (prompt := prompt.strip()):
+        return None, _err(rid, 4004, "heartbeat prompt is required")
+    interval = args.get("interval_seconds")
+    if type(interval) is not int or interval < 1:
+        return None, _err(rid, 4004, "interval_seconds must be a positive integer")
+    if interval > _INTERVAL_CEILING:
+        return None, _err(rid, 4004, f"interval_seconds must be <= {_INTERVAL_CEILING}")
+    return {"prompt": prompt, "interval_seconds": interval}, None
 
 
 def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
@@ -335,9 +429,39 @@ def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
 
 def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
     """Use manager APIs for controls that have no TUI command handler."""
+    if action == "goal.create":
+        return _execute_goal_create(session_key, args)
     if action.startswith("subgoal."):
         return _execute_subgoal_action(session_key, action, args)
+    if action == "loop.create":
+        return _execute_loop_create(session_key, args)
+    if action == "heartbeat.create":
+        return _execute_heartbeat_create(session_key, args)
     return _execute_heartbeat_action(session_key, action)
+
+
+def _execute_goal_create(session_key: str, args: dict) -> dict:
+    from hermes_cli.goals import GoalManager, load_goal
+
+    existing = load_goal(session_key)
+    if existing is not None and existing.status != "cleared":
+        return _err(None, 4004, f"A {existing.status} goal already exists for this session. Clear it first with goal.clear.")
+    try:
+        default_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+    except (TypeError, ValueError, OverflowError):
+        default_turns = 20
+    manager = GoalManager(session_id=session_key, default_max_turns=default_turns)
+    prompt = args["prompt"]
+    criteria = args.get("criteria", [])
+    max_turns = args.get("max_turns")
+    state = manager.set(prompt, max_turns=max_turns)
+    if criteria:
+        for criterion in criteria:
+            manager.add_subgoal(criterion)
+        state = manager.state
+    message = state and manager.next_continuation_prompt() or prompt
+    notice = f"✓ Goal set: {prompt}"
+    return {"result": {"type": "send", "output": notice, "message": message, "notice": notice, "display": prompt}}
 
 
 def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:
@@ -376,11 +500,51 @@ def _execute_heartbeat_action(session_key: str, action: str) -> dict:
     return {"result": {"type": "exec", "output": output}}
 
 
+def _execute_loop_create(session_key: str, args: dict) -> dict:
+    from hermes_cli.loops import LoopManager, load_loop
+
+    existing = load_loop(session_key)
+    if existing is not None and existing.status != "cleared":
+        return _err(None, 4004, f"A {existing.status} loop already exists for this session. Clear it first with loop.stop.")
+    manager = LoopManager(session_id=session_key)
+    prompt = args["prompt"]
+    interval = args["interval_seconds"]
+    times = args.get("run_limit") or 0
+    until = args.get("stop_condition", "")
+    state = manager.set(prompt, interval_seconds=interval, times=times, until=until)
+    lines = [f"✓ Loop set ({state.cadence_label()}): {state.prompt}"]
+    if state.times:
+        lines.append(f"  Runs {state.times} time{'s' if state.times != 1 else ''}, then stops.")
+    if state.until:
+        lines.append(f"  Stops when: {state.until}")
+    notice = "\n".join(lines)
+    # LoopManager schedules the first accounted tick immediately.
+    return {"result": {"type": "exec", "output": notice}}
+
+
+def _execute_heartbeat_create(session_key: str, args: dict) -> dict:
+    from hermes_cli.heartbeat import HeartbeatManager, format_interval, load_heartbeat
+
+    existing = load_heartbeat(session_key)
+    if existing is not None and existing.status != "cleared":
+        return _err(None, 4004, f"A {existing.status} heartbeat already exists for this session. Clear it first with heartbeat.clear.")
+    manager = HeartbeatManager(session_id=session_key)
+    prompt = args["prompt"]
+    interval = args["interval_seconds"]
+    state = manager.set(prompt, interval_seconds=interval)
+    notice = f"✓ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}"
+    # The owner poller fires after the first interval, never on creation.
+    return {"result": {"type": "exec", "output": notice}}
+
+
 def _manager_error_message(action: str, exc: Exception) -> str:
     prefixes = {
+        "goal.create": "/goal",
         "subgoal.add": "/subgoal",
         "subgoal.remove": "/subgoal remove",
         "subgoal.clear": "/subgoal clear",
+        "loop.create": "/loop",
+        "heartbeat.create": "/heartbeat",
     }
     return f"{prefixes.get(action, action)}: {exc}"
 

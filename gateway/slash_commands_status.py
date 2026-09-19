@@ -566,13 +566,7 @@ class GatewayStatusCommandsMixin:
         # Running agent first (mid-turn), then cached agent (between turns).
         agent = self._resident_agent_for(session_key)
 
-        # Provider/base_url/api_key for the account-usage fetch: live agent first, else persisted
-        # billing data on the SessionDB row so `/usage` still returns account info between turns.
-        provider, base_url, api_key = (
-            getattr(agent, k, None) if agent else None for k in ("provider", "base_url", "api_key")
-        )
-        if not provider and getattr(self, "_session_db", None) is not None:
-            provider, base_url = await self._persisted_billing_route(source)
+        provider, base_url, api_key = await self._account_usage_route(source, session_key, agent)
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -631,6 +625,41 @@ class GatewayStatusCommandsMixin:
         if account_lines or credits_lines:
             return _with_account_blocks([])
         return t("gateway.usage.no_data")
+
+    async def _account_usage_route(self, source, session_key: str, agent) -> tuple[str, str | None, str | None]:
+        """Resolve a usable account-usage route even before the first model-backed turn."""
+        def route(provider, base_url=None, api_key=None):
+            provider = _clean_str(provider)
+            return (provider, base_url, api_key) if provider.lower() not in {"", "auto", "custom"} else ("", None, None)
+
+        if agent:
+            resolved = route(getattr(agent, "provider", None), getattr(agent, "base_url", None), getattr(agent, "api_key", None))
+            if resolved[0]:
+                return resolved
+        if getattr(self, "_session_db", None) is not None:
+            provider, base_url = await self._persisted_billing_route(source)
+            resolved = route(provider, base_url)
+            if resolved[0]:
+                return resolved
+        override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        if isinstance(override, dict):
+            resolved = route(override.get("provider"), override.get("base_url"), override.get("api_key"))
+            if resolved[0]:
+                return resolved
+        from gateway.run import _load_gateway_config, _resolve_runtime_agent_kwargs
+
+        config = await asyncio.to_thread(_load_gateway_config)
+        model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+        if isinstance(model_cfg, dict):
+            resolved = route(model_cfg.get("provider"), model_cfg.get("base_url"), model_cfg.get("api_key"))
+            if resolved[0]:
+                return resolved
+        runtime = await _quiet(lambda: asyncio.to_thread(_resolve_runtime_agent_kwargs), {})
+        if isinstance(runtime, dict):
+            resolved = route(runtime.get("provider"), runtime.get("base_url"), runtime.get("api_key"))
+            if resolved[0]:
+                return resolved
+        return "openai-codex", "https://chatgpt.com/backend-api/codex", None
 
     async def _persisted_billing_route(self, source):
         """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""

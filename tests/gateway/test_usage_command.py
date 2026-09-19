@@ -2,7 +2,7 @@ from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -199,6 +199,57 @@ class TestUsageAccountSection:
 
         account_call = next(c for c in calls if c["args"] == ("nvidia",))
         assert account_call["kwargs"]["base_url"] == "https://integrate.api.nvidia.com/v1/"
+
+
+class TestUsageFreshSessionRoute:
+    """Account limits resolve a provider without a resident agent."""
+
+    @pytest.mark.asyncio
+    async def test_auto_config_uses_runtime_provider_for_fresh_session(self, monkeypatch):
+        runner = _make_runner(SK)
+        runner._session_db = None
+        runner._session_model_overrides = {}
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"model": {"provider": "auto"}},
+        )
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "token",
+            },
+        )
+
+        route = await runner._account_usage_route(MagicMock(), SK, None)
+
+        assert route == ("openai-codex", "https://chatgpt.com/backend-api/codex", "token")
+
+    @pytest.mark.asyncio
+    async def test_usage_shows_account_limits_before_first_turn(self, monkeypatch):
+        runner = _make_runner(SK)
+        runner._session_db = None
+        runner._session_model_overrides = {}
+        runner._async_session_store = MagicMock(
+            get_or_create_session=AsyncMock(return_value=MagicMock(session_id="fresh")),
+            load_transcript=AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"provider": "auto"}})
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex"},
+        )
+        monkeypatch.setattr("gateway.slash_commands_status.fetch_account_usage", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 **Account limits**"],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        result = await runner._handle_usage_command(MagicMock())
+
+        assert "📈 **Account limits**" in result
 
 
 class TestUsageReset:

@@ -72,6 +72,34 @@ class TestDetectToolFailureTerminal:
         assert "hermes setup terminal" in suffix
         assert "Terminal backend degraded:" not in suffix
 
+    def test_tagged_benign_exit_is_not_a_failure(self):
+        """The tool layer tags known-benign nonzero exits (grep=1 "no matches", diff=1 "files
+        differ") with ``exit_code_meaning``; treating them as failures fed the
+        ``same_tool_failure`` counter and could trip ``same_tool_failure_halt`` mid-turn
+        even though every command had actually succeeded."""
+        result = json.dumps({"output": "", "exit_code": 1, "exit_code_meaning": "No matches found (not an error)"})
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
+    def test_untagged_benign_exit_is_still_a_failure(self):
+        """The tag is the contract: an untagged nonzero exit (failed build, failing test suite,
+        ``exit 2``) stays a failure even when it printed output. Without this, a red pytest run
+        would look healthy to the guardrail and the agent would keep retrying it."""
+        result = json.dumps({"output": "1 failed, 3 passed", "exit_code": 1})
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert suffix == " [exit 1]"
+
+    def test_error_field_stays_authoritative_over_exit_tag(self):
+        """``error`` is set for real infrastructure/execution failures; a coincidental
+        ``exit_code_meaning`` must not downgrade it."""
+        result = json.dumps({
+            "output": "", "exit_code": 6, "error": "curl: (6) Could not resolve host",
+            "exit_code_meaning": "Could not resolve host",
+        })
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert "resolve host" in suffix
+
     def test_nonzero_dict_result_is_a_failure(self):
         """An already-parsed terminal result (a plugin tool_execution middleware may hand back the
         dict instead of the JSON string) must classify like its JSON form (#111815)."""

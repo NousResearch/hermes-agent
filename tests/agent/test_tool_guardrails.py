@@ -412,3 +412,38 @@ def test_a_real_tool_error_is_still_a_failure():
     assert _detect_tool_failure("read_file", real)[0] is True
     # The marker is only honoured as the literal boolean, never as truthy prose.
     assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True
+
+
+def test_benign_tagged_terminal_exit_does_not_feed_the_guardrail_counter():
+    """grep with no matches exits 1 *and is tagged benign*; the classifier fallback
+    (used when a caller doesn't pass ``failed``) must agree with the CLI's red/green tag,
+    or the guardrail halts on a sweep of greps that all succeeded."""
+    from agent.display import _detect_tool_failure
+
+    benign = '{"output": "", "exit_code": 1, "exit_code_meaning": "No matches found (not an error)"}'
+    assert classify_tool_failure("terminal", benign) == (False, "")
+    assert _detect_tool_failure("terminal", benign) == (False, "")
+
+    # An untagged nonzero exit — a red pytest run, a failed build — must stay a failure
+    # on both classifiers even though it printed output.
+    red = '{"output": "1 failed, 3 passed", "exit_code": 1}'
+    assert classify_tool_failure("terminal", red) == (True, " [exit 1]")
+    assert _detect_tool_failure("terminal", red) == (True, " [exit 1]")
+
+    # Hard-stop path: distinct benign greps never count; distinct untagged reds do count
+    # (terminal is failure-tolerant, so a run of distinct reds warns rather than halts),
+    # and a byte-identical red replay is still blocked at the next execution.
+    c = _HARD()
+    for i in range(12):
+        args = {"command": f"grep -q needle{i} haystack.txt"}
+        assert not c.after_call("terminal", args, benign).should_halt
+    assert c.halt_decision is None
+    assert c._same_tool_failure_counts.get("terminal", 0) == 0
+
+    red_args = {"command": "make"}
+    c2 = _HARD()
+    for _ in range(5):
+        assert not c2.after_call("terminal", red_args, red).should_halt
+    assert c2._same_tool_failure_counts["terminal"] == 5
+    d = c2.before_call("terminal", red_args)
+    assert d.action == "block" and d.code == "repeated_exact_failure_block"

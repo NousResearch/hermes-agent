@@ -76,6 +76,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     tests/hermes_cli/test_cmd_update.py).
     """
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
+    # The fetch has its own seam now; route it through the run fake so the harness sees the same argv.
+    monkeypatch.setattr(update_cmd, "_fetch_with_progress",
+                        lambda git_cmd, branch, **kw: hermes_main.subprocess.run([*git_cmd, "fetch", "origin", branch]))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".git").mkdir()  # pass the "is a git repo" gate
     monkeypatch.setattr(

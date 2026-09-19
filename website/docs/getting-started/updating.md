@@ -264,6 +264,7 @@ tail -f ~/.hermes/logs/update.log
 ```
 
 - `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents.
+- A slow fetch reports progress while it runs (`Receiving objects: … MiB | … MiB/s`), so a large download is distinguishable from a hang. Interrupting it stops the fetch, cleans up the partial pack it had downloaded, and changes no code.
 
 You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a terminal drop.
 

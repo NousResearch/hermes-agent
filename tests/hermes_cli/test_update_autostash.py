@@ -86,6 +86,9 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    # The fetch has its own seam now; route it through the run fake so the harness sees the same argv.
+    monkeypatch.setattr(update_cmd, "_fetch_with_progress",
+                        lambda git_cmd, branch, **kw: hermes_main.subprocess.run([*git_cmd, "fetch", "origin", branch]))
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
     monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])

@@ -129,13 +129,20 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
 _BG_DELETE_ACTIONS = ("replace", "remove")
 
 
-def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
+def _background_delete_gate(action, operations, target="memory", content=None, old_text=None,
+                            store=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
     stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    staging failure fails closed to a plain denial.
+
+    Staging also requires the write to be one the user can ACCEPT: ``/memory approve`` replays
+    the payload verbatim (there is no editing step), so a batch the budget can never fit would
+    sit in the queue failing on every approve — and a failed approve does not consume it. Such
+    a batch is refused here, with the live entries and usage the fork needs to reissue a leaner
+    one, instead of being queued."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -144,6 +151,19 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
         isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))
     if not hit:
         return None
+    ops = operations if operations is not None else [{"action": action, "content": content, "old_text": old_text}]
+    if store is not None:
+        # The payload shape decides the replay path, so the preview must match it: a batch replays
+        # through apply_batch, a lone op through replace/remove.
+        over_budget = (store.preview_batch(target, ops) if operations is not None
+                       else store.preview_single(target, action, content, old_text))
+        if over_budget:
+            return tool_error(
+                f"{over_budget} This proposal was NOT staged for approval: the pending queue only holds "
+                "writes that can be accepted. Reissue ONE batch that fits the limit on its final state "
+                "(merge or shorten entries in the same batch), or — if the durable fact is a procedure — "
+                "put it in the skill that governs the task instead of memory.",
+                success=False, current_entries=store._entries_for(target), usage=store._usage(target))
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
@@ -187,7 +207,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        denied = _background_delete_gate(action, operations, target)
+        denied = _background_delete_gate(action, operations, target, store=store)
         if denied is not None:
             return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
@@ -198,7 +218,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if action not in _STORE_ACTIONS:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
-               or _background_delete_gate(action, None, target, content, old_text)
+               or _background_delete_gate(action, None, target, content, old_text, store=store)
                or _apply_write_gate(action, target, content, old_text))
     if invalid is not None:
         return invalid

@@ -187,3 +187,85 @@ class TestCreateRouting:
         }]))
         assert res.get("success"), res
         assert "Patched." in (brain / "patchable-skill" / "SKILL.md").read_text()
+
+
+class TestReadPathDiscovery:
+    """The system-prompt skill index is built from ``get_all_skills_dirs()``,
+    which folds ``create_dir`` in — so a create_dir skill is advertised to the
+    model. Every path that then resolves an advertised name (skill_view,
+    skills_list, /slash dispatch, gateway menus) must scan the same dirs, or
+    the model is offered a skill it cannot load."""
+
+    @staticmethod
+    def _seed(brain: Path, name: str = "brain-skill", category: str = "devops") -> Path:
+        skill_dir = brain / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_skill_md(name), encoding="utf-8")
+        return skill_dir
+
+    def test_skill_view_finds_create_dir_skill(self, isolated_home, tmp_path):
+        from tools.skills_tool import skill_view
+        brain = tmp_path / "brain-skills"
+        skill_dir = self._seed(brain)
+        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
+        res = json.loads(skill_view("brain-skill"))
+        assert res.get("success"), res
+        assert Path(res["skill_dir"]).resolve() == skill_dir.resolve()
+
+    def test_skill_created_via_skill_manage_is_viewable(self, isolated_home, tmp_path):
+        from tools.skill_manager_tool import skill_manage
+        from tools.skills_tool import skill_view
+        brain = tmp_path / "brain-skills"
+        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
+        created = json.loads(skill_manage("", "", operations=[{
+            "action": "create", "name": "fresh-skill",
+            "content": _skill_md("fresh-skill"),
+        }]))
+        assert created.get("success"), created
+        res = json.loads(skill_view("fresh-skill"))
+        assert res.get("success"), res
+
+    def test_skills_list_includes_create_dir_skill_with_category(self, isolated_home, tmp_path):
+        from tools.skills_tool import _find_all_skills
+        brain = tmp_path / "brain-skills"
+        self._seed(brain)
+        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
+        by_name = {s["name"]: s for s in _find_all_skills()}
+        assert "brain-skill" in by_name
+        assert by_name["brain-skill"]["category"] == "devops"
+
+    def test_create_dir_also_listed_in_external_dirs_is_not_ambiguous(self, isolated_home, tmp_path):
+        """Listing the same dir under both keys must not surface one skill twice."""
+        from tools.skills_tool import skill_view
+        brain = tmp_path / "brain-skills"
+        self._seed(brain)
+        _write_config(
+            isolated_home,
+            f"skills:\n  create_dir: {brain}\n  external_dirs:\n    - {brain}\n",
+        )
+        res = json.loads(skill_view("brain-skill"))
+        assert res.get("success"), res
+
+    def test_slash_command_registered_for_create_dir_skill(self, isolated_home, tmp_path, monkeypatch):
+        import agent.skill_commands as sc_mod
+        brain = tmp_path / "brain-skills"
+        self._seed(brain)
+        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc_mod, "_skill_commands_home", None)
+        assert "/brain-skill" in sc_mod.get_skill_commands()
+
+    def test_gateway_menu_admits_create_dir_skill(self, isolated_home, tmp_path):
+        from unittest.mock import patch
+        from hermes_cli.commands_platforms import telegram_menu_commands
+        brain = (tmp_path / "brain-skills")
+        skill_dir = self._seed(brain).resolve()
+        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
+        fake_cmds = {"/brain-skill": {
+            "name": "brain-skill", "description": "create_dir skill",
+            "skill_md_path": str(skill_dir / "SKILL.md"), "skill_dir": str(skill_dir),
+        }}
+        with patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds):
+            menu, _ = telegram_menu_commands(max_commands=100)
+        assert "brain_skill" in {n for n, _ in menu}

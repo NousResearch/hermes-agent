@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
@@ -201,3 +203,112 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+class _RecordingClient:
+    def __init__(self, payload, calls):
+        self._payload = payload
+        self._calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        self._calls.append((url, dict(headers or {})))
+        return _Response(self._payload)
+
+
+class _FailingClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        raise RuntimeError("connection reset")
+
+
+def _stub_deepinfra(monkeypatch, payload, calls=None, client=None):
+    """Point the deepinfra route at a stub client; its configured base_url carries a route suffix."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "deepinfra",
+            "base_url": "https://api.deepinfra.com/v1/openai",
+            "api_key": "test-key",
+        },
+    )
+    captured = calls if calls is not None else []
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: client or _RecordingClient(payload, captured),
+    )
+    return captured
+
+
+def test_fetch_account_usage_deepinfra_renders_prepaid_credit_from_the_api_origin(monkeypatch):
+    calls = _stub_deepinfra(
+        monkeypatch,
+        {
+            "email": "dan@example.com",
+            "billing_address_info": {"name": "Daniel Cheah", "line1": "1 Example Street"},
+            "billing_type": "balance",
+            "suspended": False,
+            "stripe_balance": -5.0,
+            "recent": 0.04,
+            "limit": 10.0,
+        },
+    )
+
+    snapshot = fetch_account_usage("deepinfra")
+
+    assert snapshot is not None
+    assert snapshot.source == "payment_checklist"
+    assert snapshot.windows == (
+        AccountUsageWindow(
+            label="Spending limit",
+            used_percent=50.0,
+            detail="$5.00 of $10.00 remaining",
+        ),
+    )
+    assert snapshot.details == ("Credits balance: $5.00", "Recent spend: $0.04")
+    # The checklist endpoint hangs off the API origin, not the configured /v1/openai route suffix.
+    assert calls[0][0] == "https://api.deepinfra.com/payment/checklist?compute_owed=true"
+    assert calls[0][1]["Authorization"] == "Bearer test-key"
+    # The payload carries billing PII; only numeric billing fields may reach the snapshot.
+    assert not any("Daniel" in line or "Example" in line for line in render_account_usage_lines(snapshot))
+
+
+def test_fetch_account_usage_deepinfra_flags_exhausted_and_suspended_balances(monkeypatch):
+    _stub_deepinfra(
+        monkeypatch, {"stripe_balance": 0.0, "recent": 0.04, "suspended": True}
+    )
+
+    snapshot = fetch_account_usage("deepinfra")
+
+    assert snapshot is not None
+    assert snapshot.details[0] == "Credits balance: $0.00"
+    assert snapshot.details[-1].startswith("Status: suspended")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"suspended": False, "billing_type": "balance"},  # no balance field at all
+        {"stripe_balance": None, "recent": 0.04},  # unreadable balance
+    ],
+)
+def test_fetch_account_usage_deepinfra_fails_soft_on_unusable_payload(monkeypatch, payload):
+    _stub_deepinfra(monkeypatch, payload)
+
+    assert fetch_account_usage("deepinfra") is None
+
+
+def test_fetch_account_usage_deepinfra_fails_soft_on_transport_error(monkeypatch):
+    _stub_deepinfra(monkeypatch, None, client=_FailingClient())
+
+    assert fetch_account_usage("deepinfra") is None

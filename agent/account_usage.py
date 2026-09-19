@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -601,10 +602,81 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _json_number(value: Any) -> Optional[float]:
+    """Coerce a JSON number or numeric string to a finite float; providers disagree on which they send."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _api_origin(base_url: Any, fallback: str) -> str:
+    """Scheme and host of ``base_url``: balance endpoints sit beside the API path, not under it."""
+    parts = urlsplit(str(base_url or "").strip())
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme in {"http", "https"} and parts.netloc else fallback
+
+
+def _balance_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+
+def _deepinfra_balance_snapshot(origin: str, headers: dict[str, str], provider: str) -> Optional[AccountUsageSnapshot]:
+    # The checklist payload also carries billing PII (name, postal address, email flag): never surface it.
+    payload = _get_json(f"{origin}/payment/checklist?compute_owed=true", headers, timeout=10.0)
+    stripe_balance = _json_number(payload.get("stripe_balance"))
+    if stripe_balance is None:
+        return None
+    # DeepInfra holds customer credit as a negative Stripe balance.
+    balance = -stripe_balance
+    details = [f"Credits balance: ${max(0.0, balance):,.2f}"]
+    recent = _json_number(payload.get("recent"))
+    if recent is not None and recent > 0:
+        details.append(f"Recent spend: ${recent:,.2f}")
+    windows: list[AccountUsageWindow] = []
+    limit = _json_number(payload.get("limit"))
+    if limit is not None and limit > 0:
+        windows.append(AccountUsageWindow(
+            label="Spending limit",
+            used_percent=min(100.0, max(0.0, (1 - max(0.0, balance) / limit) * 100)),
+            detail=f"${max(0.0, balance):,.2f} of ${limit:,.2f} remaining",
+        ))
+    if payload.get("suspended"):
+        details.append("Status: suspended — billing action required")
+    elif balance <= 0:
+        details.append(_DEPLETED_LINE)
+    return _snapshot(provider, "payment_checklist", windows, details)
+
+
+# Provider slug → (default API origin, snapshot parser). Slugs mirror plugins/model-providers/<slug>/.
+_BALANCE_SOURCES: dict[str, tuple[str, Callable[[str, dict[str, str], str], Optional[AccountUsageSnapshot]]]] = {
+    "deepinfra": ("https://api.deepinfra.com", _deepinfra_balance_snapshot),
+}
+
+
+def _fetch_balance_account_usage(
+    provider: str, base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Shared plumbing for prepaid-balance providers: pooled credential in, provider origin out."""
+    default_origin, parser = _BALANCE_SOURCES[provider]
+    runtime = resolve_runtime_provider(requested=provider, explicit_base_url=base_url, explicit_api_key=api_key)
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    return parser(_api_origin(runtime.get("base_url") or base_url, default_origin), _balance_headers(token), provider)
+
+
+def _balance_fetcher(provider: str) -> Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]:
+    return lambda base_url, api_key: _fetch_balance_account_usage(provider, base_url, api_key)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
 }
+_USAGE_FETCHERS.update({slug: _balance_fetcher(slug) for slug in _BALANCE_SOURCES})
 
 
 def fetch_account_usage(

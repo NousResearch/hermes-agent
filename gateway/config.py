@@ -672,9 +672,14 @@ class GatewayConfig:
             return key if key in data else f"gateway.{key}"
 
         def by_platform(key: str, parse, *, dicts_only: bool = False) -> dict:
-            """``{Platform(name): parse(block)}`` for a platform-keyed mapping; unknown platforms skipped."""
+            """``{Platform(name): parse(block)}`` for a platform-keyed mapping; unknown platforms skipped.
+
+            Same top-level-presence-wins lookup as :func:`pick`: the nested ``gateway.<key>`` form
+            (what ``hermes config set gateway.<key>`` writes) is consulted when the top-level key
+            is absent, so a platform block never depends on where the operator placed it.
+            """
             out = {}
-            for platform_name, block in _coerce_dict(data.get(key, {})).items():
+            for platform_name, block in _coerce_dict(pick(key)).items():
                 if dicts_only and not isinstance(block, dict):
                     continue
                 try:

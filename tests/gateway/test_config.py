@@ -58,6 +58,25 @@ class TestPlatformConfigRoundtrip:
         assert pc.reply_to_mode == "all" and pc.typing_indicator is False
         assert PlatformConfig.from_dict(pc.to_dict()).extra == pc.extra
 
+
+class TestNestedGatewayPlatformFallback:
+    def test_platforms_read_from_nested_gateway_block(self):
+        """``hermes config set gateway.platforms.<p>.enabled`` writes the nested form; the loader
+        must see it (same top-level-presence-wins rule ``pick`` applies to scalars)."""
+        cfg = GatewayConfig.from_dict(
+            {"gateway": {"platforms": {"telegram": {"enabled": True}}}}
+        )
+
+        assert cfg.platforms[Platform.TELEGRAM].enabled is True
+
+    def test_toplevel_platforms_win_over_nested(self):
+        cfg = GatewayConfig.from_dict({
+            "platforms": {"telegram": {"enabled": False}},
+            "gateway": {"platforms": {"telegram": {"enabled": True}}},
+        })
+
+        assert cfg.platforms[Platform.TELEGRAM].enabled is False
+
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(
             enabled=True,

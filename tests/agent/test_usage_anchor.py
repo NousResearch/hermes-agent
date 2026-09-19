@@ -300,10 +300,18 @@ class TestCodexAppServerAnchor:
         messages = _history_with_images(2)
         prior = capture_usage_anchor(9_000, 50, messages)
         agent = self._agent(anchor=prior)
+        engine = SimpleNamespace(
+            awaiting_real_usage_after_compression=True,
+            _verify_compaction_cleared_threshold=True,
+            update_from_response=lambda _usage: None,
+        )
+        agent.context_compressor = engine
 
         _record_codex_app_server_usage(agent, self._turn(None), messages=messages)
 
         assert agent._usage_anchor is prior
+        assert engine.awaiting_real_usage_after_compression is False
+        assert engine._verify_compaction_cleared_threshold is False
 
 
 if __name__ == "__main__":

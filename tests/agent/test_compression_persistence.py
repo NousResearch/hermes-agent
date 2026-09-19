@@ -19,7 +19,43 @@ Bug scenario (pre-fix):
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from agent.context_engine import ContextEngine
+
+
+class _PluginStyleContextEngine(ContextEngine):
+    """A valid plugin engine with no built-in-compressor private result fields."""
+
+    last_prompt_tokens = 0
+    last_completion_tokens = 0
+    last_total_tokens = 0
+    threshold_tokens = 100
+    context_length = 1_000
+    compression_count = 0
+
+    @property
+    def name(self):
+        return "plugin-style"
+
+    def update_from_response(self, usage):
+        self.last_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        self.last_completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        self.last_total_tokens = int(usage.get("total_tokens", 0) or 0)
+
+    def should_compress(self, prompt_tokens=None):
+        return int(prompt_tokens or 0) >= self.threshold_tokens
+
+    def compress(
+        self, messages, current_tokens=None, focus_topic=None, force=False,
+        memory_context="",
+    ):
+        self.compression_count += 1
+        return [
+            {"role": "user", "content": "[summary] earlier state"},
+            {"role": "assistant", "content": "retained tail"},
+        ]
 
 
 
@@ -46,6 +82,55 @@ class TestFlushAfterCompression:
                 skip_memory=True,
             )
         return agent
+
+    def test_plugin_engine_progress_rearms_after_provider_usage(self):
+        """Core owns progress and usage latches for every context engine."""
+        from agent.conversation_compression import compress_context
+        from agent.turn_usage import record_response_usage
+
+        agent = self._make_agent(None)
+        engine = _PluginStyleContextEngine()
+        setattr(agent, "context_compressor", engine)
+        messages = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "recent question"},
+            {"role": "assistant", "content": "recent answer"},
+        ]
+
+        compressed, _ = compress_context(
+            agent, messages, "system", approx_tokens=200
+        )
+
+        assert compressed != messages
+        assert getattr(engine, "awaiting_real_usage_after_compression") is True
+        assert getattr(engine, "_verify_compaction_cleared_threshold") is True
+
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=50,
+                completion_tokens=1,
+                total_tokens=51,
+                prompt_tokens_details=None,
+                completion_tokens_details=None,
+            ),
+            id="response-1",
+            model="test/model",
+        )
+        outcome = record_response_usage(
+            agent,
+            response,
+            messages=compressed,
+            api_call_count=1,
+            api_duration=0.1,
+            compression_attempts=2,
+            max_compression_attempts=3,
+        )
+
+        assert outcome.compression_attempts == 0
+        assert outcome.rearmed is True
+        assert getattr(engine, "awaiting_real_usage_after_compression") is False
+        assert getattr(engine, "_verify_compaction_cleared_threshold") is False
 
     def test_flush_after_compression_with_long_history(self):
         """The actual bug: conversation_history longer than compressed messages.

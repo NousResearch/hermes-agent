@@ -13,6 +13,7 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.context_engine import update_context_engine_usage
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
@@ -100,7 +101,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     if not isinstance(usage, dict) or not usage:
         if compressor is not None and getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage cannot adjudicate the pending compaction; unlatch preflight deferral.
-            compressor.update_from_response({})
+            update_context_engine_usage(compressor, {})
         if compressor is not None and callable(getattr(compressor, "note_usage_less_response", None)):
             compressor.note_usage_less_response()
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
@@ -120,7 +121,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
                   "total_tokens": total_tokens, **token_counts}
     if compressor is not None:
         try:
-            compressor.update_from_response(usage_dict)
+            update_context_engine_usage(compressor, usage_dict)
             context_window = getattr(turn, "model_context_window", None)
             if isinstance(context_window, int) and context_window > 0:
                 compressor.context_length = context_window
@@ -170,7 +171,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
         record_boundary = getattr(type(compressor), "record_completed_compaction", None)
         if callable(record_boundary):
             record_boundary(compressor, used_fallback=False)
-        elif hasattr(compressor, "_verify_compaction_cleared_threshold"):
+        else:
             compressor._verify_compaction_cleared_threshold = True
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens, compressor.last_completion_tokens = -1, 0

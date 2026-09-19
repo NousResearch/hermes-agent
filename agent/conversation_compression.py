@@ -3948,15 +3948,19 @@ def compress_context(
     try:
         # Capture the verdict before rotation callbacks: lifecycle hooks may reset
         # compressor fields on rebind; record only after the full boundary commits.
-        _compression_made_progress, _compression_used_fallback, _compression_feasibility_skip = (
+        _compression_used_fallback, _compression_feasibility_skip = (
             bool(getattr(agent.context_compressor, name, False))
-            for name in ("_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip")
+            for name in ("_last_summary_fallback_used", "_last_feasibility_skip")
         )
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
             attempt_started_at=attempt.started_at,
         ):
             return messages, _existing_system_prompt(agent, system_message)
+        # Reaching this point proves semantic progress: _candidate_rejected()
+        # already rejects unchanged output for every context engine. Do not make
+        # plugin engines publish ContextCompressor's private result marker.
+        _compression_made_progress = True
         if commit_fence is not None:
             _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
             if not _commit_fence_entered:

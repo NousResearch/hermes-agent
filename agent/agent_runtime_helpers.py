@@ -1667,6 +1667,15 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     if profile is None:
         return None
     try:
+        # Opt-in ONLY, via a profile attribute — never a new key in ``client_kwargs``.
+        # That mapping is forwarded verbatim to SDK constructors (openai.OpenAI and
+        # friends), which reject unknown keywords: widening it for every provider is
+        # what previously broke openai-codex and openrouter. Agent-as-provider
+        # transports (the OMP thin host) execute their own tools and need the live
+        # agent to report that activity through ``agent.tool_progress_callback``;
+        # ordinary HTTP providers neither declare the flag nor see the extra argument.
+        if getattr(profile, "wants_agent_handle", False):
+            return profile.create_client(_hermes_agent=agent, **client_kwargs)
         return profile.create_client(**client_kwargs)
     except Exception:
         _ra().logger.warning(

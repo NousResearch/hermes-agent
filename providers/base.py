@@ -268,6 +268,13 @@ class ProviderProfile:
         a profile registered from ``~/.hermes/plugins/model-providers/`` or a
         pip entry point can supply its own transport without any core edit. See
         ``plugins/model-providers/copilot-acp/`` for the in-tree example.
+
+        A profile that sets the class attribute ``wants_agent_handle = True``
+        additionally receives ``_hermes_agent=<AIAgent>``. Only declare it if the
+        transport runs its own tool loop and must report that activity back
+        through ``agent.tool_progress_callback`` (the OMP thin host does); the
+        argument is passed to nothing else, so ordinary SDK constructors never
+        see it.
         """
         return None
 

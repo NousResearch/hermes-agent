@@ -312,6 +312,181 @@ async def _noop_redirect(_url: str) -> None:
     return None
 
 
+@pytest.mark.asyncio
+async def test_401_with_usable_refresh_silently_refreshes_before_browser(tmp_path, monkeypatch):
+    """#107059: a resource 401 with a usable refresh token must NOT open a browser tab.
+
+    The server can reject an access token before its local expiry (restart/boot
+    with a stale token). The wrapper must attempt one silent refresh and retry
+    the resource with the new bearer before the SDK's authorization-code branch
+    (``redirect_handler`` -> browser tab) is allowed to run.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import (
+        OAuthClientInformationFull, OAuthClientMetadata, OAuthMetadata, OAuthToken,
+    )
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="old_access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="old_refresh",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_browser_must_not_open,
+        callback_handler=_noop_callback,
+    )
+    provider.context.oauth_metadata = OAuthMetadata(
+        issuer="https://example.com",
+        authorization_endpoint="https://example.com/authorize",
+        token_endpoint="https://example.com/token",
+    )
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+    outbound = await flow.__anext__()
+
+    fake_401 = httpx.Response(
+        401,
+        request=outbound,
+        headers={"www-authenticate": 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"'},
+    )
+
+    # Must be a refresh POST, not a metadata-discovery GET / browser authorize.
+    refresh_request = await flow.asend(fake_401)
+    assert refresh_request.method == "POST"
+    assert "example.com/token" in str(refresh_request.url)
+    assert b"grant_type=refresh_token" in refresh_request.content
+
+    retry = await flow.asend(
+        httpx.Response(
+            200,
+            request=refresh_request,
+            json={
+                "access_token": "new_access",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "new_refresh",
+            },
+        )
+    )
+    assert retry is req
+    assert retry.headers["authorization"] == "Bearer new_access"
+
+    with pytest.raises(StopAsyncIteration):
+        await flow.asend(httpx.Response(200, request=retry))
+
+
+@pytest.mark.asyncio
+async def test_401_failed_refresh_falls_back_to_sdk_discovery(tmp_path, monkeypatch):
+    """#107059: when silent refresh fails, the SDK browser fallback must stay intact."""
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import (
+        OAuthClientInformationFull, OAuthClientMetadata, OAuthMetadata, OAuthToken,
+    )
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="old_access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="old_refresh",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+    provider.context.oauth_metadata = OAuthMetadata(
+        issuer="https://example.com",
+        authorization_endpoint="https://example.com/authorize",
+        token_endpoint="https://example.com/token",
+    )
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+    outbound = await flow.__anext__()
+
+    fake_401 = httpx.Response(
+        401,
+        request=outbound,
+        headers={"www-authenticate": 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"'},
+    )
+
+    refresh_request = await flow.asend(fake_401)
+    assert refresh_request.method == "POST"
+
+    # Refresh rejected -> wrapper must hand the 401 to the SDK, which yields
+    # its metadata-discovery GET (browser re-auth path preserved).
+    next_request = await flow.asend(httpx.Response(400, request=refresh_request))
+    assert isinstance(next_request, httpx.Request)
+
+    await flow.aclose()
+
+
+async def _browser_must_not_open(_url: str) -> None:
+    """Fail loudly if the SDK authorization-code branch opens a browser tab."""
+    raise AssertionError("browser authorize must not run when silent refresh can recover (#107059)")
+
+
 async def _noop_callback() -> tuple[str, str | None]:
     """Callback handler that won't be invoked in these tests."""
     raise AssertionError(

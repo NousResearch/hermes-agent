@@ -11,8 +11,14 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, getSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  getSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote,
+  listSidebarSessions
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 

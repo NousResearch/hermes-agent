@@ -62,7 +62,13 @@ export function SegmentedControl<T extends string>({
           </button>
         )
 
-        return iconOnly && Icon ? <Tip key={id} label={label}>{button}</Tip> : button
+        return iconOnly && Icon ? (
+          <Tip key={id} label={label}>
+            {button}
+          </Tip>
+        ) : (
+          button
+        )
       })}
     </div>
   )

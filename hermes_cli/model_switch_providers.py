@@ -266,6 +266,37 @@ def _skip(seen: set, excluded: set, *keys: str) -> bool:
     return any(k in seen for k in lowered) or any(k in excluded for k in lowered)
 
 
+def provider_row_is_excluded(row: dict, excluded: set | frozenset) -> bool:
+    """True when ``row`` names a provider in ``excluded`` (normalized lowercase).
+
+    THE single definition of "is this provider row excluded", for the rows that
+    :func:`_skip` cannot reach — the user-defined endpoints appended through
+    ``_PickerBuild.add_endpoint_row`` (sections 3, 3b, 4) and the virtual rows
+    other modules inject *after* :func:`list_authenticated_providers` returns
+    (``inventory.build_models_payload``'s ``moa`` row and unconfigured canonical
+    skeletons, :func:`_prepend_moa_picker_provider`'s picker ``moa`` row). Those
+    call sites share this predicate by import rather than re-deriving it: two
+    hand-written copies of "is this row excluded" drift, and the drift is
+    invisible because each site has its own tests.
+
+    Matched against the row's ``slug``, its ``provider_id`` and its display
+    ``name``, plus the bare tail of a ``custom:<name>`` slug, so a single config
+    entry hides the endpoint regardless of which key the user spelled it under.
+    """
+    if not excluded:
+        return False
+    slug = str(row.get("slug", "")).strip().lower()
+    candidates = {
+        slug,
+        str(row.get("provider_id", "")).strip().lower(),
+        str(row.get("name", "")).strip().lower(),
+    }
+    if slug.startswith("custom:"):
+        candidates.add(slug[len("custom:"):])
+    candidates.discard("")
+    return bool(candidates & set(excluded))
+
+
 def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
     """Yield ``(hermes_id, mdev_id, pconfig, env_vars)`` for section-1 rows.
 
@@ -734,11 +765,22 @@ class _PickerBuild:
     def add_endpoint_row(
         self, slug: str, name: str, api_url: str, models: list, is_current: bool, native_catalog_empty: bool,
         *, source: str = "user-config", shown: list | None = None) -> None:
-        """Append a user-defined endpoint row (sections 3, 3b, 4)."""
-        self.results.append({
+        """Append a user-defined endpoint row (sections 3, 3b, 4).
+
+        ``model_catalog.excluded_providers`` is honoured HERE rather than in each caller: this is
+        the one method sections 3, 3b and 4 all append through, so a section added later cannot
+        reintroduce the omission. Without it an excluded user endpoint still reached every consumer
+        of ``list_authenticated_providers`` (the dashboard ``/api/models``, the ACP adapter,
+        tui_gateway, moa_cmd) while ``hermes model`` hid it — the built-in sections 1/2/2b gate
+        through :func:`_skip`, but no equivalent existed for user-defined rows. The slug is still
+        marked seen so a later lap cannot re-emit the endpoint under another section.
+        """
+        row = {
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": True,
             "models": models if shown is None else shown, "total_models": len(models), "source": source,
-            "api_url": api_url, "native_catalog_empty": native_catalog_empty})
+            "api_url": api_url, "native_catalog_empty": native_catalog_empty}
+        if not provider_row_is_excluded(row, self.excluded):
+            self.results.append(row)
         self.seen_slugs.add(slug.lower())
 
     def record_section3_pair(self, name: str, url_norm: str) -> bool:
@@ -1307,6 +1349,13 @@ def list_picker_providers(
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
+        # ``list_authenticated_providers`` filtered ``excluded_providers`` over its OWN rows; the
+        # virtual moa row is injected afterwards and would otherwise reappear in the gateway /
+        # Telegram / Discord picker despite being excluded. Same shared predicate as the other
+        # choke points (``_PickerBuild.add_endpoint_row``, ``inventory.build_models_payload``).
+        _excl_norm = {str(p).strip().lower() for p in (excluded_providers or []) if p}
+        if _excl_norm:
+            providers = [p for p in providers if not provider_row_is_excluded(p, _excl_norm)]
 
     filtered: List[dict] = []
     for p in providers:

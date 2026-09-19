@@ -136,6 +136,22 @@ def build_models_payload(
 
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
+
+    # Re-apply ``model_catalog.excluded_providers`` over the rows this function injected ITSELF.
+    # list_authenticated_providers() already filtered its own output, but it never sees the virtual
+    # ``moa`` row, the managed local-runtime row or the unconfigured canonical skeletons added above
+    # — each leaked an excluded provider back into every consumer of this payload (the dashboard
+    # ``/api/models``, the kanban dashboard, the ACP adapter, tui_gateway, moa_cmd). Runs before the
+    # decoration passes so excluded rows are never priced or probed.
+    #
+    # Same predicate as the picker-builder filter by import, not by re-derivation: two hand-written
+    # copies of "is this row excluded" drift, and each site's own tests keep passing while they do.
+    _excluded_norm = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    if _excluded_norm:
+        from hermes_cli.model_switch_providers import provider_row_is_excluded
+
+        rows = [r for r in rows if not provider_row_is_excluded(r, _excluded_norm)]
+
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:

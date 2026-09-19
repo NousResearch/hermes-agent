@@ -1975,6 +1975,117 @@ def test_excluded_providers_hides_builtin_row(monkeypatch):
     )
 
 
+def test_excluded_providers_hides_user_defined_rows(monkeypatch):
+    """``excluded_providers`` must hide USER-DEFINED rows too.
+
+    The ``_skip(seen, excluded, ...)`` gates only covered the built-in rows
+    (sections 0, 1, 2, 2b). Sections 3 (``providers:``), 3b (bare
+    ``provider: custom`` + ``base_url``) and 4 (``custom_providers:``) append
+    through ``_PickerBuild.add_endpoint_row`` with no exclusion gate at all, so
+    an excluded user endpoint still reached every non-CLI consumer (the
+    dashboard /api/model/options, the ACP adapter, tui_gateway, moa_cmd) while
+    ``hermes model`` hid it. One case per unguarded section, plus a positive
+    control that the non-excluded siblings survive.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    user_providers = {
+        # section 3, excluded by its ``providers:`` key
+        "excluded-slot": {
+            "base_url": "http://127.0.0.1:2/v1", "api_key": "x", "model": "m2",
+            "discover_models": False,
+        },
+        # section 3, excluded by its display ``name`` rather than its key
+        "byname": {
+            "name": "Excluded By Name", "base_url": "http://127.0.0.1:5/v1",
+            "api_key": "x", "model": "m5", "discover_models": False,
+        },
+        # positive control
+        "kept-slot": {
+            "base_url": "http://127.0.0.1:1/v1", "api_key": "x", "model": "m1",
+            "discover_models": False,
+        },
+    }
+    custom_providers = [
+        # section 4, excluded by name (slug surfaces as ``custom:cp-excluded``)
+        {"name": "cp-excluded", "base_url": "http://127.0.0.1:4/v1", "api_key": "x",
+         "model": "m4", "discover_models": False},
+        # positive control
+        {"name": "cp-kept", "base_url": "http://127.0.0.1:6/v1", "api_key": "x",
+         "model": "m6", "discover_models": False},
+    ]
+
+    # current_provider=custom + base_url with no matching named entry exercises
+    # section 3b (the bare active custom endpoint).
+    def _rows(excluded):
+        return {
+            p["slug"]
+            for p in list_authenticated_providers(
+                current_provider="custom",
+                current_base_url="http://127.0.0.1:9/v1",
+                current_model="m9",
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+                max_models=50,
+                excluded_providers=excluded,
+            )
+        }
+
+    baseline = _rows(None)
+    for expected in ("excluded-slot", "byname", "custom", "custom:cp-excluded"):
+        assert expected in baseline, (
+            f"sanity: {expected} must appear without exclusions; got {sorted(baseline)}"
+        )
+
+    filtered = _rows(["excluded-slot", "Excluded By Name", "cp-excluded", "custom"])
+    must_be_hidden = {"excluded-slot", "byname", "custom", "custom:cp-excluded"}
+    leaked = sorted(must_be_hidden & filtered)
+    assert not leaked, (
+        f"excluded_providers must hide these rows, they leaked: {leaked} "
+        f"(full row set: {sorted(filtered)})"
+    )
+    # Positive control: siblings that were not excluded are untouched.
+    assert "kept-slot" in filtered
+    assert "custom:cp-kept" in filtered
+
+
+def test_excluded_providers_hides_moa_row_from_picker(monkeypatch):
+    """``excluded_providers: [moa]`` must hide the virtual MoA row too.
+
+    ``list_picker_providers(include_moa=True)`` injects the moa row AFTER
+    ``list_authenticated_providers`` has applied the exclusion filter, so it
+    re-leaked into the gateway/Telegram/Discord picker. Third instance of the
+    same class as the two in-inventory injectors.
+    """
+    from hermes_cli.model_switch_providers import list_picker_providers
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.inventory._moa_provider_row",
+        lambda current_provider="": {
+            "slug": "moa", "name": "MoA", "models": ["preset-a"], "total_models": 1,
+            "is_current": False, "is_user_defined": False, "source": "moa",
+        },
+    )
+
+    def _slugs(excluded):
+        return {
+            p["slug"]
+            for p in list_picker_providers(
+                current_provider="openai", user_providers={}, custom_providers=[],
+                max_models=5, include_moa=True, excluded_providers=excluded,
+            )
+        }
+
+    assert "moa" in _slugs(None), "sanity: moa row must be injected"
+    filtered = _slugs(["moa"])
+    assert "moa" not in filtered, (
+        f"excluded_providers=['moa'] must hide the virtual moa row; got {sorted(filtered)}"
+    )
+
+
 def test_custom_provider_context_length_models_dict_still_probes(monkeypatch):
     """Dict-shaped ``models:`` from ``_save_custom_provider`` is metadata.
 

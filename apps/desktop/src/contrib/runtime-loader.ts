@@ -58,17 +58,157 @@ interface LoadOptions {
 const loaded = new Map<string, (() => void)[]>()
 
 // Matches the specifier of a static `from '…'`, a side-effect `import '…'`, or
-// a dynamic `import('…')` — anchored to import/export syntax so a bare string
-// literal or comment (e.g. `notify('react')`) is never touched.
+// a dynamic `import('…')`. Deliberately loose — a sentence ending in `from`, a
+// quoted example, a commented-out import all match it — so a match is honoured
+// only when it sits in CODE (see `codeRanges`), never in a string or comment.
 const importSpecifierRe = () => /(from\s*|import\s*\(\s*|import\s+)(['"])([^'"]+)\2/g
+
+/** Character ranges of *source* that are code — string, template-literal and
+ *  comment text excluded (template `${…}` interpolations ARE code). The
+ *  specifier regex is not syntax-aware, so this is what keeps a plugin's own
+ *  copy and comments — `const label = 'Copy keys from'`, `// import 'x'` —
+ *  from being read as import syntax (rejected as "unsupported import") or
+ *  rewritten in place (a mapped specifier inside a string must stay verbatim). */
+function codeRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  const stack: Array<'expr' | 'template'> = []
+  let state: 'block-comment' | 'code' | 'double' | 'line-comment' | 'single' | 'template' = 'code'
+  let codeStart = 0
+  let i = 0
+
+  const closeCode = (end: number) => {
+    if (end > codeStart) {
+      ranges.push([codeStart, end])
+    }
+  }
+
+  while (i < source.length) {
+    const ch = source[i]
+    const next = i + 1 < source.length ? source[i + 1] : ''
+
+    if (state === 'code') {
+      if (ch === '/' && next === '/') {
+        closeCode(i)
+        state = 'line-comment'
+        i += 2
+      } else if (ch === '/' && next === '*') {
+        closeCode(i)
+        state = 'block-comment'
+        i += 2
+      } else if (ch === "'") {
+        closeCode(i)
+        state = 'single'
+        i += 1
+      } else if (ch === '"') {
+        closeCode(i)
+        state = 'double'
+        i += 1
+      } else if (ch === '`') {
+        closeCode(i)
+        stack.push('template')
+        state = 'template'
+        i += 1
+      } else if (ch === '}' && stack[stack.length - 1] === 'expr') {
+        closeCode(i)
+        stack.pop()
+        state = 'template'
+        i += 1
+      } else {
+        i += 1
+      }
+
+      continue
+    }
+
+    if (state === 'line-comment') {
+      if (ch === '\n') {
+        state = 'code'
+        codeStart = i
+      }
+
+      i += 1
+
+      continue
+    }
+
+    if (state === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        i += 2
+        state = 'code'
+        codeStart = i
+      } else {
+        i += 1
+      }
+
+      continue
+    }
+
+    if (state === 'single' || state === 'double') {
+      if (ch === '\\') {
+        i += 2
+      } else if (ch === (state === 'single' ? "'" : '"')) {
+        i += 1
+        state = 'code'
+        codeStart = i
+      } else if (ch === '\n') {
+        // Unterminated literal — recover as code so one stray quote cannot
+        // swallow the rest of the file.
+        i += 1
+        state = 'code'
+        codeStart = i
+      } else {
+        i += 1
+      }
+
+      continue
+    }
+
+    // Template-literal text.
+    if (ch === '\\') {
+      i += 2
+    } else if (ch === '$' && next === '{') {
+      stack.push('expr')
+      state = 'code'
+      i += 2
+      codeStart = i
+    } else if (ch === '`') {
+      stack.pop()
+      state = 'code'
+      i += 1
+      codeStart = i
+    } else {
+      i += 1
+    }
+  }
+
+  closeCode(source.length)
+
+  return ranges
+}
+
+/** True when *at* sits inside a code range (ordered, non-overlapping). */
+function inCode(ranges: Array<[number, number]>, at: number): boolean {
+  for (const [start, end] of ranges) {
+    if (at < start) {
+      return false
+    }
+
+    if (at < end) {
+      return true
+    }
+  }
+
+  return false
+}
 
 /** Rewrite ONLY mapped import specifiers (@hermes/plugin-sdk, react*) to their
  *  live shim blob URLs — never occurrences inside strings/comments. */
 function rewriteSpecifiers(source: string): string {
   const map = sdkImportMap()
+  const ranges = codeRanges(source)
 
-  return source.replace(importSpecifierRe(), (whole, pre, quote, spec) =>
-    map[spec] ? `${pre}${quote}${map[spec]}${quote}` : whole
+  return source.replace(importSpecifierRe(), (whole, pre, quote, spec, offset) =>
+    map[spec] && inCode(ranges, Number(offset)) ? `${pre}${quote}${map[spec]}${quote}` : whole
   )
 }
 
@@ -78,12 +218,18 @@ function rewriteSpecifiers(source: string): string {
 function unsupportedImports(source: string): string[] {
   const map = sdkImportMap()
   const bare = new Set<string>()
+  const ranges = codeRanges(source)
 
   for (const m of source.matchAll(importSpecifierRe())) {
     const spec = m[3]
 
+    // Strings and comments can quote any text; only real code counts.
+    if (!spec || !inCode(ranges, m.index ?? 0)) {
+      continue
+    }
+
     // Skip relative/absolute (./ ../ /) and any URL scheme (blob: http(s):).
-    if (spec && !/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec) && !map[spec]) {
+    if (!/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec) && !map[spec]) {
       bare.add(spec)
     }
   }

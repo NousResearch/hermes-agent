@@ -435,3 +435,133 @@ describe('bundled-shadowed disk copies', () => {
     }
   })
 })
+
+describe('specifier scanning is limited to code (strings/comments never load-block)', () => {
+  // Same blob→data: URL reroute as the suites above: the loader evaluates the
+  // rewritten source through URL.createObjectURL.
+  const withBlobReroute = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  it('loads a plugin whose own copy ends a sentence with "from"', async () => {
+    // The specifier regex reads `from '` as an import specifier — a label like
+    // 'Copy keys from' must not be load-blocked for it.
+    const restore = withBlobReroute()
+
+    try {
+      const register = vi.fn()
+
+      ;(globalThis as unknown as { __copyFromRegister: unknown }).__copyFromRegister = register
+
+      const id = await loadRuntimePlugin(
+        "const label = 'Copy keys from'\nexport default { id: 'copy-from', register: globalThis.__copyFromRegister }",
+        'copy-from'
+      )
+
+      expect(id).toBe('copy-from')
+      expect(register).toHaveBeenCalledTimes(1)
+      expect($pluginRecords.get()['copy-from']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('copy-from')
+      delete (globalThis as unknown as { __copyFromRegister?: unknown }).__copyFromRegister
+      restore()
+    }
+  })
+
+  it('loads a plugin whose comment mentions an import', async () => {
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "// old docs said: import 'left-pad' here\nexport default { id: 'comment-import', register() {} }",
+        'comment-import'
+      )
+
+      expect(id).toBe('comment-import')
+    } finally {
+      unloadRuntimePlugin('comment-import')
+      restore()
+    }
+  })
+
+  it('still rejects a real unmapped import', async () => {
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "import 'left-pad'\nexport default { id: 'real-bare', register() {} }",
+        'real-bare'
+      )
+
+      expect(id).toBeNull()
+      expect($pluginRecords.get()['real-bare']).toMatchObject({ status: 'error' })
+      expect($pluginRecords.get()['real-bare']?.error).toContain('unsupported import')
+    } finally {
+      restore()
+    }
+  })
+
+  it('never rewrites a mapped specifier quoted inside a string', async () => {
+    // Rewriting is for real imports only; a string that documents the import
+    // form must reach the plugin verbatim (it used to become a blob URL).
+    const restore = withBlobReroute()
+
+    try {
+      ;(globalThis as unknown as { __captured?: string }).__captured = undefined
+
+      const id = await loadRuntimePlugin(
+        `const doc = "from '@hermes/plugin-sdk'"
+export default { id: 'quoted-spec', register: () => { globalThis.__captured = doc } }`,
+        'quoted-spec'
+      )
+
+      expect(id).toBe('quoted-spec')
+      expect((globalThis as unknown as { __captured?: string }).__captured).toBe("from '@hermes/plugin-sdk'")
+    } finally {
+      unloadRuntimePlugin('quoted-spec')
+      delete (globalThis as unknown as { __captured?: string }).__captured
+      restore()
+    }
+  })
+
+  it('still rewrites a real mapped import', async () => {
+    // The fix must not swing the other way: the SDK import is the load path.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "import { host } from '@hermes/plugin-sdk'\nexport default { id: 'real-mapped', register() { void host } }",
+        'real-mapped'
+      )
+
+      expect(id).toBe('real-mapped')
+      expect($pluginRecords.get()['real-mapped']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('real-mapped')
+      restore()
+    }
+  })
+})

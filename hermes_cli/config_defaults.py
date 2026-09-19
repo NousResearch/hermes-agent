@@ -568,6 +568,14 @@ DEFAULT_CONFIG = {
         # Prune's summarize pass only touches tool results larger than this (chars); clamped >= 200
         # so a generated summary can't be re-summarized.
         "proactive_prune_min_result_chars": 8000,
+        # Tool-call argument truncation: over-long string leaves inside a tool-call arguments JSON
+        # blob keep a head AND a tail (middle elided by a marker) so file endings / closing braces
+        # survive compression instead of being silently cut. head_chars/tail_chars = chars kept from
+        # the start/end of each over-long leaf (tail_chars=0 = head-only); truncate_threshold = whole
+        # arguments-blob char length above which leaves start being shrunken.
+        "tool_arg_head_chars": 200,
+        "tool_arg_tail_chars": 200,
+        "tool_arg_truncate_threshold": 500,
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
         "proactive_prune_min_reclaim_tokens": 4096,

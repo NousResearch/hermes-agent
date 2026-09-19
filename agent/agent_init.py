@@ -1480,6 +1480,12 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         proactive_prune_min_reclaim=max(
             0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
         ),
+        # Tool-call arg truncation window/toggle (compression.tool_arg_*; tail_chars=0 = head-only).
+        tool_arg_head_chars=max(1, _parse_config_int(cfg.get("tool_arg_head_chars", 200), 200)),
+        tool_arg_tail_chars=max(0, _parse_config_int(cfg.get("tool_arg_tail_chars", 200), 200)),
+        tool_arg_truncate_threshold=max(
+            0, _parse_config_int(cfg.get("tool_arg_truncate_threshold", 500), 500)
+        ),
         protect_first=protect_first,
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
         # Per-model threshold overrides: keys substring-matched against the model name
@@ -1867,6 +1873,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
+            tool_arg_head_chars=cs.tool_arg_head_chars, tool_arg_tail_chars=cs.tool_arg_tail_chars,
+            tool_arg_truncate_threshold=cs.tool_arg_truncate_threshold,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
         )

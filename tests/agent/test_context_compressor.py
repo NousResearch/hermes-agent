@@ -2370,8 +2370,52 @@ class TestTruncateToolCallArgsJson:
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        # head+tail windowing keeps BOTH ends; the elision marker sits in the middle.
+        assert parsed["content"].startswith("# Shopping Browser Setup Notes")
+        assert parsed["content"].endswith("abc ")
+        assert "...[truncated]..." in parsed["content"]
         assert len(shrunk) < len(original)
+
+    def test_tail_window_preserves_file_ending(self):
+        # The core of #110094: a large payload's *ending* must survive, not be silently
+        # cut — e.g. a write_file body whose meaningful lines live at the end.
+        import json as _json
+        shrink = self._helper()
+        content = "def unused():\n    pass\n\n" + "x = " * 600 + "print('done')\n"
+        original = _json.dumps({"path": "/tmp/script.py", "content": content})
+        shrunk = shrink(original, head_chars=200, tail_chars=200)
+        parsed = _json.loads(shrunk)
+        assert parsed["content"].startswith("def unused()")
+        assert parsed["content"].endswith("print('done')\n")
+        assert "...[truncated]..." in parsed["content"]
+
+    def test_tail_zero_restores_head_only(self):
+        import json as _json
+        shrink = self._helper()
+        original = _json.dumps({"content": "z" * 2000})
+        shrunk = shrink(original, head_chars=200, tail_chars=0)
+        parsed = _json.loads(shrunk)
+        assert parsed["content"] == "z" * 200 + "...[truncated]"
+        assert parsed["content"].endswith("...[truncated]")
+
+    def test_leaf_within_head_plus_tail_left_intact(self):
+        # Longer than head but no longer than head+tail: eliding the middle can't shrink it,
+        # so the leaf is left verbatim rather than mangled.
+        import json as _json
+        shrink = self._helper()
+        body = "a" * 350
+        original = _json.dumps({"content": body})
+        shrunk = shrink(original, head_chars=200, tail_chars=200)
+        assert _json.loads(shrunk)["content"] == body
+
+    def test_constructor_exposes_tool_arg_knobs(self):
+        comp = ContextCompressor(
+            "model-a", quiet_mode=True,
+            tool_arg_head_chars=50, tool_arg_tail_chars=25, tool_arg_truncate_threshold=10,
+        )
+        assert comp.tool_arg_head_chars == 50
+        assert comp.tool_arg_tail_chars == 25
+        assert comp.tool_arg_truncate_threshold == 10
 
 
 
@@ -2391,7 +2435,7 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        assert parsed["note"] == "z" * 200 + "...[truncated]..." + "z" * 200
 
 
 
@@ -2429,7 +2473,9 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert parsed["content"].startswith("# Shopping Browser Setup Notes")
+        assert parsed["content"].endswith("x ")
+        assert "...[truncated]..." in parsed["content"]
 
 
 class TestLazyContextResolution:

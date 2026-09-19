@@ -1347,16 +1347,29 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+def _truncate_tool_call_args_json(args: str, head_chars: int = 200, tail_chars: int = 200) -> str:
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    Over-long string leaves keep BOTH a head and a tail (the middle elided by a marker) so the end of a
+    large payload — the trailing lines of a ``write_file`` body, the closing braces of ``execute_code``
+    source, a heredoc tail — survives instead of being silently cut. ``tail_chars=0`` restores the
+    previous head-only behaviour. Leaves longer than ``head_chars`` but no longer than
+    ``head_chars + tail_chars`` are left intact (eliding the middle could not shrink them)."""
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
         return args
 
+    head_chars = max(1, int(head_chars))
+    tail_chars = max(0, int(tail_chars))
+
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            if len(obj) <= head_chars + tail_chars:
+                return obj
+            if tail_chars == 0:
+                return obj[:head_chars] + "...[truncated]"
+            return obj[:head_chars] + "...[truncated]..." + obj[-tail_chars:]
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -2461,6 +2474,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        tool_arg_head_chars: int = 200, tool_arg_tail_chars: int = 200, tool_arg_truncate_threshold: int = 500,
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
@@ -2487,6 +2501,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
+        # Tool-call argument truncation (compression.tool_arg_*). Over-long string leaves keep a head AND
+        # a tail (middle elided) so file endings / closing braces survive; ``truncate_threshold`` is the
+        # whole-arguments-blob char length above which leaves are shrunken. ``tail_chars=0`` = head-only.
+        self.tool_arg_head_chars = max(1, int(tool_arg_head_chars))
+        self.tool_arg_tail_chars = max(0, int(tool_arg_tail_chars))
+        self.tool_arg_truncate_threshold = max(0, int(tool_arg_truncate_threshold))
         # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
         self._proactive_prune_rearm_tokens: int = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
@@ -2817,8 +2837,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             content_hashes.add(h)
         return pruned
 
-    @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
+    def _truncate_tool_call_args_at(self, result: List[Dict[str, Any]], idx: int) -> bool:
         """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -2826,7 +2845,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         new_tcs = []
         for tc in msg["tool_calls"]:
             args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            new_args = (
+                _truncate_tool_call_args_json(args, self.tool_arg_head_chars, self.tool_arg_tail_chars)
+                if len(args) > self.tool_arg_truncate_threshold
+                else args
+            )
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:
@@ -3035,9 +3058,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
         assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
         image-bearing tool results — tail-agnostic and lossy by design (#92699). Only pass (2)'s floor is
-        raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
-        recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
-        dedup is lossless.
+        raised by ``proactive_prune_min_result_chars``; pass (3)'s head/tail window and trigger are tunable
+        via ``compression.tool_arg_*``, while pass (1) keeps its own fixed floor. The recent-tail protection
+        applies to passes (2) and (3); pass (1) is tail-agnostic by design because dedup is lossless.
         """
         if self.proactive_prune_tokens <= 0 or (
             current_tokens is not None and current_tokens < self.proactive_prune_tokens

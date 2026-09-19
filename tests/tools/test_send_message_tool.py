@@ -1741,6 +1741,121 @@ class TestSendViaAdapterStandaloneFallback:
 
         assert result == {"error": "Plugin standalone send failed: boom!"}
 
+class TestNtfyMediaRouting:
+    """ntfy MEDIA attachments deliver natively (issue #46447): through the live
+    gateway adapter's attachment methods, or the plugin standalone sender (cron).
+    The generic text-only gate must neither refuse media-only sends nor add a
+    false 'attachments were omitted' warning."""
+
+    @staticmethod
+    def _fake_gateway_run(runner):
+        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run._gateway_runner_ref = lambda: runner
+        return fake_gateway_run
+
+    @pytest.mark.asyncio
+    async def test_ntfy_media_only_send_delivers_via_live_adapter(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_to_platform
+
+        platform = Platform("ntfy")
+        media = tmp_path / "report.pdf"
+        media.write_bytes(b"%PDF-1.4 tiny")
+        calls = []
+
+        class Adapter:
+            async def send_document(self, chat_id, file_path, caption=None, reply_to=None,
+                                    metadata=None, **kwargs):
+                calls.append({"chat_id": chat_id, "file_path": file_path,
+                              "caption": caption, "metadata": metadata})
+                return SimpleNamespace(success=True, message_id="m1")
+
+        monkeypatch.setitem(sys.modules, "gateway.run", self._fake_gateway_run(
+            SimpleNamespace(adapters={platform: Adapter()})))
+
+        result = await _send_to_platform(
+            platform, SimpleNamespace(extra={"topic": "hermes-in"}), "alerts-channel", "",
+            media_files=[(str(media), False)])
+
+        assert result == {"success": True, "message_id": "m1", "media_delivered": True}
+        assert calls[0]["file_path"] == str(media)
+        assert calls[0]["metadata"] == {"publish_topic": "alerts-channel"}
+
+    @pytest.mark.asyncio
+    async def test_ntfy_text_and_media_caption_rides_attachment(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_to_platform
+
+        platform = Platform("ntfy")
+        media = tmp_path / "clip.mp4"
+        media.write_bytes(b"mp4")
+        text_sends, video_calls = [], []
+
+        class Adapter:
+            async def send(self, *, chat_id, content, metadata=None):
+                text_sends.append(content)
+                return SimpleNamespace(success=True, message_id="t1")
+
+            async def send_video(self, chat_id, video_path, caption=None, reply_to=None,
+                                 metadata=None, **kwargs):
+                video_calls.append({"path": video_path, "caption": caption})
+                return SimpleNamespace(success=True, message_id="v1")
+
+        monkeypatch.setitem(sys.modules, "gateway.run", self._fake_gateway_run(
+            SimpleNamespace(adapters={platform: Adapter()})))
+
+        result = await _send_to_platform(
+            platform, SimpleNamespace(extra={"topic": "hermes-in"}), "alerts-channel", "see clip",
+            media_files=[(str(media), False)])
+
+        assert result == {"success": True, "message_id": "v1", "media_delivered": True}
+        assert video_calls == [{"path": str(media), "caption": "see clip"}]
+        assert text_sends == []  # the caption rode the attachment; no separate text send
+
+    @pytest.mark.asyncio
+    async def test_ntfy_media_only_send_standalone_uses_plugin_sender(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_to_platform
+        from gateway.platform_registry import platform_registry
+
+        platform = Platform("ntfy")
+        media = tmp_path / "note.ogg"
+        media.write_bytes(b"OggS")
+        received = {}
+
+        async def fake_sender(pconfig, chat_id, chunk, **kwargs):
+            received.update(kwargs, chunk=chunk)
+            return {"success": True, "platform": "ntfy"}
+
+        monkeypatch.setattr(
+            platform_registry, "get",
+            lambda name: SimpleNamespace(standalone_sender_fn=fake_sender, send_message_handler=None))
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        result = await _send_to_platform(
+            platform, SimpleNamespace(extra={"topic": "hermes-in"}), "alerts-channel", "",
+            media_files=[(str(media), False)])
+
+        assert result == {"success": True, "platform": "ntfy"}
+        assert received["media_files"] == [(str(media), False)]
+        assert received["chunk"] == ""
+
+    @pytest.mark.asyncio
+    async def test_ntfy_text_only_send_has_no_media_warning(self, monkeypatch):
+        from tools.send_message_tool import _send_to_platform
+
+        platform = Platform("ntfy")
+
+        class Adapter:
+            async def send(self, *, chat_id, content, metadata=None):
+                return SimpleNamespace(success=True, message_id="t1")
+
+        monkeypatch.setitem(sys.modules, "gateway.run", self._fake_gateway_run(
+            SimpleNamespace(adapters={platform: Adapter()})))
+
+        result = await _send_to_platform(
+            platform, SimpleNamespace(extra={"topic": "hermes-in"}), "alerts-channel", "plain text")
+
+        assert result == {"success": True, "message_id": "t1"}
+
+
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 

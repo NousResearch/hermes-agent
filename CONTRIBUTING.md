@@ -841,13 +841,13 @@ that touches the OS, assume *any* platform can hit your code path.
     (["schtasks", "/TR", some_cmd])` → schtasks itself parses `/TR`, AND
     the `some_cmd` string is re-parsed by `cmd.exe` when the task fires.
     Different parsers, different escape rules. Use two separate quoting
-    helpers and never cross them. See `hermes_cli/gateway_windows.py::
-    _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
-    pair.
+    helpers and never cross them. See `_quote_cmd_script_arg` and
+    `_quote_vbs_string` in `hermes_cli/gateway_windows.py`; the task XML path
+    avoids `/TR` quoting entirely.
 
 ### Testing cross-platform
 
-Tests that excercise behavior on specific platforms must run on their target platforms.
+Tests that exercise behavior on specific platforms must run on their target platforms.
 
 ```python
 @pytest.mark.linux_only

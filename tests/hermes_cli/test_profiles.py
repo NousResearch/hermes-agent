@@ -1716,3 +1716,75 @@ class TestCloneAllExcludesRuntimeTrees:
             assert not (clone / name).exists(), name
         assert (clone / "skills" / "greet" / "SKILL.md").is_file()
         assert (clone / "config.yaml").is_file()
+
+
+# ===================================================================
+# TestExportImportInstance — #110428
+# ===================================================================
+
+class TestExportImportInstance:
+    """export_instance_tree / import_instance_tree: diffable-directory instance backup."""
+
+    def test_export_excludes_credentials_and_redacts_embedded_secrets(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test\n")
+        (default_home / ".env").write_text("OPENAI_API_KEY=sk-should-not-survive\n")
+        (default_home / "auth.json").write_text('{"token": "should-not-survive"}\n')
+        (default_home / "SOUL.md").write_text(
+            "persona with an embedded key sk-ant-api03-leaktest1234567890\n")
+
+        named = default_home / "profiles" / "sidework"
+        named.mkdir(parents=True)
+        (named / "config.yaml").write_text("model: test2\n")
+        (named / ".env").write_text("TELEGRAM_TOKEN=should-not-survive\n")
+        (named / "SOUL.md").write_text("another persona\n")
+
+        out_dir = profile_env / "export-out"
+        result = profiles.export_instance_tree(str(out_dir))
+
+        # Credential files never reach the tree, for either the default or a named profile.
+        assert not (result / "default" / ".env").exists()
+        assert not (result / "default" / "auth.json").exists()
+        assert not (result / "sidework" / ".env").exists()
+        # Non-credential config survives, and embedded secret-shaped text is redacted.
+        assert (result / "default" / "config.yaml").exists()
+        assert (result / "sidework" / "config.yaml").exists()
+        assert "sk-ant-api03-leaktest1234567890" not in (result / "default" / "SOUL.md").read_text()
+
+    def test_import_round_trips_default_and_named_profiles(self, profile_env, monkeypatch, tmp_path):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test\n")
+        named = default_home / "profiles" / "sidework"
+        named.mkdir(parents=True)
+        (named / "config.yaml").write_text("model: test2\n")
+
+        out_dir = profile_env / "export-out"
+        profiles.export_instance_tree(str(out_dir))
+
+        # Restore into a SEPARATE fresh instance — proves the tree is self-contained,
+        # not just re-reading the same source directories.
+        new_root = tmp_path / "fresh-instance"
+        new_home = new_root / ".hermes"
+        new_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: new_root)
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+
+        restored = profiles.import_instance_tree(str(out_dir))
+
+        assert set(restored) == {"default", "sidework"}
+        assert (new_home / "config.yaml").read_text() == "model: test\n"
+        assert (new_home / "profiles" / "sidework" / "config.yaml").read_text() == "model: test2\n"
+
+    def test_import_refuses_to_clobber_existing_named_profile_without_overwrite(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test\n")
+        named = default_home / "profiles" / "sidework"
+        named.mkdir(parents=True)
+        (named / "config.yaml").write_text("model: test2\n")
+
+        out_dir = profile_env / "export-out"
+        profiles.export_instance_tree(str(out_dir))
+
+        # sidework already exists at the destination (same instance) — must refuse.
+        with pytest.raises(FileExistsError):
+            profiles.import_instance_tree(str(out_dir))

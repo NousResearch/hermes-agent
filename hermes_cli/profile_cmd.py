@@ -477,6 +477,25 @@ def _profile_export(args):
         _die(f"Error: {e}")
 
 
+def _profile_export_instance(args):
+    from hermes_cli.profiles import export_instance_tree
+    try:
+        out = export_instance_tree(args.output_dir)
+        print(f"✓ Exported instance to {out}")
+        print("  Commit it to a git repo for diffable, reviewable history.")
+    except (ValueError, OSError) as e:
+        _die(f"Error: {e}")
+
+
+def _profile_import_instance(args):
+    from hermes_cli.profiles import import_instance_tree
+    try:
+        restored = import_instance_tree(args.input_dir, overwrite=getattr(args, "overwrite", False))
+        print(f"✓ Restored {len(restored)} profile(s): {', '.join(restored)}")
+    except (ValueError, FileNotFoundError, FileExistsError, OSError) as e:
+        _die(f"Error: {e}")
+
+
 def _profile_import(args):
     from hermes_cli.profiles import check_alias_collision, create_wrapper_script, import_profile
     try:
@@ -608,7 +627,9 @@ PROFILE_ACTIONS = {
     'purge-identity': _profile_purge_identity,
     'migrate-identity': _profile_migrate_identity,
     'export': _profile_export,
+    'export-instance': _profile_export_instance,
     'import': _profile_import,
+    'import-instance': _profile_import_instance,
     'install': _profile_install,
     'update': _profile_update,
     'info': _profile_info,

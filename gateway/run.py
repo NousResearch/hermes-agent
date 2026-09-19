@@ -3162,8 +3162,8 @@ def _normalize_empty_agent_response(
                 "Your message should already be saved — please send it again in a moment.")
         if is_overflow:
             return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or /reset to start fresh.")
+                "⚠️ This conversation is too long for the model's context window.\n"
+                "Use /compress to shorten it, or /new to start a fresh conversation.")
         # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
         logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
         return (

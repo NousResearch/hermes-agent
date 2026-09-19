@@ -1,6 +1,6 @@
 # Spotify
 
-Hermes can control Spotify directly — playback, queue, search, playlists, saved tracks/albums, and listening history — using Spotify's official Web API with PKCE OAuth. Tokens are stored in `~/.hermes/auth.json` and refreshed automatically on 401; you only log in once per machine (refresh tokens expire after ~6 months; re-run `hermes auth spotify` when they do).
+Hermes can control Spotify directly — playback, queue, search, playlists (including custom cover images), saved tracks/albums, and listening history — using Spotify's official Web API with PKCE OAuth. Tokens are stored in `~/.hermes/auth.json` and refreshed automatically on 401; you only log in once per machine (refresh tokens expire after ~6 months; re-run `hermes auth spotify` when they do).
 
 Unlike Hermes' built-in OAuth integrations (Google, GitHub Copilot, Codex), Spotify requires every user to register their own lightweight developer app. Spotify does not let third parties ship a public OAuth app that anyone can use. It takes about two minutes and `hermes auth spotify` walks you through it.
 
@@ -96,6 +96,7 @@ Once logged in, the agent has access to 7 Spotify tools. You talk to the agent n
 > add this track to my Late Night Jazz playlist
 > skip to the next song
 > make a new playlist called "Focus 2026" and add the last three songs I played
+> use this square image as the cover for my Focus 2026 playlist
 > which of my saved albums are by Radiohead
 > search for acoustic covers of Blackbird
 > transfer playback to my kitchen speaker
@@ -151,6 +152,9 @@ Search the catalog. `query` is required. Optional: `types` (array of `track` / `
 | `add_items` | Add tracks | `playlist_id`, `uris` (optional `position`) |
 | `remove_items` | Remove tracks | `playlist_id`, `uris` (+ optional `snapshot_id`) |
 | `update_details` | Rename / edit | `playlist_id` + any of `name`, `description`, `public`, `collaborative` |
+| `upload_cover` | Replace the custom cover image | `playlist_id`, `image_url` (HTTP(S) or base64 data URL) |
+
+`upload_cover` accepts a network image or base64 data URL, converts it to JPEG, and compresses it to Spotify's maximum 256 KB Base64 request payload. Local filesystem paths are rejected. Use a square source image to avoid Spotify cropping it in clients. The OAuth token must include `ugc-image-upload` plus the relevant playlist modification scope.
 
 #### `spotify_albums`
 | Action | Purpose | Required args |
@@ -243,6 +247,8 @@ To revoke the app on Spotify's side, visit [Apps connected to your account](http
 
 **`401 Unauthorized` keeps coming back** — Your refresh token was revoked (usually because you removed the app from your account, or the app was deleted). Run `hermes auth spotify` again.
 
+**`403` when uploading a playlist cover** — The current token is missing `ugc-image-upload` or the relevant playlist modification scope. Re-run `hermes auth spotify`; existing tokens do not gain newly requested scopes automatically.
+
 **Wizard doesn't open the browser** — If you're over SSH or in a container without a display, Hermes detects it and skips the auto-open. Copy the dashboard URL it prints and open it manually.
 
 ## Advanced: custom scopes
@@ -254,6 +260,8 @@ hermes auth spotify --scope "user-read-playback-state user-modify-playback-state
 ```
 
 Scope reference: [Spotify Web API scopes](https://developer.spotify.com/documentation/web-api/concepts/scopes). If you request fewer scopes than a tool needs, that tool's calls will fail with 403.
+
+Custom playlist covers require `ugc-image-upload` together with `playlist-modify-private` or `playlist-modify-public`, depending on the target playlist.
 
 ## Advanced: custom client ID / redirect URI
 

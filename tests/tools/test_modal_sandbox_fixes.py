@@ -373,6 +373,52 @@ class TestDockerHostBindApproval:
         assert _tt_mod._docker_has_host_access(
             {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
 
+    def test_docker_extra_args_host_bind_detected(self):
+        """Host binds expressed as raw docker args also disable the fast path.
+
+        ``docker_extra_args`` is forwarded to ``docker run`` verbatim, so
+        ``-v /host:/c`` mounts exactly what a ``docker_volumes`` entry would.
+        Reading only ``docker_volumes`` lets the identical mount arrive with the
+        approval fast-path still armed, which is the case this guard exists to
+        prevent.
+        """
+        # -v with a host path -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["-v", "/srv/data:/srv/data"]}) is True
+        # --volume long form -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["--volume", "/tmp:/hosttmp"]}) is True
+        # --volume=... joined form -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["--volume=/tmp:/hosttmp"]}) is True
+        # --mount type=bind -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["--mount", "type=bind,source=/etc,target=/etc"]}) is True
+        # Named volume via -v -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["-v", "myvol:/data"]}) is False
+        # --mount type=volume -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["--mount", "type=volume,source=myvol,target=/data"]}) is False
+        # Unrelated args -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["--network", "none"]}) is False
+        # A trailing flag with no value must not IndexError.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": ["-v"]}) is False
+        # Non-list config value must not raise.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "docker_extra_args": None}) is False
+
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
         import tools.approval as A

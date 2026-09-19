@@ -536,3 +536,65 @@ class TestBareNamedAuxCredentialSurvivesAsyncRebuild:
         headers = self._wire_headers(async_client)
         assert headers["authorization"] == "Bearer vk-test-1234"
         assert headers["x-gw-session"] == "aux-session-tag"
+
+
+class TestLocalServerAliasResolvesNamedEntry:
+    """#115990: a local-server alias name (llamacpp/vllm/ollama) rewritten to "custom" by
+    _normalize_aux_provider() must still reach a ``providers:`` entry defined under that name.
+    Without the lookup, a fallback entry naming it (no inline base_url) fell through the bare
+    "custom" branch to the API-key discovery chain and routed the local model slug to Gemini."""
+
+    def test_alias_name_uses_named_providers_entry_not_discovery_chain(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, {
+            "providers": {
+                "llamacpp": {
+                    "name": "Llama-server qwen3.8 v1.1",
+                    "base_url": "http://127.0.0.1:8081/v1",
+                },
+            },
+        })
+        # The misroute condition from the report: a Gemini key in the env, no OPENAI_BASE_URL.
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("llamacpp", "qwen3.8-27b-gsq-rco-v1.1")
+        assert client is not None
+        assert model == "qwen3.8-27b-gsq-rco-v1.1"
+        assert "127.0.0.1:8081" in str(client.base_url)
+        assert "generativelanguage" not in str(client.base_url)
+
+    def test_alias_with_inline_base_url_still_wins_over_entry(self, tmp_path):
+        """The verified workaround (inline base_url on the fallback entry) keeps winning over the
+        entry's own base_url: explicit per-call values compose OVER entry defaults."""
+        _write_config(tmp_path, {
+            "providers": {
+                "llamacpp": {
+                    "name": "Llama-server qwen3.8 v1.1",
+                    "base_url": "http://127.0.0.1:8081/v1",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client(
+            "llamacpp", "qwen3.8-27b-gsq-rco-v1.1",
+            explicit_base_url="http://127.0.0.1:9090/v1",
+        )
+        assert client is not None
+        assert model == "qwen3.8-27b-gsq-rco-v1.1"
+        assert "127.0.0.1:9090" in str(client.base_url)
+
+    def test_alias_without_named_entry_matches_bare_custom_behavior(self, tmp_path, monkeypatch):
+        """No ``providers:`` entry under the alias name → resolution behaves exactly like bare
+        ``custom``: the API-key discovery chain is still consulted, never the named-entry path."""
+        _write_config(tmp_path, {"model": {"default": "test-model"}})
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from agent.auxiliary_client import resolve_provider_client
+        alias_client, _alias_model = resolve_provider_client("llamacpp", "qwen3.8-27b-gsq-rco-v1.1")
+        bare_client, _bare_model = resolve_provider_client("custom", "qwen3.8-27b-gsq-rco-v1.1")
+        assert alias_client is not None and bare_client is not None
+        assert type(alias_client) is type(bare_client)
+        assert str(alias_client.base_url) == str(bare_client.base_url)
+        assert "generativelanguage" in str(alias_client.base_url)

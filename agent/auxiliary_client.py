@@ -4915,6 +4915,18 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
+    # A local-server alias name (llamacpp/vllm/ollama) reaches this branch rewritten to "custom",
+    # which otherwise never consults the named-custom lookup — an entry under ``providers:`` with
+    # that name became unreachable and the discovery chain misrouted the local model slug to an
+    # API-key provider (Gemini 404). With an inline base_url the explicit path below still wins
+    # (its /v1 tail and alias key rules differ), so only consult the entry when it is blank. (#115990)
+    if not req.explicit_base_url and req.original_provider in _LOCAL_SERVER_ALIASES:
+        try:
+            _named_result = _resolve_named_custom_branch(req)
+        except ImportError:
+            _named_result = None
+        if _named_result is not None:
+            return _named_result
     # wrap_base: base for the Anthropic-wrap decision. anthropic_messages must keep the raw
     # /anthropic base while the plain OpenAI client uses the /v1-rewritten custom_base (never
     # /anthropic/chat/completions). Empty means "use custom_base".

@@ -17,6 +17,7 @@ Covers the two safeguards added in response:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -253,3 +254,111 @@ def test_dispatch_critical_pressure_still_runs_reclaim_bookkeeping(
     assert res.memory_pressure == "critical"
     assert row is not None
     assert row.status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# #1012 — the pressure subject is the container's own cgroup, not the node
+# ---------------------------------------------------------------------------
+#
+# Measured live 2026-09-19: pod hermes-gateway (no memory limit, Burstable) on
+# a shared 64 GiB Autopilot node whose MemAvailable sat at 4.8% ->
+# "critical" -> dispatch frozen for hours while the container itself used
+# 1.1 GiB. These pins are the mutation contract: delete the cgroup branch of
+# classify_pressure_sample (or the sampler's cgroup fields) and the first two
+# go RED.
+
+GIB_BYTES = 1024 * 1024 * 1024
+
+
+def test_pressure_ignores_node_when_container_own_usage_is_low():
+    """Node screams critical; the container is nowhere near its own limit -> ok.
+
+    THE #1012 shape: a cgroup-capped container with headroom on a saturated
+    shared node must NOT throttle.
+    """
+    sample = {
+        # whole-node view: MemAvailable 3.0 GiB of 64 GiB (4.7% -> critical)
+        "mem_total_kib": 64 * GIB,
+        "mem_available_kib": 3 * GIB,
+        # the container's own cgroup: 1.1 GiB of a 2 GiB limit
+        "cgroup_usage_bytes": int(1.1 * GIB_BYTES),
+        "cgroup_limit_bytes": 2 * GIB_BYTES,
+    }
+    assert kbd._memory_pressure_level(sample) == "ok"
+
+
+def test_pressure_throttles_on_container_headroom_even_when_node_is_idle():
+    """Mirror direction: node is fine, container is nearly at ITS limit ->
+    critical. The guard must actually watch the cgroup, not just ignore /proc.
+    """
+    sample = {
+        "mem_total_kib": 64 * GIB,
+        "mem_available_kib": 40 * GIB,
+        "cgroup_usage_bytes": int(1.95 * GIB_BYTES),
+        "cgroup_limit_bytes": 2 * GIB_BYTES,
+    }
+    assert kbd._memory_pressure_level(sample) == "critical"
+
+
+def test_uncapped_container_classifies_own_usage_not_node_fraction():
+    """A Burstable pod with NO memory limit (the deployed gateway shape): the
+    cgroup reports usage but no limit. Judging the node's MemAvailable is the
+    #1012 bug; the subject is OUR usage against the node's capacity — small
+    own usage -> ok even when neighbours drained the node.
+    """
+    sample = {
+        "mem_total_kib": 64 * GIB,
+        "mem_available_kib": 3 * GIB,          # node: critical by old rules
+        "cgroup_usage_bytes": int(1.13 * GIB_BYTES),  # ours: trivial
+        # no cgroup_limit_bytes — uncapped
+    }
+    assert kbd._memory_pressure_level(sample) == "ok"
+
+
+def test_no_cgroup_fields_fall_back_to_node_sample():
+    """Plain VM / non-Linux / unreadable cgroupfs: historical behaviour — the
+    node sample IS the subject there."""
+    critical = {"mem_total_kib": 1 * GIB, "mem_available_kib": 32 * 1024}
+    assert kbd._memory_pressure_level(critical) == "critical"
+
+
+@pytest.mark.skipif(sys.platform != "linux",
+                    reason="cgroupfs shape is Linux-only by design (the sampler skips reads elsewhere)")
+def test_sample_memory_carries_cgroup_fields_on_linux():
+    """The sampler, not just the classifier, must populate the subject. The
+    classifier is pure — this proves the production wiring feeds it. Every
+    Linux box (container, VM, CI runner) lives in a cgroup whose usage file is
+    readable, so own-usage MUST be present.
+    """
+    from gateway import lifecycle_ledger as ledger
+
+    sample = ledger.sample_memory()
+    assert "cgroup_usage_bytes" in sample, \
+        f"sampler lost the cgroup subject: {sorted(sample)!r}"
+
+
+def test_dispatch_does_not_freeze_on_node_pressure_with_container_headroom(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """End-to-end #1012 pin: the live gateway log lines ("spawning no new
+    workers") must NOT appear when the node is critical but the container has
+    headroom — dispatch proceeds."""
+    monkeypatch.setattr(kbd, "_system_memory_sample", lambda: {
+        "mem_total_kib": 64 * GIB,
+        "mem_available_kib": 3 * GIB,
+        "cgroup_usage_bytes": int(1.1 * GIB_BYTES),
+        "cgroup_limit_bytes": 2 * GIB_BYTES,
+    })
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        for title in ("a", "b", "c"):
+            kb.create_task(conn, title=title, assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert len(spawns) == 3
+    assert res.memory_pressure is None

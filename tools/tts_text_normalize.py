@@ -201,14 +201,24 @@ def flatten_newlines_for_payload(text: str) -> str:
     return text.strip()
 
 
-def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
+def prepare_spoken_text(
+    text: str, max_chars: int | None = 4000, *, preserve_paragraphs: bool = False,
+) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
     Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
-    pauses > single line (for newline-sensitive providers), then ``max_chars``."""
+    pauses > single line (for newline-sensitive providers), then ``max_chars``.
+
+    Pre-synthesis callers preserve ordinary blank lines; the final provider boundary
+    decides whether to flatten them or build explicit speech/pause segments.
+    """
     spoken = text
     for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
-                 smooth_whitespace_for_tts, flatten_newlines_for_payload):
+                 smooth_whitespace_for_tts):
         spoken = step(spoken)
+    if preserve_paragraphs:
+        spoken = "\n\n".join(flatten_newlines_for_payload(p) for p in spoken.split("\n\n") if p.strip())
+    else:
+        spoken = flatten_newlines_for_payload(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()
     return spoken

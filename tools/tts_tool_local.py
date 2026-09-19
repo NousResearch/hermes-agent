@@ -8,6 +8,7 @@ container. Piper and KittenTTS keep loaded models in small LRU caches registered
 
 from __future__ import annotations
 
+import io
 import logging
 import subprocess
 import sys
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
 from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
+from tools.tts_tool_segments import (
+    SpeechSegment, encode_segments, pcm_from_samples, pcm_from_wav, write_pcm_segments)
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -50,25 +53,31 @@ def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], A
     return value
 
 
-def _run_helper(cmd: list, timeout: int) -> subprocess.CompletedProcess:
+def _run_helper(cmd: list, timeout: int, *, input_text: str | None = None) -> subprocess.CompletedProcess:
+    stdin_kwargs = {"stdin": subprocess.DEVNULL} if input_text is None else {"input": input_text}
     return subprocess.run(
-        cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, stdin=subprocess.DEVNULL,
+        cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
+        **stdin_kwargs,
     )
 
 
 # --- NeuTTS (subprocess via tools/neutts_synth.py so the ~500MB model exits after use) ---
-def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_neutts(
+    text: str, output_path: str, tts_config: Dict[str, Any],
+    *, segments: tuple[SpeechSegment, ...] | None = None,
+) -> str:
     neutts_config = tts_config.get("neutts") or {}
     wav_path = _wav_sidecar_path(output_path)
     cmd = [
         sys.executable, str(Path(__file__).parent / "neutts_synth.py"),
-        "--text", text,
+        *(["--segments-stdin"] if segments is not None else ["--text", text]),
         "--out", wav_path,
         "--ref-audio", neutts_config.get("ref_audio", "") or str(_NEUTTS_SAMPLES / "jo.wav"),
         "--ref-text", neutts_config.get("ref_text", "") or str(_NEUTTS_SAMPLES / "jo.txt"),
         "--model", neutts_config.get("model", "neuphonic/neutts-air-q4-gguf"),
         "--device", neutts_config.get("device", "cpu")]
-    result = _run_helper(cmd, 120)
+    result = (_run_helper(cmd, 120, input_text=encode_segments(segments)) if segments is not None
+              else _run_helper(cmd, 120))
     if result.returncode != 0:  # the synth script reports success lines as "OK:" on stderr too
         error_lines = [l for l in result.stderr.strip().splitlines() if not l.startswith("OK:")]
         raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
@@ -137,7 +146,10 @@ def _load_piper_voice_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[
 _PIPER_ADVANCED_KNOBS = ("length_scale", "noise_scale", "noise_w_scale", "volume", "normalize_audio", "speaker_id")
 
 
-def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_piper_tts(
+    text: str, output_path: str, tts_config: Dict[str, Any],
+    *, segments: tuple[SpeechSegment, ...] | None = None,
+) -> str:
     import wave
     voice, piper_config = _load_piper_voice_for_config(tts_config)
     # Bad speaker_id drops to 0 (Piper's default); bools are rejected (they'd coerce to 1/0).
@@ -159,11 +171,23 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         except ImportError:
             logger.warning("[Piper] SynthesisConfig not available in this piper-tts version — advanced knobs ignored")
     wav_path = _wav_sidecar_path(output_path)
-    with wave.open(wav_path, "wb") as wav_file:
+    def synthesize_wav(spoken, wav_file):
         if syn_config is not None:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+            voice.synthesize_wav(spoken, wav_file, syn_config=syn_config)
         else:
-            voice.synthesize_wav(text, wav_file)
+            voice.synthesize_wav(spoken, wav_file)
+
+    if segments is None:
+        with wave.open(wav_path, "wb") as wav_file:
+            synthesize_wav(text, wav_file)
+    else:
+        def audio_blocks():
+            for segment in segments:
+                buffer = io.BytesIO()
+                with wave.open(buffer, "wb") as wav_file:
+                    synthesize_wav(segment.text, wav_file)
+                yield segment, pcm_from_wav(buffer.getvalue())
+        write_pcm_segments(wav_path, audio_blocks())
     return _finalize_wav_output(wav_path, output_path)
 
 
@@ -183,12 +207,21 @@ def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, D
     return _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model), kt_config
 
 
-def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_kittentts(
+    text: str, output_path: str, tts_config: Dict[str, Any],
+    *, segments: tuple[SpeechSegment, ...] | None = None,
+) -> str:
     model, kt_config = _load_kittentts_model_for_config(tts_config)
-    audio = model.generate(  # numpy array at 24kHz
-        text, voice=kt_config.get("voice", DEFAULT_KITTENTTS_VOICE),
-        speed=kt_config.get("speed", 1.0), clean_text=kt_config.get("clean_text", True))
-    import soundfile as sf
+    def generate(spoken):
+        return model.generate(  # numpy array at 24kHz
+            spoken, voice=kt_config.get("voice", DEFAULT_KITTENTTS_VOICE),
+            speed=kt_config.get("speed", 1.0), clean_text=kt_config.get("clean_text", True))
+
     wav_path = _wav_sidecar_path(output_path)
-    sf.write(wav_path, audio, 24000)
+    if segments is None:
+        import soundfile as sf
+        sf.write(wav_path, generate(text), 24000)
+    else:
+        write_pcm_segments(wav_path, (
+            (segment, pcm_from_samples(generate(segment.text))) for segment in segments))
     return _finalize_wav_output(wav_path, output_path)

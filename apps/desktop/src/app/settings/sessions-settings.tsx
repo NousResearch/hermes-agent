@@ -8,6 +8,7 @@ import {
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
+  peekConfigReadOrigin,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -193,6 +194,9 @@ function AutoArchiveSetting() {
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+  // Reactive write scope (not a mirrored ref): set with the accepted GET so
+  // persist can pin PUT without an effect-to-ref assignment.
+  const [writeScope, setWriteScope] = useState<ReturnType<typeof peekConfigReadOrigin>>(undefined)
 
   useEffect(() => {
     // Config REST is only reachable through the Electron bridge; skip in
@@ -211,6 +215,7 @@ function AutoArchiveSetting() {
 
         const sessions = (record.sessions ?? {}) as Record<string, unknown>
         const parsedDays = Number(sessions.auto_archive_days)
+        setWriteScope(peekConfigReadOrigin(record))
         setConfig(record)
         setEnabled(Boolean(sessions.auto_archive))
         setDays(Number.isFinite(parsedDays) && parsedDays > 0 ? Math.round(parsedDays) : DEFAULT_AUTO_ARCHIVE_DAYS)
@@ -242,12 +247,13 @@ function AutoArchiveSetting() {
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } })
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }
     },
-    [config, s.autoArchiveFailed]
+    [config, s.autoArchiveFailed, writeScope]
   )
 
   if (!config) {

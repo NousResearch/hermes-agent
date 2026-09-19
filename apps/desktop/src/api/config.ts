@@ -22,6 +22,52 @@ import {
   STARTUP_REQUEST_TIMEOUT_MS
 } from './client'
 
+const configReadOrigins = new WeakMap<object, { connectionId?: string; profile?: string }>()
+
+/** Snapshot the `(connectionId, profile)` that served a config GET. */
+export function bindConfigReadOrigin(
+  record: object,
+  origin: { connectionId?: string; profile?: string }
+): void {
+  configReadOrigins.set(record, origin)
+}
+
+export function peekConfigReadOrigin(
+  record: object | undefined | null
+): { connectionId?: string; profile?: string } | undefined {
+  return record ? configReadOrigins.get(record) : undefined
+}
+
+/**
+ * Route a config write to the identity that served the matching read.
+ * An explicit `{ connectionId, profile }` pin wins. A GET-derived record
+ * keeps its captured origin even after the registry primary changes.
+ * Unbound writes (no captured origin, no object pin) keep the live ambient
+ * capability scope — e.g. reset-to-defaults on the current connection.
+ */
+export function resolveConfigWriteScope(
+  record: object | undefined,
+  requestScope?: ProfileScope
+): { connectionId?: string; profile?: string } {
+  if (requestScope && typeof requestScope === 'object') {
+    return capabilityScoped(requestScope)
+  }
+
+  const captured = peekConfigReadOrigin(record)
+
+  if (captured) {
+    const profile =
+      typeof requestScope === 'string' && requestScope.trim() ? requestScope.trim() : captured.profile
+
+    return {
+      ...(profile ? { profile } : {}),
+      ...(captured.connectionId ? { connectionId: captured.connectionId } : {})
+    }
+  }
+
+  return capabilityScoped(requestScope)
+}
+
 export function getStatus(): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
     ...profileScoped(),
@@ -74,22 +120,40 @@ export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   })
 }
 
-export function getHermesConfigRecord(
+export async function getHermesConfigRecord(
   profile?: ProfileScope,
   { includeDefaults = true }: { includeDefaults?: boolean } = {}
 ): Promise<HermesConfigRecord> {
-  return window.hermesDesktop.api<HermesConfigRecord>({
-    ...capabilityScoped(profile),
+  // `null` is an absent override here, not a request to discard the active
+  // profile. The cache API therefore keeps the default scope `undefined`.
+  const requestScope = capabilityScoped(profile ?? undefined)
+
+  const record = await window.hermesDesktop.api<HermesConfigRecord>({
+    ...requestScope,
     path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'
   })
+
+  if (record && typeof record === 'object') {
+    bindConfigReadOrigin(record, requestScope)
+  }
+
+  return record
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
-  return hermesApi<HermesConfigRecord>({
-    ...profileScoped(),
+export async function getHermesConfigDefaults(profile?: ProfileScope): Promise<HermesConfigRecord> {
+  const origin = capabilityScoped(profile ?? undefined)
+
+  const record = await window.hermesDesktop.api<HermesConfigRecord>({
+    ...origin,
     path: '/api/config/defaults',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
+
+  if (record && typeof record === 'object') {
+    bindConfigReadOrigin(record, origin)
+  }
+
+  return record
 }
 
 export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {
@@ -101,11 +165,11 @@ export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSc
 
 export function saveHermesConfig(
   config: HermesConfigRecord,
-  profile?: null | string,
+  profile?: ProfileScope,
   { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
 ): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...resolveConfigWriteScope(config, profile),
     path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
     method: 'PUT',
     body: { config }
@@ -117,7 +181,7 @@ export function saveHermesConfig(
  *  on another registered gateway), mirroring getHermesConfigRecord. */
 export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    ...capabilityScoped(profile),
+    ...resolveConfigWriteScope(config, profile),
     path: '/api/config',
     method: 'PUT',
     body: { config }

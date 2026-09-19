@@ -30,7 +30,7 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
+  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
   // The seed effect refuses to reseed while the query still carries the
   // previous profile's stamp. A structurally-shared refetch keeps the object
@@ -80,7 +80,7 @@ export function ChatFontSetting() {
 
       // Sparse patch: PUT /api/config deep-merges; echoing the cached snapshot
       // would overwrite keys other surfaces changed since it loaded.
-      void saveHermesConfig(setNested({}, CONFIG_PATH, value))
+      void saveHermesConfig(setNested({}, CONFIG_PATH, value), writeScope)
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)
@@ -106,7 +106,7 @@ export function ChatFontSetting() {
     }, AUTOSAVE_DELAY_MS)
 
     return () => window.clearTimeout(timeout)
-  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed])
+  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed, writeScope])
 
   const update = (value: string) => {
     saveVersionRef.current += 1

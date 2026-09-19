@@ -164,6 +164,7 @@ import {
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { decodedPathIfMissing } from './decoded-path-fallback'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import {
@@ -6436,7 +6437,13 @@ async function previewFileTarget(rawTarget, baseDir) {
   const ext = path.extname(resolved).toLowerCase()
 
   if (!fileExists(resolved)) {
-    return null
+    const decoded = decodedPathIfMissing(resolved)
+
+    if (decoded && fileExists(decoded)) {
+      resolved = decoded
+    } else {
+      return null
+    }
   }
 
   ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))

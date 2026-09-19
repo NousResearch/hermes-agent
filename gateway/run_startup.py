@@ -22,7 +22,7 @@ from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, include_telegram_dm_thread_via_store
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
@@ -1622,9 +1622,36 @@ class GatewayStartupMixin:
                         handoff_profile = resolved
             except Exception:
                 logger.debug("Handoff: could not resolve profile namespace", exc_info=True)
+        store = None
+        try:
+            store = getattr(self.async_session_store, "_store", None)
+        except Exception:
+            store = None
+        if store is None:
+            store = getattr(self, "session_store", None)
+        topic_mode = None
+        db = getattr(self, "_session_db", None)
+        inner_db = getattr(db, "_db", db)
+        checker = getattr(inner_db, "is_telegram_topic_mode_enabled", None)
+        if callable(checker):
+            try:
+                checked = checker(
+                    chat_id=str(getattr(dest.source, "chat_id", None) or ""),
+                    user_id=str(getattr(dest.source, "user_id", None) or ""),
+                    profile_name=str(
+                        getattr(dest.source, "profile", None) or handoff_profile or ""
+                    ).strip() or "default",
+                )
+                if isinstance(checked, bool):
+                    topic_mode = checked
+            except Exception:
+                topic_mode = None
         return build_session_key(
             dest.source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
+            include_telegram_dm_thread=include_telegram_dm_thread_via_store(
+                dest.source, store, topic_mode_enabled=topic_mode,
+            ),
         )
 
     async def _process_handoff(self, row: Dict[str, Any], profile_name: Optional[str] = None) -> None:

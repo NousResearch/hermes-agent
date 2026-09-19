@@ -388,7 +388,7 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, include_telegram_dm_thread_via_store
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -2391,10 +2391,27 @@ class BasePlatformAdapter(ABC):
     def _source_session_key(self, source: "SessionSource") -> str:
         self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra = self.config.extra
+        store = getattr(self, "_session_store", None)
+        # Telegram DMs: prefer SessionStore so topic-mode lanes keep their suffix while
+        # synthetic per-message thread_ids coalesce (issue #107133). handle_message keys
+        # ``_active_sessions`` through this path — the flag must match the store.
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and getattr(source, "chat_type", None) == "dm"
+        ):
+            generate = getattr(store, "_generate_session_key", None)
+            if callable(generate):
+                try:
+                    key = generate(source)
+                    if isinstance(key, str) and key:
+                        return key
+                except Exception:
+                    logger.debug("telegram DM session-key via store failed; coalescing", exc_info=True)
         return build_session_key(
             source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(source))
+            profile=self._session_key_profile(source),
+            include_telegram_dm_thread=include_telegram_dm_thread_via_store(source, store))
 
     def _text_batch_key(self, event: "MessageEvent") -> str:
         """Session-scoped key for text batching (subclasses may override)."""

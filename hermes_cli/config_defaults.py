@@ -1718,6 +1718,9 @@ DEFAULT_CONFIG = {
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
         "model_provider": "",
+        # null inherits the global fallback chain; [] disables cron fallback.
+        # An explicit provider/model list replaces the global chain for cron only.
+        "fallback_providers": None,
         # Cron SCHEDULER provider (WHEN a due job fires). "" = built-in in-process 60s ticker. Name
         # an installed provider (plugins/cron_providers/<name>/ or $HERMES_HOME/plugins/ <name>/),
         # e.g. "chronos" (NAS-mediated managed cron for scale-to-zero). An unknown or unavailable

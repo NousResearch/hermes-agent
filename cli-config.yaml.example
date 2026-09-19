@@ -368,6 +368,9 @@ kanban:
 #   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 cron:
+  # null inherits global fallback_providers; [] disables cron provider fallback.
+  # Set a provider/model list here to override the chain for cron agents only.
+  fallback_providers: null
   catch_up_missed: true  # False skips past-grace recurring misses after planned downtime.
 
 terminal:

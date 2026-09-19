@@ -17,7 +17,7 @@ _HTTP_LEAD = re.compile(r"failed: (HTTP|Error code:|provider )")
 
 def _no_chain(monkeypatch):
     monkeypatch.setattr(scheduler, "load_config", lambda: {})
-    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(scheduler, "get_cron_fallback_chain", lambda cfg: [])
 
 
 def test_generic_failure_names_runs_and_pause_commands_and_the_real_output_dir():

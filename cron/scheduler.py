@@ -40,7 +40,7 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly, resolve_cron_model_drift_defaults)
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_cron_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -105,13 +105,13 @@ def _fallback_chain_phrase() -> str:
     """
     try:
         cfg = load_config() or {}
-        chain = get_fallback_chain(cfg)
+        chain = get_cron_fallback_chain(cfg)
     except Exception:
         return "No backup provider succeeded either."
     if chain:
         return "No backup provider succeeded either."
     return (
-        "No backup provider is configured — add one with `hermes fallback add`, "
+        "No backup provider is configured — check `cron.fallback_providers` or add a global backup with `hermes fallback add`, "
         "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
     )
 
@@ -1566,7 +1566,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
             job_id, "auth" if is_auth else "transient network", resolve_exc)
-        for entry in get_fallback_chain(jc.cfg):
+        for entry in get_cron_fallback_chain(jc.cfg):
             if not isinstance(entry, dict):
                 continue
             fb_provider = str(entry.get("provider") or "").strip()
@@ -2198,7 +2198,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
-    setup.fallback_model = get_fallback_chain(_cfg) or None
+    setup.fallback_model = get_cron_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)

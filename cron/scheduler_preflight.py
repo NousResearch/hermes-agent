@@ -88,7 +88,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     requested-provider computation. Skipped when a fallback chain exists — auth-fallback may
     legitimately rescue a missing primary key, so blocking here would break that contract."""
     try:
-        if _sched.get_fallback_chain(cfg):
+        if _sched.get_cron_fallback_chain(cfg):
             return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error

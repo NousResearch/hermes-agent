@@ -104,3 +104,18 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
                 seen.add(identity)
                 chain.append(entry)
     return chain
+
+
+def get_cron_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Resolve cron's override without changing the main agent's fallback policy.
+
+    Missing/null inherits the global chain, including legacy fallback_model.
+    An explicit value replaces it entirely; [] disables cron provider fallback.
+    Invalid entries are dropped by the shared normalizer, never rescued globally.
+    """
+    config = config or {}
+    cron = config.get("cron")
+    declared = cron.get("fallback_providers") if isinstance(cron, dict) else None
+    if declared is None:
+        return get_fallback_chain(config)
+    return get_fallback_chain({"fallback_providers": declared})

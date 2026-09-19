@@ -986,6 +986,29 @@ Cron jobs inherit your configured fallback providers and credential pool rotatio
 - **Fall back to an alternate provider** if you have `fallback_providers` (or the legacy `fallback_model`) configured in `config.yaml`
 - **Rotate to the next credential** in your [credential pool](../configuration.md#credential-pool-strategies) for the same provider
 
+To give cron agents a separate fallback chain, set `cron.fallback_providers`:
+
+```yaml
+cron:
+  model: your-cron-model
+  model_provider: openrouter
+  fallback_providers:
+    - provider: anthropic
+      model: claude-sonnet-4
+```
+
+Omitting this setting or setting it to `null` inherits the top-level
+`fallback_providers` and legacy `fallback_model` chain. An explicit list replaces
+that chain for all cron agents, including jobs with a primary model/provider pin.
+An empty list (`[]`) disables cron provider fallback. Entries use the same format
+and normalization as the global chain. Invalid entries are ignored without
+restoring the global chain.
+
+This setting applies to preflight credential checks, provider-resolution recovery,
+and the cron agent's model-call fallback. It leaves interactive sessions,
+delegation settings, auxiliary-task routing, and same-provider credential rotation
+unchanged. Per-job fallback lists are not supported.
+
 This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
 
 ## Run failures (`last_error`)

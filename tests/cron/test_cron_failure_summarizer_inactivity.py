@@ -16,7 +16,7 @@ Second bug bundled into the same fix: even on a *genuine* provider failure,
 regardless of whether fallback_providers was ever configured. Most installs
 have fallback_providers: [], so the message always implied an
 attempted-and-failed fallback that never existed. _fallback_chain_phrase() now checks the effective chain
-via get_fallback_chain() and reports "No fallback chain configured." when
+via get_cron_fallback_chain() and reports "No fallback chain configured." when
 it's empty.
 """
 
@@ -39,7 +39,7 @@ def test_inactivity_timeout_is_not_reported_as_provider_timeout():
 
 def test_genuine_provider_timeout_with_no_fallback_configured(monkeypatch):
     monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": []})
-    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(scheduler, "get_cron_fallback_chain", lambda cfg: [])
     job = {"name": "CI Autofix Poller", "id": "f7fe78574bda"}
     error = "Request timed out."
     msg = _summarize_cron_failure_for_delivery(job, error)
@@ -54,7 +54,7 @@ def test_genuine_provider_timeout_with_fallback_configured(monkeypatch):
     })
     monkeypatch.setattr(
         scheduler,
-        "get_fallback_chain",
+        "get_cron_fallback_chain",
         lambda cfg: [{"provider": "openrouter", "model": "anthropic/claude-sonnet-5"}],
     )
     job = {"name": "CI Autofix Poller", "id": "f7fe78574bda"}
@@ -75,7 +75,7 @@ def test_fallback_chain_phrase_fails_open_on_config_error(monkeypatch):
 
 def test_readtimeout_error_still_classified_as_provider_timeout(monkeypatch):
     monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": []})
-    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(scheduler, "get_cron_fallback_chain", lambda cfg: [])
     job = {"name": "some-job", "id": "abc123"}
     error = "httpx.ReadTimeout: The read operation timed out"
     msg = _summarize_cron_failure_for_delivery(job, error)
@@ -88,7 +88,7 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     # adjacent wording; rate-limit check runs first and should be unaffected
     # by the new inactivity branch inserted after it.
     monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": []})
-    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(scheduler, "get_cron_fallback_chain", lambda cfg: [])
     job = {"name": "some-job", "id": "abc123"}
     error = "HTTP 429: weekly usage limit exceeded"
     msg = _summarize_cron_failure_for_delivery(job, error)

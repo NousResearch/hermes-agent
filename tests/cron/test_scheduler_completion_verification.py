@@ -99,7 +99,7 @@ def _run_booked_job(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", lambda: [])
     monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
+    monkeypatch.setattr(cron_scheduler, "get_cron_fallback_chain", lambda _cfg: [])
     monkeypatch.setattr(
         cron_scheduler, "_guard_job_credential_exfil", lambda _job: None
     )

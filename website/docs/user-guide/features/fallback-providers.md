@@ -415,7 +415,7 @@ See [Subagent Delegation](./delegation.md) for full configuration details.
 
 ## Cron Job Providers
 
-Cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`) when they create an agent. To use a different primary provider for a cron job, configure `provider` and `model` overrides on the cron job itself:
+Cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`) by default. Set `cron.fallback_providers` to replace that chain for cron agents only, or `[]` to disable cron provider fallback. Missing or `null` inherits the global chain. See [cron provider recovery](cron.md#provider-recovery) for an example. To use a different primary provider for a cron job, configure `provider` and `model` overrides on the cron job itself:
 
 ```python
 cronjob(
@@ -446,4 +446,4 @@ See [Scheduled Tasks (Cron)](./cron.md) for full configuration details.
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
-| Cron jobs | Inherit the configured `fallback_providers` chain; optional per-job provider override | Per-job `provider` / `model` |
+| Cron jobs | `cron.fallback_providers` when declared, otherwise the global chain | `cron.fallback_providers`; per-job primary `provider` / `model` |

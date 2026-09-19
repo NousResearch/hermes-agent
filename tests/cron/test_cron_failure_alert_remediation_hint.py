@@ -15,7 +15,7 @@ from cron.scheduler import _summarize_cron_failure_for_delivery
 
 def test_empty_chain_alert_names_the_remediation_commands(monkeypatch):
     monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": []})
-    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(scheduler, "get_cron_fallback_chain", lambda cfg: [])
     job = {"name": "semi-analyst-radar", "id": "aaa111"}
     msg = _summarize_cron_failure_for_delivery(job, "Request timed out.")
     assert "No backup provider is configured" in msg
@@ -29,7 +29,7 @@ def test_exhausted_chain_alert_does_not_carry_the_config_hint(monkeypatch):
         lambda: {"fallback_providers": [{"provider": "openrouter", "model": "x"}]},
     )
     monkeypatch.setattr(
-        scheduler, "get_fallback_chain",
+        scheduler, "get_cron_fallback_chain",
         lambda cfg: [{"provider": "openrouter", "model": "x"}],
     )
     job = {"name": "semi-analyst-radar", "id": "aaa111"}
@@ -40,7 +40,7 @@ def test_exhausted_chain_alert_does_not_carry_the_config_hint(monkeypatch):
 
 def test_rate_limit_empty_chain_also_carries_the_hint(monkeypatch):
     monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": []})
-    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    monkeypatch.setattr(scheduler, "get_cron_fallback_chain", lambda cfg: [])
     job = {"name": "kz-coverage", "id": "bbb222"}
     msg = _summarize_cron_failure_for_delivery(job, "HTTP 429: rate limit exceeded")
     assert "No backup provider is configured" in msg

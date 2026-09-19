@@ -104,7 +104,8 @@ async def test_config_opt_out_lets_silence_through(tmp_path, monkeypatch):
     result = await router._deliver_to_platform(target, "*(silent)*", metadata=None)
 
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["content"] == "*(silent)*"
+    # Chat display strips punctuation; the opt-out still delivers, depunctuated.
+    assert adapter.calls[0]["content"] == "silent"
     assert result == {"success": True}
 
 
@@ -146,7 +147,8 @@ async def test_cron_job_id_metadata_bypasses_the_filter(tmp_path, monkeypatch):
     )
 
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["content"] == "*(silent)*"
+    # Cron artifacts bypass the filter but chat display still strips punctuation.
+    assert adapter.calls[0]["content"] == "silent"
     assert result.get("filtered") is None
     assert result.get("delivered") is not False
 

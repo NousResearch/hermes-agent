@@ -46,7 +46,7 @@ def test_set_forks_a_builtin_without_inventing_a_background():
 
     fork = _skins() / "default-custom.yaml"
     assert fork.exists()
-    data = yaml.safe_load(fork.read_text())
+    data = yaml.safe_load(fork.read_text(encoding="utf-8"))
     assert data["colors"]["ui_tool"] == "#00FFFF"
     # default has no background, so the fork must not invent one (terminal stays put).
     assert "background" not in data["colors"]

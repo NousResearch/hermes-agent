@@ -24,7 +24,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import display_kind_for_event, is_machinery_display_kind, strip_edge_punctuation
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -3599,7 +3599,7 @@ class GatewayTurnMixin:
 
         # Safety net: a pending slash command is never passed to the agent as user input.
         if pending and pending.strip().startswith("/"):
-            _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
+            _pending_cmd_word = strip_edge_punctuation(pending.strip().split(None, 1)[0][1:].lower())
             if _pending_cmd_word:
                 with suppress(Exception):
                     from hermes_cli.commands import resolve_command as _rc_pending

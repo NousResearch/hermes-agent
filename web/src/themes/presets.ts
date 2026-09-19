@@ -67,18 +67,31 @@ export function webPresetFromShared(
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "JARVIS HUD",
+  description: "Stark Industries holographic cyan and deep obsidian HUD",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
+    background: { hex: "#040d1a", alpha: 1 },
+    midground: { hex: "#00f0ff", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    warmGlow: "rgba(0, 240, 255, 0.45)",
+    noiseOpacity: 0.6,
   },
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,
-  terminalBackground: "#000000",
+  terminalBackground: "#020813",
+};
+
+export const jarvisTheme: DashboardTheme = {
+  name: "jarvis",
+  label: "JARVIS HUD",
+  description: "Stark Industries holographic cyan and deep obsidian HUD",
+  palette: {
+    ...webPresetFromShared(THEME_PRESET_PALETTES.jarvis),
+    noiseOpacity: 0.6,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  terminalBackground: "#020813",
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -245,6 +258,7 @@ export const defaultLargeTheme: DashboardTheme = {
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
+  jarvis: jarvisTheme,
   "default-large": defaultLargeTheme,
   "nous-blue": nousBlueTheme,
   midnight: midnightTheme,

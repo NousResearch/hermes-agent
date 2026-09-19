@@ -11,6 +11,7 @@ import logging
 import queue
 import tempfile
 import threading
+import time
 import asyncio
 import json
 import os
@@ -22,7 +23,13 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest, VoiceLiveSessionRequest
+from hermes_cli.web_models import (
+    AudioTranscriptionRequest,
+    TTSSpeakRequest,
+    TTSLeaseRequest,
+    VoiceLiveSessionRequest,
+    YouTubePlayRequest,
+)
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -292,12 +299,53 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
 
+    provider = payload.provider
+    voice_id = payload.voice_id
+    model_id = payload.model_id
+    persona = (payload.persona or "").strip().lower()
+    req_lang = (payload.language or "").strip().lower()
+
+    # Detect whether the text contains Arabic script
+    import re
+    arabic_chars = len(re.findall(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]", text))
+    latin_chars = len(re.findall(r"[a-zA-Z]", text))
+    if req_lang == "arabic":
+        is_arabic_text = True
+    elif req_lang == "english":
+        is_arabic_text = False
+    else:
+        is_arabic_text = arabic_chars > 0 and (arabic_chars >= latin_chars * 0.35)
+
+    if persona == "gwen":
+        # Gwen is 100% the Female AI (ElevenLabs Sarah voice)
+        provider = "elevenlabs"
+        voice_id = "EXAVITQu4vr4xnSDxMaL"
+        model_id = "eleven_multilingual_v2"
+    elif persona == "jarvis":
+        # Jarvis is 100% the MALE AI!
+        provider = "edge"
+        if is_arabic_text:
+            voice_id = "ar-EG-ShakirNeural"  # Authentic Egyptian Male voice
+        else:
+            voice_id = "en-US-GuyNeural"     # Distinctive English Male voice
+    else:
+        # If no persona specified, determine by language
+        if is_arabic_text:
+            provider = provider or "edge"
+            voice_id = voice_id or "ar-EG-ShakirNeural"
+        else:
+            provider = provider or "edge"
+            voice_id = voice_id or "en-US-GuyNeural"
+
     # _config_profile_scope raises 400/404 for a bad profile — pass it
     # through instead of masking it as a 500 synthesis failure.
     with http_failure("Desktop voice TTS failed", 500, "Speech synthesis failed"):
         from tools.tts_tool import text_to_speech_tool
 
-        result_json = await _run_config_scoped(profile, lambda: text_to_speech_tool(text))
+        result_json = await _run_config_scoped(
+            profile,
+            lambda: text_to_speech_tool(text, provider=provider, voice=voice_id, model=model_id),
+        )
 
     try:
         result = json.loads(result_json) if isinstance(result_json, str) else result_json
@@ -522,3 +570,63 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         pump.cancel()
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+_YOUTUBE_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+_YOUTUBE_CACHE_TTL = 3600.0  # 1 hour cache
+
+
+def _get_youtube_helper():
+    import importlib.util
+    from pathlib import Path
+    script_path = Path(__file__).resolve().parents[2] / "skills" / "media" / "youtube-playback" / "scripts" / "play_youtube.py"
+    spec = importlib.util.spec_from_file_location("play_youtube", str(script_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load play_youtube from {script_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@router.get("/api/youtube/search")
+async def search_youtube_endpoint(q: str, limit: int = 5):
+    """Search YouTube for videos/music with in-memory caching for zero-latency response."""
+    query = (q or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query must not be empty")
+
+    now = time.time()
+    cache_key = f"{query.lower()}:{limit}"
+    cached = _YOUTUBE_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _YOUTUBE_CACHE_TTL:
+        return {"ok": True, "results": cached[1], "cached": True}
+
+    helper = _get_youtube_helper()
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(None, lambda: helper.search_youtube(query, max_results=limit))
+    _YOUTUBE_CACHE[cache_key] = (now, results)
+
+    return {"ok": True, "results": results, "cached": False}
+
+
+@router.post("/api/youtube/play")
+async def play_youtube_endpoint(payload: YouTubePlayRequest):
+    """Resolve and optionally launch a YouTube video or music in the default browser."""
+    helper = _get_youtube_helper()
+
+    query = (payload.query or payload.video_id or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Must provide query or video_id")
+
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(None, lambda: helper.search_youtube(query, max_results=1))
+    if not results or "error" in results[0]:
+        raise HTTPException(status_code=404, detail="No YouTube video found")
+
+    top = results[0]
+    opened = False
+    if payload.open_browser and top.get("url"):
+        opened = await loop.run_in_executor(None, lambda: helper.open_in_browser(top["url"], autoplay=payload.autoplay))
+
+    return {"ok": True, "opened": opened, "video": top, "results": results}
+

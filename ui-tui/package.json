@@ -15,7 +15,7 @@
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
     "check": "npm run build:ink && npm run typecheck && npm run test && npm run lint",
-    "test": "vitest run",
+    "test": "npm run build:ink && vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

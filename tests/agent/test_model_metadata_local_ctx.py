@@ -772,8 +772,8 @@ class TestGetModelContextLengthLocalFallback:
 
 
     def test_local_endpoint_server_returns_none_falls_back_to_2m(self):
-        """When local server returns None, still falls back to 2M probe tier."""
-        from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
+        """When local server returns None, still falls back to the fail-closed default."""
+        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
@@ -782,7 +782,7 @@ class TestGetModelContextLengthLocalFallback:
              patch("agent.model_metadata._query_local_context_length", return_value=None):
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
-        assert result == CONTEXT_PROBE_TIERS[0]
+        assert result == DEFAULT_FALLBACK_CONTEXT
 
 
     def test_cached_result_skips_local_query(self):

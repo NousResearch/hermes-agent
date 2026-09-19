@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -29,6 +30,35 @@ class _StubSpotifyClient:
 
     def get_currently_playing(self, *, market=None):
         return self.payload
+
+
+class _PlaylistClient:
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, path, *, params=None, json_body=None):
+        self.calls.append((method, path, params))
+        if path.endswith("/items"):
+            assert params is not None
+            return {"items": [{"track": {"id": "page-2"}}], "offset": params["offset"], "total": 101}
+        return {"id": "playlist-1", "tracks": {"items": [{"track": {"id": "page-1"}}]}}
+
+
+def test_playlist_get_uses_playlist_items_endpoint_for_pagination() -> None:
+    client = _PlaylistClient()
+
+    payload = spotify_tool._playlist_get(
+        cast(spotify_mod.SpotifyClient, client),
+        {"playlist_id": "playlist-1", "limit": 50, "offset": 50},
+        "get",
+    )
+
+    assert payload["id"] == "playlist-1"
+    assert payload["tracks"]["items"][0]["track"]["id"] == "page-2"
+    assert client.calls == [
+        ("GET", "/playlists/playlist-1", {"market": None}),
+        ("GET", "/playlists/playlist-1/items", {"limit": 50, "offset": 50, "market": None}),
+    ]
 
 
 def test_spotify_client_retries_once_after_401(monkeypatch: pytest.MonkeyPatch) -> None:

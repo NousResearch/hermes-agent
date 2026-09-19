@@ -2788,10 +2788,6 @@ class GatewayTurnMixin:
 
                     buffer = ""
                     async for chunk in resp.content.iter_any():
-                        if saw_done:
-                            # A buggy upstream that holds the connection open after [DONE]
-                            # would otherwise block us for up to sock_read seconds.
-                            break
                         if not _run_still_current():
                             return _stale_result("stream")
                         buffer += chunk.decode("utf-8", errors="replace")
@@ -2800,6 +2796,9 @@ class GatewayTurnMixin:
                             if _consume_sse_line(line):
                                 saw_done = True
                                 break
+                        # Exit before the iterator requests another network chunk.
+                        if saw_done:
+                            break
                         if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError("Proxy SSE stream exceeded max buffer size without a line boundary")
                     # The final SSE frame may not be newline-terminated: flush the residual

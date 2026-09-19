@@ -546,6 +546,29 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
         pids.append(pid)
 
 
+def _pid_is_owned_by_current_user(pid: int) -> bool:
+    """Whether ``pid`` belongs to this OS user, failing closed when ownership is unknown.
+
+    Process-table discovery is used by ``gateway status`` and the update fleet's manual-process
+    sweep.  It must not turn another user's visible gateway into a local restart/kill target.
+    Service-manager PIDs are discovered separately and intentionally do not use this check.
+    """
+    if is_windows():
+        return True
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        return True
+    try:
+        return os.stat(f"/proc/{pid}").st_uid == getuid()
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(["ps", "-o", "uid=", "-p", str(pid)], timeout=2, **_CAPTURE_TEXT)
+        return result.returncode == 0 and int(result.stdout.strip()) == getuid()
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
 def _iter_proc_cmdlines(exclude_pids: set[int]):
     """Yield ``(pid, cmdline)`` from ``/proc`` (Docker without procps); raises if /proc is unusable."""
     my_pid = os.getpid()
@@ -604,7 +627,11 @@ def _scan_gateway_pids(
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
-        if matches_runtime and (all_profiles or _matches_current_profile(command)):
+        if (
+            matches_runtime
+            and _pid_is_owned_by_current_user(pid)
+            and (all_profiles or _matches_current_profile(command))
+        ):
             _append_unique_pid(pids, pid, exclude_pids)
 
     try:

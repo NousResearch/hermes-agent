@@ -7,6 +7,7 @@ See: NousResearch/hermes-agent#7622
 """
 
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -113,6 +114,29 @@ class TestProcFallback:
         assert 12345 not in pids
         mock_ps.assert_not_called()  # /proc dir existed, so ps not called
 
+    def test_proc_scan_excludes_foreign_user_gateway(self, monkeypatch):
+        entries = {
+            12345: _GATEWAY_CMD,
+            23456: _GATEWAY_CMD,
+        }
+        _isdir, _listdir, _open = _fake_proc_dir(entries)
+
+        def _stat(path):
+            pid = int(str(path).split("/proc/")[1].split("/")[0])
+            return SimpleNamespace(st_uid=501 if pid == 12345 else 502)
+
+        monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 501)
+        with (
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway.os.stat", side_effect=_stat),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert pids == [12345]
+
 
 class TestPsFallbackBsdCompat:
     """Verify the ps fallback command uses BSD/macOS-compatible flags.
@@ -175,6 +199,33 @@ class TestPsFallbackBsdCompat:
         assert "-o" in ps_call and "pid=,command=" in ps_call, (
             f"Missing -o pid=,command= in: {ps_call}"
         )
+
+    def test_ps_scan_excludes_foreign_user_gateway(self, monkeypatch):
+        def _run(command, **_kwargs):
+            if command[:2] == ["ps", "-Aww"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout=(
+                        "12345 python -m hermes_cli.main gateway run\n"
+                        "23456 python -m hermes_cli.main gateway run\n"
+                    ),
+                )
+            if command == ["ps", "-o", "uid=", "-p", "12345"]:
+                return MagicMock(returncode=0, stdout="501\n")
+            if command == ["ps", "-o", "uid=", "-p", "23456"]:
+                return MagicMock(returncode=0, stdout="502\n")
+            raise AssertionError(f"unexpected command: {command}")
+
+        monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 501)
+        with (
+            patch("hermes_cli.gateway.is_windows", return_value=False),
+            patch("os.path.isdir", side_effect=lambda _p: False),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run", side_effect=_run),
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert pids == [12345]
 
 
 class TestGetServicePidsAllProfiles:

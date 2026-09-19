@@ -342,8 +342,8 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         if path.exists():
             return
         path.mkdir(parents=False, exist_ok=False)
+        path.chmod(mode)
         _chown_hermes(path)
-        path.chmod(mode)  # after chown: POSIX lets chown() clear the setgid bit event/ relies on
 
     def _seed(root: Path) -> None:
         # Service-root event/ is the s6-svlisten1 subscription dir, distinct from supervise/event/.
@@ -357,8 +357,8 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         control = supervise / "control"
         if not control.exists():
             os.mkfifo(control, 0o660)
-            _chown_hermes(control)
             control.chmod(0o660)
+            _chown_hermes(control)
 
     _seed(svc_dir)
     log_dir = svc_dir / "log"

@@ -173,6 +173,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_summary_fallback_used", "_last_compress_aborted", "_last_summary_auth_failure",
     "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure",
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_summary_model_fallen_back", "summary_model",
+    "_summary_truncation_fallback_used",
     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
     "_proactive_prune_rearm_tokens",
 )

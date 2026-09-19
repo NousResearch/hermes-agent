@@ -633,7 +633,8 @@ _TERMINAL_SUMMARY_FAILURES = (
         "summary_truncated_failure",
         "Summary generation failed (output hit the token cap; summary is incomplete) — aborting compression. "
         "%d message(s) preserved unchanged; the session was NOT rotated. A truncated summary would silently "
-        "lose context: retry with /compress, or raise the summarizer's output budget.",
+        "lose context. Automatic compression is paused for 15 minutes: raise the summarizer's output budget "
+        "or retry once with /compress.",
     ),
     (
         "_last_summary_empty_content_failure",
@@ -646,6 +647,11 @@ _TERMINAL_SUMMARY_FAILURES = (
 
 # Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer.
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+
+# A length-stopped response is deterministic for an unchanged route and prompt.  After one
+# route-changing retry (when configured), retain the existing session and give the provider
+# configuration time to change instead of replaying the same summary request every 30 seconds.
+_TRUNCATED_SUMMARY_COOLDOWN_SECONDS = 900
 
 
 def _next_timeout_cooldown(compressor: Any) -> int:
@@ -2037,6 +2043,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
+        self._summary_truncation_fallback_used = False
         self._consecutive_timeout_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
@@ -3726,16 +3733,44 @@ Write only the summary body. Do not include any preamble or prefix."""
         # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
         # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.
         if self.summary_model and self.summary_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
+            if kind.truncated:
+                # The main-model retry is the one permitted material escalation for this
+                # truncation. Do not also walk the configured chain if it truncates again.
+                self._summary_truncation_fallback_used = True
             self._fallback_to_main_for_compression(e, kind.fallback_reason())
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
+
+        # ``finish_reason=length`` is a successful HTTP response, so call_llm's normal
+        # fallback-chain exception handling never sees it. Give a configured *different*
+        # route one chance before entering the durable automatic cooldown. This is deliberately
+        # separate from generic transient failures: retrying the same route and prompt cannot
+        # recover a deterministic output cap.
+        if kind.truncated and not getattr(self, "_summary_truncation_fallback_used", False):
+            from agent.conversation_compression import resolve_compression_fallback_route
+
+            route = resolve_compression_fallback_route()
+            active_model = self.summary_model or self.model
+            active_provider = self.provider or ""
+            if route and (route.get("model") != active_model or route.get("provider", "") != active_provider):
+                self._summary_truncation_fallback_used = True
+                logger.warning(
+                    "Context compression summary hit its output cap; retrying once on configured fallback "
+                    "provider=%s model=%s.", route.get("provider"), route.get("model"),
+                )
+                with pin_summary_route(route):
+                    return self._generate_summary(
+                        turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context,
+                    )
 
         # Transient errors: short cooldown for JSON-decode/streaming-closed. Timeouts escalate
         # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung.
         if kind.timeout:
             _transient_cooldown = _next_timeout_cooldown(self)
+        elif kind.truncated:
+            _transient_cooldown = _TRUNCATED_SUMMARY_COOLDOWN_SECONDS
         else:
-            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content or kind.truncated) else 60
+            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content) else 60
         err_text = _short_error_text(e)
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text
@@ -4620,6 +4655,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
+        self._summary_truncation_fallback_used = False
         self._last_compress_aborted = False
         self._last_compress_refused_would_grow = False
         self._last_compression_made_progress = False

@@ -17,6 +17,7 @@ Covers all three compressor summarization sites:
 its guard is covered by site 1.)
 """
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,6 +105,71 @@ class TestGenerateSummaryTruncationGuard:
         assert result is not None
         assert "full summary via main model" in result
         assert c._last_summary_truncated_failure is False
+
+    def test_length_stop_uses_configured_route_once_then_succeeds(self):
+        """A default route may escape a deterministic output cap only via one different route."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", provider="primary", quiet_mode=True)
+        truncated = _mock_response("partial...", "length")
+        complete = _mock_response("complete summary", "stop")
+        fallback = {"provider": "backup", "model": "backup-model", "timeout": 45}
+        with (
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"fallback_chain": [fallback]},
+            ),
+            patch("agent.context_compressor.call_llm", side_effect=[truncated, complete]) as call,
+        ):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert call.call_count == 2
+        assert "provider" not in call.call_args_list[0].kwargs
+        assert call.call_args_list[1].kwargs["provider"] == "backup"
+        assert call.call_args_list[1].kwargs["model"] == "backup-model"
+
+    def test_repeated_default_route_truncation_enters_long_backoff(self):
+        """Automatic compression must not replay an unchanged capped request every 30 seconds."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=_mock_response("partial...", "length"),
+        ) as call:
+            original = _msgs()
+            assert c.compress(original, current_tokens=999999) == original
+            # The automatic retry sees the persisted-in-memory cooldown and does not call the same route again.
+            assert c._generate_summary(_msgs(2)) is None
+
+        assert call.call_count == 1
+        assert c._summary_failure_cooldown_until >= time.monotonic() + 899
+        assert c._last_summary_truncated_failure is True
+
+    def test_truncated_fallback_enters_terminal_backoff_without_losing_messages(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="primary", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        fallback = {"provider": "backup", "model": "backup-model"}
+        with (
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"fallback_chain": [fallback]},
+            ),
+            patch(
+                "agent.context_compressor.call_llm",
+                side_effect=[_mock_response("partial primary", "length"), _mock_response("partial backup", "length")],
+            ) as call,
+        ):
+            original = _msgs()
+            assert c.compress(original, current_tokens=999999) == original
+
+        assert call.call_count == 2
+        assert c._last_compress_aborted is True
+        assert c._last_summary_truncated_failure is True
+        assert c._summary_failure_cooldown_until >= time.monotonic() + 899
 
     def test_stop_finish_reason_still_succeeds(self):
         """Control: a normal stop-terminated summary is accepted unchanged."""

@@ -269,3 +269,49 @@ def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_neve
     monkeypatch.setattr(session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
     session._spawn_and_collect("t", {"session_name": "h_x"}, ["agent-browser"], "open", engine, 5)
     assert len(calls) == starts
+
+
+def test_janitor_keeps_the_shared_browser_alive_while_a_human_holds_the_lease(monkeypatch):
+    """#110064: the agent goes idle BECAUSE the human took over to log in; the janitor must count the human's
+    lease as activity for the shared local browser, and reap it again once the lease is handed back."""
+    from tools import browser_tool_lifecycle as lifecycle, browser_tool_session as session
+    from tools.bot_desktop import lease
+
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+    holder = {"human": True}
+    monkeypatch.setattr(lease, "human_holds", lambda *a, **k: holder["human"])
+    reaped: list = []
+    monkeypatch.setattr(lifecycle, "cleanup_browser", lambda task_id: reaped.append(task_id))
+    monkeypatch.setattr(lifecycle._bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 1)
+    monkeypatch.setattr(lifecycle._bt, "_active_sessions", {
+        "bot": {"session_name": "h_bot", "features": {"local": True}},
+        "cloud": {"session_name": "c_1", "bb_session_id": "bb", "features": {}},
+    })
+    monkeypatch.setattr(lifecycle._bt, "_session_last_activity", {"bot": 0.0, "cloud": 0.0})
+    monkeypatch.setattr(lifecycle._bt, "_session_owner_homes", {})
+
+    lifecycle._cleanup_inactive_browser_sessions()
+    assert reaped == ["cloud"], "only the browser the human is not typing into may be reaped"
+    assert lifecycle._bt._session_last_activity["bot"] > 0, "the human's lease refreshed the bot browser's activity"
+
+    holder["human"] = False
+    lifecycle._bt._session_last_activity["bot"] = 0.0
+    lifecycle._cleanup_inactive_browser_sessions()
+    assert reaped == ["cloud", "bot"]
+    assert session.human_holds_shared_browser({"features": {"local": True}}) is False
+
+
+def test_daemon_idle_timer_defers_to_the_janitor_only_for_the_shared_headed_browser(monkeypatch):
+    """The agent-browser daemon cannot see the lease, so on the Bot Desktop its self-termination timer steps
+    back and the lease-aware janitor owns the browser's lifetime; headless browsing keeps the mirror."""
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(session._bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 120)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    assert session._daemon_idle_timeout_seconds() > 120
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: False)
+    assert session._daemon_idle_timeout_seconds() == 120
+    monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    assert session._daemon_idle_timeout_seconds() == 120

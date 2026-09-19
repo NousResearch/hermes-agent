@@ -170,8 +170,33 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
-        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_daemon_idle_timeout_seconds() * 1000)
     return env
+
+
+_SHARED_HEADED_DAEMON_IDLE_SECONDS = 24 * 3600
+
+
+def _daemon_idle_timeout_seconds() -> int:
+    """The daemon's self-termination idle timer. The bot's headed Chromium on the Bot Desktop screen is
+    shared with a human who may take the lease to log in: the agent is idle by definition then, so the
+    daemon's own timer must not decide (it cannot see the lease); the lease-aware Python janitor owns that
+    browser's lifetime, and a crashed hermes leaves it to the orphan reaper (#110064)."""
+    if _cloud._is_headed_mode():
+        from tools.bot_desktop.runtime import published_env
+        if published_env().get("DISPLAY"):
+            return _SHARED_HEADED_DAEMON_IDLE_SECONDS
+    return _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT
+
+
+def human_holds_shared_browser(session_info: Dict[str, Any]) -> bool:
+    """True while a human holds the Bot Desktop lease over the browser ``session_info`` shares with them.
+    The janitor treats that as activity: reaping the browser mid-login is the human's session dying under
+    them, not an idle agent's cleanup (#110064)."""
+    if not _shares_bot_desktop_browser(session_info):
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    return _bd_lease.human_holds()
 
 
 def _ensure_screen_for_headed_chromium() -> None:

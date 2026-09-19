@@ -1,0 +1,24 @@
+name: mybot-farm
+repo: https://github.com/okita-io/mybot-farm
+sha: 53208812f9a38098e082974b4d42e5728f24d6eb
+subdir: packages/hermes-mybot-farm
+description: Search mybot.farm, plant/reinstall Hermes packs, and post GAF listings.
+maintainer: okita-io / Alex Okita
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://mybot.farm/install/hermes
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - farm_search
+    - farm_get_pack
+    - farm_get_stall
+    - farm_plant
+    - farm_reinstall
+    - farm_post
+    - farm_update
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

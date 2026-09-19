@@ -502,7 +502,8 @@ def _finish_zip_update(
         _print_curator_recent_run_notice()
     # Don't stop a working dashboard when the Node refresh failed — see the git-update path for rationale.
     # See #30271.
-    _finish_dashboard_update_cleanup(node_failures)
+    with _best_effort('Dashboard cleanup during update failed: %s'):
+        _finish_dashboard_update_cleanup(node_failures)
     with _best_effort('Update receipt finalize (zip path) failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         finalize_update_receipt("success" if update_complete and not node_failures else "partial")

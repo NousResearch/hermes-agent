@@ -890,6 +890,79 @@ class TestPostUpdateDashboardCleanupIsolation:
         assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]
         assert "_loaded_launchd_backend_jobs" in capsys.readouterr().out
 
+    def test_kill_stale_dashboard_processes_tolerates_pre_scope_home_signature(self, capsys):
+        """Older main_dashboard in sys.modules during self-update (#115466) lacks scope_home kwarg."""
+        from hermes_cli import dashboard_procs
+
+        calls = []
+
+        def legacy_find_stale_dashboard_pids(*, exclude_pids=None):
+            calls.append(exclude_pids)
+            return [101, 102]
+
+        with patch("os.kill"), \
+             patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", side_effect=legacy_find_stale_dashboard_pids), \
+             patch.object(dashboard_procs, "_pids_owned_by_hermes_home", return_value=[101]) as pids_owned:
+            dashboard_procs._kill_stale_dashboard_processes(
+                scope_home="/some/hermes/home",
+                restart_managed=False,
+            )
+            assert len(calls) == 1
+            pids_owned.assert_called_once_with([101, 102], "/some/hermes/home")
+
+        # When scope_home is None or empty, does not call _pids_owned_by_hermes_home
+        calls.clear()
+        with patch("os.kill"), \
+             patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", side_effect=legacy_find_stale_dashboard_pids), \
+             patch.object(dashboard_procs, "_pids_owned_by_hermes_home") as pids_owned:
+            dashboard_procs._kill_stale_dashboard_processes(
+                scope_home=None,
+                restart_managed=False,
+            )
+            assert len(calls) == 1
+            pids_owned.assert_not_called()
+
+        # Unrelated TypeError is not caught
+        def broken_find_stale(*, exclude_pids=None, scope_home=None):
+            raise TypeError("unrelated type error inside finder")
+
+        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", side_effect=broken_find_stale):
+            with pytest.raises(TypeError, match="unrelated type error inside finder"):
+                dashboard_procs._kill_stale_dashboard_processes(
+                    scope_home="/some/hermes/home",
+                    restart_managed=False,
+                )
+        capsys.readouterr()
+
+    def test_verify_fleet_after_update_isolates_dashboard_cleanup_failure(self):
+        """A failure in _finish_dashboard_update_cleanup must not abort _verify_fleet_after_update (#115466)."""
+        from hermes_cli import update_cmd_fleet
+        from unittest.mock import MagicMock
+
+        restart_mock = MagicMock()
+        restart_mock.restarted_services = []
+        restart_mock.incomplete = False
+        restart_mock.fleet_probe_signals.return_value = ([], [])
+
+        with patch("hermes_cli.update_cmd_fleet._print_legacy_units_warning"), \
+             patch("hermes_cli.update_cmd._finish_dashboard_update_cleanup", side_effect=RuntimeError("unexpected cleanup crash")), \
+             patch("hermes_cli.update_cmd._surviving_pre_update_serve_runtimes", return_value=[]), \
+             patch("hermes_cli.update_cmd_fleet._collect_fleet_snapshot", return_value=[]), \
+             patch("hermes_cli.update_cmd_fleet._fleet_probe_expected_runtimes", return_value=False), \
+             patch("hermes_cli.update_cmd_fleet._clear_fleet_restart_pending_marker") as clear_marker, \
+             patch("hermes_cli.update_receipt.print_fleet_version_matrix", return_value=False), \
+             patch("hermes_cli.update_receipt.finalize_update_receipt"), \
+             patch("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update"):
+            # must not raise RuntimeError
+            update_cmd_fleet._verify_fleet_after_update(
+                node_failures=[],
+                restart=restart_mock,
+                _pre_update_plan=None,
+                update_complete=True,
+                _windows_gateway_resume=None,
+            )
+            clear_marker.assert_called_once()
+
 
 class TestLaunchdSupervisedBackends:
     """macOS (#111689): a backend supervised by a launchd job must come back through launchd. Respawning

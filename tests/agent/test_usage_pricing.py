@@ -343,8 +343,11 @@ def test_fireworks_router_fast_tier_prices_distinctly():
 
 
 def test_google_and_vertex_routes_share_official_pricing_snapshot():
-    """Direct Gemini, Vertex, and Vertex's OpenAI-compatible hostname must
+    """Direct Gemini, Vertex, and Vertex's OpenAI-compatible hostnames must
     all normalize to the Google official-pricing route.
+
+    Vertex is reached through three host shapes (global, single-region, and the
+    eu/us multi-region REP hosts); every one of them is the same billing route.
     """
     routes = (
         resolve_billing_route("model", provider="gemini"),
@@ -353,6 +356,16 @@ def test_google_and_vertex_routes_share_official_pricing_snapshot():
             "google/model",
             provider="custom",
             base_url="https://aiplatform.googleapis.com/v1/projects/example",
+        ),
+        resolve_billing_route(
+            "google/model",
+            provider="custom",
+            base_url="https://europe-west4-aiplatform.googleapis.com/v1beta1/projects/example",
+        ),
+        resolve_billing_route(
+            "google/model",
+            provider="custom",
+            base_url="https://aiplatform.eu.rep.googleapis.com/v1beta1/projects/example",
         ),
     )
 

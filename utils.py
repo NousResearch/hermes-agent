@@ -625,3 +625,23 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     hostname = base_url_hostname(base_url)
     domain = (domain or "").strip().lower().rstrip(".")
     return bool(hostname and domain) and (hostname == domain or hostname.endswith("." + domain))
+
+
+def is_vertex_ai_host(base_url: str) -> bool:
+    """True when the base URL's hostname is a Google Vertex AI API host, in any region shape.
+
+    Vertex serves one API from three host shapes and only the first is a
+    ``base_url_host_matches(url, "aiplatform.googleapis.com")`` match: the global endpoint
+    (``aiplatform.googleapis.com``), single regions (``europe-west4-aiplatform.googleapis.com``)
+    and the multi-regions, which use a separate REP host (``aiplatform.eu.rep.googleapis.com``).
+    Every shape stays under ``googleapis.com``, so a lookalike or path-embedded host cannot match.
+    """
+    hostname = base_url_hostname(base_url)
+    suffix = ".googleapis.com"
+    if not hostname.endswith(suffix):
+        return False
+    service, _, multiregion = hostname[: -len(suffix)].partition(".")
+    if service != "aiplatform" and not service.endswith("-aiplatform"):
+        return False
+    # Global/regional hosts have no extra labels; REP hosts have exactly ``<multi-region>.rep``.
+    return not multiregion or (multiregion.endswith(".rep") and multiregion.count(".") == 1)

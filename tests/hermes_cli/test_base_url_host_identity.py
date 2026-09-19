@@ -140,6 +140,12 @@ def test_dotted_model_name_provider_allowlist_host_anchored():
     assert probe._anthropic_preserve_dots() is False
     probe.base_url = "https://aiplatform.googleapis.com/v1"
     assert probe._anthropic_preserve_dots() is True
+    # Regional and multi-region Vertex hosts are the same endpoint (the global host is
+    # not what the Vertex setup flow writes).
+    probe.base_url = "https://europe-west4-aiplatform.googleapis.com/v1beta1"
+    assert probe._anthropic_preserve_dots() is True
+    probe.base_url = "https://aiplatform.eu.rep.googleapis.com/v1beta1"
+    assert probe._anthropic_preserve_dots() is True
     probe.base_url = "https://evil.io/aiplatform.googleapis.com/v1"
     assert probe._anthropic_preserve_dots() is False
 

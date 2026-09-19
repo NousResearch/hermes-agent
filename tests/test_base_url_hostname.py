@@ -1,4 +1,4 @@
-"""Targeted tests for ``utils.base_url_hostname`` and ``base_url_host_matches``.
+"""Targeted tests for ``utils.base_url_hostname``, ``base_url_host_matches`` and ``is_vertex_ai_host``.
 
 These helpers are used across provider routing, auxiliary client, setup
 wizards, billing routes, and the trajectory compressor to avoid the
@@ -8,7 +8,7 @@ tests/agent/test_direct_provider_url_detection.py.
 
 from __future__ import annotations
 
-from utils import base_url_hostname, base_url_host_matches
+from utils import base_url_hostname, base_url_host_matches, is_vertex_ai_host
 
 
 # ─── base_url_hostname ────────────────────────────────────────────────────
@@ -118,3 +118,43 @@ class TestOllamaUrlHostCheck:
             "https://ollama.com/api/generate", "ollama.com"
         ) is True
 
+
+
+# ─── is_vertex_ai_host ────────────────────────────────────────────────────
+
+
+class TestVertexAiHost:
+    """Vertex AI serves one API from three host shapes. A plain
+    ``base_url_host_matches(url, "aiplatform.googleapis.com")`` only recognizes the
+    global endpoint, so regional and multi-region deployments were not detected as Vertex.
+    """
+
+    def test_global_endpoint(self):
+        assert is_vertex_ai_host("https://aiplatform.googleapis.com/v1/projects/p") is True
+
+    def test_single_region_hosts(self):
+        assert is_vertex_ai_host(
+            "https://europe-west4-aiplatform.googleapis.com/v1beta1/projects/p"
+        ) is True
+        assert is_vertex_ai_host("https://us-central1-aiplatform.googleapis.com/v1") is True
+
+    def test_multi_region_rep_hosts(self):
+        assert is_vertex_ai_host("https://aiplatform.eu.rep.googleapis.com/v1beta1") is True
+        assert is_vertex_ai_host("https://aiplatform.us.rep.googleapis.com/v1beta1") is True
+
+    def test_case_insensitive(self):
+        assert is_vertex_ai_host("https://EUROPE-WEST4-AIPLATFORM.GOOGLEAPIS.COM/v1") is True
+
+    def test_other_google_apis_are_not_vertex(self):
+        assert is_vertex_ai_host("https://generativelanguage.googleapis.com/v1beta") is False
+        assert is_vertex_ai_host("https://storage.googleapis.com/bucket") is False
+
+    def test_lookalike_and_path_injection_rejected(self):
+        assert is_vertex_ai_host("https://aiplatform.googleapis.com.evil.test/v1") is False
+        assert is_vertex_ai_host("https://evil.test/aiplatform.googleapis.com/v1") is False
+        assert is_vertex_ai_host("https://notaiplatform.googleapis.com/v1") is False
+        assert is_vertex_ai_host("https://aiplatform.eu.rep.googleapis.com.evil.test/v1") is False
+
+    def test_empty(self):
+        assert is_vertex_ai_host("") is False
+        assert is_vertex_ai_host(None) is False  # type: ignore[arg-type]

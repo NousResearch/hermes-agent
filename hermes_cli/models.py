@@ -1441,7 +1441,9 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 # and the promo it delisted without removing from ``/models`` (``deepseek-v4-flash-free``). The
 # live-first keyed Zen/Go pickers filter through this so a stale live listing can never route
 # into a 400/403 (#111749).
-_OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
+_OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
+    {"ox-alpha-free", "deepseek-v4-flash-free", "x-preview-f-free"}
+)
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
@@ -1470,7 +1472,14 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     if not curated:
         return live
     primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-    return _merge_unique(primary, secondary, key=_model_dedup_key)
+    merged = _merge_unique(primary, secondary, key=_model_dedup_key)
+    # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
+    # live-first, so filter the MERGED result — the curated floor is merged back in as the
+    # secondary half and would otherwise resurrect a delisted slug after the live filter ran
+    # (#111749, #115496).
+    if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+        merged = [m for m in merged if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
+    return merged
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:

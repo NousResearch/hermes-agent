@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
     multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
-    retained_gateway_state)
+    retained_gateway_state, runtime_status_hosts_live_gateway)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_constants import get_process_hermes_home
@@ -217,7 +217,11 @@ def _messaging_platform_payload(
         pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
     ).running
-    if not gateway_running:
+    # Display-only host trust (#116416), same verdict /api/status gives: a fresh-heartbeat
+    # snapshot whose PID survives the reuse guard is a live non-``gateway run`` host carrying
+    # the loop, so its per-platform verdicts are current, not history.
+    hosted = not gateway_running and runtime_status_hosts_live_gateway(rt) is not None
+    if not gateway_running and not hosted:
         # gateway_state.json outlives its writer and keeps per-platform entries across
         # restarts, so a stopped gateway that once ran WITHOUT credentials still says
         # "fatal / No bot token configured" after the user saved a token. Only a live
@@ -244,7 +248,7 @@ def _messaging_platform_payload(
         state = "disabled"
     elif not configured:
         state = "not_configured"
-    elif gateway_running and not state:
+    elif (gateway_running or hosted) and not state:
         state = "pending_restart"
     elif not gateway_running and not state:
         # Same verdict /api/status gives: ``hermes gateway stop`` keeps the last failure on disk,
@@ -264,7 +268,7 @@ def _messaging_platform_payload(
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
-        "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
+        "ingress_url": runtime_platform.get("ingress_url") if gateway_running or hosted else None,
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()

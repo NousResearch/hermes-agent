@@ -388,6 +388,88 @@ class TestFindSkillInRepoTree:
         assert result is None
 
 
+class TestRepoRootSkillLayout:
+    """Regression for #115028: skills.sh repos whose SKILL.md sits at the repo ROOT (no skill
+    directory, e.g. orzcls/win-disk-cleaner) are listed by search but could not be resolved by
+    inspect/install — the discovery root scan skipped non-directory entries by construction and
+    no identifier form expressed "the skill directory IS the repo root"."""
+
+    IDENTIFIER = "skills-sh/orzcls/win-disk-cleaner/win-disk-cleaner"
+    REPO = "orzcls/win-disk-cleaner"
+    SKILL_MD = (
+        "---\nname: win-disk-cleaner\ndescription: Clean a Windows disk safely.\n---\n\n"
+        "# Win Disk Cleaner\n\nSee references/free_tools.md\n"
+    )
+    ROOT_TREE = [
+        {"path": "LICENSE", "type": "blob"},
+        {"path": "README.md", "type": "blob"},
+        {"path": "SKILL.md", "type": "blob"},
+        {"path": "references/free_tools.md", "type": "blob"},
+    ]
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
+        return SkillsShSource(auth=auth)
+
+    def _github_stub(self, tree):
+        """Minimal GitHub API: repo info, one git tree, and root-level file contents only —
+        every candidate ``<repo>/<base>/<skill>/SKILL.md`` path 404s, as in the real repo."""
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 404
+            if url.rstrip("/").endswith(self.REPO):
+                resp.status_code, resp.json = 200, (lambda: {"default_branch": "main"})
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"sha": "b" * 40, "truncated": False, "tree": tree}
+            elif url.endswith("/contents/SKILL.md"):
+                resp.status_code, resp.content = 200, self.SKILL_MD.encode()
+            elif url.endswith("/contents/references/free_tools.md"):
+                resp.status_code, resp.content = 200, b"# Free tools\n"
+            return resp
+        return _side_effect
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_resolves_skill_md_at_repo_root(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        meta = self._source().inspect(self.IDENTIFIER)
+
+        assert meta is not None
+        assert meta.name == "win-disk-cleaner"
+        assert meta.repo == self.REPO
+        assert meta.identifier == self.IDENTIFIER
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_resolves_and_names_bundle_for_repo_root_skill(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        bundle = self._source().fetch(self.IDENTIFIER)
+
+        assert bundle is not None
+        # Repo-root skill has no directory to name itself after; fall back to the repo name.
+        assert bundle.name == "win-disk-cleaner"
+        assert bundle.files["SKILL.md"] == self.SKILL_MD
+        # Support files sit directly under the repo root, so the root is the skill directory.
+        assert bundle.files["references/free_tools.md"] == b"# Free tools\n"
+        assert bundle.identifier == self.IDENTIFIER
+        assert bundle.metadata["source_url"] == f"https://github.com/{self.REPO}/tree/{'b' * 40}"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_root_layout_does_not_resolve_as_a_multi_skill_repo(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """A repo with a root SKILL.md AND another skill dir is not a root-layout single skill."""
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE + [{"path": "skills/other/SKILL.md", "type": "blob"}])
+
+        assert self._source().inspect(self.IDENTIFIER) is None
+
+
 class TestWellKnownSkillSource:
     @pytest.fixture(autouse=True)
     def _allow_public_skill_fetches(self, monkeypatch):

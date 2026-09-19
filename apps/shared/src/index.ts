@@ -164,7 +164,7 @@ export {
   translucencySupportedOn,
   vibrancyFor,
   windowOpacityFor,
-  WINDOWS_BACKEND_MATERIALS,
+  WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'

@@ -617,7 +617,9 @@ def _check_stale_giveup(agent) -> None:
 
 def _configured_stale_base(agent) -> float:
     """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
-    cfg = get_provider_stale_timeout(agent.provider, agent.model)
+    cfg = get_provider_stale_timeout(
+        agent.provider, agent.model, base_url=getattr(agent, "base_url", None)
+    )
     return cfg if cfg is not None else env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
 
 
@@ -2759,7 +2761,9 @@ class _StreamingCall(StreamingWaitMonitor):
         ``request_timeout_seconds`` wins over HERMES_API_TIMEOUT (1800s) and
         HERMES_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
         inference: 30s, or capped at 60s when configured."""
-        cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
+        cfg = get_provider_request_timeout(
+            self.agent.provider, self.agent.model, base_url=getattr(self.agent, "base_url", None)
+        )
         base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
         if cfg is not None:
             return base, cfg, min(base, 60.0)

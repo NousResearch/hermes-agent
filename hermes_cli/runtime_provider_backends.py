@@ -6,6 +6,7 @@ collaborators are resolved on the origin module at call time via :func:`_rp` so 
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any, Dict, Optional
@@ -13,6 +14,8 @@ from typing import Any, Dict, Optional
 from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches
+
+logger = logging.getLogger(__name__)
 
 
 def _rp():
@@ -212,6 +215,15 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
         bearer = resolve_bedrock_bearer_token()
         runtime.update(api_mode="codex_responses", base_url=bedrock_openai_base_url(region), api_key=bearer or "aws-sdk",
                        source="AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source, model=current_model, bedrock_openai=True)
+        if guardrail_config:
+            # Converse carries the guardrail in ``guardrailConfig`` and the Claude route in the
+            # ``X-Amzn-Bedrock-Guardrail*`` InvokeModel headers; the Mantle Responses surface has
+            # neither, so a configured guardrail is silently not applied on this route. Say so
+            # here instead of leaving it to the docs.
+            logger.warning(
+                "bedrock.guardrail is configured but %s routes to the Bedrock Mantle Responses "
+                "endpoint, where Hermes attaches no guardrail - this session runs unguarded. "
+                "Use a Converse-served or Claude model when the guardrail must apply.", current_model)
     elif is_anthropic_bedrock_model(current_model) and not has_bearer_token:
         runtime.update(api_mode="anthropic_messages", bedrock_anthropic=True)
     if guardrail_config:

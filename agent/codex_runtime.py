@@ -57,6 +57,43 @@ def _codex_request_failure_details(error: BaseException) -> tuple[int | None, st
     return request_body_bytes, " <- ".join(exception_classes)
 
 
+def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: int) -> dict:
+    """#95429 criterion 3: a reconnect after an attempt that produced no stream event must not resend
+    a pathological payload unchanged. Inline ``function_call_output`` strings over the per-result
+    threshold (results that escaped commit-time persistence) are spilled through the standard
+    policy -- bounded preview + recoverable ``<persisted-output>`` reference -- and ONE log line
+    records the size delta. When nothing is prunable the resend is logged as unchanged. The
+    caller's kwargs are never mutated; only the retried wire payload changes."""
+    from tools.budget_config import DEFAULT_BUDGET
+    from tools.tool_result_storage import maybe_persist_tool_result
+
+    items = api_kwargs.get("input")
+    if not isinstance(items, list):
+        return api_kwargs
+    before = len(json.dumps(items, default=str).encode("utf-8"))
+    if before <= DEFAULT_BUDGET.turn_budget:
+        return api_kwargs
+    pruned_items, pruned = [], 0
+    for item in items:
+        output = item.get("output") if isinstance(item, dict) and item.get("type") == "function_call_output" else None
+        if isinstance(output, str):
+            replaced = maybe_persist_tool_result(content=output, tool_name="codex_zero_event_retry",
+                                                 tool_use_id=str(item.get("call_id") or "call"),
+                                                 config=DEFAULT_BUDGET, threshold=DEFAULT_BUDGET.default_result_size)
+            if replaced != output:
+                item, pruned = {**item, "output": replaced}, pruned + 1
+        pruned_items.append(item)
+    if not pruned:
+        logger.warning("Codex zero-event retry (attempt %s/%s): no prunable tool output; resending payload "
+                       "unchanged (serialized_input_bytes=%s, model=%s)", attempt, attempts, before, api_kwargs.get("model"))
+        return api_kwargs
+    after = len(json.dumps(pruned_items, default=str).encode("utf-8"))
+    logger.warning("Codex zero-event retry (attempt %s/%s): spilled %d oversized tool output(s) before reconnect, "
+                   "serialized_input_bytes=%s -> %s (model=%s)", attempt, attempts, pruned, before, after,
+                   api_kwargs.get("model"))
+    return {**api_kwargs, "input": pruned_items}
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -1011,6 +1048,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
                     attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
                 )
+                if not intercepted_events:  # zero-event attempt: never resend a pathological payload silently
+                    api_kwargs = _prune_zero_event_retry_payload(api_kwargs, attempt + 1, max_stream_retries + 1)
                 continue
             except RuntimeError:
                 # "No terminal response"; Relay may still hold a finalizer-assembled response.

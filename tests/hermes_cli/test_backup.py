@@ -1600,6 +1600,125 @@ class TestQuickSnapshot:
         out = capsys.readouterr().out
         assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
 
+    def test_oversized_db_prunes_redundant_but_protects_recovery(self, hermes_home):
+        """#68805 follow-up: a persistently oversized state.db must no longer pin
+        the whole snapshot history. Pruning resumes with a reduced window, but the
+        newest snapshot that still captured the DB is protected as the recovery copy.
+
+        Three snapshots: A (complete), B (complete), C (oversized). After C runs with
+        the reduced keep window, the redundant older complete copy A is pruned while B
+        — the newest snapshot holding state.db — survives.
+        """
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        a_id = create_quick_snapshot(label="A", hermes_home=hermes_home)
+        _advance_backup_clock()
+        b_id = create_quick_snapshot(label="B", hermes_home=hermes_home)
+        _advance_backup_clock()
+        c_id = create_quick_snapshot(
+            label="C", hermes_home=hermes_home, max_file_size=1024
+        )
+        assert a_id and b_id and c_id
+
+        snap_ids = {s["id"] for s in list_quick_snapshots(limit=100, hermes_home=hermes_home)}
+        # Redundant older complete copy pruned...
+        assert a_id not in snap_ids, "older redundant complete snapshot should be pruned"
+        # ...but the newest recovery copy and the new oversized snapshot survive.
+        assert b_id in snap_ids, "newest complete copy (recovery source) was wrongly pruned"
+        assert c_id in snap_ids
+        assert (hermes_home / "state-snapshots" / b_id / "state.db").exists()
+
+    def test_repeated_oversized_snapshots_stay_bounded(self, hermes_home):
+        """Repeated oversized runs must not accumulate without bound: the snapshot
+        count stays within the reduced keep window plus the single protected recovery
+        copy, and that recovery copy is never lost."""
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        recovery_id = create_quick_snapshot(label="recovery", hermes_home=hermes_home)
+        assert recovery_id
+        for i in range(4):
+            _advance_backup_clock()
+            create_quick_snapshot(
+                label=f"oversized-{i}", hermes_home=hermes_home, max_file_size=1024
+            )
+
+        snaps = list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        snap_ids = {s["id"] for s in snaps}
+        # Reduced window (2) + the one protected recovery copy = at most 3.
+        assert len(snaps) <= 3, f"snapshots accumulated unbounded: {len(snaps)}"
+        assert recovery_id in snap_ids, "the only recoverable state.db copy was pruned"
+        assert (hermes_home / "state-snapshots" / recovery_id / "state.db").exists()
+
+    def test_corrupt_manifest_does_not_hide_real_recovery_copy(self, hermes_home):
+        """Review on #109586: a newer snapshot with a corrupt (unreadable)
+        manifest must not be mistaken for a recovery copy while the older
+        VERIFIABLE state.db copy falls past the keep window. The prune must
+        verify the manifest AND the file, keep searching, and protect the real
+        copy — not delete it because a newer corrupt snapshot 'claimed' the DB.
+        """
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        a_id = create_quick_snapshot(label="A", hermes_home=hermes_home)
+        _advance_backup_clock()
+        b_id = create_quick_snapshot(label="B", hermes_home=hermes_home)
+        # Corrupt B's manifest (torn write): unreadable JSON.
+        (hermes_home / "state-snapshots" / b_id / "manifest.json").write_text(
+            "{corrupt", encoding="utf-8")
+        _advance_backup_clock()
+        c_id = create_quick_snapshot(
+            label="C", hermes_home=hermes_home, max_file_size=1024, keep=2)
+
+        snap_ids = {s["id"] for s in list_quick_snapshots(limit=100, hermes_home=hermes_home)}
+        assert a_id in snap_ids, (
+            "the verifiable state.db copy was pruned behind a corrupt-manifest "
+            "snapshot — recovery source lost")
+        assert (hermes_home / "state-snapshots" / a_id / "state.db").exists()
+        assert c_id in snap_ids
+
+    def test_lying_manifest_does_not_hide_real_recovery_copy(self, hermes_home):
+        """Review on #109586: a manifest that CLAIMS the DB must also be checked
+        against the file actually existing — a lying manifest (file deleted from
+        the snapshot dir) must not be treated as the recovery copy while the
+        real copy is pruned."""
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        a_id = create_quick_snapshot(label="A", hermes_home=hermes_home)
+        _advance_backup_clock()
+        b_id = create_quick_snapshot(label="B", hermes_home=hermes_home)
+        # Make B lie: manifest lists state.db but the file is gone.
+        (hermes_home / "state-snapshots" / b_id / "state.db").unlink()
+        _advance_backup_clock()
+        c_id = create_quick_snapshot(
+            label="C", hermes_home=hermes_home, max_file_size=1024, keep=2)
+
+        snap_ids = {s["id"] for s in list_quick_snapshots(limit=100, hermes_home=hermes_home)}
+        assert a_id in snap_ids, (
+            "the real state.db copy was pruned because a lying manifest was "
+            "accepted as the recovery copy")
+        assert (hermes_home / "state-snapshots" / a_id / "state.db").exists()
+
+    def test_no_verifiable_copy_aborts_pruning(self, hermes_home):
+        """Review on #109586: when NO snapshot verifiably holds the skipped DB
+        (all manifests corrupt), pruning must abort entirely instead of
+        deleting snapshots on a guess."""
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        a_id = create_quick_snapshot(label="A", hermes_home=hermes_home)
+        _advance_backup_clock()
+        b_id = create_quick_snapshot(label="B", hermes_home=hermes_home)
+        for sid in (a_id, b_id):
+            (hermes_home / "state-snapshots" / sid / "manifest.json").write_text(
+                "{torn", encoding="utf-8")
+        _advance_backup_clock()
+        c_id = create_quick_snapshot(
+            label="C", hermes_home=hermes_home, max_file_size=1024, keep=1)
+
+        snap_ids = {s["id"] for s in list_quick_snapshots(limit=100, hermes_home=hermes_home)}
+        assert {a_id, b_id, c_id} <= snap_ids, (
+            "pruning deleted snapshots although no verifiable recovery copy "
+            "existed — must abort instead")
+        assert (hermes_home / "state-snapshots" / a_id / "state.db").exists()
+
 
 class TestQuickSnapshotProjectsKanban:
     """Regression for #52889: projects.db / kanban.db must survive an upgrade.

@@ -148,6 +148,40 @@ def test_launchd_default_gateway_restarted_via_ai_hermes_label():
     assert report_unaccounted_runtimes(outcomes) is False
 
 
+def test_hash_suffixed_unit_restarted_credits_default_profile():
+    """A HERMES_HOME outside the native root names its gateway unit
+    ``hermes-gateway-<sha256[:8]>`` (_profile_suffix in hermes_cli/gateway.py).
+    The restart phase restarts that real unit, so the default-profile gateway must
+    count as restarted — otherwise every ``hermes update`` on such an install
+    exits 1 after a successful restart and fleet_restart_pending is never
+    cleared (#110238)."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 400, supervisor="systemd")),
+        restarted_services=["hermes-gateway-03b57a39.service"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "restarted"
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_hash_suffix_match_is_exact_shape_not_substring():
+    from hermes_cli.update_inventory import _gateway_service_matches_profile as matches
+
+    # Exact 8 lowercase hex across the systemd/launchd/s6 base names, scope-prefixed or not.
+    assert matches("default", "hermes-gateway-03b57a39")
+    assert matches("default", "ai.hermes.gateway-03b57a39")
+    assert matches("default", "gateway-03b57a39")
+    assert matches("default", "user/hermes-gateway-03b57a39.service")
+    # Anything else is a named profile's unit, never the default gateway's hash.
+    assert not matches("default", "hermes-gateway-03b57a3")    # 7 hex chars
+    assert not matches("default", "hermes-gateway-03b57a3900")  # 10 hex chars
+    assert not matches("default", "hermes-gateway-03B57A39")   # uppercase is not sha256 hexdigest
+    assert not matches("default", "hermes-gateway-foobar")     # the no-substring rule (#100479)
+    # A named profile still matches only its own name, hash shape included (hash-as-profile-id).
+    assert matches("03b57a39", "hermes-gateway-03b57a39")
+    assert not matches("work", "hermes-gateway-03b57a39")
+
+
 def test_launchd_named_profile_and_failed_label():
     restarted = match_runtime_outcomes(
         _plan(_rt("work", 401, supervisor="launchd")),

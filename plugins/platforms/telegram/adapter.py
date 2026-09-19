@@ -1458,10 +1458,13 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             if self._rich_rejected(exc, "sendRichMessage", "MarkdownV2"):
                 return None
-            # Honor Telegram's flood-control retry_after over the base retry schedule.
+            # Honor Telegram's flood-control retry_after over the base retry schedule. PTB's own
+            # RetryAfter always carries the .retry_after attribute, but a 429 whose JSON body lacks
+            # "parameters" surfaces as a plain NetworkError with the raw Bot API description text
+            # ("Too Many Requests: retry after 30", no unit) instead — the case this regex is for.
             _retry_after = getattr(exc, "retry_after", None)
             if _retry_after is None:
-                _m = re.search(r"retry\s+(?:in\s+)?(\d+)", str(exc).lower(), re.IGNORECASE)
+                _m = re.search(r"retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)", str(exc).lower(), re.IGNORECASE)
                 if _m:
                     _retry_after = float(_m.group(1))
             return self._rich_transient_result(exc, "sendRichMessage", retry_after=_retry_after)

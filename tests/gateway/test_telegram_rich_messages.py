@@ -287,6 +287,39 @@ async def test_transient_rich_error_does_not_legacy_resend(exc):
 
 
 @pytest.mark.asyncio
+async def test_rich_send_retry_after_parses_raw_bot_api_description():
+    """A 429 whose JSON body lacks "parameters" surfaces as a plain NetworkError
+    carrying Telegram's raw, unit-less description ("retry after N") instead of
+    a typed RetryAfter with a .retry_after attribute — the regex fallback must
+    still recover the wait time from that text."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=NetworkError("Too Many Requests: retry after 30")
+    )
+
+    result = await adapter._try_send_rich("12345", RICH_CONTENT, None, None)
+
+    assert result is not None and result.success is False
+    assert result.retry_after == 30.0
+
+
+@pytest.mark.asyncio
+async def test_rich_send_retry_after_parses_ptb_flood_control_message():
+    """Regression guard for the pre-existing "Retry in N seconds" phrasing
+    (PTB's own RetryAfter.__str__), so widening the regex to also accept
+    "retry after" doesn't drop the "retry in" case it already handled."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=NetworkError("Flood control exceeded. Retry in 180 seconds")
+    )
+
+    result = await adapter._try_send_rich("12345", RICH_CONTENT, None, None)
+
+    assert result is not None and result.success is False
+    assert result.retry_after == 180.0
+
+
+@pytest.mark.asyncio
 async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabled(monkeypatch):
     import agent.redact as redact
 

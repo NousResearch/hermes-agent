@@ -145,6 +145,39 @@ def test_cli_complete_persists_evidence_receipt(kanban_home):
         ]
 
 
+def test_cli_complete_required_evidence_is_a_validation_error(kanban_home, capsys):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="receipt required", completion_contract="evidence-required")
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+
+    rc = kc.kanban_command(parser.parse_args(["kanban", "complete", task_id]))
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "completion requires concrete evidence" in captured.err
+    assert "Traceback" not in captured.err
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
+def test_cli_bulk_complete_preflights_evidence_before_mutating(kanban_home, capsys):
+    with kbc.connect() as conn:
+        ordinary = kb.create_task(conn, title="ordinary")
+        required = kb.create_task(conn, title="receipt required", completion_contract="evidence-required")
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+
+    rc = kc.kanban_command(parser.parse_args(["kanban", "complete", ordinary, required]))
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert required in captured.err
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, ordinary).status == "ready"
+        assert kb.get_task(conn, required).status == "ready"
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

@@ -46,6 +46,7 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
+import { Markdown } from './markdown'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -398,7 +399,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <Markdown text={body} />
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}

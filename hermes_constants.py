@@ -21,6 +21,11 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# TUI chrome glyph tiers (display.tui_glyph_preset, /glyphs, TUI gateway config).
+# Keep in sync with GLYPH_PRESETS / DEFAULT_GLYPH_PRESET in ui-tui/src/theme.ts.
+GLYPH_PRESETS: tuple[str, ...] = ("ascii", "nerd", "unicode")
+DEFAULT_GLYPH_PRESET: str = "unicode"
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.

@@ -57,7 +57,12 @@ const looksLikeTheme = (value: unknown): value is Theme => {
     typeof theme.color.primary === 'string' &&
     typeof theme.brand === 'object' &&
     theme.brand !== null &&
-    typeof theme.brand.name === 'string'
+    typeof theme.brand.name === 'string' &&
+    // Chrome glyphs arrived with `display.tui_glyph_preset`; a cache written
+    // before that carries no table, and replaying it would render the first
+    // frame off `undefined.glyphs` — ignore it and re-resolve instead.
+    typeof theme.glyphs === 'object' &&
+    theme.glyphs !== null
   )
 }
 

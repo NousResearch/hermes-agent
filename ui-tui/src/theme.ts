@@ -65,6 +65,7 @@ export interface Theme {
   brand: ThemeBrand
   bannerLogo: string
   bannerHero: string
+  glyphs: ThemeGlyphs
 }
 
 // ── Color math ───────────────────────────────────────────────────────
@@ -269,6 +270,334 @@ const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
   return cleaned || fallback
 }
 
+// ── Chrome glyphs (display.tui_glyph_preset) ─────────────────────────
+//
+// Every glyph the TUI draws as CHROME — status icons, tree rails, spinners,
+// ok/fail marks, separators — resolves through one of three tiers instead of
+// being authored per call site, so a terminal whose font lacks the classic
+// Hermes glyphs shows a readable TUI instead of tofu boxes:
+//
+//   nerd    — Nerd Font icons (`\uF00C` etc.) for the icon slots. Patched
+//             fonts keep the standard box-drawing/braille ranges, so rails,
+//             separators and spinners stay identical to `unicode`.
+//   unicode — the classic Hermes glyphs. THE DEFAULT, byte-identical to the
+//             pre-preset rendering: no existing setup changes.
+//   ascii   — pure 7-bit (`[ok]`, `|-`, `|`), the floor for terminals with no
+//             font control at all (embedded consoles, some SSH clients).
+//
+// Width contract: the spinner frames are one column in every tier (the
+// status-bar budget reserves exactly that), and the rails/separators/
+// chevrons are one column in `unicode`/`nerd`. The ok/fail/warn MARKS are
+// wider in the ascii tier (`[ok]` vs `✓`), so any width arithmetic around a
+// mark must measure the preset value (`stringWidth(t.glyphs.ok)`) instead of
+// a literal.
+export const GLYPH_PRESETS = ['ascii', 'nerd', 'unicode'] as const
+
+export type GlyphPreset = (typeof GLYPH_PRESETS)[number]
+
+/** The tier every terminal we have no signal about can render. */
+export const DEFAULT_GLYPH_PRESET: GlyphPreset = 'unicode'
+
+/** Lifecycle vocabulary of the agent/subagent surfaces (see lib/subagentGlyph). */
+export type GlyphStatus =
+  | 'cancelled'
+  | 'completed'
+  | 'dispatched'
+  | 'error'
+  | 'failed'
+  | 'finalizing'
+  | 'interrupted'
+  | 'queued'
+  | 'rejected'
+  | 'running'
+  | 'timeout'
+  | 'unknown'
+
+export interface ThemeGlyphs {
+  /** Empty context-bar cell. */
+  barEmpty: string
+  /** Filled context-bar cell. */
+  barFilled: string
+  /** Resume-when-idle marker. */
+  back: string
+  /** Battery read-out marker. */
+  battery: string
+  /** Charging marker (battery read-out). */
+  bolt: string
+  /** Running-tool / list bullet. */
+  bullet: string
+  /** Cache-hit percentage marker. */
+  cache: string
+  /** Streaming caret at the end of live text. */
+  caret: string
+  /** Background-subagent chain marker. */
+  chain: string
+  /** Collapsed-section chevron. */
+  chevronClosed: string
+  /** Expanded-section chevron. */
+  chevronOpen: string
+  /** Latency clock. */
+  clock: string
+  /** Signed delta marker (dev credits). */
+  delta: string
+  /** Inline separator dot (`· `). */
+  dot: string
+  /** Timeline/event marker. */
+  event: string
+  /** Failed / negative mark. */
+  fail: string
+  /** Focus-view badge. */
+  focus: string
+  /** Assistant-row gutter mark (chrome stand-in for the brand's `┊`). */
+  gutter: string
+  /** Brand mark shown beside the agent name. */
+  icon: string
+  /** Completed / positive mark. */
+  ok: string
+  /** Paused marker. */
+  pause: string
+  /** Input-prompt mark for the user gutter. */
+  prompt: string
+  /** Tree rail, last child (`└─ `). */
+  railLast: string
+  /** Tree rail, middle child (`├─ `). */
+  railMid: string
+  /** Tree rail, vertical pass-through (`│ `). */
+  railPipe: string
+  /** Horizontal rule / status-bar lead (`─ `). */
+  rule: string
+  /** Scrollbar thumb cell. */
+  scrollbar: string
+  /** Status-segment separator (` │ `). */
+  sep: string
+  /** Chrome spinner cycle (one column per frame). */
+  spinner: readonly string[]
+  /** Per-status icon. */
+  status: Record<GlyphStatus, string>
+  /** Tool-role gutter glyph. */
+  tool: string
+  /** Throughput marker (tokens/sec). */
+  up: string
+  /** Warning mark. */
+  warn: string
+}
+
+// The `unicode` tier's spinner is the braille cycle the busy indicator has
+// always used (`unicode-animations`' `braille` spinner, 80 ms/frame).
+const BRAILLE_SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
+
+const CLASSIC_STATUS: Record<GlyphStatus, string> = {
+  cancelled: '■',
+  completed: '✓',
+  dispatched: '○',
+  error: '⚠',
+  failed: '✗',
+  finalizing: '◐',
+  interrupted: '■',
+  queued: '○',
+  rejected: '⊘',
+  running: '●',
+  timeout: '⌛',
+  unknown: '·'
+}
+
+const UNICODE_GLYPHS: ThemeGlyphs = {
+  barEmpty: '░',
+  barFilled: '█',
+  back: '↩',
+  battery: '🔋',
+  bolt: '⚡',
+  bullet: '●',
+  cache: '◎',
+  caret: '▍',
+  chain: '⛓',
+  chevronClosed: '▸',
+  chevronOpen: '▾',
+  clock: '◷',
+  delta: 'Δ',
+  dot: '·',
+  event: '◈',
+  fail: '✗',
+  focus: '◉',
+  gutter: '┊',
+  icon: '☤',
+  ok: '✓',
+  pause: '⏸',
+  prompt: '❯',
+  railLast: '└─',
+  railMid: '├─',
+  railPipe: '│',
+  rule: '─',
+  scrollbar: '┃',
+  sep: '│',
+  spinner: BRAILLE_SPINNER,
+  status: CLASSIC_STATUS,
+  tool: '⚡',
+  up: '↑',
+  warn: '⚠'
+}
+
+// Icon slots only: Nerd Fonts ship every standard box-drawing/braille glyph
+// unpatched, so the rails, separators, rule, scrollbar and spinner stay on
+// the `unicode` values instead of inventing PUA equivalents for them.
+// Codepoints follow the reference table (oh-my-pi `symbols.ts` NERD map):
+// nf-fa-check F00C, nf-fa-times F00D, nf-fa-exclamation_triangle F12A,
+// nf-fa-circle F111 / circle_o F10C, nf-fa-spinner F110, nf-fa-square
+// F04D, nf-fa-ban F05E, nf-fa-hourglass F254, nf-fa-bolt F0E7,
+// nf-fa-caret_right/caret_down F0DA/F0D7, nf-fa-battery_full F240,
+// nf-fa-question F128.
+const NERD_GLYPHS: ThemeGlyphs = {
+  ...UNICODE_GLYPHS,
+  battery: '\uF240',
+  bolt: '\uF0E7',
+  chevronClosed: '\uF0DA',
+  chevronOpen: '\uF0D7',
+  fail: '\uF00D',
+  ok: '\uF00C',
+  tool: '\uF0E7',
+  warn: '\uF12A',
+  status: {
+    cancelled: '\uF04D',
+    completed: '\uF00C',
+    dispatched: '\uF10C',
+    error: '\uF12A',
+    failed: '\uF00D',
+    finalizing: '\uF111',
+    interrupted: '\uF04D',
+    queued: '\uF10C',
+    rejected: '\uF05E',
+    running: '\uF110',
+    timeout: '\uF254',
+    unknown: '\uF128'
+  }
+}
+
+// `[ok]` and friends take the width the classic marks take in the transcript
+// header slot; the rails keep the classic `tree --charset=ascii` shapes so a
+// depth level still reads as a level.
+const ASCII_GLYPHS: ThemeGlyphs = {
+  barEmpty: '-',
+  barFilled: '#',
+  back: '<-',
+  battery: 'B',
+  bolt: '!',
+  bullet: '*',
+  cache: '%',
+  caret: '|',
+  chain: '@',
+  chevronClosed: '>',
+  chevronOpen: 'v',
+  clock: '~',
+  delta: 'D',
+  dot: '.',
+  event: '+',
+  fail: '[x]',
+  focus: '*',
+  gutter: '|',
+  icon: '',
+  ok: '[ok]',
+  pause: '||',
+  prompt: '>',
+  railLast: '`-',
+  railMid: '|-',
+  railPipe: '|',
+  rule: '-',
+  scrollbar: '#',
+  sep: '|',
+  spinner: ['|', '/', '-', '\\'],
+  status: {
+    cancelled: '[-]',
+    completed: '[ok]',
+    dispatched: '[ ]',
+    error: '[!]',
+    failed: '[x]',
+    finalizing: '[~]',
+    interrupted: '[-]',
+    queued: '[ ]',
+    rejected: '[/]',
+    running: '[~]',
+    timeout: '[t]',
+    unknown: '.'
+  },
+  tool: '*',
+  up: '^',
+  warn: '[!]'
+}
+
+export const GLYPH_TABLES: Record<GlyphPreset, ThemeGlyphs> = {
+  ascii: ASCII_GLYPHS,
+  nerd: NERD_GLYPHS,
+  unicode: UNICODE_GLYPHS
+}
+
+const GLYPH_PRESET_SET: ReadonlySet<string> = new Set(GLYPH_PRESETS)
+
+/** Normalize a configured value (`display.tui_glyph_preset`, possibly absent
+ *  or hand-edited) to a shipped tier. Unknown/missing falls back to the
+ *  default tier rather than throwing — a typo must not cost the user their
+ *  chrome. */
+export function normalizeGlyphPreset(raw: unknown): GlyphPreset {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+
+  return GLYPH_PRESET_SET.has(value) ? (value as GlyphPreset) : DEFAULT_GLYPH_PRESET
+}
+
+/** The glyph table for a configured value. */
+export function glyphTable(raw: unknown): ThemeGlyphs {
+  return GLYPH_TABLES[normalizeGlyphPreset(raw)]
+}
+
+// The active tier for themes BUILT from here on (skin arrival, background
+// re-detection). Config sync sets it; every later theme resolution carries it,
+// so a preset change survives a skin swap instead of reverting on the next
+// theme rebuild.
+let activeGlyphPreset: GlyphPreset = DEFAULT_GLYPH_PRESET
+
+export const getGlyphPreset = (): GlyphPreset => activeGlyphPreset
+
+export function setGlyphPreset(raw: unknown): GlyphPreset {
+  activeGlyphPreset = normalizeGlyphPreset(raw)
+
+  return activeGlyphPreset
+}
+
+/** Re-derive an already-resolved theme with a new tier. The theme object is
+ *  the TUI's single render input, so swapping it re-renders every chrome
+ *  consumer (and persists through the same boot-theme path skins use). */
+export function themeWithGlyphPreset(theme: Theme, raw: unknown): Theme {
+  const glyphs = glyphTable(raw)
+
+  return {
+    ...theme,
+    brand: {
+      ...theme.brand,
+      icon: tierDefault(theme.brand.icon, 'icon', glyphs.icon),
+      prompt: tierDefault(theme.brand.prompt, 'prompt', glyphs.prompt),
+      tool: tierDefault(theme.brand.tool, 'gutter', glyphs.gutter)
+    },
+    glyphs
+  }
+}
+
+/** The new tier's value for a brand mark, unless the current one was AUTHORED
+ *  (a skin's `tool_prefix`, a user's `prompt_symbol`) — those are identity,
+ *  and a preset change must not overwrite them. */
+function tierDefault(current: string, key: 'gutter' | 'icon' | 'prompt', next: string): string {
+  return GLYPH_PRESETS.some(preset => GLYPH_TABLES[preset][key] === current) ? next : current
+}
+
+/** Frames a chrome spinner should cycle. A tier whose own cycle is ASCII
+ *  (the ascii floor) never borrows the caller's art — the decorative
+ *  thinking/tool animations are braille and unreadable without a
+ *  braille-capable font, which is exactly the case the tier exists for. */
+export function spinnerFrames(glyphs: ThemeGlyphs, art: readonly string[] = []): readonly string[] {
+  if (art.length && (glyphs.spinner[0]?.codePointAt(0) ?? 0) >= 0x7f) {
+    return art
+  }
+
+  return glyphs.spinner
+}
+
 // ── Seeds → palette ──────────────────────────────────────────────────
 //
 // A palette is BUILT, not enumerated: skins/base themes supply identity seeds
@@ -417,19 +746,35 @@ export const LIGHT_SEEDS: ThemeSeeds = {
   warn: '#956115'
 }
 
-export const DARK_THEME: Theme = {
-  color: buildPalette(DARK_SEEDS, false),
-  brand: BRAND,
-  bannerLogo: '',
-  bannerHero: ''
+/**
+ * Brand CHROME follows the glyph tier: `BRAND` owns the identity (name,
+ * welcome/goodbye prose) while the marks the TUI draws in a gutter or prompt
+ * slot come from the tier, so the ascii floor never paints `❯`/`┊`.
+ * An authored `prompt_symbol` / skin `tool_prefix` still wins (see fromSkin) —
+ * a user's own symbol is their choice, not chrome.
+ */
+const tierBrand = (brand: ThemeBrand, glyphs: ThemeGlyphs): ThemeBrand => ({
+  ...brand,
+  icon: glyphs.icon,
+  prompt: glyphs.prompt,
+  tool: glyphs.gutter
+})
+
+const baseTheme = (seeds: ThemeSeeds, isLight: boolean): Theme => {
+  const glyphs = glyphTable(activeGlyphPreset)
+
+  return {
+    color: buildPalette(seeds, isLight),
+    brand: tierBrand(BRAND, glyphs),
+    bannerLogo: '',
+    bannerHero: '',
+    glyphs
+  }
 }
 
-export const LIGHT_THEME: Theme = {
-  color: buildPalette(LIGHT_SEEDS, true),
-  brand: BRAND,
-  bannerLogo: '',
-  bannerHero: ''
-}
+export const DARK_THEME: Theme = baseTheme(DARK_SEEDS, false)
+
+export const LIGHT_THEME: Theme = baseTheme(LIGHT_SEEDS, true)
 
 // ── Background-aware readability adaptation ─────────────────────────
 //
@@ -854,6 +1199,9 @@ export function fromSkin(
   const bg = skinBg ?? referenceBackground(isLight)
   const base = isLight ? LIGHT_SEEDS : DARK_SEEDS
   const d = isLight ? LIGHT_THEME : DARK_THEME
+  // The active tier, re-read per call: a skin arriving AFTER a preset change
+  // (or after the config sync) must not revert the chrome.
+  const skinGlyphs = glyphTable(activeGlyphPreset)
   const c = (k: string) => colors[k]
 
   const hasSkinColors = Object.keys(colors).length > 0
@@ -954,16 +1302,18 @@ export function fromSkin(
 
       brand: {
         name: branding.agent_name ?? d.brand.name,
-        icon: d.brand.icon,
-        prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
+        icon: skinGlyphs.icon,
+        prompt: cleanPromptSymbol(branding.prompt_symbol, skinGlyphs.prompt),
         welcome: branding.welcome ?? d.brand.welcome,
         goodbye: branding.goodbye ?? d.brand.goodbye,
-        tool: toolPrefix || d.brand.tool,
+        tool: toolPrefix || skinGlyphs.gutter,
         helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
       },
 
       bannerLogo,
-      bannerHero
+      bannerHero,
+
+      glyphs: skinGlyphs
     },
     process.env,
     isLight

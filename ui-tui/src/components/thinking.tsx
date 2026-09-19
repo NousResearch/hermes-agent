@@ -26,7 +26,7 @@ import {
   thinkingPreview,
   toolTrailLabel
 } from '../lib/text.js'
-import type { Theme } from '../theme.js'
+import { spinnerFrames, type Theme, type ThemeGlyphs } from '../theme.js'
 import type {
   ActiveTool,
   ActivityItem,
@@ -51,8 +51,8 @@ type TreeRails = readonly boolean[]
 
 const nextTreeRails = (rails: TreeRails, branch: TreeBranch) => [...rails, branch === 'mid']
 
-const treeLead = (rails: TreeRails, branch: TreeBranch) =>
-  `${rails.map(on => (on ? '│ ' : '  ')).join('')}${branch === 'mid' ? '├─ ' : '└─ '}`
+const treeLead = (rails: TreeRails, branch: TreeBranch, g: ThemeGlyphs) =>
+  `${rails.map(on => (on ? `${g.railPipe} ` : '  ')).join('')}${branch === 'mid' ? `${g.railMid} ` : `${g.railLast} `}`
 
 // ── Primitives ───────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ function TreeRow({
   stemDim?: boolean
   t: Theme
 }) {
-  const lead = treeLead(rails, branch)
+  const lead = treeLead(rails, branch, t.glyphs)
 
   return (
     <Box>
@@ -150,12 +150,29 @@ function TreeNode({
   )
 }
 
-export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
+export function Spinner({
+  color,
+  glyphs,
+  variant = 'think'
+}: {
+  color: string
+  glyphs: ThemeGlyphs
+  variant?: 'think' | 'tool'
+}) {
   const spin = useMemo(() => {
     const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
 
-    return { ...raw, frames: raw.frames.map(f => [...f][0] ?? '⠀') }
-  }, [variant])
+    // The decorative animations are braille art; the ascii tier swaps in its
+    // own cycle (see spinnerFrames) so a terminal without the font still sees
+    // a spinner instead of tofu.
+    return {
+      ...raw,
+      frames: spinnerFrames(
+        glyphs,
+        raw.frames.map(f => [...f][0] ?? '⠀')
+      )
+    }
+  }, [glyphs, variant])
 
   const [frame, setFrame] = useState(0)
 
@@ -193,11 +210,13 @@ function Detail({
 function StreamCursor({
   color,
   dimColor,
+  glyphs,
   streaming = false,
   visible = false
 }: {
   color: string
   dimColor?: boolean
+  glyphs: ThemeGlyphs
   streaming?: boolean
   visible?: boolean
 }) {
@@ -219,12 +238,14 @@ function StreamCursor({
     return null
   }
 
+  const caret = streaming && on ? glyphs.caret : ' '
+
   return dimColor ? (
     <Text color={color} dim>
-      {streaming && on ? '▍' : ' '}
+      {caret}
     </Text>
   ) : (
-    <Text color={color}>{streaming && on ? '▍' : ' '}</Text>
+    <Text color={color}>{caret}</Text>
   )
 }
 
@@ -250,7 +271,7 @@ function Chevron({
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
       <Text color={color} dim={tone === 'dim'}>
-        <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
+        <Text color={t.color.accent}>{open ? `${t.glyphs.chevronOpen} ` : `${t.glyphs.chevronClosed} `}</Text>
         {title}
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
@@ -383,11 +404,11 @@ function SubagentAccordion({
     }
 
     if (aggregate.activeCount > 0 && item.status !== 'running') {
-      rollupBits.push(`⚡${aggregate.activeCount}`)
+      rollupBits.push(`${t.glyphs.tool}${aggregate.activeCount}`)
     }
   }
 
-  const suffix = rollupBits.join(' · ')
+  const suffix = rollupBits.join(` ${t.glyphs.dot} `)
 
   const thinkingText = item.thinking.join('\n')
   const hasThinking = Boolean(thinkingText)
@@ -463,7 +484,7 @@ function SubagentAccordion({
               color={t.color.text}
               content={
                 <>
-                  <Text color={t.color.tool}>● </Text>
+                  <Text color={t.color.tool}>{t.glyphs.bullet} </Text>
                   {line}
                 </>
               }
@@ -530,7 +551,7 @@ function SubagentAccordion({
             }
           }}
           open={openKids}
-          suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
+          suffix={`d${item.depth + 1} ${t.glyphs.dot} ${aggregate.descendantCount} total`}
           t={t}
           title="Spawned"
         />
@@ -652,19 +673,19 @@ export const Thinking = memo(function Thinking({
               <Text color={t.color.thinking} key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
-                  <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
+                  <StreamCursor color={t.color.thinking} glyphs={t.glyphs} streaming={streaming} visible={active} />
                 ) : null}
               </Text>
             ))
           ) : (
             <Text color={t.color.thinking} wrap="truncate-end">
               {preview}
-              <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
+              <StreamCursor color={t.color.thinking} glyphs={t.glyphs} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
           <Text color={t.color.thinking}>
-            <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
+            <StreamCursor color={t.color.thinking} glyphs={t.glyphs} streaming={streaming} visible={active} />
           </Text>
         )}
       </Box>
@@ -876,7 +897,7 @@ export const ToolTrail = memo(function ToolTrail({
         key: `tr-${i}`,
         content: groups.length ? (
           <>
-            <Spinner color={t.color.accent} variant="think" /> {line}
+            <Spinner color={t.color.accent} glyphs={t.glyphs} variant="think" /> {line}
           </>
         ) : (
           line
@@ -908,7 +929,7 @@ export const ToolTrail = memo(function ToolTrail({
         : [],
       content: (
         <>
-          <Spinner color={t.color.tool} variant="tool" /> {label}
+          <Spinner color={t.color.tool} glyphs={t.glyphs} variant="tool" /> {label}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -916,7 +937,7 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const item of activity.slice(-4)) {
-    const glyph = item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·'
+    const glyph = item.tone === 'error' ? t.glyphs.fail : item.tone === 'warn' ? t.glyphs.warn : t.glyphs.dot
     const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.muted
     meta.push({ color, content: `${glyph} ${item.text}`, dimColor: item.tone === 'info', key: `a-${item.id}` })
   }
@@ -981,7 +1002,7 @@ export const ToolTrail = memo(function ToolTrail({
       <Box flexDirection="column">
         {alerts.map(i => (
           <Text color={i.tone === 'error' ? t.color.error : t.color.warn} key={`ha-${i.id}`}>
-            {i.tone === 'error' ? '✗' : '!'} {i.text}
+            {i.tone === 'error' ? t.glyphs.fail : t.glyphs.warn} {i.text}
           </Text>
         ))}
       </Box>
@@ -1054,7 +1075,9 @@ export const ToolTrail = memo(function ToolTrail({
           }}
         >
           <Text color={t.color.muted} dim={!thinkingLive}>
-            <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.accent}>
+              {openThinking ? `${t.glyphs.chevronOpen} ` : `${t.glyphs.chevronClosed} `}
+            </Text>
             {thinkingLive ? (
               <Text bold color={t.color.text}>
                 Thinking
@@ -1127,7 +1150,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.tool}>● </Text>
+                      <Text color={t.color.tool}>{t.glyphs.bullet} </Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>
@@ -1257,7 +1280,7 @@ export const ToolTrail = memo(function ToolTrail({
       {outcome ? (
         <Box marginTop={1}>
           <Text color={t.color.muted} dim>
-            · {outcome}
+            {t.glyphs.dot} {outcome}
           </Text>
         </Box>
       ) : null}

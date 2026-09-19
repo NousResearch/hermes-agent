@@ -7,7 +7,7 @@ import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from 
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
+import { applyConfiguredGlyphPreset, applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
   type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
@@ -276,6 +276,11 @@ export const applyDisplay = (
   setBellOnPrompt?.(!!d.bell_on_prompt)
 
   applyConfiguredTuiTheme(d.tui_theme)
+
+  // Chrome glyph tier (nerd | unicode | ascii). Commits a re-derived theme so
+  // every chrome consumer repaints on the next frame, and caches the tier for
+  // the next launch's first frame — no restart, no env var.
+  applyConfiguredGlyphPreset(d.tui_glyph_preset)
 
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we

@@ -153,7 +153,7 @@ export const MessageLine = memo(function MessageLine({
           <Text> </Text>
         </NoSelect>
         <Text color={t.color.muted} dimColor>
-          ◈ {msg.text}
+          {t.glyphs.event} {msg.text}
         </Text>
       </Box>
     )
@@ -181,7 +181,7 @@ export const MessageLine = memo(function MessageLine({
       return (
         <Box flexDirection="column">
           <Box onClick={() => setSystemOpen(v => !v)}>
-            <Text color={t.color.accent}>{systemOpen ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.accent}>{systemOpen ? `${t.glyphs.chevronOpen} ` : `${t.glyphs.chevronClosed} `}</Text>
             <Text color={t.color.muted}>{firstLine}</Text>
             <Text color={t.color.muted} dimColor>
               {' — '}
@@ -285,7 +285,7 @@ export const MessageLine = memo(function MessageLine({
       {showResponseSeparator && (
         <Box marginBottom={1}>
           <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-            <Text color={t.color.border}>└─ </Text>
+            <Text color={t.color.border}>{t.glyphs.railLast} </Text>
           </NoSelect>
           <Text color={t.color.muted} dim>
             Response

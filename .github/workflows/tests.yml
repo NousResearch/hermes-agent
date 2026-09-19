@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  full-suite:
     name: Run tests
     # One 96-core runner for the whole suite. There is no slicing. Slicing
     # existed to spread the suite over 4-core runners. It cost a matrix job, a

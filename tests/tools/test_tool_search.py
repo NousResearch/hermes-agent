@@ -201,6 +201,29 @@ class TestClassification:
         assert "clarify" in names
         assert "computer_use" not in names
 
+    def test_process_management_stays_direct_by_default(self):
+        """Process control is a core operational capability and must be
+        available directly, not hidden behind progressive tool discovery."""
+        from tools.tool_search import (
+            _DEFAULT_DEFERRED_TOOLS,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+
+        assert "process_manage" not in _DEFAULT_DEFERRED_TOOLS
+
+        assembled = assemble_tool_defs(
+            [
+                _td("process_manage", "Manage a background process"),
+                _td("computer_use", "Drive the OS"),
+            ],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "process_manage" in names
+        assert "computer_use" not in names
+
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
         not be claimed as deferrable. This protects against the OpenClaw

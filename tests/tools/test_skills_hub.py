@@ -2088,6 +2088,58 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert "references/missing.md" not in bundle.files
 
 
+class TestGitHubSourceFetchTruncatedTree:
+    def test_fetches_complete_directory_when_recursive_tree_is_truncated(self):
+        """A truncated recursive tree must not degrade to SKILL.md-linked files only."""
+        source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        root_sha = "root-tree-sha"
+
+        def fake_github_json(url, **kwargs):
+            if url.endswith("/owner/repo"):
+                return {"default_branch": "main"}
+            if url.endswith("/git/trees/main"):
+                return {
+                    "sha": root_sha,
+                    "truncated": True,
+                    "tree": [{"path": "skills/demo/SKILL.md", "type": "blob", "mode": "100644"}],
+                }
+            if url.endswith(f"/git/trees/{root_sha}"):
+                return {"tree": [{"path": "skills", "type": "tree", "sha": "skills-tree"}]}
+            if url.endswith("/git/trees/skills-tree"):
+                return {"tree": [{"path": "demo", "type": "tree", "sha": "demo-tree"}]}
+            if url.endswith("/git/trees/demo-tree"):
+                return {"tree": [
+                    {"path": "SKILL.md", "type": "blob", "mode": "100644"},
+                    {"path": "unlinked-guide.md", "type": "blob", "mode": "100644"},
+                    {"path": "assets", "type": "tree", "sha": "assets-tree"},
+                ]}
+            if url.endswith("/git/trees/assets-tree"):
+                return {"tree": [{"path": "logo.txt", "type": "blob", "mode": "100644"}]}
+            raise AssertionError(f"unexpected GitHub API request: {url}")
+
+        payloads = {
+            "skills/demo/unlinked-guide.md": b"unlinked support file\n",
+            "skills/demo/assets/logo.txt": b"asset\n",
+        }
+        source._github_json = MagicMock(side_effect=fake_github_json)
+        source._fetch_file_content = MagicMock(
+            return_value="---\nname: demo\n---\nSee `references/linked.md`.\n"
+        )
+        source._fetch_file_bytes = MagicMock(side_effect=lambda _repo, path, **_kw: payloads.get(path))
+
+        bundle = source.fetch("owner/repo/skills/demo")
+
+        assert bundle is not None
+        assert bundle.files == {
+            "SKILL.md": "---\nname: demo\n---\nSee `references/linked.md`.\n",
+            "unlinked-guide.md": b"unlinked support file\n",
+            "assets/logo.txt": b"asset\n",
+        }
+        assert bundle.metadata["source_revision"] == root_sha
+        assert source._fetch_file_content.call_args.kwargs["ref"] == root_sha
+        assert all(call.kwargs["ref"] == root_sha for call in source._fetch_file_bytes.call_args_list)
+
+
 class TestUrlSourceFetchMissingReferencedFile:
     def test_fetch_skips_missing_referenced_file(self):
         md = "---\nname: demo\ndescription: demo\n---\n\nSee `references/missing.md`.\n"

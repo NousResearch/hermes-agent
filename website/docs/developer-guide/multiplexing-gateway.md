@@ -222,6 +222,22 @@ conflating (`gateway/authz_mixin.py`):
 Outside multiplexing there is one adapter per platform, so both seams return
 it. `tests/gateway/test_multiplex_transport_matrix.py` asserts every row.
 
+### Restore, relay, callbacks and thread hops
+
+The routing entry persists `transport_profile` next to the key (and the
+`sessions.transport_profile` column in `state.db`), so after a restart a
+revived lane still knows which bot received it: `_restored_source(entry)`
+re-pins a `RoutingIdentity` with no live adapter and `_adapter_for_source`
+delivers through that bot's adapter or fails closed — a satellite routed
+through the default bot keeps answering from the default bot, a lane owned by
+a secondary never falls back to the default bot's credential. Entries written
+before the column existed carry `null` and keep the shared-bot heuristics.
+Over the relay, every outbound frame's `metadata.profile` (and `follow_up`'s
+key namespace) tells the connector which profile to stamp on the next
+`passthrough_forward`, so a button press after a routed slash command stays in
+the same profile. Deferred callbacks (`/model` picker) capture the routed home
+at command time and the gateway's executor hops copy the ContextVar scope.
+
 ## Control plane
 
 Desktop plugins reach the gateway only through the ws JSON-RPC door, so

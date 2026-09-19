@@ -164,6 +164,20 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   | shared bot → profile that owns its own bot | routed | receiving adapter | receiving adapter (conversation continuity; #70625's "routed bot" reading was not adopted) |
   | secondary-owned bot → `default` (`bot_profile`) | default (`agent:main`) | receiving adapter | receiving adapter |
   | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`; a disconnected secondary → `None`, never the default bot |
+- **Identity survives the process.** `SessionEntry.transport_profile` (routing index +
+  `sessions.transport_profile`, nullable, reconciled by `SCHEMA_SQL`) persists the receiving bot
+  next to the key namespace; the namespace says where a lane RUNS, the column says which bot may
+  DELIVER to it. Anything reviving a session from durable state (auto-resume, heartbeat restore,
+  plugin injection, background-process events) reads `entry.origin` through
+  `authz_mixin.py::_restored_source`, which re-pins a `RoutingIdentity(transport=None)` via
+  `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
+  adapter or nothing (never the default bot by heuristic). Rows without the column (pre-PR-5)
+  keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
+  command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
+  hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`
+  derives it from the key namespace so the connector stamps it on the next `passthrough_forward`.
+  Ambient `get_active_profile_name()` reads in `gateway/` are boot-only and marked
+  `# launch profile, pre-identity`; a path with an identity reads `identity.runtime_profile`.
 - **Token locks.** An adapter that connects with a unique credential (bot token, API key) calls
   `acquire_scoped_lock()` from `gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
   in `disconnect()`/`stop()`, so two profiles cannot share one credential. Canonical:

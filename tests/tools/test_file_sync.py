@@ -370,6 +370,83 @@ class TestSyncBackSecurity:
         assert skill.read_text(encoding="utf-8") == "remote-skill"
 
 
+class TestSyncBackUnwritableFile:
+    """A host file that cannot be written must not wedge the sync-back transaction.
+
+    sync-back applies the remote tar file-by-file; previously a single
+    unwritable host path raised out of the apply loop, failed the whole
+    transaction, and the retry re-ran the full set — every other remote
+    change stayed blocked behind the bad path and the log kept flooding.
+    """
+
+    def test_unwritable_host_file_is_skipped_and_others_apply(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        good = tmp_path / "good.py"
+        good.write_text("host-good", encoding="utf-8")
+        bad = tmp_path / "bad.py"
+        bad.write_text("host-bad", encoding="utf-8")
+
+        monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+        monkeypatch.setattr(
+            "tools.credential_files.iter_skills_files",
+            lambda container_base="/root/.hermes": [
+                {"host_path": str(good), "container_path": f"{container_base}/skills/good.py"},
+                {"host_path": str(bad), "container_path": f"{container_base}/skills/bad.py"},
+            ],
+        )
+        monkeypatch.setattr(
+            "tools.credential_files.iter_cache_files", lambda container_base="/root/.hermes": []
+        )
+
+        def bulk_download(dest: Path) -> None:
+            with tarfile.open(dest, "w") as tar:
+                for name, data in {
+                    "root/.hermes/skills/good.py": b"remote-good",
+                    "root/.hermes/skills/bad.py": b"remote-bad",
+                }.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+
+        import tools.environments.file_sync as file_sync_mod
+
+        real_copy2 = file_sync_mod.shutil.copy2
+
+        def guarded_copy2(src, dst, *args, **kwargs):
+            if Path(dst) == bad:
+                raise PermissionError(13, "Permission denied", str(dst))
+            return real_copy2(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(file_sync_mod.shutil, "copy2", guarded_copy2)
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files("/root/.hermes"),
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_download_fn=bulk_download,
+        )
+
+        mgr.sync(force=True)
+        caplog.set_level(logging.WARNING, logger="tools.environments.file_sync")
+        mgr.sync_back(hermes_home=tmp_path)  # must not raise
+
+        # The writable file applied; the unwritable one kept its host content.
+        assert good.read_text(encoding="utf-8") == "remote-good"
+        assert bad.read_text(encoding="utf-8") == "host-bad"
+        assert mgr._sync_back_skipped == {str(bad)}
+
+        warns = [r for r in caplog.records if "skipping unwritable host file" in r.getMessage()]
+        assert len(warns) == 1
+        assert str(bad) in warns[0].getMessage()
+
+        # A later cycle retries silently (no duplicate warning) and still does not raise.
+        caplog.clear()
+        mgr.sync_back(hermes_home=tmp_path)
+        warns = [r for r in caplog.records if "skipping unwritable host file" in r.getMessage()]
+        assert len(warns) == 0
+
+
 class TestBulkUpload:
     """Tests for the optional bulk_upload_fn callback."""
 
@@ -410,3 +487,96 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+
+class TestUnreadableFiles:
+    """Unreadable host files must not wedge the sync pipeline.
+
+    A single permanently-unreadable file previously failed the whole
+    transactional cycle on every sync: state rolled back, the rate-limit
+    clock never advanced, and every subsequent sync retried the full set
+    (a log-flooding retry storm where nothing else ever reaches the
+    remote).  Unreadable files are now skipped with a one-time warning and
+    picked up again automatically once readable.
+    """
+
+    @pytest.fixture
+    def unreadable_file(self, tmp_files, monkeypatch):
+        """Make ``skill_main.py`` appear unreadable to the sync manager."""
+        unreadable = {tmp_files["skill_main.py"]}
+        real_access = os.access
+
+        def fake_access(path, mode, *args, **kwargs):
+            if str(path) in unreadable and mode & os.R_OK:
+                return False
+            return real_access(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr("tools.environments.file_sync.os.access", fake_access)
+        return unreadable
+
+    def test_unreadable_skipped_others_sync(self, tmp_files, unreadable_file, caplog):
+        import logging
+
+        caplog.set_level(logging.WARNING, logger="tools.environments.file_sync")
+        upload = MagicMock()
+        mgr = _make_manager(tmp_files, upload=upload)
+
+        mgr.sync(force=True)
+
+        # Only the two readable files are uploaded (the transport receives staged
+        # copies, so identify files by their stable remote paths)
+        assert upload.call_count == 2
+        uploaded_remotes = [call.args[1] for call in upload.call_args_list]
+        assert "/root/.hermes/skill_main.py" not in uploaded_remotes
+        # Skipped file is not recorded as synced
+        assert mgr._unreadable_skipped == {tmp_files["skill_main.py"]}
+
+        # The unreadable file is warned about exactly once
+        warns = [
+            r for r in caplog.records if "skipping unreadable file" in r.getMessage()
+        ]
+        assert len(warns) == 1
+        assert tmp_files["skill_main.py"] in warns[0].getMessage()
+
+        # A second cycle commits nothing new and does not warn again
+        caplog.clear()
+        upload.reset_mock()
+        mgr.sync(force=True)
+        assert upload.call_count == 0
+        warns = [
+            r for r in caplog.records if "skipping unreadable file" in r.getMessage()
+        ]
+        assert len(warns) == 0
+
+    def test_unreadable_recovers_automatically(self, tmp_files, unreadable_file):
+        upload = MagicMock()
+        mgr = _make_manager(tmp_files, upload=upload)
+
+        mgr.sync(force=True)
+        assert upload.call_count == 2
+
+        # File becomes readable again — picked up on the next cycle
+        unreadable_file.clear()
+        upload.reset_mock()
+        mgr.sync(force=True)
+        assert upload.call_count == 1
+        assert upload.call_args[0][1] == "/root/.hermes/skill_main.py"
+        assert mgr._unreadable_skipped == set()
+
+    def test_bulk_upload_never_receives_unreadable(self, tmp_files, unreadable_file):
+        """The tar-over-SSH bulk path must never see the unreadable file."""
+        bulk_upload = MagicMock()
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+
+        mgr.sync(force=True)
+
+        # The transport receives staged copies; identify files by their stable remote paths.
+        files_arg = bulk_upload.call_args[0][0]
+        remotes = {remote for _, remote in files_arg}
+        assert "/root/.hermes/skill_main.py" not in remotes
+        assert len(remotes) == 2

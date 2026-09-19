@@ -400,6 +400,7 @@ class HermesProviderMixin:
             if token_response.scope is None:
                 token_response.scope = prior.scope
         await self._store_tokens(token_response)
+        self._hermes_refresh_generation = getattr(self, "_hermes_refresh_generation", 0) + 1
         return True
 
     async def _hermes_reload_tokens_after_refresh_failure(self) -> bool:

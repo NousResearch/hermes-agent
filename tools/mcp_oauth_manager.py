@@ -224,6 +224,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         inner = super().async_auth_flow(request)
         resource_lock_released = retry_after_concurrent_auth = False
         sent_access_token = None
+        refresh_generation = getattr(self, "_hermes_refresh_generation", 0)
+        retry_after_refresh = False
         try:
             outgoing = await inner.__anext__()
             while True:
@@ -232,10 +234,22 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if outgoing is request:
                     tokens = self.context.current_tokens
                     sent_access_token = tokens.access_token if tokens is not None else None
+                    retry_after_refresh = (
+                        getattr(self, "_hermes_refresh_generation", 0) != refresh_generation
+                    )
                     self.context.lock.release()
                     resource_lock_released = True
                 incoming = yield outgoing
                 if resource_lock_released:
+                    await self.context.lock.acquire()
+                    resource_lock_released = False
+                # A newly refreshed token can be rejected once while succeeding on the next connection.
+                if retry_after_refresh and getattr(incoming, "status_code", None) == 401:
+                    retry_after_refresh = False
+                    self._add_auth_header(request)
+                    self.context.lock.release()
+                    resource_lock_released = True
+                    incoming = yield request
                     await self.context.lock.acquire()
                     resource_lock_released = False
                 # Another request may have refreshed/authorized while this one was in flight:

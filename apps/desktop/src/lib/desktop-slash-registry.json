@@ -32,7 +32,6 @@
   "/sb": "terminal",
   "/set-home": "terminal",
   "/sethome": "terminal",
-  "/skills": "settings",
   "/snap": "terminal",
   "/snapshot": "terminal",
   "/statusbar": "terminal",

@@ -184,4 +184,90 @@ describe('useSlashCompletions', () => {
     expect(groupOf('/compress')).toBe('Commands')
     expect(groupOf('/docx')).toBe('Skills')
   })
+
+  it('keeps command-stage /skills rows when replace_from says command stage', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: '/skills', display: '/skills', kind: 'command' }], replace_from: 1 }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'skills '))).toEqual(['/skills'])
+  })
+
+  it('still filters /skills hub subcommands when replace_from is omitted', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'install' }, { text: 'search' }, { text: 'pending' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+    const items = await completions(api, 'skills ')
+
+    expect(commandsOf(items)).toEqual(['/skills pending'])
+  })
+
+  it('replaces a partial /skills subcommand when replace_from is omitted', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'pending' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'skills pen'))).toEqual(['/skills pending'])
+  })
+
+  it('keeps non-scoped command rows intact when replace_from is omitted', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: '/save', display: '/save', kind: 'command' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'save json report'))).toEqual(['/save'])
+  })
+
+  it('uses a backend replace_from offset verbatim', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'report', display: 'report', kind: 'command' }], replace_from: 7 }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'save json'))).toEqual(['/save jreport'])
+  })
+
+  it('filters blocked subcommands from replace_from even without trailing space', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'install' }, { text: 'pending' }], replace_from: 8 }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+    const items = await completions(api, 'skills pen')
+
+    expect(commandsOf(items)).toEqual(['/skills pending'])
+  })
 })

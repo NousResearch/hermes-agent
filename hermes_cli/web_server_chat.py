@@ -224,43 +224,52 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``);
     ``credential`` names what was presented so the accept path can log *how*.
 
-    Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
-    Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
-    (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
-    child can reconnect; never injected into the SPA).  The legacy token is
-    rejected in gated mode: a leaked ``_SESSION_TOKEN`` must not grant access.
+    ``?internal=`` (process-lifetime, multi-use, only ever handed to
+    server-spawned WS clients so the PTY child can reconnect; never injected
+    into the SPA) is accepted in EVERY mode: it is the only credential that
+    mints a server identity, and downstream authorization keys off that
+    identity (``WSTransport.auth_identity`` → the /skills review gate).
+    Loopback / ``--insecure`` additionally accepts the legacy ``?token=``
+    (constant-time compared).  Gated additionally accepts ``?ticket=``
+    (browser-minted, single-use, 30s TTL) and rejects the legacy token: a
+    leaked ``_SESSION_TOKEN`` must not grant access.
     """
     from hermes_cli.web_server import _SESSION_TOKEN, app
     auth_required = bool(getattr(app.state, "auth_required", False))
-    if auth_required:
-        # Lazy import — keeps this function importable in test harnesses
-        # that don't bring in the dashboard_auth layer.
+
+    def _stamp_identity(info) -> None:
+        # Server-minted {user_id, provider} stamped onto the WS object is the
+        # sole identity authority downstream (gateway transport / controller
+        # registration); a client can never supply it through RPC params.
+        # Only the two identity fields are carried — bookkeeping such as
+        # ``minted_at`` is not part of the identity contract.
+        ws._hermes_auth_identity = {
+            "user_id": info.get("user_id"), "provider": info.get("provider")}
+
+    def _reject(reason: str) -> None:
+        # Audit exists only in gated mode; ungated rejections are not recorded.
+        if not auth_required:
+            return
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        audit_log(
+            AuditEvent.WS_TICKET_REJECTED, reason=reason,
+            ip=(ws.client.host if ws.client else ""), path=ws.url.path)
+
+    # Lazy imports throughout — they keep this function importable in test
+    # harnesses that don't bring in the dashboard_auth layer.
+    internal = ws.query_params.get("internal", "")
+    if internal:
         from hermes_cli.dashboard_auth.ws_tickets import (
-            TicketInvalid, consume_internal_credential, consume_ticket)
+            TicketInvalid, consume_internal_credential)
+        try:
+            _stamp_identity(consume_internal_credential(internal))
+            return None, "internal"
+        except TicketInvalid as exc:
+            _reject(f"internal: {exc}")
+            return "internal_invalid", "internal"
 
-        def _reject(reason: str) -> None:
-            audit_log(
-                AuditEvent.WS_TICKET_REJECTED, reason=reason,
-                ip=(ws.client.host if ws.client else ""), path=ws.url.path)
-
-        def _stamp_identity(info) -> None:
-            # Server-minted {user_id, provider} stamped onto the WS object is the
-            # sole identity authority downstream (gateway transport / controller
-            # registration); a client can never supply it through RPC params.
-            # Only the two identity fields are carried — bookkeeping such as
-            # ``minted_at`` is not part of the identity contract.
-            ws._hermes_auth_identity = {
-                "user_id": info.get("user_id"), "provider": info.get("provider")}
-
-        internal = ws.query_params.get("internal", "")
-        if internal:
-            try:
-                _stamp_identity(consume_internal_credential(internal))
-                return None, "internal"
-            except TicketInvalid as exc:
-                _reject(f"internal: {exc}")
-                return "internal_invalid", "internal"
+    if auth_required:
+        from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
 
         protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
         if protocol_reason == "invalid":
@@ -395,13 +404,15 @@ def _resolve_client_ws_host() -> Optional[str]:
     return "127.0.0.1" if host in _WILDCARD_HOSTS else host
 
 
-def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
+def _server_internal_ws_url(path: str, *, always_internal: bool = False, **extra_qs) -> Optional[str]:
     """``ws://<host>:<port><path>?<auth>&<extra>`` for server-spawned WS clients,
     or None when unbound.
 
     Gated mode uses the process-lifetime internal credential, NOT a single-use
     browser ticket: the child reads the URL once and reuses it on every
     reconnect, and a 30s-TTL ticket can expire before a slow cold boot dials.
+    ``always_internal`` extends that to loopback / ``--insecure`` too, for
+    children whose *identity* matters and not just their admission.
     """
     from hermes_cli.web_server import _SESSION_TOKEN, app
     host = _resolve_client_ws_host()
@@ -409,7 +420,7 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
     if not host or not port:
         return None
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    if getattr(app.state, "auth_required", False):
+    if always_internal or getattr(app.state, "auth_required", False):
         from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
         auth = {"internal": internal_ws_credential()}
@@ -419,8 +430,16 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
 
 
 def _build_gateway_ws_url() -> Optional[str]:
-    """ws:// URL the PTY child attaches to for JSON-RPC gateway traffic."""
-    return _server_internal_ws_url("/api/ws")
+    """ws:// URL the PTY child attaches to for JSON-RPC gateway traffic.
+
+    Always the internal credential, gated or not: this socket carries privileged
+    JSON-RPC, and the gateway authorizes it (e.g. the /skills review gate) from
+    the server-minted ``server-internal`` transport identity that only this
+    credential stamps. The legacy ``?token=`` admits the child but mints no
+    identity, which would silently demote the dashboard TUI to the review-only
+    slice on a loopback bind.
+    """
+    return _server_internal_ws_url("/api/ws", always_internal=True)
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:

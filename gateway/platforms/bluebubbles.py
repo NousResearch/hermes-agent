@@ -63,6 +63,7 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_SEEN_MESSAGE_IDS_SIZE = 512  # LRU cap for webhook message GUIDs already handed to the agent
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
 
 
@@ -131,6 +132,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._seen_message_ids: OrderedDict[str, None] = OrderedDict()
 
     # --- API helpers ---
 
@@ -578,6 +580,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
             return _ok()
+        message_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        # BlueBubbles emits "updated-message" for read/delivery receipts on messages it already
+        # announced; without these checks a read receipt re-runs the agent on an old message.
+        if event_type == "updated-message" and (record.get("dateRead") or record.get("dateDelivered")):
+            return _ok()
+        if message_id:
+            if message_id in self._seen_message_ids:
+                return _ok()
+            self._seen_message_ids[message_id] = None
+            while len(self._seen_message_ids) > _SEEN_MESSAGE_IDS_SIZE:
+                self._seen_message_ids.popitem(last=False)
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         session_chat_id = chat_guid or chat_identifier
@@ -599,7 +612,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                    chat_id_alt=chat_identifier)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
-            message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
+            message_id=message_id,
             reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
             media_urls=media_urls, media_types=media_types)
         task = asyncio.create_task(self.handle_message(event))

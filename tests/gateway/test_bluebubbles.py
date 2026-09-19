@@ -117,6 +117,89 @@ class TestBlueBubblesMentionGating:
         assert handled == []
 
 
+class TestBlueBubblesReceiptAndDuplicateEvents:
+    def _new_message(self, guid="msg-1", **overrides):
+        record = {
+            "guid": guid,
+            "text": "hey there",
+            "handle": {"address": "+15555550100"},
+            "isFromMe": False,
+            "isGroup": False,
+            "chats": [{"guid": "iMessage;-;+15555550100"}],
+        }
+        record.update(overrides)
+        return record
+
+    def _adapter_with_capture(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        return adapter, handled
+
+    @pytest.mark.asyncio
+    async def test_read_receipt_update_does_not_rerun_agent(self, monkeypatch):
+        """BlueBubbles emits updated-message when a message is read; that is not a new message."""
+        adapter, handled = self._adapter_with_capture(monkeypatch)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": self._new_message(dateRead=1758000000000),
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_updated_message_without_receipt_fields_is_still_processed(self, monkeypatch):
+        adapter, handled = self._adapter_with_capture(monkeypatch)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": self._new_message(),
+        }))
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_same_message_guid_is_only_handled_once(self, monkeypatch):
+        """new-message followed by updated-message for the same GUID must not double-trigger."""
+        adapter, handled = self._adapter_with_capture(monkeypatch)
+        for event_type in ("new-message", "updated-message", "new-message"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest({
+                "type": event_type,
+                "data": self._new_message(),
+            }))
+        await asyncio.sleep(0)
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_message_guids_are_each_handled(self, monkeypatch):
+        adapter, handled = self._adapter_with_capture(monkeypatch)
+        for guid in ("msg-1", "msg-2"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest({
+                "type": "new-message",
+                "data": self._new_message(guid=guid),
+            }))
+        await asyncio.sleep(0)
+        assert [e.message_id for e in handled] == ["msg-1", "msg-2"]
+
+    @pytest.mark.asyncio
+    async def test_seen_message_cache_is_bounded(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _SEEN_MESSAGE_IDS_SIZE
+        adapter, _ = self._adapter_with_capture(monkeypatch)
+        for i in range(_SEEN_MESSAGE_IDS_SIZE + 50):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest({
+                "type": "new-message",
+                "data": self._new_message(guid=f"msg-{i}"),
+            }))
+        await asyncio.sleep(0)
+        assert len(adapter._seen_message_ids) == _SEEN_MESSAGE_IDS_SIZE
+        assert "msg-0" not in adapter._seen_message_ids
+
+
 class TestBlueBubblesWebhookParsing:
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):

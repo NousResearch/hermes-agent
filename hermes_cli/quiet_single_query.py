@@ -43,7 +43,8 @@ def exit_single_query(code: int) -> None:
 # one-shot exit linger, so the spawner can book the delivery and stop waiting while the linger
 # keeps protecting nested ``notify_on_complete`` replies. Popped before the turn runs (same
 # contract as HERMES_TURN_AUTHOR): nothing the turn spawns inherits it, and a nested one-shot
-# never writes over its host's report — the record also carries the writer's pid.
+# never writes over its host's report. That pop IS the isolation — the path is a per-delivery
+# temp name the spawner owns and unlinks, so nothing else can be holding it.
 TURN_REPORT_FILE_ENV = "HERMES_QUIET_TURN_REPORT_FILE"
 
 
@@ -65,14 +66,23 @@ def write_turn_report(path: str | None, *, exit_code: int, error: str = "") -> N
         os.replace(tmp, path)
 
 
-def read_turn_report(path: str, pid: int) -> dict | None:
-    """The child's turn report, or None while absent, unreadable, or written by another process."""
+def read_turn_report(path: str) -> dict | None:
+    """The child's turn report, or None while absent, unreadable or half-written.
+
+    Identity comes from *path*: the spawner names a fresh per-delivery temp file, hands it to
+    exactly one child and unlinks it afterwards. It deliberately does NOT come from the writer's
+    pid. The spawner only knows the pid ``Popen`` handed back, and whenever ``argv[0]`` re-execs
+    - a venv ``Scripts/python.exe`` redirector, a pip/uv ``hermes.exe`` console script - that is
+    the launcher, while ``os.getpid()`` inside the child is the interpreter it exec'd. The two
+    are never equal there, so a pid gate rejects every report and the turn is booked as a
+    timeout. The record still carries ``pid`` for diagnostics.
+    """
     try:
         with open(path, encoding="utf-8") as fh:
             record = json.load(fh)
     except (OSError, ValueError):
         return None
-    if not isinstance(record, dict) or record.get("pid") != pid:
+    if not isinstance(record, dict) or not isinstance(record.get("exit_code"), int):
         return None
     return record
 

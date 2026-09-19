@@ -21,6 +21,13 @@
  *    installed binary to match ``electronVersion`` / ``electronDist``), and
  * 2. the dependency, ``build.electronVersion``, and the resolved lockfile entry
  *    all agree — so ``npm ci`` installs exactly what the build packages.
+ *
+ * A third pin lives in the *root* ``package.json``: ``allowScripts``. Its keys are
+ * version-exact (``"electron@41.10.7": true``), so bumping Electron without moving
+ * the key silently orphans Electron's postinstall — ``npm install`` still exits 0
+ * with only an ``npm warn install-scripts`` line, the binary is never downloaded,
+ * and the failure surfaces much later as a missing ``Electron.app`` at package or
+ * launch time. The last two tests lock that pin to the other two.
  */
 
 import assert from 'node:assert/strict'
@@ -32,6 +39,7 @@ import { test } from 'vitest'
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
+const ROOT_PKG = path.join(REPO_ROOT, 'package.json')
 
 // An exact semver: digits.digits.digits with an optional prerelease/build tag,
 // but NO range operators (^ ~ > < = * x || spaces || -range).
@@ -105,5 +113,99 @@ test('lockfile resolves the pinned electron', () => {
       `package-lock.json resolves electron to ${v}, but the pin is "${spec}"; ` +
         'run `npm install --package-lock-only` so `npm ci` stays consistent.'
     )
+  }
+})
+
+/** Root ``allowScripts`` map: keys are ``name@version`` or a bare ``name``. */
+function allowScripts(): Record<string, boolean> {
+  assert.ok(fs.existsSync(ROOT_PKG), `missing ${ROOT_PKG}`)
+  const pkg = JSON.parse(fs.readFileSync(ROOT_PKG, 'utf-8'))
+
+  return (pkg.allowScripts ?? {}) as Record<string, boolean>
+}
+
+/** Split ``"electron@41.10.7"`` -> ``['electron', '41.10.7']``; a bare name yields a null version. */
+function splitAllowKey(key: string): [string, string | null] {
+  const at = key.lastIndexOf('@')
+
+  // No '@', or a leading '@' with no second one, means the key is a bare package
+  // name (covers every installed version) rather than a version-exact pin.
+  if (at <= 0) {
+    return [key, null]
+  }
+
+  return [key.slice(0, at), key.slice(at + 1)]
+}
+
+/** Versions of ``name`` present in the root lockfile. */
+function lockedVersions(name: string): string[] {
+  if (!fs.existsSync(ROOT_LOCK)) {
+    return []
+  }
+
+  const lock = JSON.parse(fs.readFileSync(ROOT_LOCK, 'utf-8'))
+  const packages = (lock.packages ?? {}) as Record<string, { version?: string }>
+
+  return [
+    ...new Set(
+      Object.entries(packages)
+        .filter(([key]) => key.endsWith(`node_modules/${name}`))
+        .map(([, meta]) => meta.version)
+        .filter((v): v is string => !!v)
+    )
+  ]
+}
+
+test('allowScripts pins the same electron as the dependency', () => {
+  const spec = electronSpec(desktopPkg())
+
+  const keys = Object.keys(allowScripts()).filter(k => splitAllowKey(k)[0] === 'electron')
+
+  assert.ok(
+    keys.length > 0,
+    'electron has no allowScripts entry in the root package.json; its postinstall ' +
+      'downloads the binary, so npm would skip it and leave no Electron.app.'
+  )
+
+  const versions = keys.map(k => splitAllowKey(k)[1])
+  assert.ok(
+    versions.includes(spec) || versions.includes(null),
+    `allowScripts pins electron@[${versions.join(', ')}] but the dependency is ` +
+      `"${spec}". allowScripts keys are version-exact, so a bump that misses this ` +
+      "key orphans electron's postinstall: npm install still succeeds (only an " +
+      '`npm warn install-scripts` line), the binary is never downloaded, and the ' +
+      'build fails later with a missing Electron.app.'
+  )
+})
+
+test('every allowScripts entry covers the installed version', () => {
+  // Guards the general case behind the electron test above: any version-exact
+  // allowScripts key that drifts from the lockfile silently disables that
+  // package's install scripts. Extra keys for versions that are no longer
+  // installed are fine — only an *uncovered installed* version is a problem.
+  const byName = new Map<string, Set<string | null>>()
+
+  for (const key of Object.keys(allowScripts())) {
+    const [name, version] = splitAllowKey(key)
+    const versions = byName.get(name) ?? new Set<string | null>()
+    versions.add(version)
+    byName.set(name, versions)
+  }
+
+  for (const [name, versions] of byName) {
+    // A bare-name key covers every version of that package.
+    if (versions.has(null)) {
+      continue
+    }
+
+    for (const installed of lockedVersions(name)) {
+      assert.ok(
+        versions.has(installed),
+        `package-lock.json installs ${name}@${installed}, but allowScripts only ` +
+          `pins ${name}@[${[...versions].join(', ')}]. Add "${name}@${installed}" ` +
+          `to allowScripts in the root package.json (or drop the stale key) so ` +
+          `its install scripts still run.`
+      )
+    }
   }
 })

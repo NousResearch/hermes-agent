@@ -2514,6 +2514,7 @@ export const en: Translations = {
   },
 
   cron: {
+    shownOf: (shown, total) => `${shown} of ${total}`,
     close: 'Close cron',
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,

@@ -107,7 +107,7 @@ def _smart_approve(command: str, description: str) -> str:
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
         )
         response = call_llm(
-            task="approval", temperature=0, max_tokens=16, timeout=smart_timeout,
+            task="approval", temperature=0, max_tokens=64, timeout=smart_timeout,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
         )
         logger.debug("Smart approvals: LLM call completed in %.1fs", time.monotonic() - _smart_t0)

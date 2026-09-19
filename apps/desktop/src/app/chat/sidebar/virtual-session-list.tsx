@@ -58,10 +58,10 @@ export interface VirtualSessionListProps {
   sortable: boolean
 }
 
-// Matches the card's typical rendered height (four lines when a preview
-// exists) so long card lists don't jump under the scroll thumb before
-// self-measurement catches up.
-const CARD_ROW_ESTIMATE_PX = 74
+// A full card is four lines (header, title + preview, footer). Estimate the
+// largest normal variant so a missed resize observation leaves whitespace,
+// never overlapping rows; self-measurement still tightens shorter cards.
+const CARD_ROW_ESTIMATE_PX = 92
 const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 
@@ -109,9 +109,9 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     overscan: OVERSCAN_ROWS
   })
 
-  // Rows are measured after paint, so changing density must invalidate cached
+  // Rows are measured after paint, so changing row mode must invalidate cached
   // measurements from the previous mode before off-screen rows re-enter.
-  useEffect(() => virtualizer.measure(), [density, virtualizer])
+  useEffect(() => virtualizer.measure(), [card, density, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()

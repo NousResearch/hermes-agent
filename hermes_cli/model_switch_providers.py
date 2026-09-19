@@ -1207,11 +1207,79 @@ def list_authenticated_providers(
     _lap_canonical_rows(b)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
+    _lap_local_runtime_row(b)
     _lap_bare_custom_row(b, custom_providers)
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
     return _finalize_picker_rows(b.results, user_providers, current_model)
+
+
+_LOCAL_RUNTIME_SLUG = "llamacpp"
+# Every alias ``resolve_provider_full`` accepts for this provider (providers.py mirrors the same
+# set), so a config pinned to any of them marks the row current.
+_LOCAL_RUNTIME_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp", "local", "vllm"})
+
+
+def _local_staged_model_ids(base_url: str) -> list:
+    """Model ids for the local row: staged ``.gguf`` files first, else the server's own ``/models``.
+
+    Reachability has already resolved by the time this runs, so an external llama-server is a
+    legitimate source when nothing is staged under ``$HERMES_HOME/models``.
+    """
+    try:
+        from hermes_cli.local_runtime.bootstrap import models_dir, staged_in
+        from hermes_cli.local_runtime.gguf import model_id_from_stem
+
+        staged = [model_id_from_stem(path.stem) for path in staged_in(models_dir())]
+    except Exception as exc:  # local runtime absent/unreadable — fall through to the probe
+        logger.debug("local-runtime staged scan failed: %r", exc)
+        staged = []
+    if staged:
+        return staged
+    try:
+        import json
+        import urllib.request
+
+        request = urllib.request.Request(str(base_url).rstrip("/") + "/models")
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+        return [str(item["id"]) for item in payload.get("data", []) if item.get("id")]
+    except Exception as exc:
+        logger.debug("local-runtime /models probe failed: %r", exc)
+        return []
+
+
+def _lap_local_runtime_row(b: _PickerBuild) -> None:
+    """Section 3c: the managed llama.cpp runtime (or a detected external llama-server).
+
+    Reachability is this provider's credential: ``_llamacpp_pdef()`` returns a ProviderDef for
+    exactly the endpoints ``--provider llamacpp`` can reach, and the Local Models pane's *Use*
+    button writes that provider id into config. Without this lap the picker named every other
+    configured provider and silently omitted the one the pane had just written, so a local model
+    was usable but unlistable (#local-models-picker-row).
+    """
+    if _LOCAL_RUNTIME_SLUG in b.seen_slugs:
+        return
+    try:
+        from hermes_cli.providers import _llamacpp_pdef
+
+        pdef = _llamacpp_pdef()
+    except Exception as exc:  # resolution is best-effort; never break the picker
+        logger.debug("local-runtime row skipped: %r", exc)
+        return
+    if pdef is None:
+        return
+    base_url = str(getattr(pdef, "base_url", "") or "")
+    model_ids = _local_staged_model_ids(base_url) if base_url else []
+    if not model_ids:
+        return
+    b.add_builtin_row(_LOCAL_RUNTIME_SLUG, getattr(pdef, "name", "") or "Local",
+                      b.current_provider_norm in _LOCAL_RUNTIME_ALIASES, model_ids, "local-runtime")
+    url_norm = _norm_url(base_url)
+    if url_norm:
+        # A custom_providers entry pointing at the same host IS the same server: don't list twice.
+        b.builtin_endpoints.add(url_norm)
 
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:

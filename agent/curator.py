@@ -213,6 +213,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             _u.seed_record_if_missing(name)
             counts["seeded"] += 1
             continue
+        # A bundled skill's telemetry record predates the curator's first sight of it; anchor the clock here, once.
+        if (row.get("provenance") == "bundled" and int(row.get("use_count", 0) or 0) == 0
+                and not _parse_iso(row.get("last_activity_at")) and not row.get("first_seen_at")):
+            _u.reanchor_clock(name)
+            counts["seeded"] += 1
+            continue
         # Never-active skills anchor on created_at so they don't self-archive.
         anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:

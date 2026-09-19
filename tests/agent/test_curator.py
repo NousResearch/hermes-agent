@@ -484,6 +484,33 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
 
 
 
+def test_preseeded_never_used_builtin_is_reanchored_not_staled(curator_env, monkeypatch):
+    """Telemetry records a bundled skill the moment it is seeded, months before the curator's first
+    sight; anchoring on that created_at marked 71 built-ins stale on one first run (#79295). First
+    sight re-anchors the clock (and reactivates a record the bug already staled); the skill then
+    ages normally and still goes stale after a full window of non-use."""
+    u, c = curator_env["usage"], curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-helper")
+    (skills_dir / ".bundled_manifest").write_text("bundled-helper:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["bundled-helper"] = {**u._empty_record(), "created_at": super_old, "state": u.STATE_STALE}
+    u.save_usage(data)
+
+    t0 = datetime.now(timezone.utc)
+    counts = c.apply_automatic_transitions(now=t0)
+    assert (counts["marked_stale"], counts["archived"], counts["seeded"]) == (0, 0, 1)
+    rec = u.get_record("bundled-helper")
+    assert rec["state"] == "active" and rec["first_seen_at"] is not None
+    assert datetime.fromisoformat(rec["created_at"]) > datetime.fromisoformat(super_old)
+
+    # One-shot: 15 days of continued non-use (past stale_after_days=14) → stale, not deferred forever.
+    counts = c.apply_automatic_transitions(now=t0 + timedelta(days=15))
+    assert counts["marked_stale"] == 1 and u.get_record("bundled-helper")["state"] == "stale"
+
+
 def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"

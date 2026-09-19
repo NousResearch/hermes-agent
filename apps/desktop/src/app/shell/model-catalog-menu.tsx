@@ -23,8 +23,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, providerCapabilities, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -94,7 +95,7 @@ interface ModelCatalogMenuProps {
   gateway?: HermesGateway
   /** Owner-routed RPC for catalog reads. Preferred over `gateway.request` so
    *  a tile's menu queries the session owner's backend, not chrome's. */
-  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  request?: GatewayRequest
   /** Render the virtual `moa` provider's presets as a selectable section.
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
@@ -285,7 +286,7 @@ export function ModelCatalogMenu({
   )
 
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
-    const caps = provider.capabilities?.[family.id]
+    const caps = providerCapabilities(provider, family.id)
     const preset = controller.presetFor(provider.slug, family.id)
 
     // Variant-fast models (no speed param) express "fast" as a separate `-fast`
@@ -492,7 +493,7 @@ export function ModelCatalogMenu({
 
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
-                    const caps = group.provider.capabilities?.[family.id]
+                    const caps = providerCapabilities(group.provider, family.id)
 
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote

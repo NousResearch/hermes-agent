@@ -1,4 +1,11 @@
-import type { MessageCompletePayload, SubagentEventPayload } from '@hermes/shared/gateway-events'
+import type {
+  MessageCompletePayload,
+  SubagentCompletePayload,
+  SubagentProgressPayload,
+  SubagentStartPayload,
+  SubagentThinkingPayload,
+  SubagentToolPayload
+} from '@hermes/shared/gateway-events'
 
 import {
   REASONING_PULSE_MS,
@@ -7,7 +14,7 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse } from '../gatewayTypes.js'
+import type { GatewayClient } from '../gatewayClient.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -26,6 +33,14 @@ import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+
+/** Every `subagent.*` frame carries the same generated payload; the tree reads one shape. */
+type SubagentEventPayload =
+  | SubagentCompletePayload
+  | SubagentProgressPayload
+  | SubagentStartPayload
+  | SubagentThinkingPayload
+  | SubagentToolPayload
 
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
@@ -74,8 +89,8 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
       return {
         content: String(row.content ?? '').trim(),
         id,
-        status,
-        ...(parent && parent !== id ? { parent } : {})
+        parent: parent && parent !== id ? parent : null,
+        status
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
@@ -100,7 +115,7 @@ const finalTail = (finalText: string, segments: Msg[]) => {
 
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
-  gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
+  gw: Pick<GatewayClient, 'request'>
   sid: string
   sys: (text: string) => void
 }
@@ -309,7 +324,7 @@ class TurnController {
   // cancelled turn's "[interrupted]" reply.
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
-    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+    gw.request('session.interrupt', { session_id: sid }).catch(() => {})
 
     this.closeReasoningSegment()
 
@@ -569,7 +584,7 @@ class TurnController {
     this.flushPendingNotice()
   }
 
-  recordMessageComplete(payload: MessageCompletePayload) {
+  recordMessageComplete(payload: Partial<MessageCompletePayload>) {
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI

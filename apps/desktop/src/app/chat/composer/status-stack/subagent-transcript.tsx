@@ -27,7 +27,7 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
       pending = true
 
       try {
-        const result = await requestForOwnedSession<Tail>(sessionId, rejectUnownedSubagentRequest, 'subagent.tail', {
+        const result = await requestForOwnedSession(sessionId, rejectUnownedSubagentRequest, 'subagent.tail', {
           session_id: sessionId,
           subagent_id: subagentId
         })
@@ -35,7 +35,7 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
         if (!cancelled && owner === JSON.stringify(knownOwnerForSession(sessionId))) {
           setTail({
             available: result.available,
-            text: typeof result.text === 'string' ? result.text.slice(-16384) : '',
+            text: (result.text ?? '').slice(-16384),
             truncated: result.truncated
           })
         }

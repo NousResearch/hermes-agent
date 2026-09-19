@@ -12,44 +12,55 @@ Modelling rules (they keep the generated TS clean and the wire stable):
 
 - ``snake_case`` field names, exactly as they travel.
 - Closed sets are ``StrEnum`` (rendered as literal unions); discriminators are ``Literal``.
-- ``X | None = None`` renders ``x?: X | null``; a plain default renders ``x?: X``.
-- Params models are ``extra="forbid"``: an unknown key is a client bug and answers ``4000``
-  instead of being silently ignored. Result and payload models are ``extra="allow"`` only
-  while a field is genuinely open (``dict[str, Any]`` is banned in a contract — declare the
-  shape or use ``JsonValue``).
+- Inbound models (method params and server-request results) render defaulted fields as optional.
+  Outbound models (method results, server-request params and event payloads) render every field
+  required; use ``X | None`` when the wire may carry ``null``.
+- Every model is ``extra="forbid"``. An unknown key in params is a client bug and answers
+  ``4000`` instead of being silently ignored; a genuinely open field is ``JsonValue``, never
+  ``dict[str, Any]`` or ``extra="allow"``.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
-JsonValue = Any  # a JSON scalar/array/object the contract deliberately leaves open (renders ``unknown``)
+
+# Aliases are the wire names (``_lineage_root_id``, ``from``): the generated TypeScript and the clients
+# read them, so every dump — result frame, event payload, server-request params — leaves by alias.
+_WIRE = ConfigDict(extra="forbid", serialize_by_alias=True)
 
 
 class Params(BaseModel):
-    """Client→server method params / server→client request params. Unknown keys are rejected."""
+    """Inbound client→server method params / outbound server-request params; unknown keys reject."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = _WIRE | ConfigDict(populate_by_name=True)
+
+
+class MethodParams(Params):
+    """Top-level params of a client→server method (``registry.method`` requires this base)."""
+
+    # The desktop routes any method to a named profile by injecting ``profile`` (``requestGatewayForProfile``,
+    # ``session-request-router.routeParams``) and ``server._profile_scoped`` reads it via getattr: transport, not
+    # surface. Nested inputs and server-request params stay on bare ``Params`` so the key never travels outbound.
+    profile: str | None = None
 
 
 class Result(BaseModel):
-    """Method / server-request result. Serialised with ``exclude_none=False`` so an explicit
-    ``null`` stays a ``null`` on the wire (clients distinguish absent from null)."""
+    """Outbound method / inbound server-request result; ``None`` serializes as wire ``null``."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _WIRE
 
 
 class Payload(BaseModel):
-    """Notification payload (``event`` frame ``params.payload``)."""
+    """Outbound notification payload (``event`` frame ``params.payload``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _WIRE
 
 
 class WireEnum(StrEnum):
     """A closed string set on the wire; renders as a TS literal union."""
 
 
-__all__ = ["JsonValue", "Params", "Payload", "Result", "WireEnum"]
+__all__ = ["JsonValue", "MethodParams", "Params", "Payload", "Result", "WireEnum"]

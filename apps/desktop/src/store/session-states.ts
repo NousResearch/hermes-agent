@@ -16,7 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey, type RpcMethods } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -31,6 +31,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
@@ -1176,19 +1177,14 @@ export function isSessionRemote(sessionId: null | string | undefined): boolean {
  * explicit SessionOwnerResolutionError unless the ambient gateway is provably
  * the only backend (legacy single-profile, no registry source).
  */
-export function requestForOwnedSession<T>(
+export function requestForOwnedSession<M extends keyof RpcMethods>(
   sessionId: null | string | undefined,
-  ambientRequest: <R>(
-    method: string,
-    params?: Record<string, unknown>,
-    timeoutMs?: number,
-    signal?: AbortSignal
-  ) => Promise<R>,
-  method: string,
-  params: Record<string, unknown> = {},
+  ambientRequest: GatewayRequest,
+  method: M,
+  params: RpcMethods[M]['params'],
   timeoutMs?: number,
   signal?: AbortSignal
-): Promise<T> {
+): Promise<RpcMethods[M]['result']> {
   const owner = knownOwnerForSession(sessionId)
 
   try {
@@ -1197,7 +1193,7 @@ export function requestForOwnedSession<T>(
     return Promise.reject(error)
   }
 
-  return requestForSessionProfile<T>(owner, ambientRequest, method, params, timeoutMs, signal)
+  return requestForSessionProfile(owner, ambientRequest, method, params, timeoutMs, signal)
 }
 
 /** Resolve a session id THAT MAY BE A RUNTIME ID to the stored id its tile

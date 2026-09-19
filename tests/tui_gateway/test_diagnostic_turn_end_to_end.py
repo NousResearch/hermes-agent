@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.events import MessageCompletePayload
 from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
 
@@ -66,7 +67,7 @@ def test_next_human_followup_is_outside_diagnostic_presentation_scope(turn_env, 
         run_conversation=lambda *a, **k: {"final_response": "diagnostic echo", "messages": []})
     session = _session(agent=agent, running=True)
     def followups(*a):
-        server._emit("message.complete", "session", {"text": "next requested result"})
+        server._emit("message.complete", "session", MessageCompletePayload(text="next requested result"))
     monkeypatch.setattr(server, "_run_post_turn_followups", followups)
     server._run_prompt_submit("request", "session", session, "engine failure",
                               display_metadata={"notification_category": "diagnostic"})

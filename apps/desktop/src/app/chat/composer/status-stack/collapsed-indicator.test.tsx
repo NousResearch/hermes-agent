@@ -24,7 +24,7 @@ describe('ComposerStatusStack collapsed todo indicator', () => {
 
   it('shows a running indicator while the todo group is expanded', () => {
     $todosBySession.set({
-      'session-1': [{ content: 'Wire the status stack', id: '1', status: 'in_progress' }]
+      'session-1': [{ content: 'Wire the status stack', id: '1', parent: null, status: 'in_progress' }]
     })
 
     render(
@@ -40,7 +40,7 @@ describe('ComposerStatusStack collapsed todo indicator', () => {
 
   it('shows a running indicator next to the collapsed todo label', () => {
     $todosBySession.set({
-      'session-1': [{ content: 'Wire the status stack', id: '1', status: 'in_progress' }]
+      'session-1': [{ content: 'Wire the status stack', id: '1', parent: null, status: 'in_progress' }]
     })
 
     render(
@@ -62,7 +62,7 @@ describe('ComposerStatusStack collapsed todo indicator', () => {
 
   it('does not show a collapsed todo indicator when no todo is running', () => {
     $todosBySession.set({
-      'session-1': [{ content: 'Wire the status stack', id: '1', status: 'completed' }]
+      'session-1': [{ content: 'Wire the status stack', id: '1', parent: null, status: 'completed' }]
     })
 
     render(

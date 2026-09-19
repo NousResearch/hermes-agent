@@ -16,7 +16,7 @@ describe('profile-scoped approval mode cache', () => {
   it('labels an unread profile Smart by default and adopts backend truth', async () => {
     expect(approvalModeForProfile('default')).toBe('smart')
 
-    const request = vi.fn(async () => ({ value: 'manual' }))
+    const request = vi.fn().mockResolvedValue({ value: 'manual' })
     await syncApprovalModeForProfile(request, 'default')
 
     expect(request).toHaveBeenCalledWith('config.get', { key: 'approvals.mode' })
@@ -25,11 +25,11 @@ describe('profile-scoped approval mode cache', () => {
 
   it('keeps profile values isolated', async () => {
     await syncApprovalModeForProfile(
-      vi.fn(async () => ({ value: 'manual' })),
+      vi.fn().mockResolvedValue({ value: 'manual' }),
       'work'
     )
     await syncApprovalModeForProfile(
-      vi.fn(async () => ({ value: 'off' })),
+      vi.fn().mockResolvedValue({ value: 'off' }),
       'personal'
     )
 
@@ -40,7 +40,7 @@ describe('profile-scoped approval mode cache', () => {
 
   it('rolls consecutive failed writes back to the last authoritative value', async () => {
     await syncApprovalModeForProfile(
-      vi.fn(async () => ({ value: 'smart' })),
+      vi.fn().mockResolvedValue({ value: 'smart' }),
       'default'
     )
     const first = deferred<{ value: string }>()
@@ -68,7 +68,7 @@ describe('profile-scoped approval mode cache', () => {
     const write = deferred<{ value: string }>()
 
     const pending = setApprovalModeForProfile(
-      vi.fn(() => write.promise),
+      vi.fn().mockReturnValue(write.promise),
       'work',
       'off'
     )

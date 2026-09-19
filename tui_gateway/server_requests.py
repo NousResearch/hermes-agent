@@ -36,6 +36,10 @@ import time
 import uuid
 from typing import Any, Callable
 
+from pydantic import TypeAdapter, ValidationError
+
+from tui_gateway.contracts.base import Params, Payload, Result
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,14 +47,14 @@ class ServerRequest:
     __slots__ = ("id", "sid", "method", "params", "event", "result", "answered", "created_at",
                  "qids", "locked", "on_result")
 
-    def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
-                 on_result: Callable[[dict | None], None] | None = None) -> None:
+    def __init__(self, sid: str, method: str, params: Params, *, qids: list[str] | None = None,
+                 on_result: Callable[[Result | None], None] | None = None) -> None:
         self.id = f"srq-{uuid.uuid4().hex[:12]}"
         self.sid = sid
         self.method = method
-        self.params = dict(params)
+        self.params = params
         self.event = threading.Event()
-        self.result: dict | None = None
+        self.result: Result | None = None
         self.answered = False
         self.created_at = time.time()
         # Batch clarify: question ids still to lock, and the answers locked so far.
@@ -60,12 +64,11 @@ class ServerRequest:
 
     def frame(self) -> dict:
         return {"jsonrpc": "2.0", "id": self.id, "method": self.method,
-                "params": {"session_id": self.sid, **self.params}}
+                "params": self.params.model_dump(mode="json")}
 
     def snapshot(self) -> dict:
-        """``open_requests`` entry: the request as sent, plus the batch answers locked so far so a
-        reconnecting client restores its ✓ state."""
-        params = {"session_id": self.sid, **self.params}
+        """``open_requests`` entry: the request as sent, plus batch answers locked so far."""
+        params = self.params.model_dump(mode="json")
         if self.locked:
             params["answers"] = dict(self.locked)
         return {"id": self.id, "method": self.method, "params": params}
@@ -78,7 +81,7 @@ _open: dict[str, ServerRequest] = {}
 # modules): importing server back from here would pick a different module object under the test
 # fixtures that patch ``sys.modules`` around the server import.
 _write: Callable[[dict], Any] = lambda frame: None  # noqa: E731
-_emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None  # noqa: E731
+_emit: Callable[[str, str, Payload | None], Any] = lambda event, sid, payload: None  # noqa: E731
 # ``answerable(sid)``: False only when every client attached to the session is a build that never
 # advertised handling server→client requests (session_transports.py::_session_client_answers_requests).
 _answerable: Callable[[str], bool] = lambda sid: True  # noqa: E731
@@ -88,7 +91,7 @@ _answerable: Callable[[str], bool] = lambda sid: True  # noqa: E731
 _answering_clients: set = set()
 
 
-def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any],
+def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, Payload | None], Any],
                answerable: Callable[[str], bool]) -> None:
     global _write, _emit, _answerable
     _write, _emit, _answerable = write_json, emit, answerable
@@ -123,31 +126,34 @@ def _unanswerable(method: str, sid: str) -> bool:
 
 
 def _emit_cancel(req: ServerRequest, reason: str) -> None:
-    _emit("request.cancel", req.sid, {"id": req.id, "method": req.method, "reason": reason})
+    from tui_gateway.contracts.server_requests import RequestCancelPayload
+
+    _emit("request.cancel", req.sid, RequestCancelPayload(id=req.id, method=req.method, reason=reason))
 
 
 def _register(req: ServerRequest) -> None:
     from tui_gateway.contracts import registry as contracts
 
-    contract = contracts.SERVER_REQUESTS.get(req.method)
-    if contract is None:
-        raise RuntimeError(f"server request {req.method!r} has no contract in tui_gateway/contracts")
-    _, problem = contracts.validate_params(contract, {"session_id": req.sid, **req.params})
-    if problem is not None:
-        raise ValueError(problem)  # a key the renderer's typed handler would never read: our bug
+    contract = contracts.SERVER_REQUESTS[req.method]
+    if not isinstance(req.params, Params):
+        raise TypeError(f"server request {req.method!r} params must be a Params instance")
+    try:
+        validated = TypeAdapter(contract.params).validate_python(req.params)
+    except ValidationError as exc:
+        raise TypeError(f"server request {req.method!r} params do not match its contract") from exc
+    if validated is not req.params:
+        raise TypeError(f"server request {req.method!r} params must be its declared model instance")
     with _lock:
         _open[req.id] = req
     _write(req.frame())
 
 
-def send(method: str, sid: str, params: dict, *, timeout: float | None,
-         qids: list[str] | None = None) -> dict | None:
-    """Send one request and block for the response ``result`` (a dict).
+def send(method: str, sid: str, params: Params, *, timeout: float | None,
+         qids: list[str] | None = None) -> Result | None:
+    """Send one request and block for a validated Result model.
 
-    Returns ``None`` when the renderer never answered (timeout, cancel, or an error response — e.g.
-    a client without a handler for ``method``). ``timeout`` semantics: None → wait until answered or
-    cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that times out
-    returns ``{"answers": <locked so far>, "timed_out": True}`` instead of None.
+    Returns ``None`` when the renderer never answered (timeout, cancel, or an error response). A
+    batch timeout returns ``ClarifyAnswers`` with the locked answers and ``timed_out=True``.
     """
     if _unanswerable(method, sid):
         return None
@@ -175,11 +181,14 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return {"answers": locked, "timed_out": True}
+            from tui_gateway.contracts.server_requests import ClarifyAnswers
+
+            return ClarifyAnswers(answers=locked, timed_out=True)
     return None
 
 
-def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | None], None]) -> Callable[[str], None]:
+def send_async(method: str, sid: str, params: Params,
+               on_result: Callable[[Result | None], None]) -> Callable[[str], None]:
     """Send one request whose wait is owned elsewhere (the approval queue's own timeout). ``on_result``
     runs on the dispatching thread when the response lands. Returns ``settle(reason)``: call it when
     the underlying wait ends; if the request is still open it is withdrawn with ``request.cancel``."""
@@ -219,17 +228,21 @@ def resolve_response(frame: dict) -> bool:
             logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
             req.result, req.answered = None, False
         else:
-            result = frame.get("result")
-            req.result = result if isinstance(result, dict) else {}
-            if req.qids and "answers" in req.result:
-                # Batch clarify: answers locked early via clarify.lock belong to the final set even when
-                # the closing response only carries the tail the user answered last.
-                answers = req.result.get("answers")
-                merged = dict(req.locked)
-                if isinstance(answers, dict):
-                    merged.update(answers)
-                req.result = {**req.result, "answers": merged}
-            req.answered = True
+            from tui_gateway.contracts import registry as contracts
+
+            try:
+                result = TypeAdapter(contracts.SERVER_REQUESTS[req.method].result).validate_python(frame.get("result"))
+            except (KeyError, ValidationError) as exc:
+                logger.debug("server request %s (%s) returned invalid result: %s", rid, req.method, exc)
+                req.result, req.answered = None, False
+            else:
+                if req.qids and hasattr(result, "answers"):
+                    # Batch clarify: answers locked early via clarify.lock belong to the final set even when
+                    # the closing response only carries the tail the user answered last.
+                    from tui_gateway.contracts.server_requests import ClarifyAnswers
+
+                    result = ClarifyAnswers(answers={**req.locked, **result.answers}, timed_out=result.timed_out)
+                req.result, req.answered = result, True
     if req.on_result is not None:
         req.on_result(req.result)
     req.event.set()
@@ -238,7 +251,7 @@ def resolve_response(frame: dict) -> bool:
 
 def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | None:
     """Lock one batch-clarify answer (update-in-place). Returns the question ids still unanswered;
-    the last lock resolves the request with the full ``{"answers"}`` set. ``None`` when no open
+    the last lock resolves the request with the full answer set. ``None`` when no open
     batch has that id (expired or foreign); ``ValueError`` for an unknown question id."""
     with _lock:
         req = _open.get(request_id)
@@ -249,7 +262,9 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
         req.locked[question_id] = answer
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
-            req.result, req.answered = {"answers": dict(req.locked)}, True
+            from tui_gateway.contracts.server_requests import ClarifyAnswers
+
+            req.result, req.answered = ClarifyAnswers(answers=dict(req.locked)), True
             _open.pop(request_id, None)
     if not remaining:
         req.event.set()

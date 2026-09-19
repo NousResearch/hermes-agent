@@ -6,6 +6,7 @@ import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { sealOpenToolParts, upsertToolPart } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { todosFromMessageContent } from '@/lib/todos'
+import { todoItem, toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 const normalize = (parts: ReturnType<typeof upsertToolPart>) =>
   fromThreadMessageLike(
@@ -20,7 +21,7 @@ describe('D1 settlement and presentation consumers', () => {
       {
         id: 'd1',
         role: 'assistant' as const,
-        parts: upsertToolPart([], { name: 'terminal', tool_id: 'missing' }, 'running', 1)
+        parts: upsertToolPart([], toolStartPayload({ name: 'terminal', tool_id: 'missing' }), 'running', 1)
       }
     ]
 
@@ -34,13 +35,13 @@ describe('D1 settlement and presentation consumers', () => {
   it('keeps side-channel diffs in the changed-files consumer after normalization', () => {
     const parts = upsertToolPart(
       [],
-      {
+      toolCompletePayload({
         name: 'patch',
         tool_id: 'patch',
         args: { path: '/tmp/a.ts' },
         result: 'ok',
         inline_diff: '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new'
-      },
+      }),
       'complete',
       2
     )
@@ -48,10 +49,10 @@ describe('D1 settlement and presentation consumers', () => {
     expect(deriveChangedFiles(normalize(parts))).toEqual([{ path: '/tmp/a.ts', name: 'a.ts', added: 1, removed: 1 }])
   })
   it('keeps envelope-only todo completion and explicit clearing after normalization', () => {
-    const todos = [{ id: 'a', content: 'Do it', status: 'completed' }]
-    const parts = upsertToolPart([], { name: 'todo_list', tool_id: 'todos', result: 'ok', todos }, 'complete', 2)
-    expect(todosFromMessageContent(normalize(parts))).toEqual(todos)
-    const cleared = upsertToolPart(parts, { name: 'todo_list', tool_id: 'todos', todos: [] }, 'complete', 3)
+    const todos = [todoItem({ id: 'a', content: 'Do it', status: 'completed' })]
+    const parts = upsertToolPart([], toolCompletePayload({ name: 'todo_list', tool_id: 'todos', result: 'ok', todos }), 'complete', 2)
+    expect(todosFromMessageContent(normalize(parts))).toEqual([todos[0]])
+    const cleared = upsertToolPart(parts, toolCompletePayload({ name: 'todo_list', tool_id: 'todos', todos: [] }), 'complete', 3)
     expect(todosFromMessageContent(normalize(cleared))).toEqual([])
   })
 })

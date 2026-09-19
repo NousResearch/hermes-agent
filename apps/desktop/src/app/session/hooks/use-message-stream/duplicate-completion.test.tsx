@@ -1,11 +1,12 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { appendMidTurnUserMessage } from '@/app/session/hooks/use-prompt-actions/rewind'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
+import { messageCompletePayload, messageDeltaPayload, toolCompletePayload, toolStartPayload } from '@/test/contract'
 
-import { renderMessageStream } from './test-harness'
+import { gatewayEvent, renderMessageStream } from './test-harness'
 
 const SID = 'duplicate-completion'
 
@@ -13,8 +14,8 @@ function mount() {
   const hydrate = vi.fn(async () => undefined)
   const stream = renderMessageStream(SID, { hydrateFromStoredSession: hydrate })
 
-  const send = (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
-    act(() => stream.handleEvent({ type, payload, session_id: SID }))
+  const send = <K extends GatewayEventName>(type: K, payload: GatewayEventMap[K]) =>
+    act(() => stream.handleEvent(gatewayEvent(type, payload, SID)))
 
   return { stream, send, hydrate }
 }
@@ -24,19 +25,19 @@ afterEach(cleanup)
 it('settles identical tool-interim completion once while retaining every completed call', async () => {
   for (const reusedId of [false, true]) {
     const { stream, send, hydrate } = mount()
-    await send('message.start')
-    await send('message.delta', { text: 'same reply' })
+    await send('message.start', {})
+    await send('message.delta', messageDeltaPayload({ text: 'same reply' }))
 
     if (reusedId) {
-      await send('tool.start', { name: 'terminal', tool_id: 'call', args: { command: 'pwd' } })
-      await send('tool.complete', { name: 'terminal', tool_id: 'call', result: 'first result' })
+      await send('tool.start', toolStartPayload({ name: 'terminal', tool_id: 'call', args: { command: 'pwd' } }))
+      await send('tool.complete', toolCompletePayload({ name: 'terminal', tool_id: 'call', result: 'first result' }))
     }
 
     await send('message.interim', { text: 'same reply', already_streamed: true })
     const keptId = stream.state().messages.at(-1)!.id
-    await send('tool.start', { name: 'terminal', tool_id: 'call', args: { command: 'date' } })
-    await send('tool.complete', { name: 'terminal', tool_id: 'call', result: 'second result' })
-    await send('message.complete', { text: 'same reply' })
+    await send('tool.start', toolStartPayload({ name: 'terminal', tool_id: 'call', args: { command: 'date' } }))
+    await send('tool.complete', toolCompletePayload({ name: 'terminal', tool_id: 'call', result: 'second result' }))
+    await send('message.complete', messageCompletePayload({ text: 'same reply' }))
 
     const messages = stream.state().messages
     const tools = messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
@@ -65,7 +66,7 @@ it('keeps distinct segments, user boundaries, and failures on their own side of 
 
   for (const fixture of cases) {
     const { stream, send } = mount()
-    await send('message.start')
+    await send('message.start', {})
     await send('message.interim', { text: fixture.interim ?? 'same reply', already_streamed: true })
     const earlierId = stream.state().messages[0].id
 
@@ -80,17 +81,23 @@ it('keeps distinct segments, user boundaries, and failures on their own side of 
     }
 
     if (fixture.restart) {
-      await send('message.start')
+      await send('message.start', {})
     }
 
-    await send('tool.start', { name: 'terminal', tool_id: 'after-boundary', args: { command: 'pwd' } })
+    await send('tool.start', toolStartPayload({ name: 'terminal', tool_id: 'after-boundary', args: { command: 'pwd' } }))
 
     if (fixture.live) {
-      await send('message.delta', { text: fixture.live })
+      await send('message.delta', messageDeltaPayload({ text: fixture.live }))
     }
 
     const liveId = stream.state().streamId
-    await send('message.complete', { text: fixture.final ?? 'same reply', ...(fixture.error ? { error: fixture.error, status: 'error' } : {}) })
+    await send(
+      'message.complete',
+      messageCompletePayload({
+        text: fixture.final ?? 'same reply',
+        ...(fixture.error ? { error: fixture.error, status: 'error' } : {})
+      })
+    )
 
     const messages = stream.state().messages
     expect(messages.at(-1)?.id, fixture.name).toBe(liveId)

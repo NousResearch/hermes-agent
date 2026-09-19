@@ -10,6 +10,8 @@ import pytest
 
 from tui_gateway import compute_host, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
+from tui_gateway.contracts.prompt_voice import ClarifyLockParams, ClarifyLockResult
+from tui_gateway.contracts.server_requests import ClarifyAnswer, ClarifySingle
 from tui_gateway.host_supervisor import (
     MUTATOR_ROUTE_TABLE,
     HostSupervisor,
@@ -56,27 +58,53 @@ def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monke
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "host-clarify"
     server._sessions[sid] = {"history_lock": threading.Lock()}
-    req = server_requests.ServerRequest(sid, "clarify", {"question": "?"})
+    req = server_requests.ServerRequest(sid, "clarify", ClarifySingle(
+        session_id=sid, kind="single", question="?", choices=None, multi_select=False))
     with server_requests._lock:
         server_requests._open[req.id] = req
     locks = []
-    monkeypatch.setitem(server._methods, "clarify.lock",
-                        lambda rid, params: locks.append((rid, dict(params))) or {"result": {"status": "ok", "remaining": []}})
+    monkeypatch.setattr(
+        server, "invoke",
+        lambda name, params: locks.append((name, params)) or ClarifyLockResult(status="ok", remaining=[]),
+    )
 
     try:
         host._handle_respond({"sid": sid, "request_id": "relay-lock",
                               "params": {"lock": {"request_id": req.id, "question_id": "q0", "answer": "a"}}})
-        assert locks == [("relay-lock", {"request_id": req.id, "question_id": "q0", "answer": "a"})]
-        assert _json_lines(out)[-1]["response"] == {"result": {"status": "ok", "remaining": []}}
+        assert len(locks) == 1
+        assert locks[0][0] == "clarify.lock"
+        assert locks[0][1] == ClarifyLockParams(request_id=req.id, question_id="q0", answer="a")
+        assert _json_lines(out)[-1]["response"] == {
+            "jsonrpc": "2.0", "id": "relay-lock", "result": {"status": "ok", "remaining": []}}
 
         host._handle_respond({"sid": sid, "request_id": "relay-response",
                               "params": {"frame": {"jsonrpc": "2.0", "id": req.id, "result": {"answer": "yes"}}}})
-        assert req.answered and req.result == {"answer": "yes"} and req.event.is_set()
+        assert req.answered and req.result == ClarifyAnswer(answer="yes") and req.event.is_set()
         frame = _json_lines(out)[-1]
         assert frame["type"] == "respond.ack" and frame["response"]["result"] == {"status": "ok"}
     finally:
         server._sessions.pop(sid, None)
         server_requests.reset_for_tests()
+        host.close()
+
+
+def test_compute_host_relays_a_clarify_lock_domain_error(monkeypatch):
+    """``clarify.lock`` answers a stale or malformed lock with an error frame; the host relays that
+    error (the parent maps it onto the client's rid) instead of crashing on ``.model_dump``."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "host-clarify-error"
+    server._sessions[sid] = {"history_lock": threading.Lock()}
+    monkeypatch.setattr(server, "invoke", lambda name, params: server._err(None, 4002, "unknown request"))
+
+    try:
+        host._handle_respond({"sid": sid, "request_id": "relay-lock",
+                              "params": {"lock": {"request_id": "gone", "question_id": "q0", "answer": "a"}}})
+        frame = _json_lines(out)[-1]
+        assert frame["type"] == "respond.ack"
+        assert frame["response"] == {"jsonrpc": "2.0", "id": "relay-lock", "error": {"code": 4002, "message": "unknown request"}}
+    finally:
+        server._sessions.pop(sid, None)
         host.close()
 
 

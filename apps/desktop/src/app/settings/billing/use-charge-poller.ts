@@ -1,3 +1,4 @@
+import { isRecord } from '@hermes/shared'
 import { refusalPolicy } from '@hermes/shared/billing-policy'
 import {
   driveChargeSettlement,
@@ -10,7 +11,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { BillingApi, BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type { BillingChargeStatusResponse } from './types'
+import type { BillingChargeStatusResult, BillingErrorPayload } from './types'
 
 export const CHARGE_POLL_INTERVAL_MS = SETTLEMENT_POLL_INTERVAL_MS
 export const CHARGE_POLL_CAP_MS = SETTLEMENT_POLL_CAP_MS
@@ -68,7 +69,7 @@ export async function pollChargeSettlement(
 ): Promise<ChargeFlowOutcome> {
   const sleep = opts.sleep ?? defaultSleep
   const now = opts.now ?? Date.now
-  const observed: { refusal?: BillingRefusal; status?: BillingChargeStatusResponse } = {}
+  const observed: { refusal?: BillingRefusal; status?: BillingChargeStatusResult } = {}
 
   const settlement = await driveChargeSettlement({
     fetchStatus: async () => {
@@ -78,7 +79,7 @@ export async function pollChargeSettlement(
         observed.refusal = undefined
         observed.status = result.data
 
-        return result.data
+        return observed.status
       }
 
       observed.refusal = result.refusal
@@ -94,7 +95,7 @@ export async function pollChargeSettlement(
   switch (settlement.kind) {
     case 'settled':
       return {
-        amountUsd: settlement.status.amount_usd,
+        amountUsd: settlement.status.amount_usd === null ? null : String(settlement.status.amount_usd),
         kind: 'success',
         message: settlement.status.amount_usd ? `$${settlement.status.amount_usd} added.` : 'Credits added.'
       }
@@ -144,32 +145,37 @@ export async function pollChargeSettlement(
   }
 }
 
-function statusFromRefusal(refusal: BillingRefusal): BillingChargeStatusResponse {
-  const raw = isRecord(refusal.raw) ? refusal.raw : {}
-
+function statusFromRefusal(refusal: BillingRefusal): BillingChargeStatusResult {
   return {
-    ...raw,
+    actor: refusal.actor ?? null,
+    amount_usd: null,
+    code: refusal.code ?? null,
     error: refusal.kind,
     message: refusal.message,
     ok: false,
-    ...(refusal.payload !== undefined ? { payload: refusal.payload } : {}),
-    ...(refusal.portalUrl !== undefined ? { portal_url: refusal.portalUrl } : {}),
-    ...(refusal.retryAfter !== undefined ? { retry_after: refusal.retryAfter } : {})
-  } as BillingChargeStatusResponse
-}
-
-function refusalFromStatus(error: string, status: BillingChargeStatusResponse): BillingRefusal {
-  return {
-    kind: error,
-    message: status.message || error,
-    payload: status.payload,
-    portalUrl: status.portal_url ?? undefined,
-    retryAfter: status.retry_after ?? undefined
+    // Back onto the wire's opaque JSON: the client-side error payload has optional keys, JSON has none.
+    payload: refusal.payload ? Object.fromEntries(Object.entries(refusal.payload).filter(([, v]) => v !== undefined)) : null,
+    portal_url: refusal.portalUrl ?? null,
+    reason: null,
+    recovery: refusal.recovery ?? null,
+    retry_after: refusal.retryAfter ?? null,
+    settled_at: null,
+    status: null
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
+// SAFETY: `payload` is opaque JSON on the wire; a record is read as the error-payload fields the UI knows.
+const asErrorPayload = (value: unknown): BillingErrorPayload | undefined =>
+  isRecord(value) ? (value as BillingErrorPayload) : undefined
+
+function refusalFromStatus(error: string, status: BillingChargeStatusResult): BillingRefusal {
+  return {
+    kind: error,
+    message: status.message || error,
+    payload: asErrorPayload(status.payload),
+    portalUrl: status.portal_url ?? undefined,
+    retryAfter: status.retry_after ?? undefined
+  }
 }
 
 export function useChargeFlow() {

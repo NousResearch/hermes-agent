@@ -1,3 +1,4 @@
+import type { RequestCancelPayload, RequestCancelReason } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -11,8 +12,8 @@ import type { GatewayEventContext } from './types'
 // bar disappears and the tool row then shows a model-facing "BLOCKED …" result.
 // The transcript must gain a human system line that says what happened and
 // where the wait is configured; a cancel for any other reason stays silent.
-function context(reason: string, updateSessionState: ReturnType<typeof vi.fn>): GatewayEventContext {
-  const payload = { id: 'srv-1', method: 'approval', reason }
+function context(reason: RequestCancelReason, updateSessionState: ReturnType<typeof vi.fn>): GatewayEventContext {
+  const payload: RequestCancelPayload = { id: 'srv-1', method: 'approval', reason }
 
   return {
     deps: { flushQueuedDeltas: vi.fn(), updateSessionState } as unknown as GatewayEventContext['deps'],
@@ -21,7 +22,6 @@ function context(reason: string, updateSessionState: ReturnType<typeof vi.fn>): 
     fromActiveSource: () => true,
     isActiveEvent: true,
     occurredAt: 1_700_000_000,
-    payload: payload as GatewayEventContext['payload'],
     scheduleConfigRefresh: vi.fn(),
     sessionId: 's1'
   }
@@ -56,6 +56,7 @@ describe('approval request.cancel', () => {
     const next = updateSessionState.mock.results[0]?.value as {
       messages: { role: string; parts: { text: string }[] }[]
     }
+
     expect(next.messages).toHaveLength(1)
     expect(next.messages[0].role).toBe('system')
     expect(next.messages[0].parts[0].text).toMatch(/timed out/i)
@@ -79,7 +80,7 @@ describe('approval request.cancel', () => {
     parkApproval()
     const updateSessionState = vi.fn()
 
-    expect(handleInputRequestEvent(context('answered', updateSessionState))).toBe(true)
+    expect(handleInputRequestEvent(context('resolved', updateSessionState))).toBe(true)
     expect($approvalRequests.get()['s1']?.requestId).toBe('front')
     clearApprovalRequest('s1', 'front')
     expect($approvalRequests.get()['s1']).toBeUndefined()
@@ -90,7 +91,7 @@ describe('approval request.cancel', () => {
     parkApproval()
     const updateSessionState = vi.fn()
 
-    expect(handleInputRequestEvent(context('answered', updateSessionState))).toBe(true)
+    expect(handleInputRequestEvent(context('resolved', updateSessionState))).toBe(true)
     expect($approvalRequests.get()['s1']).toBeUndefined()
     expect(updateSessionState).not.toHaveBeenCalled()
     expect($notifications.get()).toHaveLength(0)

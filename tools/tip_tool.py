@@ -13,6 +13,8 @@ SIDES = ("top", "right", "bottom", "left")
 
 def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
     """Show one tip bubble anchored to ``selector``."""
+    from tui_gateway.contracts.events import TipShowPayload  # lazy: contracts pkg is ~200ms cold
+
     text = (text or "").strip()
     selector = (selector or "").strip()
     if not text:
@@ -22,8 +24,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
                           "what's on screen and prefer a target reporting stable: true.")
     if side and side not in SIDES:
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
-    payload = {"selector": selector, "text": text,
-               **{k: v for k, v in (("title", title), ("side", side)) if v}}
+    payload = TipShowPayload(selector=selector, text=text, title=title or None, side=side or None)
     try:
         ok = desktop_ui.emit("tip.show", payload)
     except Exception as exc:

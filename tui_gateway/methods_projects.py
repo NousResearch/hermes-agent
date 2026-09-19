@@ -1,9 +1,20 @@
-"""Projects RPC surface: per-profile multi-folder workspaces, repo discovery, sidebar tree.
-Bodies are rebound onto server.py's globals at install (method_ctx.bind_module)."""
+"""Projects RPC surface: per-profile multi-folder workspaces, repo discovery, sidebar tree. Reaches server.py state through ``srv`` (method_ctx.py)."""
 
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.base import Params
+from .contracts.projects_pets import (
+    ActiveIdResult, OptionalProjectResult, ProjectFolderParams, ProjectIdParams, ProjectResult,
+    ProjectsAddFolderParams, ProjectsArchiveParams, ProjectsCreateParams, ProjectsForCwdParams,
+    ProjectsForCwdResult, ProjectsPayload, ProjectsSetActiveParams, ProjectsUpdateParams,
+)
+import contextlib
+import json
+import os
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -17,11 +28,17 @@ class _NoProject(Exception):
     """Raised inside a projects handler when ``params['id']`` resolves to None."""
 
 
-def _projects_payload(conn) -> dict:
+def _project_info(project):
+    from tui_gateway.contracts.projects_pets import ProjectInfo
+    return ProjectInfo.model_validate(project.to_dict())
+
+
+def _projects_payload(conn) -> ProjectsPayload:
     from hermes_cli import projects_db as pdb
-    return {
-        "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
-        "active_id": pdb.get_active_id(conn)}
+    return ProjectsPayload(
+        projects=[srv._project_info(project) for project in pdb.list_projects(conn, include_archived=True)],
+        active_id=pdb.get_active_id(conn),
+    )
 
 
 def _projects_method(name: str):
@@ -30,102 +47,106 @@ def _projects_method(name: str):
     def decorator(fn):
         @method(name)
         @_registry.profile_scoped
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             try:
                 from hermes_cli import projects_db as pdb
                 with pdb.connect_closing() as conn:
                     return fn(rid, params, pdb, conn)
             except _NoProject:
-                return _err(rid, _E_NO_PROJECT, "no such project")
+                return srv._err(rid, _E_NO_PROJECT, "no such project")
             except ValueError as e:
-                return _err(rid, _E_PROJECT_ARG, str(e))
+                return srv._err(rid, _E_PROJECT_ARG, str(e))
             except Exception as e:
-                return _err(rid, _E_PROJECTS, str(e))
+                return srv._err(rid, _E_PROJECTS, str(e))
         return handler
     return decorator
 
 
-def _require_project(pdb, conn, params: dict):
-    """The project named by ``params['id']`` (or raise ``_NoProject``)."""
-    proj = pdb.get_project(conn, str(params.get("id") or ""))
+def _require_project(pdb, conn, project_id: str):
+    """The project named by ``project_id`` (or raise ``_NoProject``)."""
+    proj = pdb.get_project(conn, project_id)
     if proj is None:
         raise _NoProject
     return proj
 
 
-def _pick(params: dict, *keys: str) -> dict:
-    return {k: params.get(k) for k in keys}
+@_projects_method("projects.update")
+def _(rid, params: ProjectsUpdateParams, pdb, conn) -> ProjectResult | dict:
+    project = srv._require_project(pdb, conn, params.id)
+    pdb.update_project(
+        conn, project.id, name=params.name, description=params.description, icon=params.icon,
+        color=params.color, board_slug=params.board_slug)
+    return ProjectResult(project=srv._project_info(pdb.get_project(conn, project.id)))
 
 
-def _register_project_mutator(suffix: str, fn_name: str, takes_path: bool, kwargs_of) -> None:
-    """``projects.<suffix>``: resolve ``params['id']`` (5062 when missing), call
-    ``pdb.<fn_name>(conn, id[, path], **kwargs_of(params))``, answer with the refreshed project."""
-    @_projects_method(f"projects.{suffix}")
-    def _(rid, params, pdb, conn) -> dict:
-        proj = _require_project(pdb, conn, params)
-        args = (str(params.get("path") or ""),) if takes_path else ()
-        getattr(pdb, fn_name)(conn, proj.id, *args, **kwargs_of(params))
-        return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+@_projects_method("projects.add_folder")
+def _(rid, params: ProjectsAddFolderParams, pdb, conn) -> ProjectResult | dict:
+    project = srv._require_project(pdb, conn, params.id)
+    pdb.add_folder(conn, project.id, params.path, label=params.label, is_primary=params.is_primary)
+    return ProjectResult(project=srv._project_info(pdb.get_project(conn, project.id)))
 
 
-_register_project_mutator(
-    "update", "update_project", False,
-    lambda p: _pick(p, "name", "description", "icon", "color", "board_slug"))
-_register_project_mutator(
-    "add_folder", "add_folder", True,
-    lambda p: {"label": p.get("label"), "is_primary": bool(p.get("is_primary"))})
-_register_project_mutator("remove_folder", "remove_folder", True, lambda p: {})
-_register_project_mutator("set_primary", "set_primary", True, lambda p: {})
+@_projects_method("projects.remove_folder")
+def _(rid, params: ProjectFolderParams, pdb, conn) -> ProjectResult | dict:
+    project = srv._require_project(pdb, conn, params.id)
+    pdb.remove_folder(conn, project.id, params.path)
+    return ProjectResult(project=srv._project_info(pdb.get_project(conn, project.id)))
+
+
+@_projects_method("projects.set_primary")
+def _(rid, params: ProjectFolderParams, pdb, conn) -> ProjectResult | dict:
+    project = srv._require_project(pdb, conn, params.id)
+    pdb.set_primary(conn, project.id, params.path)
+    return ProjectResult(project=srv._project_info(pdb.get_project(conn, project.id)))
 
 
 @_projects_method("projects.list")
-def _(rid, params, pdb, conn) -> dict:
-    return _ok(rid, _projects_payload(conn))
+def _(rid, params: Params, pdb, conn) -> ProjectsPayload | dict:
+    return srv._projects_payload(conn)
 
 
 @_projects_method("projects.get")
-def _(rid, params, pdb, conn) -> dict:
-    return _ok(rid, {"project": _require_project(pdb, conn, params).to_dict()})
+def _(rid, params: ProjectIdParams, pdb, conn) -> ProjectResult | dict:
+    return ProjectResult(project=srv._project_info(srv._require_project(pdb, conn, params.id)))
 
 
 @_projects_method("projects.create")
-def _(rid, params, pdb, conn) -> dict:
+def _(rid, params: ProjectsCreateParams, pdb, conn) -> OptionalProjectResult | dict:
     pid = pdb.create_project(
-        conn, name=str(params.get("name") or ""), folders=params.get("folders") or [],
-        **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
-    if params.get("use"):
+        conn, name=params.name, folders=params.folders or [], slug=params.slug,
+        primary_path=params.primary_path, description=params.description, icon=params.icon,
+        color=params.color, board_slug=params.board_slug)
+    if params.use:
         pdb.set_active(conn, pid)
     proj = pdb.get_project(conn, pid)
-    return _ok(rid, {"project": proj.to_dict() if proj else None})
+    return OptionalProjectResult(project=srv._project_info(proj) if proj else None)
 
 
 @_projects_method("projects.archive")
-def _(rid, params, pdb, conn) -> dict:
-    proj = _require_project(pdb, conn, params)
-    (pdb.restore_project if params.get("restore") else pdb.archive_project)(conn, proj.id)
-    return _ok(rid, _projects_payload(conn))
+def _(rid, params: ProjectsArchiveParams, pdb, conn) -> ProjectsPayload | dict:
+    proj = srv._require_project(pdb, conn, params.id)
+    (pdb.restore_project if params.restore else pdb.archive_project)(conn, proj.id)
+    return srv._projects_payload(conn)
 
 
 @_projects_method("projects.delete")
-def _(rid, params, pdb, conn) -> dict:
-    pdb.delete_project(conn, _require_project(pdb, conn, params).id)
-    return _ok(rid, _projects_payload(conn))
+def _(rid, params: ProjectIdParams, pdb, conn) -> ProjectsPayload | dict:
+    pdb.delete_project(conn, srv._require_project(pdb, conn, params.id).id)
+    return srv._projects_payload(conn)
 
 
 @_projects_method("projects.set_active")
-def _(rid, params, pdb, conn) -> dict:
-    pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
-    return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+def _(rid, params: ProjectsSetActiveParams, pdb, conn) -> ActiveIdResult | dict:
+    pdb.set_active(conn, srv._require_project(pdb, conn, params.id).id if params.id else None)
+    return ActiveIdResult(active_id=pdb.get_active_id(conn))
 
 
 @_projects_method("projects.for_cwd")
-def _(rid, params, pdb, conn) -> dict:
-    cwd = _completion_cwd(
-        {"cwd": str(params.get("cwd") or "").strip()} if params.get("cwd") else {})
+def _(rid, params: ProjectsForCwdParams, pdb, conn) -> ProjectsForCwdResult | dict:
+    cwd = srv._completion_cwd(cwd=params.cwd.strip() if params.cwd else None)
     proj = pdb.project_for_path(conn, cwd)
-    return _ok(rid, {
-        "project": proj.to_dict() if proj else None, "cwd": cwd,
-        "branch": git_probe.branch(cwd)})
+    return ProjectsForCwdResult(
+        project=srv._project_info(proj) if proj else None, cwd=cwd, branch=srv.git_probe.branch(cwd))
 
 
 def _non_workspace_dirs() -> set[str]:
@@ -146,7 +167,7 @@ def _is_repo_junk(root: str) -> bool:
     real = os.path.realpath(root)
     hermes_home = os.path.realpath(str(get_hermes_home()))
     return (
-        os.path.normcase(real) in _non_workspace_dirs()
+        os.path.normcase(real) in srv._non_workspace_dirs()
         or real == hermes_home
         or real.startswith(hermes_home + os.sep))
 
@@ -159,14 +180,14 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     from hermes_constants import get_hermes_home
     real = os.path.normcase(os.path.realpath(cwd))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
-    return real in _non_workspace_dirs() or real == hermes_home
+    return real in srv._non_workspace_dirs() or real == hermes_home
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
     """Return the effective, profile-local Desktop repository scan policy."""
     from hermes_cli.config import DEFAULT_CONFIG
     defaults = DEFAULT_CONFIG["desktop"]
-    source = raw if isinstance(raw, dict) else (_load_cfg().get("desktop") or {})
+    source = raw if isinstance(raw, dict) else (srv._load_cfg().get("desktop") or {})
     if not isinstance(source, dict):
         source = {}
 
@@ -199,8 +220,8 @@ def _repo_discovery_policy_key(policy: dict) -> str:
 
 def _repo_discovery_policy_is_default(policy: dict) -> bool:
     from hermes_cli.config import DEFAULT_CONFIG
-    return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
-        _repo_discovery_policy(DEFAULT_CONFIG["desktop"]))
+    return srv._repo_discovery_policy_key(policy) == srv._repo_discovery_policy_key(
+        srv._repo_discovery_policy(DEFAULT_CONFIG["desktop"]))
 
 
 def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
@@ -254,7 +275,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     if pairs:
         try:
             pdb.record_discovered_repos(
-                conn, pairs, replace=authoritative, policy_key=_repo_discovery_policy_key(policy))
+                conn, pairs, replace=authoritative, policy_key=srv._repo_discovery_policy_key(policy))
         except Exception:
             logger.debug("discover_repos cache write failed", exc_info=True)
             authoritative = False
@@ -273,15 +294,15 @@ def _discover_repos_payload(
             root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
     cwd_rows = list(db.distinct_session_cwds())
     # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
-    git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
+    srv.git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
     cwd_to_root: dict[str, str] = {}
     for row in cwd_rows:
         cwd = str(row.get("cwd") or "")
-        root = git_probe.common_repo_root(cwd)
+        root = srv.git_probe.common_repo_root(cwd)
         if not root:
             continue
         cwd_to_root[cwd] = root
-        if _is_repo_junk(root):
+        if srv._is_repo_junk(root):
             continue
         agg = _agg(root)
         agg["sessions"] += int(row.get("sessions") or 0)
@@ -301,7 +322,7 @@ def _discover_repos_payload(
             with (contextlib.nullcontext(conn) if conn is not None else pdb.connect_closing()) as c:
                 for entry in pdb.list_discovered_repos(c):
                     root = str(entry.get("root") or "")
-                    if root and not _is_repo_junk(root):
+                    if root and not srv._is_repo_junk(root):
                         agg = _agg(root)
                         if entry.get("label"):
                             agg["label"] = entry["label"]
@@ -342,24 +363,24 @@ def _project_tree_inputs(
     # compact_rows: selecting the system-prompt blob only to drop it costs tens of MB of reads.
     rows = db.list_sessions_rich(
         limit=session_limit, offset=0, order_by_last_active=True, min_message_count=1,
-        include_children=False, exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
+        include_children=False, exclude_sources=srv._PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False, compact_rows=True)
-    sessions = [_project_tree_row(r) for r in rows]
+    sessions = [srv._project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver doesn't cold-probe each cwd in turn.
-    git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
+    srv.git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
     from hermes_cli import projects_db as pdb
-    policy = _repo_discovery_policy()
-    policy_key = _repo_discovery_policy_key(policy)
+    policy = srv._repo_discovery_policy()
+    policy_key = srv._repo_discovery_policy_key(policy)
     with pdb.connect_closing() as conn:
         if include_discovered:
             pdb.reconcile_discovered_repos_policy(
-                conn, policy_key, preserve_unversioned=_repo_discovery_policy_is_default(policy))
+                conn, policy_key, preserve_unversioned=srv._repo_discovery_policy_is_default(policy))
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = []
         if include_discovered:
-            discovered = _discover_repos_payload(
+            discovered = srv._discover_repos_payload(
                 db, conn=conn, backfill=False, include_cached=policy["enabled"])
     return sessions, projects, discovered, active_id
 
@@ -370,9 +391,9 @@ _DIR_EXISTS_CACHE: dict[str, bool] = {}
 
 def _dir_exists_cached(path: str) -> bool:
     """``os.path.isdir`` memoized per build — ``build_tree`` asks per SESSION, not per path."""
-    hit = _DIR_EXISTS_CACHE.get(path)
+    hit = srv._DIR_EXISTS_CACHE.get(path)
     if hit is None:
-        hit = _DIR_EXISTS_CACHE[path] = os.path.isdir(path)
+        hit = srv._DIR_EXISTS_CACHE[path] = os.path.isdir(path)
     return hit
 
 
@@ -381,20 +402,24 @@ def _build_project_tree(
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
-    _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
+    srv._DIR_EXISTS_CACHE.clear()
+    sessions, projects, discovered, active_id = srv._project_tree_inputs(
         db, session_limit, include_discovered=include_discovered)
     # build_tree also resolves declared project folders and discovered roots — warm them too.
-    git_probe.warm_roots(
+    srv.git_probe.warm_roots(
         [str(f.get("path") or "") for p in projects for f in (p.get("folders") or [])]
         + [str(r.get("root") or "") for r in discovered])
     tree = project_tree.build_tree(
-        projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
-        hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
-        exists=_dir_exists_cached)
+        projects, sessions, discovered, srv.git_probe.resolve, preview_limit=preview_limit,
+        hydrate=hydrate, is_junk_root=srv._is_repo_junk, is_junk_cwd=srv._is_session_cwd_junk,
+        exists=srv._dir_exists_cached)
     return tree, active_id
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
+    bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -15,6 +15,7 @@ import { useCallback, useMemo, useRef } from 'react'
 import type { ClientSessionState } from '@/app/types'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -175,8 +176,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   // Tile session RPCs must follow the tile's composite owner even when the
   // active gateway has moved to a same-named profile on another source.
-  const requestSessionGateway = useCallback(
-    <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+  const requestSessionGateway = useCallback<GatewayRequest>(
+    (method, params, timeoutMs, signal) => {
       const knownOwner: SessionOwnerScope =
         sessionTileOwnerRoute(storedIdRef.current) ?? knownSessionOwner(ownerLookupSessionRows(), storedIdRef.current)
 
@@ -185,7 +186,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       // across same-named sources.
       const owner: SessionOwnerScope = knownOwner && typeof knownOwner === 'object' ? knownOwner : undefined
 
-      return requestForSessionProfile<T>(owner, requestGateway, method, params ?? {}, timeoutMs, signal)
+      return requestForSessionProfile(owner, requestGateway, method, params, timeoutMs, signal)
     },
     [requestGateway]
   )
@@ -379,7 +380,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          liveId => requestSessionGateway('session.steer', { session_id: liveId, text }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
@@ -442,7 +443,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId => requestSessionGateway('session.redirect', { session_id: liveId, text }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime

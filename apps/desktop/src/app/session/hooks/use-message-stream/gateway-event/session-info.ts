@@ -1,3 +1,5 @@
+import type { SessionInfoPayload } from '@hermes/shared'
+
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -25,7 +27,6 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { reportInstallMethodWarning } from '@/store/updates'
 
 import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
 import {
@@ -97,8 +98,8 @@ function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined
  * keeping the durable selection untouched. A live turn on the old runtime
  * (overlap window during a manual switch) refuses the adoption.
  */
-function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
-  const { deps, explicitSid, isActiveEvent, payload } = ctx
+function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext, payload: SessionInfoPayload | undefined): boolean {
+  const { deps, explicitSid, isActiveEvent } = ctx
 
   if (!explicitSid || isActiveEvent || typeof payload?.stored_session_id !== 'string') {
     return false
@@ -130,7 +131,7 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
 
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
+  const { deps, event, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
 
   const {
     activeGatewayProfile,
@@ -144,12 +145,14 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'session.info') {
+    const payload = event.payload
+
     // A rebuilt runtime (mid-conversation model/provider switch) speaks under
     // a NEW session_id. Before scoping anything by isActiveEvent, check
     // whether this event is the rebuilt runtime announcing itself for the
     // conversation already on screen — if so, re-bind the pane so every
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
-    const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+    const rebound = maybeRebindPaneToRebuiltRuntime(ctx, payload)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
@@ -406,7 +409,6 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
 
     if (apply) {
-      reportInstallMethodWarning(payload?.install_warning)
       // Config refetch is only meaningful for the foreground context —
       // everything refreshHermesConfig applies is either active-session
       // guarded or a composer/global pref. Background sessions' heartbeats
@@ -424,6 +426,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'session.usage') {
+    const payload = event.payload
+
     // Live usage tick emitted while a turn is mid-flight (see tui_gateway
     // _start_usage_ticker) so the status-bar context window tracks growth
     // during the turn instead of only jumping at message.complete.
@@ -432,7 +436,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // while the primary-only global mirrors the active session.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: { ...state.usage, ...payload.usage }
       }))
 
       if (isActiveEvent) {
@@ -444,6 +448,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'session.title') {
+    const payload = event.payload
+
     // Live auto-title push (titler runs async, after the turn's refresh).
     const storedId = typeof payload?.session_id === 'string' ? payload.session_id : ''
     const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''

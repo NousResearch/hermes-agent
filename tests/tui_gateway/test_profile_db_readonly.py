@@ -16,6 +16,12 @@ from pathlib import Path
 
 import tui_gateway.server as server
 from hermes_state import SessionDB
+from tui_gateway.contracts.base import MethodParams
+
+
+def _params(profile: str) -> MethodParams:
+    """``_profile_db`` reads ``params.profile`` off the validated method params model."""
+    return MethodParams(profile=profile)
 
 
 def _seed_store(home: Path) -> Path:
@@ -33,7 +39,7 @@ def _bind_foreign(monkeypatch, tmp_path: Path) -> None:
 
 def test_foreign_profile_db_is_read_only(monkeypatch, tmp_path):
     _bind_foreign(monkeypatch, tmp_path)
-    with server._profile_db({"profile": "code"}) as db:
+    with server._profile_db(_params("code")) as db:
         assert db is not None
         assert db.read_only is True
         assert db.get_session("seed") is not None
@@ -41,7 +47,7 @@ def test_foreign_profile_db_is_read_only(monkeypatch, tmp_path):
 
 def test_foreign_profile_db_writer_opt_in(monkeypatch, tmp_path):
     _bind_foreign(monkeypatch, tmp_path)
-    with server._profile_db({"profile": "code"}, writer=True) as db:
+    with server._profile_db(_params("code"), writer=True) as db:
         assert db is not None
         assert db.read_only is False
         assert db.set_session_title("seed", "renamed") is True
@@ -50,13 +56,13 @@ def test_foreign_profile_db_writer_opt_in(monkeypatch, tmp_path):
 def test_discover_repos_payload_skips_backfill_on_read_only(monkeypatch, tmp_path):
     """The repo-root backfill UPDATE must not be attempted (and swallowed) on a reader."""
     _bind_foreign(monkeypatch, tmp_path)
-    with server._profile_db({"profile": "code"}) as db:
+    with server._profile_db(_params("code")) as db:
         calls = []
         monkeypatch.setattr(type(db), "backfill_repo_roots", lambda self, m: calls.append(m), raising=False)
         server._discover_repos_payload(db, backfill=True, include_cached=False)
         assert calls == []
     # Same call on a writable handle still backfills.
-    with server._profile_db({"profile": "code"}, writer=True) as db:
+    with server._profile_db(_params("code"), writer=True) as db:
         calls = []
         monkeypatch.setattr(type(db), "backfill_repo_roots", lambda self, m: calls.append(m), raising=False)
         server._discover_repos_payload(db, backfill=True, include_cached=False)
@@ -78,10 +84,10 @@ def test_bot_chat_unarchive_escalates_to_writer(monkeypatch, tmp_path):
     db.close()
     monkeypatch.setattr(server, "_profile_home", lambda name: foreign if (name or "").strip() == "code" else None)
 
-    with server._profile_db({"profile": "code"}) as ro_db:
+    with server._profile_db(_params("code")) as ro_db:
         assert ro_db.read_only is True
-        resp = server._session_list_by_title("rid", ro_db, BOT_CHAT_TITLE)
-    assert resp["result"]["sessions"], "archived Bot Chat was not resurrected through the writer escalation"
+        resp = server._session_list_by_title(ro_db, BOT_CHAT_TITLE)
+    assert resp.sessions, "archived Bot Chat was not resurrected through the writer escalation"
 
     check = SessionDB(db_path=foreign / "state.db", read_only=True)
     try:

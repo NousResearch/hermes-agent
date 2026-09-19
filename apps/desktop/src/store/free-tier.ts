@@ -1,7 +1,8 @@
+import type { FreeTierStatusResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
-import type { FreeTierStatus } from '@/types/hermes'
 
 /** The model the free-tier route runs on. Used to recognise a session that is
  *  still homed on the free tier after a sign-in. */
@@ -10,7 +11,7 @@ export const FREE_TIER_MODEL = 'nous/welcome'
 /** The provider slug the free-tier route and a signed-in Nous account share. */
 export const NOUS_PROVIDER_ID = 'nous'
 
-export type FreeTierRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type FreeTierRequester = GatewayRequest
 
 /**
  * The backend's free-tier verdict, cached for the chrome that paints it (the
@@ -20,11 +21,7 @@ export type FreeTierRequester = <T = unknown>(method: string, params?: Record<st
  * free tier is on or off. `null` means "not asked yet"; every consumer must
  * render as if there were no free tier until an answer lands.
  */
-export const $freeTierStatus = atom<FreeTierStatus | null>(null)
-
-function isFreeTierStatus(value: unknown): value is FreeTierStatus {
-  return typeof value === 'object' && value !== null && typeof (value as FreeTierStatus).has_guest === 'boolean'
-}
+export const $freeTierStatus = atom<FreeTierStatusResult | null>(null)
 
 /**
  * Pull the current status. No polling loop of its own: callers ride an existing
@@ -35,13 +32,9 @@ function isFreeTierStatus(value: unknown): value is FreeTierStatus {
  * chrome — an older backend without the method, or a gateway flap, is not
  * evidence that the free tier went away.
  */
-export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
+export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): Promise<FreeTierStatusResult | null> {
   try {
-    const status = await requestGateway<FreeTierStatus>('free_tier.status')
-
-    if (!isFreeTierStatus(status)) {
-      return $freeTierStatus.get()
-    }
+    const status = await requestGateway('free_tier.status', {})
 
     $freeTierStatus.set(status)
 
@@ -72,7 +65,7 @@ export interface FreeTierSetupFailure {
 
 const UNREACHABLE_CODES = new Set<string>(['anon_server_error', 'anon_unreachable'])
 
-export function freeTierSetupFailure(status: FreeTierStatus | null): FreeTierSetupFailure | null {
+export function freeTierSetupFailure(status: FreeTierStatusResult | null): FreeTierSetupFailure | null {
   if (!status || !status.enabled || status.has_guest) {
     return null
   }
@@ -123,9 +116,9 @@ export function friendlyWait(seconds: number): string {
  * afterwards so every surface keyed on it moves together. Returns the fresh
  * status, or the last known one when the call itself failed.
  */
-export async function provisionFreeTier(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
+export async function provisionFreeTier(requestGateway: FreeTierRequester): Promise<FreeTierStatusResult | null> {
   try {
-    await requestGateway('free_tier.provision')
+    await requestGateway('free_tier.provision', {})
   } catch {
     // The status read below still reports what the backend knows.
   }
@@ -137,7 +130,7 @@ export async function provisionFreeTier(requestGateway: FreeTierRequester): Prom
  *  keyed on `notice_pending` drops away together. */
 export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Promise<boolean> {
   try {
-    const result = await requestGateway<{ acked?: boolean }>('free_tier.ack_notice')
+    const result = await requestGateway('free_tier.ack_notice', {})
 
     if (result?.acked !== true) {
       return false
@@ -165,12 +158,12 @@ export function setFreeTierRoute(route: boolean | null | undefined) {
 }
 
 /** True when the one-time introduction is still owed to this user. */
-export function freeTierNoticePending(status: FreeTierStatus | null): boolean {
+export function freeTierNoticePending(status: FreeTierStatusResult | null): boolean {
   return Boolean(status?.has_guest && status.notice_pending)
 }
 
 /** The introduction is owed AND the free tier is the route: the overlay's ready screen. */
-export function freeTierReadyPending(status: FreeTierStatus | null, route: boolean | null): boolean {
+export function freeTierReadyPending(status: FreeTierStatusResult | null, route: boolean | null): boolean {
   return freeTierNoticePending(status) && route === true
 }
 
@@ -180,7 +173,7 @@ export function freeTierReadyPending(status: FreeTierStatus | null, route: boole
  * carries inference the onboarding overlay's ready screen owns the moment
  * instead, so the two can never both be on screen.
  */
-export function freeTierStripPending(status: FreeTierStatus | null, route: boolean | null): boolean {
+export function freeTierStripPending(status: FreeTierStatusResult | null, route: boolean | null): boolean {
   return freeTierNoticePending(status) && route === false && !onboardingSurfaceActive()
 }
 

@@ -1,15 +1,16 @@
 import type { AppendMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { type CommandsCatalogResult, JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+export type { GatewayRequest }
 
 export function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -124,7 +125,7 @@ export async function resumeStoredRuntimeSession(
     const resolveProfile = deps.resolveProfile ?? defaultResolveProfile
     const profile = await resolveProfile(storedSessionId)
 
-    return deps.requestGateway<{ session_id: string }>('session.resume', {
+    return deps.requestGateway('session.resume', {
       session_id: storedSessionId,
       source: 'desktop',
       omit_messages: true,
@@ -132,7 +133,7 @@ export async function resumeStoredRuntimeSession(
     })
   })
 
-  return resumed?.session_id ?? null
+  return resumed.session_id || null
 }
 
 /**
@@ -481,7 +482,7 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
 }
 
-export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
+export function renderCommandsCatalog(catalog: CommandsCatalogResult, copy: Translations['desktop']): string {
   const desktopCatalog = filterDesktopCommandsCatalog(catalog)
 
   const sections = desktopCatalog.categories?.length

@@ -13,11 +13,13 @@ PANES = ("chat", "files", "terminal", "review", "sessions")
 
 def focus_pane_tool(pane: str) -> str:
     """Ask the desktop GUI to reveal and focus ``pane``."""
+    from tui_gateway.contracts.events import PaneRevealPayload  # lazy: contracts pkg is ~200ms cold
+
     name = (pane or "").strip().lower()
     if name not in PANES:
         return tool_error(f"pane must be one of: {', '.join(PANES)}.")
     return desktop_ui.emit_or_error(
-        "pane.reveal", {"pane": name}, f"Failed to focus the {name} pane: ",
+        "pane.reveal", PaneRevealPayload(pane=name), f"Failed to focus the {name} pane: ",
         "Pane focus is only available in the Hermes desktop app.", {"success": True, "pane": name})
 
 

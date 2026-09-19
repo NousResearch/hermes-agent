@@ -116,9 +116,16 @@ def test_unknown_method(server):
 
 
 def test_ok_envelope(server):
-    assert server._ok("r1", {"x": 1}) == {
+    from tui_gateway.contracts.base import Result
+
+    class _XResult(Result):
+        x: int
+
+    assert server._ok("r1", _XResult(x=1)) == {
         "jsonrpc": "2.0", "id": "r1", "result": {"x": 1},
     }
+    with pytest.raises(TypeError):
+        server._ok("r1", {"x": 1})
 
 
 def test_err_envelope(server):
@@ -217,8 +224,8 @@ def test_live_session_payload_replays_pending_approval(server, monkeypatch):
         if saved_queue is not None:
             approval._gateway_queues["stored-session"] = saved_queue
 
-    assert payload["pending_approval"] is not first
-    replayed = payload["pending_approval"]
+    replayed = payload.pending_approval.model_dump(exclude_none=True)
+    assert replayed is not first
     # request_id is injected by _ApprovalEntry so reconnecting clients can
     # correlate their approval.respond with the exact queued request.
     assert replayed.pop("request_id")
@@ -233,7 +240,10 @@ def test_live_session_payload_replays_open_requests(server):
         "agent": types.SimpleNamespace(), "cols": 80, "created_at": 1.0, "history": [],
         "history_lock": threading.Lock(), "running": True, "session_key": "stored-session",
     }
-    req = server_requests.ServerRequest("runtime-session", "clarify", {"question": "Which?", "choices": ["a", "b"]})
+    from tui_gateway.contracts.server_requests import ClarifySingle
+    params = ClarifySingle(session_id="runtime-session", kind="single", question="Which?",
+                           choices=["a", "b"], multi_select=False)
+    req = server_requests.ServerRequest("runtime-session", "clarify", params)
     server_requests._open[req.id] = req
     try:
         payload = server._live_session_payload("runtime-session", session)
@@ -241,10 +251,12 @@ def test_live_session_payload_replays_open_requests(server):
     finally:
         server_requests._open.pop(req.id, None)
 
-    assert payload["open_requests"] == [{"id": req.id, "method": "clarify",
-                                         "params": {"session_id": "runtime-session", "question": "Which?", "choices": ["a", "b"]}}]
-    assert payload["open_requests"][0]["params"] is not req.params
-    assert "open_requests" not in other
+    open_requests = [entry.model_dump() for entry in payload.open_requests]
+    assert open_requests == [{"id": req.id, "method": "clarify",
+                              "params": {"session_id": "runtime-session", "kind": "single", "question": "Which?",
+                                         "choices": ["a", "b"], "multi_select": False}}]
+    assert open_requests[0]["params"] is not req.params
+    assert other.open_requests is None
 
 
 def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
@@ -270,14 +282,20 @@ def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
 
 
 def test_emit_with_payload(capture):
+    from tui_gateway.contracts.events import StreamDeltaPayload
     server, buf = capture
-    server._emit("test.event", "s1", {"key": "val"})
+    server._emit("message.delta", "s1", StreamDeltaPayload(text="val"))
     msg = json.loads(buf.getvalue())
 
     assert msg["method"] == "event"
-    assert msg["params"]["type"] == "test.event"
+    assert msg["params"]["type"] == "message.delta"
     assert msg["params"]["session_id"] == "s1"
-    assert msg["params"]["payload"]["key"] == "val"
+    assert msg["params"]["payload"]["text"] == "val"
+    # Payloads are closed models: a bare dict or an unknown event is a programming error, not a frame.
+    with pytest.raises(TypeError):
+        server._emit("message.delta", "s1", {"text": "val"})
+    with pytest.raises(KeyError):
+        server._emit("test.event", "s1", StreamDeltaPayload(text="val"))
 
 
 # ── Server→client requests (tui_gateway/server_requests.py) ─────────
@@ -305,11 +323,14 @@ def test_server_request_round_trip_uses_response_frame(capture):
     from tui_gateway import server_requests
     server, buf = capture
     box = {}
-    thread = threading.Thread(target=lambda: box.__setitem__("r", server._ask("sudo", "s1", {}, timeout=5)), daemon=True)
+    from tui_gateway.contracts.server_requests import SudoRequestParams
+    thread = threading.Thread(
+        target=lambda: box.__setitem__("r", server._ask("sudo", "s1", SudoRequestParams(session_id="s1", command="sudo ls"), timeout=5)),
+        daemon=True)
     thread.start()
     req = _wait_open(server_requests, buf)
     frame = _frames(buf)[-1]
-    assert frame == {"jsonrpc": "2.0", "id": req.id, "method": "sudo", "params": {"session_id": "s1"}}
+    assert frame == {"jsonrpc": "2.0", "id": req.id, "method": "sudo", "params": {"session_id": "s1", "command": "sudo ls"}}
     assert req.id.startswith("srq-")
 
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "hunter2"}}) is None
@@ -317,6 +338,19 @@ def test_server_request_round_trip_uses_response_frame(capture):
     assert box["r"] == "hunter2"
     with server_requests._lock:
         assert not server_requests._open
+
+
+def _request_params(method, sid):
+    from tui_gateway.contracts import server_requests as sr
+    return {
+        "secret": lambda: sr.SecretRequestParams(session_id=sid, env_var="TOKEN", prompt="Token?", metadata=None),
+        "sudo": lambda: sr.SudoRequestParams(session_id=sid, command="sudo ls"),
+        "terminal.read": lambda: sr.ReadRangeRequestParams(session_id=sid, start=None, count=None),
+        "tour": lambda: sr.TourRequestParams(session_id=sid, action="stop"),
+        "clarify": lambda: sr.ClarifyBatch(
+            session_id=sid, kind="batch", answers=None,
+            questions=[sr.ClarifyQuestion(qid="q1", question="Which?", choices=None, multi_select=False)]),
+    }[method]()
 
 
 @pytest.mark.parametrize("method, qids, settle, expected", [
@@ -330,14 +364,14 @@ def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expe
     """A response and cancellation may race; the first settlement owns the result."""
     from tui_gateway import server_requests
 
-    req = server_requests.ServerRequest("s1", method, {}, qids=qids)
+    req = server_requests.ServerRequest("s1", method, _request_params(method, "s1"), qids=qids)
     with server_requests._lock:
         server_requests._open[req.id] = req
 
     assert settle(server_requests, req)
     assert server_requests.cancel("s1") == 0
     assert req.answered is True
-    assert req.result == expected
+    assert req.result.model_dump(exclude_unset=True) == expected
     assert req.event.is_set()
 
 
@@ -361,7 +395,7 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
 
     monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
 
-    assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
+    assert server_requests.send("sudo", "s1", _request_params("sudo", "s1"), timeout=0.001).value == "yes"
     assert cancels == []
     assert not server_requests._open
 
@@ -426,14 +460,15 @@ def test_server_request_waits_for_a_ws_client_that_advertised(server):
     assert "clarify" in response["result"]["server_requests"]
 
     box = {}
-    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
+    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", _request_params("sudo", "ws-new"), timeout=5)),
                               daemon=True)
     thread.start()
     req = _wait_open(server_requests)
     assert peer.frames[-1]["id"] == req.id
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
     thread.join(timeout=5)
-    assert box["r"] == {"value": "yes"}
+    # The response frame's result is validated into the request's declared model.
+    assert box["r"].value == "yes"
     # Disconnect forgets the advertisement; the next connection must advertise again.
     server.unregister_live_transport(peer)
     assert server_requests.answers_requests(peer) is False
@@ -445,8 +480,10 @@ def test_server_request_error_response_fails_fast(server):
     from tui_gateway import server_requests
 
     box = {}
-    thread = threading.Thread(target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
-                              daemon=True)
+    thread = threading.Thread(
+        target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", _request_params("sudo", "s1"), timeout=5)),
+        daemon=True,
+    )
     thread.start()
     req = _wait_open(server_requests)
     t0 = time.monotonic()
@@ -460,7 +497,7 @@ def test_server_request_error_response_fails_fast(server):
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
     server, buf = capture
-    assert server_requests.send(method, "s1", {}, timeout=0) is None
+    assert server_requests.send(method, "s1", _request_params(method, "s1"), timeout=0) is None
     request, cancel = _frames(buf)
     assert request["method"] == method
     assert cancel["params"]["type"] == "request.cancel"
@@ -474,7 +511,7 @@ def test_late_response_and_lock_are_dropped_quietly(server):
     assert server.dispatch({"jsonrpc": "2.0", "id": "srq-gone", "result": {"value": ""}}) is None
     response = server.handle_request({"id": "late", "method": "clarify.lock",
                                       "params": {"request_id": "srq-gone", "question_id": "q0", "answer": ""}})
-    assert response["result"] == {"status": "expired"}
+    assert response["result"] == {"status": "expired", "remaining": None}
 
 
 def _start_batch_clarify(server, buf, qids, timeout=None):
@@ -512,7 +549,7 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
                                   "params": {"request_id": req.id, "question_id": "q1", "answer": ""}})
     assert last["result"] == {"status": "ok", "remaining": []}
     thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}}
+    assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}, "timed_out": False}
 
     # Deadline: locked answers survive, timed_out flagged, one request.cancel.
     original_timeout = server._clarify_timeout_seconds
@@ -540,8 +577,13 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
 def test_clear_pending_cancels_only_that_session(capture):
     from tui_gateway import server_requests
     server, buf = capture
-    a = threading.Thread(target=lambda: server_requests.send("sudo", "sid-a", {}, timeout=None), daemon=True)
-    b = threading.Thread(target=lambda: server_requests.send("sudo", "sid-b", {}, timeout=None), daemon=True)
+    from tui_gateway.contracts.server_requests import SudoRequestParams
+    a = threading.Thread(
+        target=lambda: server_requests.send("sudo", "sid-a", SudoRequestParams(session_id="sid-a"), timeout=None),
+        daemon=True)
+    b = threading.Thread(
+        target=lambda: server_requests.send("sudo", "sid-b", SudoRequestParams(session_id="sid-b"), timeout=None),
+        daemon=True)
     a.start(); b.start()
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline and len(server_requests._open) < 2:
@@ -569,7 +611,8 @@ def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
         {"id": "r1", "method": "approval.pending", "params": {"session_id": "ui-1"}}
     )
 
-    assert response["result"] == {"approvals": pending}
+    assert len(response["result"]["approvals"]) == 1
+    assert pending[0].items() <= response["result"]["approvals"][0].items()
 
 
 def test_approval_received_acknowledges_exact_request(server, monkeypatch):
@@ -756,7 +799,8 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
 
     assert "error" not in resp
     assert resp["result"]["message_count"] == 3
-    assert resp["result"]["messages"] == [
+    messages = [{k: v for k, v in m.items() if v is not None} for m in resp["result"]["messages"]]
+    assert messages == [
         {"role": "user", "text": "hello"},
         {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
@@ -1009,7 +1053,18 @@ def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monk
 
     assert result["running"] is True
     assert result["turn_started_at"] == active_turn["started_at"]
-    assert result == fixture
+
+    def _covers(actual, expected):
+        """Every fixture key is on the wire with the fixture's value (closed models add null/default fields)."""
+        if isinstance(expected, dict):
+            return isinstance(actual, dict) and all(k in actual and _covers(actual[k], v) for k, v in expected.items())
+        if isinstance(expected, list):
+            return isinstance(actual, list) and len(actual) == len(expected) and all(
+                _covers(a, e) for a, e in zip(actual, expected))
+        return actual == expected
+
+    assert _covers(result, fixture), (result, fixture)
+    assert set(fixture) <= set(result)
 
 
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
@@ -1435,7 +1490,7 @@ def test_skills_manage_search_uses_tools_hub_sources(server):
         })
 
     assert "error" not in resp
-    assert resp["result"] == {
+    assert {k: v for k, v in resp["result"].items() if v is not None} == {
         "results": [{"description": "Build better terminal demos", "name": "showroom"}]
     }
     auth.assert_called_once_with()
@@ -1446,9 +1501,16 @@ def test_skills_manage_search_uses_tools_hub_sources(server):
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 
+from tui_gateway.contracts.base import Result as _ContractResult
+
+
+class _PongResult(_ContractResult):
+    pong: bool
+
+
 def test_dispatch_runs_short_handlers_inline(server):
     """Non-long handlers return their response synchronously from dispatch()."""
-    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, _PongResult(pong=True))
 
     resp = server.dispatch({"id": "r1", "method": "fast.ping", "params": {}})
 
@@ -1503,7 +1565,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
-    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: emitted.append((ev, payload)))
 
     # Baseline (default) — seeds the signature.
     (tmp_path / "config.yaml").write_text("display:\n  skin: default\n", encoding="utf-8")
@@ -1516,8 +1578,8 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"]
-    assert emitted[0][1]["name"] == "midnight"
-    assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+    assert emitted[0][1].name == "midnight"
+    assert emitted[0][1].colors["banner_title"] == "#00ffcc"
 
 
 def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
@@ -1527,7 +1589,7 @@ def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
     emitted = []
     # switch, no-op, switch, then a color edit (same name, bumped mtime).
     sigs = iter([("neon", 1.0), ("neon", 1.0), ("forest", 1.0), ("forest", 2.0)])
-    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: emitted.append((ev, payload)))
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
     monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
     monkeypatch.setattr(server, "resolve_skin", lambda: {"name": "x", "colors": {}})
@@ -1563,7 +1625,8 @@ def test_unregister_live_transport_stops_delivery(capture):
     server.register_live_transport(a)
     server.unregister_live_transport(a)
 
-    server._broadcast_global_event("skin.changed", {"name": "x"})
+    from tui_gateway.contracts.events import SkinPayload
+    server._broadcast_global_event("skin.changed", SkinPayload(name="x"))
 
     assert a.frames == []
     # No live transports left → fell back to stdio.
@@ -1595,3 +1658,49 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     assert decision["choice"] is None and decision["cancelled"]
     assert peer.frames == []
     assert "ws-old-approval" not in approval_mod._gateway_queues
+
+
+@pytest.mark.parametrize("settle_queue, reason", [
+    # A choice committed from another surface (/approve on a chat platform, another client).
+    (lambda approval_mod, sk, rid: approval_mod.resolve_gateway_approval(sk, "once", request_id=rid), "resolved"),
+    # The entry is torn down with no choice (session end, client that cannot answer).
+    (lambda approval_mod, sk, rid: approval_mod.withdraw_gateway_approval(sk, rid, "session ended"), "session_closed"),
+], ids=["resolved-elsewhere", "withdrawn"])
+def test_queue_settlement_outside_the_request_withdraws_the_card(capture, monkeypatch, settle_queue, reason):
+    """The approval wait is owned by ``tools.approval``'s queue; when the queue settles by any path other
+    than this request's own response the open ``approval`` request must be withdrawn with one
+    ``request.cancel`` — through the real queue, registry and frame builder — or every renderer keeps
+    showing a card for a decision that is already made."""
+    from tools import approval as approval_mod
+    from tools import approval_gateway_wait as wait_mod
+    from tui_gateway import server_requests
+
+    server, buf = capture
+    sid = "s-approval"
+    server._sessions[sid] = {"session_key": sid, "history": [], "history_lock": threading.Lock(), "agent_ready": None}
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 5)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    approval_mod.register_gateway_notify(sid, lambda data: server._emit_approval_request(sid, data))
+    decision: dict = {}
+
+    def wait():
+        decision.update(wait_mod._await_gateway_decision(
+            sid, approval_mod._gateway_notify_cbs[sid],
+            {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]}))
+
+    waiter = threading.Thread(target=wait, daemon=True)
+    try:
+        waiter.start()
+        request = _wait_open(server_requests, buf)
+        assert settle_queue(approval_mod, sid, request.params.request_id)
+        waiter.join(timeout=5)
+        assert not waiter.is_alive(), "queue settlement did not wake the waiter"
+    finally:
+        approval_mod.unregister_gateway_notify(sid)
+        server._sessions.pop(sid, None)
+
+    cancels = [f["params"]["payload"] for f in _frames(buf)
+               if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
+    assert cancels == [{"id": request.id, "method": "approval", "reason": reason}]
+    assert not server_requests._open
+    assert sid not in approval_mod._gateway_queues

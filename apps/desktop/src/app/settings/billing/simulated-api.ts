@@ -1,10 +1,11 @@
 import type { BillingApi, BillingResult } from './api'
-import type { BillingStateResponse, SubscriptionPreviewResponse, SubscriptionStateResponse } from './types'
+import { OK_ENVELOPE } from './dev-fixtures'
+import type { BillingStateResult, SubscriptionPreviewResult, SubscriptionStateResult } from './types'
 
 /** The shape of one `billingDevFixtures` entry — a canned billing + subscription pair. */
 export interface SimulatedFixture {
-  billing: BillingResult<BillingStateResponse>
-  subscription: BillingResult<SubscriptionStateResponse>
+  billing: BillingResult<BillingStateResult>
+  subscription: BillingResult<SubscriptionStateResult>
 }
 
 // A visible-but-brief pause so the live fixture loop actually sees the "Checking…" /
@@ -27,33 +28,40 @@ const ok = <T>(data: T): BillingResult<T> => ({ data, ok: true })
 export function createSimulatedBillingApi(fixture: SimulatedFixture): BillingApi {
   const billing = fixture.billing
   // Mutable copy so scheduling/undo don't leak back into the shared fixture object.
-  let subscription: BillingResult<SubscriptionStateResponse> = structuredClone(fixture.subscription)
+  let subscription: BillingResult<SubscriptionStateResult> = structuredClone(fixture.subscription)
 
-  const patchCurrent = (patch: Partial<NonNullable<SubscriptionStateResponse['current']>>) => {
+  const patchCurrent = (patch: Partial<NonNullable<SubscriptionStateResult['current']>>) => {
     if (subscription.ok && subscription.data.current) {
       subscription = ok({ ...subscription.data, current: { ...subscription.data.current, ...patch } })
     }
   }
 
   const tierName = (tierId: string): null | string =>
-    (subscription.ok ? subscription.data.tiers.find(tier => tier.tier_id === tierId)?.name : null) ?? null
+    (subscription.ok ? subscription.data.tiers?.find(tier => tier.tier_id === tierId)?.name : null) ?? null
 
   return {
     charge: async (_amountUsd, idempotencyKey = 'sim-key') => ({
-      data: { charge_id: 'sim-charge', ok: true },
+      data: { ...OK_ENVELOPE, charge_id: 'sim-charge', idempotency_key: idempotencyKey },
       idempotencyKey,
       ok: true
     }),
-    chargeStatus: async () => ok({ amount_usd: '0', ok: true, settled_at: null, status: 'settled' }),
+    chargeStatus: async () =>
+      ok({ ...OK_ENVELOPE, amount_usd: '0', reason: null, settled_at: null, status: 'settled' }),
     fetchBillingState: async () => billing,
     fetchSubscriptionState: async () => subscription,
     previewSubscriptionChange: async tierId => {
       await delay(SIMULATED_DELAY_MS)
 
-      const preview: SubscriptionPreviewResponse = {
+      const preview: SubscriptionPreviewResult = {
+        ...OK_ENVELOPE,
+        amount_due_now_cents: null,
+        current_tier_id: null,
+        current_tier_name: null,
         effect: 'scheduled',
         effective_at: subscription.ok ? (subscription.data.current?.cycle_ends_at ?? null) : null,
-        ok: true,
+        monthly_credits_delta: null,
+        reason: null,
+        target_tier_id: tierId,
         target_tier_name: tierName(tierId)
       }
 
@@ -71,7 +79,7 @@ export function createSimulatedBillingApi(fixture: SimulatedFixture): BillingApi
         pending_downgrade_tier_name: null
       })
 
-      return ok({ message: 'Change cancelled.', ok: true })
+      return ok({ ...OK_ENVELOPE, message: 'Change cancelled.' })
     },
     scheduleSubscriptionChange: async tierId => {
       await delay(SIMULATED_DELAY_MS)
@@ -81,9 +89,9 @@ export function createSimulatedBillingApi(fixture: SimulatedFixture): BillingApi
         pending_downgrade_tier_name: tierName(tierId)
       })
 
-      return ok({ message: 'Downgrade scheduled.', ok: true })
+      return ok({ ...OK_ENVELOPE, message: 'Downgrade scheduled.' })
     },
-    stepUp: async () => ok({ granted: true, ok: true }),
-    updateAutoReload: async () => ok({ ok: true })
+    stepUp: async () => ok({ ...OK_ENVELOPE, granted: true }),
+    updateAutoReload: async () => ok(OK_ENVELOPE)
   }
 }

@@ -1,8 +1,10 @@
+import type { MessageCompletePayload } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText } from '@/lib/chat-messages'
+import { messageCompletePayload, messageDeltaPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -17,10 +19,16 @@ function mountStream() {
 const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
 
 const delta = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
+  act(() => stream.handleEvent({ payload: messageDeltaPayload({ text }), session_id: SID, type: 'message.delta' }))
 
-const completeWithError = (payload: Record<string, unknown>) =>
-  act(() => stream.handleEvent({ payload: { status: 'error', ...payload }, session_id: SID, type: 'message.complete' }))
+const completeWithError = (payload: Partial<MessageCompletePayload>) =>
+  act(() =>
+    stream.handleEvent({
+      payload: messageCompletePayload({ status: 'error', ...payload }),
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
 
 function getState(): ClientSessionState {
   return stream.state()
@@ -87,7 +95,15 @@ describe('terminal error message.complete frames', () => {
     await completeWithError({
       text: 'Error: rate limited',
       error: 'rate limited',
-      error_surface: { layer: 'provider', code: 'rate_limit', retryable: true },
+      error_surface: {
+        auth_kind: null,
+        code: 'rate_limit',
+        layer: 'provider',
+        model: null,
+        provider: null,
+        provider_label: null,
+        retryable: true
+      },
       recoverable: true
     })
 
@@ -104,7 +120,9 @@ describe('terminal error message.complete frames', () => {
     await completeWithError({
       text: 'Error: kaput',
       error: 'kaput',
-      error_surface: { layer: 'not-a-layer', code: 42 },
+      // SAFETY: deliberately off-contract — an older/foreign backend may send a surface the
+      // normaliser (lib/error-surface.ts) must reject instead of attaching garbage to the bubble.
+      error_surface: { layer: 'not-a-layer', code: 42 } as unknown as MessageCompletePayload['error_surface'],
       recoverable: true
     })
 

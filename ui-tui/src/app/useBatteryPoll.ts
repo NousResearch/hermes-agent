@@ -1,37 +1,23 @@
+import type { SystemBatteryResult } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SystemBatteryResponse } from '../gatewayTypes.js'
-import { asRpcResult } from '../lib/rpc.js'
 
-import type { BatteryCategory, BatteryInfo } from './interfaces.js'
 import { $uiState, patchUiState } from './uiStore.js'
 
 const BATTERY_POLL_MS = 30_000
 
-const CATEGORIES: ReadonlySet<BatteryCategory> = new Set(['bad', 'critical', 'dim', 'good', 'warn'])
-
-const normalizeCategory = (raw: unknown): BatteryCategory =>
-  typeof raw === 'string' && CATEGORIES.has(raw as BatteryCategory) ? (raw as BatteryCategory) : 'dim'
-
-/** Coerce a `system.battery` RPC payload into the UI's BatteryInfo shape. */
-export const toBatteryInfo = (r: null | SystemBatteryResponse): BatteryInfo | null => {
+/** Clamp a `system.battery` reading into the 0-100 the status bar renders. */
+export const toBatteryInfo = (r: null | SystemBatteryResult): SystemBatteryResult | null => {
   if (!r) {
     return null
   }
 
   const percent =
-    typeof r.percent === 'number' && Number.isFinite(r.percent)
-      ? Math.max(0, Math.min(100, Math.round(r.percent)))
-      : null
+    r.percent === null || !Number.isFinite(r.percent) ? null : Math.max(0, Math.min(100, Math.round(r.percent)))
 
-  return {
-    available: !!r.available,
-    category: normalizeCategory(r.category),
-    percent,
-    plugged: typeof r.plugged === 'boolean' ? r.plugged : null
-  }
+  return { ...r, percent }
 }
 
 /**
@@ -56,7 +42,7 @@ export function useBatteryPoll(gw: GatewayClient) {
 
     const poll = async () => {
       try {
-        const r = asRpcResult<SystemBatteryResponse>(await gw.request<SystemBatteryResponse>('system.battery', {}))
+        const r = await gw.request('system.battery', {})
 
         if (!cancelled) {
           patchUiState({ batteryStatus: toBatteryInfo(r) })

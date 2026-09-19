@@ -8,6 +8,8 @@ import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { messageDeltaPayload, sessionInfoPayload, toolCompletePayload, toolStartPayload } from '@/test/contract'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -42,12 +44,12 @@ describe('turn end without message.complete (session.info running=false)', () =>
     await mountHarness()
 
     emit({ session_id: SID, type: 'message.start', payload: {} })
-    emit({ payload: { text: 'partial answer' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'partial answer' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     expect(stream.state()?.messages.at(-1)?.pending).toBe(true)
 
-    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+    emit({ payload: sessionInfoPayload({ running: false }), session_id: SID, type: 'session.info' })
 
     const state = stream.state()
     const tail = state?.messages.at(-1)
@@ -65,17 +67,17 @@ describe('turn end without message.complete (session.info running=false)', () =>
     emit({ session_id: SID, type: 'message.start', payload: {} })
     // A tool row seeds the bubble but no text ever arrives.
     emit({
-      payload: { args: { command: 'true' }, name: 'terminal', tool_id: 't1' },
+      payload: toolStartPayload({ args: { command: 'true' }, name: 'terminal', tool_id: 't1' }),
       session_id: SID,
       type: 'tool.start'
     })
     emit({
-      payload: { name: 'terminal', result: 'ok', tool_id: 't1' },
+      payload: toolCompletePayload({ name: 'terminal', result: 'ok', tool_id: 't1' }),
       session_id: SID,
       type: 'tool.complete'
     })
 
-    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+    emit({ payload: sessionInfoPayload({ running: false }), session_id: SID, type: 'session.info' })
 
     const state = stream.state()
 

@@ -1,7 +1,5 @@
 """Completion helpers (@-mention / path fuzzy ranking, repo file listing) for the complete.* RPCs.
-
-Bodies are rebound onto server.py's globals at install time (see
-method_ctx.bind_module), so they reference server.py globals bare.
+Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 from __future__ import annotations
@@ -9,6 +7,12 @@ from __future__ import annotations
 import threading
 
 from .method_ctx import HandlerRegistry, bind_module
+import os
+import subprocess
+import time
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 _registry = HandlerRegistry()
 
@@ -49,7 +53,7 @@ def _walk_repo_files(root: str):
     (the ranker decides based on whether the query starts with `.`)."""
     try:
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = [d for d in dirnames if d not in _FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")]
+            dirnames[:] = [d for d in dirnames if d not in srv._FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")]
             rel_dir = os.path.relpath(dirpath, root)
             for f in filenames:
                 yield (f if rel_dir == "." else f"{rel_dir}/{f}").replace(os.sep, "/")
@@ -61,16 +65,16 @@ def _list_repo_files(root: str) -> list[str]:
     """File paths relative to ``root`` (git listing, else a bounded walk), cached per-root for
     ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes don't respawn git."""
     now = time.monotonic()
-    with _fuzzy_cache_lock:
-        cached = _fuzzy_cache.get(root)
-        if cached and now - cached[0] < _FUZZY_CACHE_TTL_S:
+    with srv._fuzzy_cache_lock:
+        cached = srv._fuzzy_cache.get(root)
+        if cached and now - cached[0] < srv._FUZZY_CACHE_TTL_S:
             return cached[1]
     from itertools import islice
-    files = list(islice(_git_repo_files(root), _FUZZY_CACHE_MAX_FILES))
+    files = list(islice(srv._git_repo_files(root), srv._FUZZY_CACHE_MAX_FILES))
     if not files:
-        files = list(islice(_walk_repo_files(root), _FUZZY_CACHE_MAX_FILES))
-    with _fuzzy_cache_lock:
-        _fuzzy_cache[root] = (now, files)
+        files = list(islice(srv._walk_repo_files(root), srv._FUZZY_CACHE_MAX_FILES))
+    with srv._fuzzy_cache_lock:
+        srv._fuzzy_cache[root] = (now, files)
     return files
 
 
@@ -106,7 +110,7 @@ def _fuzzy_basename_rank(name: str, query: str) -> tuple[int, int] | None:
 def _abs_completion_prefix_exists(path_part: str) -> bool:
     """True when ``path_part`` reads sensibly as an absolute path (parent exists and a
     partially-typed final segment matches an entry): decides `@/foo` = `/foo` vs cwd `foo`."""
-    expanded = _normalize_completion_path(path_part)
+    expanded = srv._normalize_completion_path(path_part)
     parent = os.path.dirname(expanded.rstrip("/")) or "/"
     tail = os.path.basename(expanded.rstrip("/"))
     if not os.path.isdir(parent):
@@ -125,7 +129,7 @@ _DETAILS_MODES = ("hidden", "collapsed", "expanded")
 
 
 def _details_root_meta(candidate: str) -> str:
-    if candidate in _DETAILS_SECTIONS:
+    if candidate in srv._DETAILS_SECTIONS:
         return "section override"
     return "cycle global mode" if candidate == "cycle" else "global mode"
 
@@ -140,25 +144,25 @@ def _details_completions(text: str) -> list[dict] | None:
     body = text[len("/details") :].removeprefix(" ")
     parts = body.split()
     trailing = text.endswith(" ")
-    root_candidates = (*_DETAILS_MODES, "cycle", *_DETAILS_SECTIONS)
+    root_candidates = (*srv._DETAILS_MODES, "cycle", *srv._DETAILS_SECTIONS)
     if not body or (not parts and trailing):
         lead = "" if trailing else " "
-        return [_item(f"{lead}{c}", _details_root_meta(c)) for c in root_candidates]
+        return [srv._item(f"{lead}{c}", srv._details_root_meta(c)) for c in root_candidates]
     if len(parts) == 1 and not trailing:
         prefix = parts[0].lower()
-        return [_item(c, _details_root_meta(c)) for c in root_candidates if c.startswith(prefix) and c != prefix]
+        return [srv._item(c, srv._details_root_meta(c)) for c in root_candidates if c.startswith(prefix) and c != prefix]
     section = parts[0].lower() if parts else ""
-    if section not in _DETAILS_SECTIONS:
+    if section not in srv._DETAILS_SECTIONS:
         return []
 
     def section_meta(candidate: str) -> str:
         return f"clear {section} override" if candidate == "reset" else f"set {section}"
-    mode_candidates = (*_DETAILS_MODES, "reset")
+    mode_candidates = (*srv._DETAILS_MODES, "reset")
     if len(parts) == 1:  # trailing space after the section
-        return [_item(c, section_meta(c)) for c in mode_candidates]
+        return [srv._item(c, section_meta(c)) for c in mode_candidates]
     if len(parts) == 2 and not trailing:
         prefix = parts[1].lower()
-        return [_item(c, section_meta(c)) for c in mode_candidates if c.startswith(prefix) and c != prefix]
+        return [srv._item(c, section_meta(c)) for c in mode_candidates if c.startswith(prefix) and c != prefix]
     return []
 
 
@@ -175,9 +179,13 @@ def _model_picker_context(agent):
         except Exception:
             logger.debug("custom provider identity recovery failed (model picker)", exc_info=True)
     return ctx.with_overrides(
-        current_provider=provider, current_model=model or _resolve_model(), current_base_url=base_url)
+        current_provider=provider, current_model=model or srv._resolve_model(), current_base_url=base_url)
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
+    bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

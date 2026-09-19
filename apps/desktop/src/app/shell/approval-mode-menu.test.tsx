@@ -4,6 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
 import { I18nProvider } from '@/i18n'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { $approvalModes } from '@/store/approval-mode'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
@@ -24,7 +25,7 @@ function Harness({
   requestGateway
 }: {
   profile?: string
-  requestGateway: (method: string, params?: Record<string, unknown>) => Promise<unknown>
+  requestGateway: GatewayRequest
 }) {
   const item = useApprovalModeStatusbarItem(profile, requestGateway)
 
@@ -53,7 +54,10 @@ describe('approval mode statusbar item', () => {
   })
 
   it('writes the selected mode through the gateway and updates its shared trigger label', async () => {
-    const requestGateway = vi.fn(async (_method, params) => ({ value: params?.value ?? 'smart' }))
+    const requestGateway = vi
+      .fn()
+      .mockImplementation(async (_method: string, params?: { value?: string }) => ({ value: params?.value ?? 'smart' }))
+
     render(<Harness profile="work" requestGateway={requestGateway} />)
 
     fireEvent.pointerDown(screen.getByRole('button', { name: /smart/i }), { button: 0 })

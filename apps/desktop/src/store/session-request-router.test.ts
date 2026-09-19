@@ -51,6 +51,7 @@ vi.mock('@/hermes', () => ({
         }
       }
     )
+    onAnyServerRequest = vi.fn(() => () => undefined)
     onState = vi.fn((handler: (state: string) => void) => {
       this.stateHandler = handler
 
@@ -345,7 +346,7 @@ describe('requestForSessionProfile', () => {
     // Active route is 'default'; the session belongs to 'loki'. The failing
     // path sent session.resume on the ambient (default) socket — the default
     // backend has never heard of the session and the bot never woke.
-    const result = await requestForSessionProfile<{ method: string; params: Record<string, unknown> }>(
+    const result = await requestForSessionProfile(
       'loki',
       ambient as never,
       'session.resume',
@@ -551,7 +552,7 @@ describe('requestForSessionProfile', () => {
     // owner back to the primary socket — so no secondary is spun up. The
     // ambient fn isn't used (routing goes through requestGatewayForProfile),
     // but the request still lands on the one primary gateway.
-    const result = await requestForSessionProfile<{ method: string; params: Record<string, unknown> }>(
+    const result = await requestForSessionProfile(
       'loki',
       ambient as never,
       'session.activate',

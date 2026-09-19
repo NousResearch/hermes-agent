@@ -1,12 +1,12 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { compactNumber } from '@hermes/shared/format'
-import type { Usage } from '@hermes/shared/gateway-events'
+import type { SystemBatteryResult, Usage } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { IndicatorStyle, Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
@@ -220,7 +220,7 @@ function statusSessionCountLabel(count: number) {
 
 // Colour the battery read-out by its (Python-computed) category. Inverted vs
 // the context bar — a full battery is "good", an empty one "critical".
-function batteryColor(info: BatteryInfo, t: Theme): string {
+function batteryColor(info: SystemBatteryResult, t: Theme): string {
   if (info.category === 'good') {
     return t.color.statusGood
   }
@@ -242,7 +242,7 @@ function batteryColor(info: BatteryInfo, t: Theme): string {
 
 // Compact battery label: a bolt while charging, else a battery glyph.
 // Renders `--` for an unknown percent so a null can never surface as "null%".
-function batteryLabel(info: BatteryInfo): string {
+function batteryLabel(info: SystemBatteryResult): string {
   return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
 }
 
@@ -934,7 +934,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
-  battery?: BatteryInfo | null
+  battery?: SystemBatteryResult | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean
   bgCount: number

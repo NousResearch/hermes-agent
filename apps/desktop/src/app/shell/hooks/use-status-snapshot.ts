@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
@@ -11,7 +12,7 @@ import type { StatusResponse } from '@/types/hermes'
 // visibility listeners refresh immediately on return.
 const REFRESH_MS = 60_000
 
-type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+type GatewayRequester = GatewayRequest
 
 export function useStatusSnapshot(
   gatewayState: string | undefined,

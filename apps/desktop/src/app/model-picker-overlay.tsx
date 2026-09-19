@@ -6,6 +6,7 @@ import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { ModelPickerDialog } from '@/components/model-picker'
 import type { HermesGateway } from '@/hermes'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { resolveModelPickerOwner } from '@/lib/model-picker-owner'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
@@ -25,7 +26,7 @@ interface ModelPickerOverlayProps {
   onSelect: (selection: ModelSelection) => void
   ownerConnectionId?: string
   profile: string
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
 export function ModelPickerOverlay({
@@ -62,9 +63,8 @@ export function ModelPickerOverlay({
     sessionTiles
   })
 
-  const requestPickerGateway = useCallback(
-    <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
-      requestForSessionProfile<T>(pickerOwner.route, requestGateway, method, params),
+  const requestPickerGateway = useCallback<GatewayRequest>(
+    (method, params) => requestForSessionProfile(pickerOwner.route, requestGateway, method, params),
     [pickerOwner.route, requestGateway]
   )
 

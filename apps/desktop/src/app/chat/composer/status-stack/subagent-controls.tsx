@@ -26,7 +26,7 @@ export function SubagentControls({ sessionId, subagentId, text, setText }: Subag
     try {
       // Unlike global chrome, a child control must NEVER fall back to whichever
       // gateway happens to be active, even on a legacy unbound session.
-      const result = await requestForOwnedSession<{ found?: boolean; status?: string }>(
+      const result = await requestForOwnedSession(
         sessionId,
         async () => {
           throw new Error(t.agents.requestRejected)
@@ -35,7 +35,9 @@ export function SubagentControls({ sessionId, subagentId, text, setText }: Subag
         { session_id: sessionId, subagent_id: subagentId, ...(action === 'steer' ? { text: text.trim() } : {}) }
       )
 
-      if (action === 'steer' ? result.status !== 'queued' : !result.found) {
+      const accepted = 'status' in result ? result.status === 'queued' : result.found
+
+      if (!accepted) {
         throw new Error(t.agents.requestRejected)
       }
 

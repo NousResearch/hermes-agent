@@ -14,6 +14,7 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
+import type { JsonValue } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -45,11 +46,29 @@ const sdk = vi.hoisted(() => {
     return Stub
   }
 
+  /** The editor loads its catalog from these two reads; both answers are the
+   *  gateway's own empty result, which is what the contract requires. */
+  const answers = {
+    'mcp.catalog': { servers: [] },
+    'profiles.describe': {
+      description: '',
+      mcp_servers: [],
+      model: { default: '', provider: '' },
+      name: '',
+      skills: [],
+      soul: '',
+      toolsets: [],
+      toolsets_pinned: false
+    }
+  } satisfies Record<string, Record<string, JsonValue>>
+
+  const answerFor = (method: string) => Object.entries(answers).find(([name]) => name === method)?.[1] ?? {}
+
   return {
     exports: {} as Record<string, unknown>,
     gatewayReads: { count: 0 },
-    request: vi.fn(async () => ({})),
-    requestProfile: vi.fn(async () => ({})),
+    request: vi.fn(async (method: string) => answerFor(method)),
+    requestProfile: vi.fn(async (_route: RosterRow['route'], method: string) => answerFor(method)),
     seen,
     spy
   }

@@ -1,3 +1,4 @@
+import type { PetInfoMetaResult, PetInfoResult } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
@@ -15,37 +16,28 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump' | 'waiting'
 
-export interface PetInfo {
-  enabled: boolean
-  slug?: string
-  displayName?: string
-  mime?: string
-  spritesheetBase64?: string
-  // Stable sheet revision (`mtime_ns:size`) from the gateway; lets the desktop
-  // skip full sprite payload refreshes when the active pet hasn't changed.
-  spritesheetRevision?: string
-  frameW?: number
-  frameH?: number
-  framesPerState?: number
-  // Real (padding-trimmed) frame count per state row, from the engine. Lets the
-  // canvas step only frames that exist instead of a fixed framesPerState, which
-  // would animate into the transparent padding of ragged sheets (blank flash).
-  framesByState?: Record<string, number>
-  // Concrete Codex row counts (e.g. running-right may have 8 frames even though
-  // the Hermes "run" activity state uses the in-place running row).
-  framesByRow?: Record<string, number>
-  loopMs?: number
-  scale?: number
-  stateRows?: string[]
+export type PetInfo = PetInfoResult
+
+/** The "no pet" reading of `pet.info`: the contract spells every field, so the absent ones are explicit nulls. */
+export const PET_DISABLED: PetInfo = {
+  displayName: null,
+  enabled: false,
+  frameH: null,
+  frameW: null,
+  framesByRow: null,
+  framesByState: null,
+  framesPerState: null,
+  loopMs: null,
+  mime: null,
+  scale: null,
+  slug: null,
+  spritesheetBase64: null,
+  spritesheetRevision: null,
+  spritesheetUnchanged: null,
+  stateRows: null
 }
 
-export interface PetInfoMeta {
-  enabled: boolean
-  slug?: string
-  displayName?: string
-  scale?: number
-  spritesheetRevision?: string
-}
+export type PetInfoMeta = PetInfoMetaResult
 
 export function hasPetSpriteForMeta(info: PetInfo, meta: PetInfoMeta): boolean {
   return (
@@ -60,7 +52,7 @@ export function hasPetSpriteForMeta(info: PetInfo, meta: PetInfoMeta): boolean {
 
 export function mergePetInfoMeta(info: PetInfo, meta: PetInfoMeta): PetInfo {
   if (!meta.enabled) {
-    return info.enabled ? { enabled: false } : info
+    return info.enabled ? PET_DISABLED : info
   }
 
   // Fast-path: nothing changed — return the same reference so callers can
@@ -136,7 +128,7 @@ export function derivePetState(activity: PetActivity): PetState {
   return 'idle'
 }
 
-export const $petInfo = atom<PetInfo>({ enabled: false })
+export const $petInfo = atom<PetInfo>(PET_DISABLED)
 export const $petActivity = atom<PetActivity>({})
 
 /** Pet installed + enabled with a loaded spritesheet (ready to show/react). */

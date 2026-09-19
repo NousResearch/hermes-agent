@@ -1,12 +1,12 @@
-import { compactNumber } from '@hermes/shared'
+import { compactNumber, type ContextCategory, type SessionContextBreakdownResult } from '@hermes/shared'
 import { useMemo } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
+import type { UsageStats } from '@/types/hermes'
 
 interface ContextUsagePanelProps {
-  breakdown: ContextBreakdown | null
+  breakdown: SessionContextBreakdownResult | null
   loading: boolean
   usage: UsageStats
 }
@@ -79,7 +79,7 @@ function ContextUsageBar({
   categories,
   segmentTotal
 }: {
-  categories: readonly ContextUsageCategory[]
+  categories: readonly ContextCategory[]
   segmentTotal: number
 }) {
   return (

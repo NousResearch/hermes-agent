@@ -16,13 +16,12 @@
  * authoring/activating a skin from a prompt, or `/skin` elsewhere) repaints.
  */
 
-import type { HermesSkin } from '@hermes/shared/skin'
 import { atom } from 'nanostores'
 
 import { readJson, writeJson } from '@/lib/storage'
 
 import { BUILTIN_THEMES } from './presets'
-import { skinToDesktopTheme } from './skin'
+import { type SkinSource, skinToDesktopTheme } from './skin'
 import { type DesktopTheme, isValidTheme } from './types'
 
 // Cached so the boot-time paint (which runs before the gateway connects) can
@@ -66,10 +65,10 @@ export function __resetBackendSkinSync(): void {
  * records the baseline; `apply: true` (runtime change / poll) repaints on a name
  * change. Built-in names keep the desktop's own palette but can still be applied.
  */
-export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }: { apply: boolean }): void {
-  const name = (skin && typeof skin === 'object' ? (skin.name ?? '') : '').trim()
+export function ingestBackendSkin(skin: SkinSource | undefined | null, { apply }: { apply: boolean }): void {
+  const name = (skin?.name ?? '').trim()
 
-  if (!name) {
+  if (!skin || !name) {
     return
   }
 
@@ -81,7 +80,7 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
   // never shadow it, but the name is still a valid apply target.
   if (name !== 'default' && !BUILTIN_THEMES[name]) {
-    const theme = skinToDesktopTheme(skin as HermesSkin)
+    const theme = skinToDesktopTheme(skin)
 
     if (!theme) {
       return

@@ -6,12 +6,14 @@ const { refreshSupportedSessionControlAfterTurn } = vi.hoisted(() => ({
 
 vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterTurn }))
 
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEvent } from '@hermes/shared'
+
+import { messageCompletePayload, messageDeltaPayload } from '@/test/contract'
 
 import { handleMessageStreamEvent } from './message-stream'
 import type { GatewayEventContext } from './types'
 
-function context(type: GatewayEventName): GatewayEventContext {
+function context(event: GatewayEvent<'message.complete' | 'message.delta'>): GatewayEventContext {
   return {
     deps: {
       activeGatewayProfile: 'default',
@@ -34,12 +36,11 @@ function context(type: GatewayEventName): GatewayEventContext {
       updateSessionState: vi.fn(),
       upsertToolCall: vi.fn()
     },
-    event: { type },
+    event,
     explicitSid: 's1',
     fromActiveSource: () => true,
     isActiveEvent: false,
     occurredAt: 1_700_000_100,
-    payload: { text: 'completed' },
     scheduleConfigRefresh: vi.fn(),
     sessionId: 's1'
   }
@@ -47,10 +48,12 @@ function context(type: GatewayEventName): GatewayEventContext {
 
 describe('handleMessageStreamEvent session-control integration', () => {
   it('refreshes only after message.complete, through the store seam', () => {
-    expect(handleMessageStreamEvent(context('message.delta'))).toBe(true)
+    expect(handleMessageStreamEvent(context({ payload: messageDeltaPayload({ text: 'completed' }), type: 'message.delta' }))).toBe(true)
     expect(refreshSupportedSessionControlAfterTurn).not.toHaveBeenCalled()
 
-    expect(handleMessageStreamEvent(context('message.complete'))).toBe(true)
+    expect(handleMessageStreamEvent(
+        context({ payload: messageCompletePayload({ text: 'completed' }), type: 'message.complete' })
+      )).toBe(true)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledTimes(1)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledWith('s1')
   })

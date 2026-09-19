@@ -1,14 +1,21 @@
 """Session working-directory + durable session row: cwd resolution/healing, session.db row ensure,
-branch seed, history rewind, git meta persistence. Bodies are rebound onto server.py's globals at
-install time (method_ctx.bind_module), so they reference server.py globals bare.
+branch seed, history rewind, git meta persistence. Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 from __future__ import annotations
 
 import contextlib
+from typing import Any
 from tui_gateway import git_probe
 
+from .contracts.events import SessionInfoPayload
 from .method_ctx import bind_module
+from pathlib import Path
+import os
+import threading
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 
 def _normalize_completion_path(path_part: str) -> str:
@@ -20,13 +27,12 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
-def _completion_cwd(params: dict | None = None) -> str:
-    params = params or {}
+def _completion_cwd(*, cwd: str | None = None, session_id: str | None = None, profile: str | None = None) -> str:
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
-    raw = (params.get("cwd") or _sessions.get(params.get("session_id") or "", {}).get("cwd")
-           or _profile_configured_cwd(_profile_home(params.get("profile"))) or _launch_configured_cwd()
+    raw = (cwd or srv._sessions.get(session_id or "", {}).get("cwd")
+           or srv._profile_configured_cwd(srv._profile_home(profile)) or srv._launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
     with contextlib.suppress(Exception):
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
@@ -38,7 +44,7 @@ def _completion_cwd(params: dict | None = None) -> str:
 def _workdir_terminal_cfg(key: str) -> str:
     """Stripped ``terminal.<key>`` from config, or "" when unset/unreadable."""
     with contextlib.suppress(Exception):
-        terminal_cfg = _load_cfg().get("terminal", {})
+        terminal_cfg = srv._load_cfg().get("terminal", {})
         if isinstance(terminal_cfg, dict):
             return str(terminal_cfg.get(key) or "").strip()
     return ""
@@ -47,30 +53,30 @@ def _workdir_terminal_cfg(key: str) -> str:
 def _terminal_task_cwd(session: dict | None) -> str:
     """The cwd terminal_tool should use for this TUI session (NOT host-validated: a non-local backend's cwd lives
     inside the target environment)."""
-    return _terminal_task_cwd_with_source(session)[0]
+    return srv._terminal_task_cwd_with_source(session)[0]
 
 
 def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     """``(cwd, source)``: ``"session"`` for THIS session's workspace (``explicit_cwd``/tracked dir), ``"process"`` for
     the global ``TERMINAL_CWD``/``terminal.cwd`` fallback — under per-session docker isolation that is a PREVIOUS
     session's launch artifact, so terminal_tool refuses it as a bind-mount source."""
-    backend = _effective_terminal_backend()
+    backend = srv._effective_terminal_backend()
     if backend != "local":
         # THIS session's explicit workspace beats the LAST session's env var.
         if session and session.get("explicit_cwd") and session.get("cwd"):
             return str(session["cwd"]), "session"
-        raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
+        raw = os.environ.get("TERMINAL_CWD", "").strip() or srv._workdir_terminal_cfg("cwd")
         if raw and raw not in {".", "auto", "cwd"}:
             return raw, "process"
         if backend == "ssh":
             return "~", "process"
     if session and session.get("cwd"):
         return str(session["cwd"]), "session"
-    return _completion_cwd(), "process"
+    return srv._completion_cwd(), "process"
 
 
 def _session_cwd(session: dict | None) -> str:
-    return str(session["cwd"]) if session and session.get("cwd") else _completion_cwd()
+    return str(session["cwd"]) if session and session.get("cwd") else srv._completion_cwd()
 
 
 # Sources whose launch directory is an artifact of how the app was started, not a workspace the user picked.
@@ -79,14 +85,14 @@ _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
 
 def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
     """Whether the session cwd came from app launch rather than user intent."""
-    return bool(session and not session.get("explicit_cwd") and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE)
+    return bool(session and not session.get("explicit_cwd") and srv._session_source(session) in srv._LAUNCH_CWD_NOT_A_WORKSPACE)
 
 
 def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
-        return _session_cwd(session)
-    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
+        return srv._session_cwd(session)
+    if srv._session_source(session) in srv._LAUNCH_CWD_NOT_A_WORKSPACE:
         return None
     return str(session.get("cwd") or "") or None  # the session's OWN dir, never _session_cwd's gateway-wide fallback
 
@@ -123,19 +129,19 @@ def _effective_terminal_backend() -> str:
     ``terminal.backend`` into env), else the ``terminal.backend`` config key (in-process gateways skip that bridge)."""
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     if not backend or backend == "local":
-        backend = _workdir_terminal_cfg("backend").lower()
+        backend = srv._workdir_terminal_cfg("backend").lower()
     return backend or "local"
 
 
 def _display_session_cwd(session: dict | None) -> str:
     """Session cwd for display/probe surfaces, healed past deleted worktrees (healed value persisted back; local only)."""
-    cwd = _session_cwd(session)
-    if not _is_local_terminal_backend():
+    cwd = srv._session_cwd(session)
+    if not srv._is_local_terminal_backend():
         return cwd
-    healed = _heal_dead_cwd(cwd)
+    healed = srv._heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
         session["cwd"] = healed
-        _persist_session_cwd_and_schedule_git_meta(session, healed)
+        srv._persist_session_cwd_and_schedule_git_meta(session, healed)
     return healed
 
 
@@ -147,7 +153,7 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed here)."""
     # An explicit choice only moves by another explicit action; a cwd adopted HERE is marked `cwd_from_settle` so
     # successive settles keep following.
-    if not session or not _is_local_terminal_backend():
+    if not session or not srv._is_local_terminal_backend():
         return False
     if session.get("explicit_cwd") and not session.get("cwd_from_settle"):
         return False
@@ -158,7 +164,7 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     except Exception:
         return False
     resolved = os.path.abspath(os.path.expanduser(str(recorded)))
-    current = os.path.abspath(os.path.expanduser(_session_cwd(session)))
+    current = os.path.abspath(os.path.expanduser(srv._session_cwd(session)))
     if resolved == current or not os.path.isdir(resolved):
         return False
     # Worktree ROOTS (folding to the common root would hide the move), both in a git tree, different from each other,
@@ -172,8 +178,8 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     # This is the session's workspace now (a desktop launch-artifact cwd earns a real row); the settle marker keeps it
     # overridable by the NEXT settle.
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=True)
-    _register_session_cwd(session)
-    _persist_session_cwd_and_schedule_git_meta(session, resolved)
+    srv._register_session_cwd(session)
+    srv._persist_session_cwd_and_schedule_git_meta(session, resolved)
     return True
 
 
@@ -181,15 +187,15 @@ def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
     """Emit end-of-turn ``session.info``, reconciling a settled cwd first (the agent has stopped moving; riding the
     turn-end event needs no new event type/round trip)."""
     try:
-        _reconcile_session_cwd_from_terminal(session)
+        srv._reconcile_session_cwd_from_terminal(session)
     except Exception:
         logger.debug("failed to reconcile settled session cwd", exc_info=True)
-    _emit("session.info", sid, _session_info(agent, session))
+    srv._emit("session.info", sid, SessionInfoPayload.of(srv._session_info(agent, session)))
 
 
 def _session_source(session: dict | None) -> str:
     source = str(session.get("source") or "").strip() if session else ""
-    return source or _resolve_session_platform()
+    return source or srv._resolve_session_platform()
 
 
 def _register_session_cwd(session: dict | None) -> None:
@@ -201,7 +207,7 @@ def _register_session_cwd(session: dict | None) -> None:
         agent.session_cwd = session.get("cwd") or None
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
-        cwd, cwd_source = _terminal_task_cwd_with_source(session)
+        cwd, cwd_source = srv._terminal_task_cwd_with_source(session)
         register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
 
 
@@ -211,7 +217,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     global default here wins the INSERT-OR-IGNORE race (a reconnect silently reverts to the profile default).
     model_config carries provider/reasoning/service_tier so resume restores effort + fast too."""
     override = raw if isinstance(raw := session.get("model_override"), dict) else {}
-    row_model = str(override.get("model") or "").strip() or _resolve_model()
+    row_model = str(override.get("model") or "").strip() or srv._resolve_model()
     model_config: dict = {k: str(v) for k in ("model", "provider", "base_url", "api_mode") if (v := override.get(k))}
     # A RESOLVED provider "custom" (named ``providers:``/``custom_providers:`` entry) persisted bare here is the origin
     # of "No LLM provider configured" rows (resume routes to OpenRouter with no key). Recover the durable
@@ -259,32 +265,32 @@ def _ensure_session_db_row(session: dict) -> bool:
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")
-    with _workdir_owner_db(session, "failed to open profile db for session row") as db:
-        if db is _WORKDIR_DB_OPEN_FAILED:
+    with srv._workdir_owner_db(session, "failed to open profile db for session row") as db:
+        if db is srv._WORKDIR_DB_OPEN_FAILED:
             return False
         if db is None:
             # Fail loud ONLY when the store failed to open (_db_error records the SessionDB open exception); None with
             # no recorded error means "no store in this context" -> True.
             # A None db with no recorded error means "no store in this context" (degraded harness, store
             # deliberately absent) — that keeps the pinned best-effort contract and stays True. See #98924.
-            return _db_error is None
-        row_model, model_config = _workdir_row_model_config(session)
+            return srv._db_error is None
+        row_model, model_config = srv._workdir_row_model_config(session)
         try:
             db.create_session(
-                key, source=_session_source(session), model=row_model, model_config=model_config or None,
-                parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
+                key, source=srv._session_source(session), model=row_model, model_config=model_config or None,
+                parent_session_id=session.get("parent_session_id") or None, cwd=srv._persisted_session_cwd(session),
                 # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
                 # built with — the row is the only place the identity reaches the store, and the upsert can't
                 # add it later (user_id is set at insert). None (no password provider, legacy token, stdio)
                 # leaves the column empty exactly as before.
-                user_id=_session_auth_user_id(session),
+                user_id=srv._session_auth_user_id(session),
                 # Self-describing rows: aggregators merging several profile DBs can't rely on which file a row came
                 # from; a NULL is only repaired by the one-shot backfill.
                 # Stamp the launch profile explicitly instead of leaving NULL — NULL is exactly what the
                 # #94724 legacy-owner backfill exists to repair, and rows minted AFTER that one-shot
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
-                profile_name=profile_name_for_home(profile_home) or _current_profile_name())
+                profile_name=srv.profile_name_for_home(profile_home) or srv._current_profile_name())
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
@@ -294,7 +300,7 @@ def _ensure_session_db_row(session: dict) -> bool:
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
-            _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
+            srv._workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
 
 
@@ -326,7 +332,7 @@ def _persist_branch_seed(session: dict) -> None:
         seed = [dict(msg) for msg in (session.get("history") or [])]
     if not seed:
         return
-    with _session_db(session) as db:
+    with srv._session_db(session) as db:
         if db is None:
             return
         try:
@@ -335,11 +341,11 @@ def _persist_branch_seed(session: dict) -> None:
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
             db.append_messages_batch(
-                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS}} for msg in seed],
+                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in srv._WORKDIR_SEED_FIELDS}} for msg in seed],
                 chunk_rows=500)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
-            _workdir_reraise_disk_full(exc, "branch seed persist failed")
+            srv._workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
 def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
@@ -411,9 +417,9 @@ def _workdir_owner_db(session: dict, fail_log: str):
             db, close_db = acquire(Path(profile_home) / "state.db"), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
-            db = _WORKDIR_DB_OPEN_FAILED
+            db = srv._WORKDIR_DB_OPEN_FAILED
     else:
-        db = _get_db()
+        db = srv._get_db()
     try:
         yield db
     finally:
@@ -427,8 +433,8 @@ def _workdir_owner_db(session: dict, fail_log: str):
 def _session_db(session: dict):
     """Yield the SessionDB that owns this session's row (profile-aware): a remote/profile session persists into its own
     profile's ``state.db`` (fresh handle, closed on exit); else the shared ``_get_db()`` handle (left open). None if unavailable."""
-    with _workdir_owner_db(session, "failed to open profile db for session") as db:
-        yield None if db is _WORKDIR_DB_OPEN_FAILED else db
+    with srv._workdir_owner_db(session, "failed to open profile db for session") as db:
+        yield None if db is srv._WORKDIR_DB_OPEN_FAILED else db
 
 
 def _rewind_active_session_history(
@@ -438,13 +444,13 @@ def _rewind_active_session_history(
     only after the commit); a session without a key rewinds the warm history alone."""
     from agent.context_compressor import history_before_user_originated_turn, retryable_user_text, user_originated_turn_view
 
-    history = _history_without_ephemeral_scaffolding(session.get("history", []))
+    history = srv._history_without_ephemeral_scaffolding(session.get("history", []))
     user_indices = [i for i, m in enumerate(history) if user_originated_turn_view(m) is not None]
     if user_ordinal < 0 or user_ordinal >= len(user_indices):
         raise ValueError("target user message is no longer in session history")
     session_key = str(session.get("session_key") or "").strip()
     if session_key:
-        with _session_db(session) as db:
+        with srv._session_db(session) as db:
             if db is None:
                 raise RuntimeError("session database is unavailable")
             outcome = db.rewind_user_turn(
@@ -487,7 +493,7 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     session-init / cwd-set path would stall startup on a slow or unreachable ``cwd``. Persists via the same
     profile-aware db the caller wrote ``cwd`` to. Best-effort: a probe failure leaves the enrichment columns unset."""
     session_key = session.get("session_key", "")
-    if not session_key or not cwd or not _workdir_valid_generation(generation):
+    if not session_key or not cwd or not srv._workdir_valid_generation(generation):
         return
     # Snapshot routing fields; the live session dict may be gone when the thread runs.
     db_session = {"session_key": session_key, "profile_home": session.get("profile_home")}
@@ -497,7 +503,7 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
             branch, root = git_probe.branch(cwd), git_probe.common_repo_root(cwd)
             if not (branch or root):
                 return
-            with _session_db(db_session) as db:
+            with srv._session_db(db_session) as db:
                 if db is not None:
                     db.publish_session_git_metadata(session_key, cwd, generation, branch, root)
         except Exception:
@@ -509,16 +515,16 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
 def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=None) -> int | None:
     """Claim a DB-backed probe generation, then start Git enrichment."""
     try:
-        with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as owner_db:
+        with (contextlib.nullcontext(db) if db is not None else srv._session_db(session)) as owner_db:
             if owner_db is None:
                 return None
             generation = owner_db.update_session_cwd(session.get("session_key", ""), cwd)
     except Exception:
         logger.debug("failed to persist session cwd", exc_info=True)
         return None
-    if not _workdir_valid_generation(generation):
+    if not srv._workdir_valid_generation(generation):
         return None
-    _persist_session_git_meta(session, cwd, generation)
+    srv._persist_session_git_meta(session, cwd, generation)
     return generation
 
 
@@ -530,9 +536,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
         raise ValueError(f"working directory does not exist: {cwd}")
     # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted cwd.
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
-    _register_session_cwd(session)
+    srv._register_session_cwd(session)
     # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
-    _persist_session_cwd_and_schedule_git_meta(session, resolved)
+    srv._persist_session_cwd_and_schedule_git_meta(session, resolved)
     with contextlib.suppress(Exception):
         from tools.terminal_tool_lifecycle import cleanup_vm
         cleanup_vm(session["session_key"])
@@ -540,5 +546,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
 
 
 def register(server) -> None:
-    """Publish this module's helpers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    """Publish this module's helpers onto ``server`` and install its handlers."""
+    bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

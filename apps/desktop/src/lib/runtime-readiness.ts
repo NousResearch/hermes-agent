@@ -1,30 +1,10 @@
-export interface SetupStatusSnapshot {
-  provider_configured?: boolean
-  /** Additive launch-profile fields (newer backends only; absent on older
-   *  ones). Carried for consumers that read the record — readiness itself
-   *  still keys on `provider_configured` + `setup.runtime_check`. */
-  ready?: boolean
-  free_tier?: boolean
-  other_providers?: boolean
-  inference_provider?: string
-  /** Present only when the boot bootstrap could not create the free-tier
-   *  identity: the failure code, its sentence, and whether / when a retry can
-   *  succeed. Same shape as `free_tier.status`. */
-  error?: string
-  error_code?: string
-  retryable?: boolean
-  retry_after?: number
-}
+import type { RpcMethods, SetupRuntimeCheckResult, SetupStatusResult } from '@hermes/shared'
 
-export interface RuntimeCheckSnapshot {
-  error?: string
-  /** True when the resolved route is the free tier rather than a credential of
-   *  the user's own. Absent on older backends. */
-  free_tier?: boolean
-  model?: string
-  ok?: boolean
-  provider?: string
-}
+import type { GatewayRequest } from '@/lib/gateway-rpc'
+
+export type SetupStatusSnapshot = SetupStatusResult
+
+export type RuntimeCheckSnapshot = SetupRuntimeCheckResult
 
 export interface RuntimeReadinessSignals {
   setup: null | SetupStatusSnapshot
@@ -55,7 +35,7 @@ export interface RuntimeReadinessResult {
 
 export type RuntimeReadinessDisplay = 'checking' | 'needs_setup' | 'ready' | 'unavailable'
 
-export type RuntimeReadinessRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type RuntimeReadinessRequester = GatewayRequest
 
 const DEFAULT_NOT_READY_REASON = 'Add a provider credential before sending your first message.'
 
@@ -81,13 +61,13 @@ function normalizeMessage(value: null | string | undefined): null | string {
   return next ? next : null
 }
 
-async function requestWithFallback<T>(
+async function requestWithFallback<M extends keyof RpcMethods>(
   requestGateway: RuntimeReadinessRequester,
-  method: string,
-  params?: Record<string, unknown>
-): Promise<{ error: null | string; value: null | T }> {
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<{ error: null | string; value: null | RpcMethods[M]['result'] }> {
   try {
-    return { error: null, value: await requestGateway<T>(method, params) }
+    return { error: null, value: await requestGateway(method, params) }
   } catch (error) {
     return { error: toErrorMessage(error), value: null }
   }
@@ -97,11 +77,11 @@ export async function fetchRuntimeReadinessSignals(
   requestGateway: RuntimeReadinessRequester,
   requestedProvider?: string
 ): Promise<RuntimeReadinessSignals> {
-  const runtimeParams = requestedProvider?.trim() ? { provider: requestedProvider.trim() } : undefined
+  const runtimeParams = requestedProvider?.trim() ? { provider: requestedProvider.trim() } : {}
 
   const [setup, runtime] = await Promise.all([
-    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status'),
-    requestWithFallback<RuntimeCheckSnapshot>(requestGateway, 'setup.runtime_check', runtimeParams)
+    requestWithFallback(requestGateway, 'setup.status', {}),
+    requestWithFallback(requestGateway, 'setup.runtime_check', runtimeParams)
   ])
 
   return {

@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Vendored stand-in for the external meta-schema the OpenRPC meta-schema references (https://meta.json-schema.tools). It carries the only shape that reference dereferences: definitions/JSONSchemaObject/properties/$ref. Resolving it locally keeps the OpenRPC validation hermetic \u2014 jsonschema's automatic remote retrieval made this check depend on runner egress and it flaked in CI.",
+  "definitions": {
+    "JSONSchemaObject": {
+      "properties": {
+        "$ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

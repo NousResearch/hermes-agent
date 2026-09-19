@@ -8,7 +8,8 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
-import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
+import type { ApprovalChoice, ConfigSetResult, GatewayEvent, RpcMethods } from '@hermes/shared/gateway-events'
+import { type AnyServerRequest, JSON_RPC_METHOD_NOT_FOUND } from '@hermes/shared/json-rpc-channel'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -20,22 +21,14 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import type { SubagentListResponse } from '../gatewayTypes.js'
-import type {
-  AnyGatewayEvent,
-  ClarifyLockResponse,
-  ConfigSetResponse,
-  SessionActiveListResponse,
-  SessionCloseResponse,
-  TerminalResizeResponse
-} from '../gatewayTypes.js'
+import { configValueText } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import {
   buildToolTrailLine,
@@ -58,7 +51,7 @@ import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfa
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
-import { respondToServerRequest } from './serverRequestStore.js'
+import { respondToServerRequest, type ServerRequestResult } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -101,10 +94,10 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
 
 export interface PromptLiveSessionOptions {
   dispatchSubmission: (full: string) => void
-  maybeWarn: (value: unknown) => void
+  maybeWarn: (result: ConfigSetResult | null) => void
   modelArg?: string
   newLiveSession: (msg?: string, title?: string) => Promise<null | string> | null | string | void
-  onModelSwitched?: (value: string, result: ConfigSetResponse) => void
+  onModelSwitched?: (value: string, result: ConfigSetResult | null) => void
   prompt: string
   rpc: GatewayRpc
   sys: (text: string) => void
@@ -141,17 +134,19 @@ export async function startPromptLiveSession({
   const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
 
   if (requestedModel) {
-    const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
+    const result = await rpc('config.set', { key: 'model', session_id: sid, value: requestedModel })
 
-    if (!result?.value) {
+    const model = result ? configValueText(result.value) : ''
+
+    if (!model) {
       sys('error: invalid response: model switch')
 
       return sid
     }
 
-    sys(`model → ${result.value}`)
+    sys(`model → ${model}`)
     maybeWarn(result)
-    onModelSwitched?.(result.value, result)
+    onModelSwitched?.(model, result)
   }
 
   dispatchSubmission(trimmed)
@@ -243,8 +238,8 @@ export function useMainApp(gw: GatewayClient) {
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
-  const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
-  const onServerRequestRef = useRef<(request: ServerRequest) => boolean>(() => false)
+  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
+  const onServerRequestRef = useRef<(request: AnyServerRequest) => boolean>(() => false)
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const submitLiteralRef = useRef<(value: string) => void>(() => {})
@@ -506,29 +501,18 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const maybeWarn = useCallback(
-    (value: unknown) => {
-      const warning = (value as { warning?: unknown } | null)?.warning
-
-      if (typeof warning === 'string' && warning) {
-        sys(`warning: ${warning}`)
+    (result: ConfigSetResult | null) => {
+      if (result?.warning) {
+        sys(`warning: ${result.warning}`)
       }
     },
     [sys]
   )
 
   const rpc: GatewayRpc = useCallback(
-    async <T extends Record<string, any> = Record<string, any>>(
-      method: string,
-      params: Record<string, unknown> = {}
-    ) => {
+    async <M extends keyof RpcMethods>(method: M, params: RpcMethods[M]['params']) => {
       try {
-        const result = asRpcResult<T>(await gw.request<T>(method, params))
-
-        if (result) {
-          return result
-        }
-
-        sys(`error: invalid response: ${method}`)
+        return await gw.request(method, params)
       } catch (e) {
         sys(`error: ${rpcErrorMessage(e)}`)
       }
@@ -609,22 +593,19 @@ export function useMainApp(gw: GatewayClient) {
     let stopped = false
     applyAgentSnapshot(ui.sid)
 
-    const refresh = () => {
-      const sid = ui.sid
-      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
-        .then(raw => {
-          const result = asRpcResult<SubagentListResponse>(raw)
+    const sid = ui.sid
 
-          if (!stopped && result && getUiState().sid === sid) {
+    const refresh = () => {
+      gw.request('subagent.list', { session_id: sid })
+        .then(result => {
+          if (!stopped && getUiState().sid === sid) {
             applyAgentSnapshot(sid, result)
           }
         })
         .catch(() => {})
-      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
-        .then(raw => {
-          const result = asRpcResult<SessionActiveListResponse>(raw)
-
-          if (!stopped && result?.sessions) {
+      gw.request('session.active_list', { current_session_id: getUiState().sid })
+        .then(result => {
+          if (!stopped) {
             const liveSessionCount = result.sessions.length
 
             // Surface the current session's (auto-)title for the terminal
@@ -700,7 +681,9 @@ export function useMainApp(gw: GatewayClient) {
           scrollRef.current.scrollToBottom()
         }
 
-        void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+        if (ui.sid) {
+          void rpc('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+        }
       }, 100)
     }
 
@@ -725,6 +708,8 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
+      const params = clarify.params
+
       if (!respondToServerRequest(clarify.requestId, { answer })) {
         // The request already expired (request.cancel raced the keystroke): nothing to answer.
         patchOverlayState({ clarify: null })
@@ -739,7 +724,7 @@ export function useMainApp(gw: GatewayClient) {
             kind: 'trail',
             role: 'system',
             text: '',
-            tools: [buildToolTrailLine('clarify', clarify.question)]
+            tools: [buildToolTrailLine('clarify', params.kind === 'single' ? params.question : '')]
           })
           appendMessage({ role: 'user', text: answer })
           patchUiState({ status: 'running…' })
@@ -749,9 +734,10 @@ export function useMainApp(gw: GatewayClient) {
           // survives on screen as standard output, matching the timeout path.
           appendMessage({
             role: 'system',
-            text: clarify.questions?.length
-              ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'cancelled')
-              : formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+            text:
+              params.kind === 'batch'
+                ? formatAbandonedClarifyBatch(params.questions, clarify.answers, 'cancelled')
+                : formatAbandonedClarify(params.question, params.choices, 'cancelled')
           })
         }
 
@@ -768,11 +754,13 @@ export function useMainApp(gw: GatewayClient) {
     (qid: string, answer: string) => {
       const clarify = overlay.clarify
 
-      if (!clarify?.questions?.length) {
+      if (clarify?.params.kind !== 'batch') {
         return
       }
 
-      rpc<ClarifyLockResponse>('clarify.lock', {
+      const questions = clarify.params.questions
+
+      rpc('clarify.lock', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
@@ -781,7 +769,7 @@ export function useMainApp(gw: GatewayClient) {
           return
         }
 
-        const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+        const answers = { ...clarify.answers, [qid]: answer }
 
         if (r.status === 'expired') {
           patchOverlayState({ clarify: null })
@@ -806,12 +794,12 @@ export function useMainApp(gw: GatewayClient) {
           kind: 'trail',
           role: 'system',
           text: '',
-          tools: [buildToolTrailLine('clarify', `${clarify.questions!.length} questions`)]
+          tools: [buildToolTrailLine('clarify', `${questions.length} questions`)]
         })
         appendMessage({
           role: 'user',
-          text: clarify
-            .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
+          text: questions
+            .map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
             .join('\n')
         })
         patchUiState({ status: 'running…' })
@@ -948,7 +936,7 @@ export function useMainApp(gw: GatewayClient) {
   onServerRequestRef.current = onServerRequest
 
   useEffect(() => {
-    const handler = (ev: AnyGatewayEvent) => {
+    const handler = (ev: GatewayEvent) => {
       if (ev.type === 'gateway.ready') {
         gaveUpRef.current = false
       }
@@ -956,9 +944,14 @@ export function useMainApp(gw: GatewayClient) {
       onEventRef.current(ev)
     }
 
-    const requestHandler = (request: ServerRequest) => {
+    // The client's fan-in subscription means the channel never sees an
+    // unhandled request, so the desktop-only methods are refused here.
+    const requestHandler = (request: AnyServerRequest) => {
       if (!onServerRequestRef.current(request)) {
-        request.fail(JSON_RPC_METHOD_NOT_FOUND, `the terminal UI cannot answer ${request.method}`)
+        request.fail({
+          code: JSON_RPC_METHOD_NOT_FOUND,
+          message: `the terminal UI cannot answer ${request.method}`
+        })
       }
     }
 
@@ -1095,13 +1088,13 @@ export function useMainApp(gw: GatewayClient) {
 
   // Answer a server→client request by id; the card closes either way (an
   // expired request has nothing left to answer).
-  const respondWith = useCallback((requestId: string, result: Record<string, unknown>, done: () => void) => {
+  const respondWith = useCallback((requestId: string, result: ServerRequestResult, done: () => void) => {
     respondToServerRequest(requestId, result)
     done()
   }, [])
 
   const answerApproval = useCallback(
-    (choice: string) => {
+    (choice: ApprovalChoice) => {
       if (!overlay.approval) {
         return
       }
@@ -1185,7 +1178,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ status: 'closing session…' })
 
       try {
-        const result = (await session.closeSession(id)) as null | SessionCloseResponse
+        const result = await session.closeSession(id)
         patchUiState({ status: 'ready' })
 
         return result
@@ -1207,11 +1200,9 @@ export function useMainApp(gw: GatewayClient) {
         maybeWarn,
         modelArg,
         newLiveSession: session.newLiveSession,
-        onModelSwitched: value =>
-          patchUiState(state => ({
-            ...state,
-            info: state.info ? { ...state.info, model: value } : { model: value, skills: {}, tools: {} }
-          })),
+        // Until the next session.info lands there is no snapshot to patch.
+        onModelSwitched: model =>
+          patchUiState(state => (state.info ? { ...state, info: { ...state.info, model } } : state)),
         prompt,
         rpc,
         sys

@@ -8,9 +8,11 @@
  */
 
 import { host, LruCache } from '@hermes/plugin-sdk'
+import type { RelayAgentRow, RelayEnvelope } from '@hermes/plugin-sdk'
 
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
-import type { ProfileRoute, RosterRow } from './types'
+import { rosterRowFromProfile } from './routing'
+import type { ProfileRoute } from './types'
 
 // ── cross-connection bot relay ────────────────────────────────────────────
 // Connections ARE the peer set: every gateway this Desktop holds a socket
@@ -115,25 +117,6 @@ interface RelayConnection {
 }
 
 /** One agent as pushed to a peer gateway's relay roster. */
-interface RelayAgentRow {
-  connection_id: string
-  connection_label: string
-  description: string
-  handle: string
-  profile: string
-  title: string
-}
-
-/** A queued cross-connection message drained from a gateway's outbox. */
-interface RelayEnvelope {
-  id?: string
-  message?: string
-  from_profile?: string
-  from_handle?: string
-  target_connection?: string
-  target_profile?: string
-}
-
 /** Reconcile retention with the CURRENT connection set: pin new connections,
  *  release removed ones. Runs on every drain/roster connection fetch. */
 function syncRelayRetention(connections: RelayConnection[]) {
@@ -214,11 +197,11 @@ async function relayConnections(): Promise<RelayConnection[]> {
  *  definitively offline → false runtime_offline refusals (#93091 item 2). */
 async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
+    const res = await host.requestProfile(connection.route, 'profiles.list', {
       include_sessions: false
     })
 
-    const profiles = Array.isArray(res?.profiles) ? res.profiles : []
+    const profiles = res.profiles.map(rosterRowFromProfile)
     // TODO(bot-mode-types): neither `connectionLabel` nor `label` can exist on
     // a `host.profileRoutes()` route (connectionId / mode / profile /
     // targetProfile only), so this always falls through to the raw connection
@@ -227,12 +210,14 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
 
     return profiles
       .map(profile => ({
-        profile: String(profile?.name || ''),
-        handle: botHandle(profile?.name, profile),
+        profile: profile.name,
+        handle: botHandle(profile.name, profile),
         connection_id: connection.id,
         connection_label: label,
-        title: String(profile?.ui_meta?.['hermes-bots']?.title || profile?.display_name || ''),
-        description: String(profile?.description || '')
+        title: profile.ui_meta?.['hermes-bots']?.title || profile.display_name || '',
+        description: profile.description || '',
+        // Liveness is the receiving gateway's own call (bot_relay._target_liveness).
+        online: null
       }))
       .filter(row => row.profile)
   } catch {
@@ -389,11 +374,7 @@ async function drainRelayOutboxes() {
 
     for (const sender of connections) {
       try {
-        const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
-          sender.route,
-          'bot_relay.outbox.drain',
-          {}
-        )
+        const res = await host.requestProfile(sender.route, 'bot_relay.outbox.drain', {})
 
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {
           queued.push({ envelope, sender })
@@ -492,14 +473,14 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ reply?: string }>(
+    const res = await host.requestProfile(
       target.route,
       'bot_relay.deliver',
       {
-        profile: String(envelope?.target_profile || ''),
-        message: String(envelope?.message || ''),
-        from_profile: String(envelope?.from_profile || ''),
-        from_handle: String(envelope?.from_handle || ''),
+        profile: envelope.target_profile,
+        message: envelope.message,
+        from_profile: envelope.from_profile,
+        from_handle: envelope.from_handle,
         from_connection: String(sender.id)
       },
       RELAY_DELIVER_TIMEOUT_MS

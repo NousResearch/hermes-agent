@@ -14,18 +14,16 @@ import { $gateway } from './gateway'
 import { markSessionGone } from './runtime-gone'
 
 vi.mock('./notifications', () => ({ notifyError: vi.fn() }))
+import { processEntry } from '@/test/contract'
+
 import { notifyError } from './notifications'
 
 const SID = 'sess-1'
 
-const running = (id: string, command = `cmd ${id}`) => ({ command, session_id: id, status: 'running' })
+const running = (id: string, command = `cmd ${id}`) => processEntry({ command, session_id: id, status: 'running' })
 
-const exited = (id: string, exit_code = 0, command = `cmd ${id}`) => ({
-  command,
-  exit_code,
-  session_id: id,
-  status: 'exited'
-})
+const exited = (id: string, exit_code = 0, command = `cmd ${id}`) =>
+  processEntry({ command, exit_code, session_id: id, status: 'exited' })
 
 const items = () => $backgroundStatusBySession.get()[SID] ?? []
 

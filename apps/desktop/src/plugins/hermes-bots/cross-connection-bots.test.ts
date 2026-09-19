@@ -97,6 +97,7 @@ describe('requestForBot dispatches on the owner, not the active gateway', () => 
       title: 'x'
     })
     await requestForBot({ connectionId: 'mac-mini', name: 'dixie', remoteSource: true }, 'prompt.submit', {
+      session_id: 's-1',
       text: 'hi'
     })
 

@@ -6,7 +6,7 @@ import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
+import { clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -24,7 +24,7 @@ import type { GatewayEventContext } from './types'
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
+  const { deps, event, sessionId, isActiveEvent, occurredAt } = ctx
 
   const {
     compactedTurnRef,
@@ -37,6 +37,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
+    const payload = event.payload
+
     if (sessionId && payload?.kind === 'compacting') {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
@@ -66,6 +68,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'btw.complete') {
+    const payload = event.payload
+
     // prompt.btw answers a side question and emits this on the originating
     // session. Persistent transcript line, matching the TUI's `[btw "q"]`
     // — without it Desktop only ever showed the acknowledgement (#99065).
@@ -95,6 +99,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'review.summary') {
+    const payload = event.payload
+
     // Self-improvement background review saved something to memory/skills
     // and emitted a persistent summary (Python formats it as
     // "💾 Self-improvement review: …"). The CLI prints this via
@@ -138,7 +144,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // as the toast id, so the escalating 50→75→90 credits line replaces in
     // place instead of stacking. Account-wide signal — shown regardless of
     // which session is focused.
-    const notice = event.payload as AgentNoticePayload | undefined
+    const notice = event.payload
 
     showAgentNotice(notice)
 
@@ -165,12 +171,14 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // Key-matched dismissal (e.g. credits restored clears the depleted
     // notice). notify() keys the toast by the notice key, so this maps
     // straight to dismissNotification(key).
-    clearAgentNotice((event.payload as AgentNoticePayload | undefined)?.key)
+    clearAgentNotice(event.payload?.key)
 
     return true
   }
 
   if (event.type === 'error') {
+    const payload = event.payload
+
     const errorMessage = payload?.message || 'Hermes reported an error'
     const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 

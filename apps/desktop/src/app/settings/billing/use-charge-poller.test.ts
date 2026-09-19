@@ -4,7 +4,8 @@ import { createElement, type PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BillingResult } from './api'
-import type { BillingChargeStatusResponse } from './types'
+import { OK_ENVELOPE } from './fixtures.test-util'
+import type { BillingChargeStatusResult } from './types'
 
 const apiMocks = vi.hoisted(() => ({
   charge: vi.fn(),
@@ -20,9 +21,12 @@ vi.mock('./api', () => ({
 
 import { CHARGE_POLL_CAP_MS, pollChargeSettlement, useChargeFlow } from './use-charge-poller'
 
-const status = (overrides: Partial<BillingChargeStatusResponse> = {}): BillingResult<BillingChargeStatusResponse> => ({
+const status = (overrides: Partial<BillingChargeStatusResult> = {}): BillingResult<BillingChargeStatusResult> => ({
   data: {
-    ok: true,
+    ...OK_ENVELOPE,
+    amount_usd: null,
+    reason: null,
+    settled_at: null,
     status: 'pending',
     ...overrides
   },
@@ -31,8 +35,8 @@ const status = (overrides: Partial<BillingChargeStatusResponse> = {}): BillingRe
 
 const refusal = (
   kind: string,
-  overrides: Partial<Extract<BillingResult<BillingChargeStatusResponse>, { ok: false }>['refusal']> = {}
-): BillingResult<BillingChargeStatusResponse> => ({
+  overrides: Partial<Extract<BillingResult<BillingChargeStatusResult>, { ok: false }>['refusal']> = {}
+): BillingResult<BillingChargeStatusResult> => ({
   ok: false,
   refusal: {
     kind,

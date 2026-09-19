@@ -8,9 +8,11 @@ from tools.open_preview_tool import _normalize_target
 
 def close_preview_tool(url: str = "") -> str:
     """Ask the desktop GUI to close the preview pane, or the tab for ``url``."""
+    from tui_gateway.contracts.events import PreviewClosePayload  # lazy: contracts pkg is ~200ms cold
+
     target = _normalize_target(url or "")
     return desktop_ui.emit_or_error(
-        "preview.close", {"url": target}, "Failed to close the preview pane: ",
+        "preview.close", PreviewClosePayload(url=target), "Failed to close the preview pane: ",
         "The preview pane is only available in the Hermes desktop app.", {"success": True, "url": target},
     )
 
@@ -58,6 +60,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
+
     from hermes_cli.plugin_compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])

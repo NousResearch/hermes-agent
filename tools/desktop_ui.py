@@ -6,17 +6,22 @@ stays ``None`` and tools report "desktop only". Routing keys off ``HERMES_UI_SES
 so the event lands on the window that owns the turn (the sink is lock-guarded).
 """
 
+from __future__ import annotations
+
 import json
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from gateway.session_context import get_session_env
 from tools.registry import tool_error
 
+if TYPE_CHECKING:
+    from tui_gateway.contracts.base import Payload
+
 # (sid, event, payload) sink, installed by the desktop gateway.
-_emit: Optional[Callable[[str, str, dict], None]] = None
+_emit: Optional[Callable[[str, str, Payload], None]] = None
 
 
-def set_emitter(fn: Optional[Callable[[str, str, dict], None]]) -> None:
+def set_emitter(fn: Optional[Callable[[str, str, Payload], None]]) -> None:
     """Install (or clear) the renderer-event sink. Called by the desktop gateway."""
     global _emit
     _emit = fn
@@ -43,7 +48,7 @@ def user_enabled(setting: str, default: bool) -> bool:
     return bool(display.get(setting))
 
 
-def emit(event: str, payload: dict) -> bool:
+def emit(event: str, payload: Payload) -> bool:
     """Route ``event`` to the window owning the current turn; False when no emitter."""
     if _emit is None:
         return False
@@ -51,7 +56,7 @@ def emit(event: str, payload: dict) -> bool:
     return True
 
 
-def emit_or_error(event: str, payload: dict, fail_prefix: str, desktop_only: str, result: dict) -> str:
+def emit_or_error(event: str, payload: Payload, fail_prefix: str, desktop_only: str, result: dict) -> str:
     """Emit ``event``; ``tool_error`` text on failure (``fail_prefix`` + exception, or
     ``desktop_only`` when no emitter), else ``result`` as JSON. Calls ``emit`` via the
     module attribute so tests can patch it."""

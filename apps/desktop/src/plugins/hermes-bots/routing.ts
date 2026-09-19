@@ -8,6 +8,7 @@
  */
 
 import { host } from '@hermes/plugin-sdk'
+import type { JsonValue, ProfileRow, RpcMethods } from '@hermes/plugin-sdk'
 
 import type { BotMeta, GroupMessageAuthor, ProfileRoute, RosterRow } from './types'
 
@@ -126,7 +127,7 @@ export function backendTargetProfile(route: null | ProfileRoute | undefined, fal
   return route.targetProfile || route.profile
 }
 
-function rewriteCliProfileOperands(argv: string[], logical: string, target: string) {
+function rewriteCliProfileOperands(argv: JsonValue[], logical: string, target: string) {
   const next = [...argv]
 
   for (let index = 0; index < next.length; index += 1) {
@@ -148,7 +149,9 @@ function rewriteCliProfileOperands(argv: string[], logical: string, target: stri
   return next
 }
 
-function scopedBotParams(route: ProfileRoute, method: string, params: Record<string, unknown>) {
+/** The alias rewrite is wire-level — it renames the profile operands a method
+ *  carries, whatever the method — so it reads the params bag as JSON. */
+function scopedBotParams(route: ProfileRoute, method: string, params: Record<string, JsonValue>) {
   const logical = route.profile
   const target = backendTargetProfile(route, logical)
   let next = params
@@ -204,12 +207,12 @@ export interface BotRequestOptions {
   spawnPriority?: 'background' | 'foreground'
 }
 
-export async function requestForBot<T = unknown>(
+export async function requestForBot<M extends keyof RpcMethods>(
   bot: Partial<RosterRow> | null | undefined,
-  method: string,
-  params: Record<string, unknown> = {},
+  method: M,
+  params: RpcMethods[M]['params'],
   options?: BotRequestOptions
-): Promise<T> {
+): Promise<RpcMethods[M]['result']> {
   const route = botConnectionRoute(bot)
 
   if (route) {
@@ -218,13 +221,16 @@ export async function requestForBot<T = unknown>(
     }
 
     try {
-      const routedParams = scopedBotParams(route, method, params)
+      // SAFETY: the plugin host is the untyped SDK boundary (Record<string, JsonValue> in,
+      // JsonValue out); the contract types on this signature are what every caller sees, so the
+      // two boundary casts here are the only ones hermes-bots needs.
+      const routedParams = scopedBotParams(route, method, params as Record<string, JsonValue>)
 
       // Keep the three-argument shape when no options were given so older
       // desktop shells (and the arity-pinning tests) see the same call.
-      return await (options?.spawnPriority
+      return (await (options?.spawnPriority
         ? host.requestProfile(route, method, routedParams, undefined, { spawnPriority: options.spawnPriority })
-        : host.requestProfile(route, method, routedParams))
+        : host.requestProfile(route, method, routedParams))) as unknown as RpcMethods[M]['result']
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,
@@ -234,7 +240,7 @@ export async function requestForBot<T = unknown>(
   }
 
   try {
-    return await host.request(method, params)
+    return (await host.request(method, params as Record<string, JsonValue>)) as unknown as RpcMethods[M]['result']
   } catch (error) {
     throw asRpcError(error, `Gateway request ${method} failed`)
   }
@@ -383,6 +389,17 @@ export function aliasIdentityFor(bot: Partial<RosterRow> | null | undefined): Al
   const entry = aliasRouteIndex.get(`${connectionId}::${target}`) || null
 
   return entry && entry.name !== String(bot?.name || '').trim() ? entry : null
+}
+
+/** `profiles.list` answers generated `ProfileRow`s; the roster reads them as
+ *  annotated RosterRows. `ui_meta` is opaque JSON in the contract — Bot Mode
+ *  owns the `hermes-bots` key inside it. */
+export function rosterRowFromProfile(row: ProfileRow): RosterRow {
+  // SAFETY: data.ts (profiles.configure) is the only writer of the
+  // 'hermes-bots' ui_meta namespace, so that key holds the BotMeta it wrote.
+  const ui_meta = (row.ui_meta ?? undefined) as RosterRow['ui_meta']
+
+  return { ...row, ui_meta }
 }
 
 // Bot metadata is scoped to the active gateway until the server exposes a

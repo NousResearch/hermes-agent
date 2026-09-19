@@ -1,6 +1,10 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { SessionInfoPayload, SubagentStatus } from '@hermes/shared'
+
+import { isToolCompletePayload, isToolStartPayload } from '@/lib/chat-messages'
+import type { ToolRowPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { isTodoToolName } from '@/lib/todos'
+import type { SubagentPayload } from '@/store/subagents'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -11,7 +15,7 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
+export function sessionInfoStatePatch(payload: SessionInfoPayload | undefined): SessionRuntimeStatePatch {
   const patch: SessionRuntimeStatePatch = {}
 
   if (typeof payload?.model === 'string') {
@@ -136,16 +140,9 @@ export const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.complete'
 ])
 
-// Anonymous progress events that carry todos but no name still belong to the
-// todo stream; named todo events are obviously routed there too.
-export function toTodoPayload(payload: GatewayEventPayload | undefined): GatewayEventPayload | undefined {
-  if (!payload) {
-    return undefined
-  }
-
-  const isTodo = isTodoToolName(payload.name) || (!payload.name && Object.hasOwn(payload, 'todos'))
-
-  return isTodo ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
+/** Todo tools are one live row under a stable id, whatever tool name produced the snapshot. */
+export function toTodoPayload(payload: ToolRowPayload): ToolRowPayload | undefined {
+  return isTodoToolName(payload.name) ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -175,53 +172,65 @@ const firstString = (...candidates: unknown[]): string => {
 }
 
 export function delegateTaskPayloads(
-  payload: GatewayEventPayload | undefined,
+  payload: ToolRowPayload | undefined,
   phase: 'running' | 'complete',
   sourceEventType?: string
-): Record<string, unknown>[] {
+): SubagentPayload[] {
   if (payload?.name !== 'delegate_task') {
     return []
   }
 
-  const args = parseMaybeRecord(payload.args ?? payload.input)
-  const result = parseMaybeRecord(payload.result)
+  const start = isToolStartPayload(payload) ? payload : undefined
+  const complete = isToolCompletePayload(payload) ? payload : undefined
+  const args = parseMaybeRecord(payload.args)
+  const result = parseMaybeRecord(complete?.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
   const tasks = rawTasks.length ? rawTasks.map(parseMaybeRecord) : [args]
   const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
-  const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
-  const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
-  const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
-  const progressText = firstString(payload.preview, payload.message, payload.context)
-
-  const eventType =
-    phase === 'complete'
-      ? 'subagent.complete'
-      : sourceEventType === 'tool.start'
-        ? 'subagent.start'
-        : 'subagent.progress'
+  const resultError = typeof result.error === 'string' && result.error.trim() !== ''
+  const failedResult = resultError || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
+  const status: SubagentStatus = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
+  const toolId = payload.tool_id || 'delegate_task'
+  const progressText = firstString(start?.preview, start?.context)
+  const starting = phase === 'running' && sourceEventType === 'tool.start'
+  const progressing = phase === 'running' && !starting
 
   return tasks.map((task, index) => {
-    const goal = firstString(task.goal, args.goal, payload.context) || 'Delegated task'
-    const summary = firstString(result.summary, payload.summary, payload.message)
+    const goal = firstString(task.goal, args.goal, start?.context) || 'Delegated task'
+    const summary = firstString(result.summary, complete?.summary)
+    // Per-child spend and the classified verdict live on the child's own entry
+    // (delegate_task returns ``{results: [...]}``); fall back to the flat result
+    // for single-task payloads. The row still renders without either.
+    const childEntry = parseMaybeRecord(Array.isArray(result.results) ? result.results[index] : result)
 
     return {
-      depth: 0,
-      duration_seconds: payload.duration_s,
       goal,
-      status,
-      subagent_id: `delegate-tool:${toolId}:${index}`,
-      summary: summary || undefined,
       task_count: tasks.length,
       task_index: index,
-      text: eventType === 'subagent.progress' ? progressText || goal : undefined,
-      tool_name: eventType === 'subagent.start' ? 'delegate_task' : undefined,
-      tool_preview: eventType === 'subagent.start' ? progressText : undefined,
+      subagent_id: `delegate-tool:${toolId}:${index}`,
+      parent_id: null,
+      child_session_id: null,
+      delegation_id: null,
+      depth: 0,
+      model: null,
+      tool_count: null,
       toolsets: Array.isArray(task.toolsets) ? task.toolsets : Array.isArray(args.toolsets) ? args.toolsets : [],
-      event_type: eventType,
+      input_tokens: null,
+      output_tokens: null,
+      reasoning_tokens: null,
+      api_calls: null,
+      files_read: null,
+      files_written: null,
       output_tail:
-        phase === 'complete' && summary
-          ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_task' }]
-          : undefined
+        phase === 'complete' && summary ? [{ is_error: failedResult, preview: summary, tool: 'delegate_task' }] : null,
+      tool_name: starting ? 'delegate_task' : null,
+      text: progressing ? progressText || goal : null,
+      status,
+      summary: summary || null,
+      duration_seconds: complete?.duration_s ?? null,
+      tool_preview: starting ? progressText || null : null,
+      cost_usd: typeof childEntry.cost_usd === 'number' ? childEntry.cost_usd : null,
+      failure_reason: firstString(childEntry.failure_reason) || null
     }
   })
 }

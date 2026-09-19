@@ -1,3 +1,4 @@
+import type { ServerRequestMap } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -10,12 +11,12 @@ import {
   type ChatMessagePart,
   chatMessageText,
   completeOpenTimelineParts,
-  type GatewayEventPayload,
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
   toolCallOwnerMessageId,
+  type ToolRowPayload,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -468,7 +469,7 @@ export function useMessageStream({
   const upsertToolCall = useCallback(
     (
       sessionId: string,
-      payload: GatewayEventPayload | undefined,
+      payload: ToolRowPayload,
       phase: 'running' | 'complete',
       sourceEventType?: string,
       occurredAt = Date.now() / 1000
@@ -483,7 +484,7 @@ export function useMessageStream({
 
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
-      if (payload && isTodoToolName(payload.name)) {
+      if (isTodoToolName(payload.name)) {
         const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
 
         if (todos) {
@@ -937,7 +938,7 @@ export function useMessageStream({
   // registry owns. The request answers itself over the socket it arrived on,
   // so no owner routing is involved here — only which card to show.
   const handleServerRequest = useCallback(
-    (request: ScopedServerRequest): boolean =>
+    <M extends keyof ServerRequestMap>(request: ScopedServerRequest<M>): void =>
       dispatchServerRequest(
         request,
         { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },

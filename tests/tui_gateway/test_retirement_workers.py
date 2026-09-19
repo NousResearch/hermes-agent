@@ -43,7 +43,7 @@ def test_side_workers_hold_admission_through_cleanup_and_preserve_profile_scope(
             session = {"profile_home": str(home), "cwd": str(tmp_path)}
             try:
                 result = server._spawn_side_agent("r", session, "side", "parent", "background.complete", body, cleanup=cleanup)
-                assert result["result"]["task_id"] == "side"
+                assert result.task_id == "side"
                 assert entered.wait(10)
                 assert fence.prepare() == {"ok": False, "idle": False}
                 assert observed == [(home, home.name, "inherited")]

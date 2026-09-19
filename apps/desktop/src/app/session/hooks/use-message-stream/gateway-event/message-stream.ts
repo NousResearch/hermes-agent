@@ -68,7 +68,7 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
+  const { deps, event, sessionId, isActiveEvent, occurredAt } = ctx
 
   const {
     appendAssistantDelta,
@@ -83,6 +83,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'message.start') {
+    const payload = event.payload
+
     if (!sessionId) {
       return true
     }
@@ -153,6 +155,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.delta') {
+    const payload = event.payload
+
     if (sessionId) {
       appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
     }
@@ -161,6 +165,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.interim') {
+    const payload = event.payload
+
     // The agent emitted interim assistant commentary (text alongside tool
     // calls, or the attempted final answer before a verify-on-stop nudge).
     // Finalize it as its own sealed bubble so message.complete doesn't wipe
@@ -178,6 +184,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'thinking.delta') {
+    const payload = event.payload
+
     // Most thinking.delta frames are kawaii spinner rewrites and stay out
     // of the transcript. Explained provider waits are different: the core
     // emits them after prolonged silence, so name that wait in the existing
@@ -190,6 +198,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'reaction') {
+    const payload = event.payload
+
     // Core-detected affection (ily / <3 / good bot) on the user's message.
     // Play hearts only for the visible session so background turns stay quiet.
     if (isActiveEvent && (payload?.kind ?? 'vibe') === 'vibe') {
@@ -200,6 +210,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'reasoning.delta') {
+    const payload = event.payload
+
     if (sessionId) {
       appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), false, occurredAt)
     }
@@ -212,6 +224,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'reasoning.available') {
+    const payload = event.payload
+
     if (sessionId) {
       appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true, occurredAt)
     }
@@ -224,6 +238,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'moa.reference') {
+    const payload = event.payload
+
     // MoA reference-model output — surface as a labelled thinking chunk
     // (tagged with the source model) before the aggregator's response, so
     // the mixture-of-agents process is visible. Reuses the reasoning
@@ -274,6 +290,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'moa.progress') {
+    const payload = event.payload
+
     // Live reference fan-out progress ("refs k/n") — surfaced in the same
     // reasoning disclosure the references land in. These lines arrive
     // BEFORE any moa.reference event (references are only emitted once the
@@ -298,6 +316,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'moa.phase') {
+    const payload = event.payload
+
     // Phase transition — currently only phase="aggregator" (fan-out done,
     // aggregator acting). Append a one-line marker; the first
     // moa.reference that follows replaces the whole block.
@@ -314,6 +334,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'message.complete') {
+    const payload = event.payload
+
     if (!sessionId) {
       return true
     }
@@ -350,7 +372,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
           }
         : undefined
 
-    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    completeAssistantMessage(sessionId, finalText, payload?.response_previewed ?? undefined, failure, occurredAt)
 
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).

@@ -56,7 +56,7 @@ export function contextBarLabel(usage: UsageStats): string {
 
   const pct = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
 
-  return `[${contextBar(usage.context_percent)}] ${usage.context_estimated ? '~' : ''}${pct}%`
+  return `[${contextBar(usage.context_percent ?? undefined)}] ${usage.context_estimated ? '~' : ''}${pct}%`
 }
 
 /** `87%` for a reported hit rate; '' when the backend omitted it (no cache

@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
+import { subagentEvent } from '@/store/subagents.test-util'
 
 import { ComposerStatusStack } from './index'
 
@@ -24,11 +25,19 @@ afterEach(() => {
 
 it('shows live work only from the composer session and keeps it hidden after collapse and progress', () => {
   for (let i = 0; i < 5; i++) {
-    upsertSubagent('owner', { subagent_id: `child-${i}`, goal: `Task ${i}`, status: i ? 'queued' : 'running' })
+    upsertSubagent(
+      'owner',
+      subagentEvent({ subagent_id: `child-${i}`, goal: `Task ${i}`, status: i ? 'queued' : 'running' })
+    )
   }
 
-  upsertSubagent('other-profile', { subagent_id: 'foreign', goal: 'Private foreign task' })
-  upsertSubagent('owner', { subagent_id: 'child-0', text: 'Reading actual source' }, false, 'subagent.progress')
+  upsertSubagent('other-profile', subagentEvent({ subagent_id: 'foreign', goal: 'Private foreign task' }))
+  upsertSubagent(
+    'owner',
+    subagentEvent({ subagent_id: 'child-0', text: 'Reading actual source' }),
+    false,
+    'subagent.progress'
+  )
 
   const view = render(
     <MemoryRouter>
@@ -46,7 +55,14 @@ it('shows live work only from the composer session and keeps it hidden after col
   expect(screen.queryByText('Task 0')).toBeNull()
   expect(screen.queryByText('Task 4')).toBeNull()
   expect(header.getAttribute('aria-expanded')).toBe('false')
-  act(() => upsertSubagent('owner', { subagent_id: 'child-0', text: 'More progress' }, false, 'subagent.progress'))
+  act(() =>
+    upsertSubagent(
+      'owner',
+      subagentEvent({ subagent_id: 'child-0', text: 'More progress' }),
+      false,
+      'subagent.progress'
+    )
+  )
   expect(screen.queryByText('Task 0')).toBeNull()
   fireEvent.click(header)
   expect(screen.getByText('Task 0')).toBeTruthy()
@@ -61,7 +77,7 @@ it('shows live work only from the composer session and keeps it hidden after col
 })
 
 it('collapses a single worker and its selected detail using the caret, preserving the steering draft', () => {
-  upsertSubagent('owner', { subagent_id: 'child', goal: 'Single task' })
+  upsertSubagent('owner', subagentEvent({ subagent_id: 'child', goal: 'Single task' }))
 
   const view = render(
     <MemoryRouter>
@@ -85,7 +101,7 @@ it('collapses a single worker and its selected detail using the caret, preservin
 })
 
 it('retires the live frame only after every child settles, without depending on the parent busy state', () => {
-  upsertSubagent('owner', { subagent_id: 'child', goal: 'Live task' })
+  upsertSubagent('owner', subagentEvent({ subagent_id: 'child', goal: 'Live task' }))
   render(
     <MemoryRouter>
       <ComposerStatusStack queue={null} sessionId="owner" />
@@ -93,6 +109,8 @@ it('retires the live frame only after every child settles, without depending on 
   )
   fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
   expect(screen.getByText('Live task')).toBeTruthy()
-  act(() => upsertSubagent('owner', { subagent_id: 'child', status: 'completed' }, false, 'subagent.complete'))
+  act(() =>
+    upsertSubagent('owner', subagentEvent({ subagent_id: 'child', status: 'completed' }), false, 'subagent.complete')
+  )
   expect(screen.queryByText('Live task')).toBeNull()
 })

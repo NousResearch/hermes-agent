@@ -37,6 +37,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
+import type { CronManageResult } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
@@ -78,12 +79,8 @@ const LEGACY_DELEGATED_ROUTINE_PREFIX = 'You are running the scheduled routine "
 /** A routine's owner: a roster row, a bare profile name, or nothing resolved yet. */
 type RoutineOwner = RosterRow | string | null | undefined
 
-/** `cron.manage {action: 'list'}` reply. `scoped` carries the profile the
- *  gateway scoped the store to; gateways that ignore `profile` omit it. */
-interface RoutineListResult {
-  jobs?: RoutineJob[]
-  scoped?: string
-}
+/** The list view reads two fields of `cron.manage {action: 'list'}`; a failed refresh passes none. */
+type RoutineList = Partial<Pick<CronManageResult, 'jobs' | 'scoped'>>
 
 function routineBot(job: RoutineJob | null | undefined): null | string {
   const match = BOT_TAG_RE.exec(job?.name || '')
@@ -96,12 +93,12 @@ function routineTitle(job: RoutineJob | null | undefined): string {
 }
 
 export function isLegacyDelegatedRoutine(job: RoutineJob | null | undefined): boolean {
-  const preview = typeof job?.prompt_preview === 'string' ? job.prompt_preview : job?.prompt
+  const preview = job?.prompt_preview
 
   return Boolean(routineBot(job) && typeof preview === 'string' && preview.startsWith(LEGACY_DELEGATED_ROUTINE_PREFIX))
 }
 
-export async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResult> {
+export async function loadRoutines(owner: RoutineOwner): Promise<CronManageResult> {
   const bot =
     typeof owner === 'string'
       ? {
@@ -121,11 +118,11 @@ export async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResu
       }
     : {}
 
-  const data = (await requestForBot(bot, 'cron.manage', {
+  const data = await requestForBot(bot, 'cron.manage', {
     action: 'list',
     include_disabled: true,
     ...scope
-  })) as RoutineListResult
+  })
 
   const jobs = Array.isArray(data?.jobs) ? data.jobs : []
 
@@ -213,12 +210,7 @@ export async function invalidateRoutineOwner(owner: RoutineOwner) {
 }
 
 /** Pick which cron jobs to show. A failed refresh keeps the last good list. */
-export function selectRoutineJobs(
-  data: RoutineListResult | undefined,
-  error: unknown,
-  lastJobs: RoutineJob[],
-  bot: string
-) {
+export function selectRoutineJobs(data: RoutineList | undefined, error: unknown, lastJobs: RoutineJob[], bot: string) {
   const live = Array.isArray(data?.jobs) ? data.jobs : null
   const all = live ?? (error ? lastJobs : [])
   const scopedToBot = normalizedProfileName(data?.scoped) === normalizedProfileName(bot)
@@ -326,7 +318,7 @@ function scheduleLabel(schedule: string | undefined): string {
 
 /** Absolute + relative rendering of a cron timestamp, or null when the job
  *  has never carried one (a job that has not run yet has no `last_run_at`). */
-function routineTimestamp(value: string | undefined): null | string {
+function routineTimestamp(value: null | string | undefined): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
 
   return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null

@@ -1,13 +1,20 @@
 """Model switching for a live session: persist, snapshot/restore runtime, /model apply with
-guards, bot-capability + config sync. Bodies are rebound onto server.py's globals at install
-time (method_ctx.bind_module), so they reference server.py globals bare."""
+guards, bot-capability + config sync. Reaches server.py state through ``srv`` (method_ctx.py)."""
 
 from __future__ import annotations
+
+import logging
 
 import contextlib
 import copy
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.events import ErrorPayload, NoticePayload
+from pathlib import Path
+from typing import Any
+import threading
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 _registry = HandlerRegistry()
 
@@ -17,7 +24,7 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
-    return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
+    return {**{k: getattr(agent, k, "") for k in srv._RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
             "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
 
@@ -43,7 +50,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         except Exception:
             logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
     if hasattr(agent, "switch_model"):
-        model, provider, api_key, base_url, api_mode = (snapshot.get(k, "") for k in _RUNTIME_KEYS)
+        model, provider, api_key, base_url, api_mode = (snapshot.get(k, "") for k in srv._RUNTIME_KEYS)
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
@@ -51,7 +58,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
+def _profile_runtime_scope_tokens(profile_home) -> "srv._TurnScopes":
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
     return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
@@ -61,27 +68,27 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
     only once multiplexing is active: single-profile terminal execution keeps the standalone
     ``os.environ`` bridge."""
     from agent.secret_scope import is_multiplex_active
-    scopes = _TurnScopes()
+    scopes = srv._TurnScopes()
     if profile_home:
         home = Path(profile_home)
         # External sources first: the requested profile may never have been served in this process.
         from hermes_cli.env_loader import hydrate_profile_secret_sources
         hydrate_profile_secret_sources(home)
-        secrets = build_profile_secret_scope(home)
+        secrets = srv.build_profile_secret_scope(home)
         overlay = None
-        scopes.home = set_hermes_home_override(str(home))
+        scopes.home = srv.set_hermes_home_override(str(home))
     else:
         # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
         # "already the launch profile"); only its secrets (+ terminal policy under multiplex) need binding.
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-        home = Path(_hermes_home)
+        home = Path(srv._hermes_home)
         secrets = launch_secret_scope(home)
-        scopes.secret = set_secret_scope(secrets)
+        scopes.secret = srv.set_secret_scope(secrets)
         if not is_multiplex_active():
             return scopes
         overlay = launch_terminal_env()
     if scopes.secret is None:
-        scopes.secret = set_secret_scope(secrets)
+        scopes.secret = srv.set_secret_scope(secrets)
     # Same terminal policy the gateway binds per turn: a docker-configured profile
     # must never resolve the launch process's pinned env. Failure → refusal scope.
     from tools.terminal_scope import install_profile_terminal_scope
@@ -89,7 +96,7 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
     return scopes
 
 
-def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
+def _release_profile_runtime_scope_tokens(scopes: "srv._TurnScopes | None") -> None:
     """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
     not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
     context (a fail-open scope leak on the teardown path). The first failure is re-raised after
@@ -98,8 +105,8 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
         return
     from tools.terminal_scope import reset_terminal_scope
     first_error: BaseException | None = None
-    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
-                         (scopes.home, reset_hermes_home_override)):
+    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, srv.reset_secret_scope),
+                         (scopes.home, srv.reset_hermes_home_override)):
         if token is None:
             continue
         try:
@@ -114,11 +121,11 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
 def _session_profile_runtime_scope(session: dict):
     """Bind model resolution to the session's profile config and secrets (launch profile included
     once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
-    scopes = _profile_runtime_scope_tokens(session.get("profile_home"))
+    scopes = srv._profile_runtime_scope_tokens(session.get("profile_home"))
     try:
         yield
     finally:
-        _release_profile_runtime_scope_tokens(scopes)
+        srv._release_profile_runtime_scope_tokens(scopes)
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
@@ -142,7 +149,7 @@ def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready:
         session["agent_ready"] = threading.Event()
         session.pop("agent_build_started", None)
         session.pop("_agent_build_thread", None)
-    _start_agent_build(sid, session)
+    srv._start_agent_build(sid, session)
     return True
 
 
@@ -173,7 +180,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     if agent:
         return tuple(
             getattr(agent, k, "") or "" for k in ("provider", "model", "base_url", "api_key"))
-    current_model = _resolve_model()
+    current_model = srv._resolve_model()
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -238,11 +245,11 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         logger.warning("In-place model switch failed for TUI agent: %s", exc)
         raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
                          f"staying on {getattr(agent, 'model', current_model)}.") from exc
-    _restart_slash_worker(sid, session)
-    _persist_live_session_runtime(session)
-    _persist_live_session_system_prompt(session)
-    _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
-    _emit_session_info(sid, session)
+    srv._restart_slash_worker(sid, session)
+    srv._persist_live_session_runtime(session)
+    srv._persist_live_session_system_prompt(session)
+    srv._append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
+    srv._emit_session_info(sid, session)
     if snapshot is not None:
         session["one_turn_model_restore"] = snapshot
     else:
@@ -254,12 +261,12 @@ def _apply_model_switch(
     pin_session_override: bool = True, parsed_flags: Any | None = None,
     persist_override: bool | None = None) -> dict:
     from hermes_cli.model_switch import switch_model
-    model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
+    model_input, explicit_provider, one_turn, persist_global, reasoning_effort = srv._switch_request(
         raw_input, parsed_flags, persist_override)
     agent = session.get("agent")
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")
-    current_provider, current_model, current_base_url, current_api_key = _current_model_runtime(
+    current_provider, current_model, current_base_url, current_api_key = srv._current_model_runtime(
         agent, explicit_provider)
     # User-defined providers let switch_model resolve named custom endpoints
     # (e.g. "ollama-launch") and validate against saved model lists.
@@ -276,15 +283,15 @@ def _apply_model_switch(
         custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
-    restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
+    restore_snapshot = srv._snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
-        _merge_preflight_warning(result, agent, session, cfg, custom_provs)
+        srv._merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:
-        confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
+        confirm = srv._expensive_model_confirm(result, current_base_url, current_api_key, agent)
         if confirm is not None:
             return confirm
     if agent:
-        _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+        srv._commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
     # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
     # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
     # every same-profile session in one process, so os.environ would leak the switch to all.
@@ -296,7 +303,7 @@ def _apply_model_switch(
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
     if reasoning_effort:
-        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+        srv._apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,
@@ -317,13 +324,13 @@ def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_gl
     if one_turn or not isinstance(session, dict):
         return
     if persist_global:
-        _write_config_key("agent.reasoning_effort", effort)
+        srv._write_config_key("agent.reasoning_effort", effort)
         session.pop("create_reasoning_override", None)  # global wins; see _set_reasoning
     else:
         session["create_reasoning_override"] = parsed
     if agent is not None:
-        _persist_live_session_runtime(session)
-        _emit_session_info(sid, session)  # the switch's own emit predates the effort change
+        srv._persist_live_session_runtime(session)
+        srv._emit_session_info(sid, session)  # the switch's own emit predates the effort change
 
 
 def _sync_bot_capabilities(sid: str, session: dict) -> None:
@@ -352,14 +359,14 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     except Exception:
         return
     try:
-        tokens = _set_session_context(sid, cwd=_session_cwd(session))
+        tokens = srv._set_session_context(sid, cwd=srv._session_cwd(session))
         try:
-            new_agent = _rebuild_session_agent(sid, session, session_id=session["session_key"],
-                                               platform_override=_session_source(session))
+            new_agent = srv._rebuild_session_agent(sid, session, session_id=session["session_key"],
+                                               platform_override=srv._session_source(session))
         finally:
-            _clear_session_context(tokens)
+            srv._clear_session_context(tokens)
         new_agent._session_title_hint = "Bot Chat"
-        _emit("notice", sid, {"message": "Capabilities updated — this bot's tools and prompt were refreshed."})
+        srv._emit("notice", sid, NoticePayload(message="Capabilities updated — this bot's tools and prompt were refreshed."))
     except Exception as e:
         logger.warning("Bot capability sync failed for %s: %s", sid, e)
 
@@ -370,7 +377,7 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is None or session.get("model_override"):
         return
-    target = _config_model_target()
+    target = srv._config_model_target()
     if not target[0]:
         return
     seen = session.get("config_model_seen")
@@ -386,14 +393,15 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     try:
         # This sync ADOPTS a config.yaml change; it must never write config back (that is
         # how `hermes --tui -m` once leaked into config.yaml).
-        _apply_model_switch(
+        srv._apply_model_switch(
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
         logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
         from gateway.warning_notifications import render_notification
+        reason = str(e)  # PEP 3110: ``e`` is unbound once the except block ends, the lambda runs later
         render_notification(
-            lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
+            lambda: srv._emit("error", sid, ErrorPayload(message=f"Could not switch to configured model {model}: {reason}")),
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
@@ -412,5 +420,9 @@ def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
+    bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -8,6 +8,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider
 } from '@/store/session'
+import { sessionInfoPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -37,7 +38,7 @@ describe('session.info does not clobber composer model selection', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: { model: 'deepseek-chat', provider: 'deepseek' },
+        payload: sessionInfoPayload({ model: 'deepseek-chat', provider: 'deepseek' }),
         type: 'session.info'
       })
     )
@@ -51,7 +52,7 @@ describe('session.info does not clobber composer model selection', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: { cwd: '/tmp/project', model: 'deepseek-chat', provider: 'deepseek' },
+        payload: sessionInfoPayload({ cwd: '/tmp/project', model: 'deepseek-chat', provider: 'deepseek' }),
         type: 'session.info'
       })
     )

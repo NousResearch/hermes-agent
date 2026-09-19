@@ -26,6 +26,7 @@ import {
   setConnection,
   setSessions
 } from '@/store/session'
+import { sessionResumeResult } from '@/test/contract'
 
 import { useSlashCommand } from './use-prompt-actions/slash'
 import { useSessionActions } from './use-session-actions'
@@ -51,6 +52,7 @@ function mountActions() {
   const requestGateway = vi.fn(async () => ({ session_id: 'ambient', stored_session_id: 'ambient-stored' }) as never)
   const navigate = vi.fn()
   const state = createClientSessionState()
+
   const result = renderHook(() =>
     useSessionActions({
       activeSessionId: 'existing-runtime',
@@ -71,6 +73,7 @@ function mountActions() {
       updateSessionState: () => state
     })
   )
+
   return { ...result, navigate, requestGateway }
 }
 
@@ -112,11 +115,9 @@ beforeEach(() => {
   })
   window.hermesDesktop = { profile: { setDefault: async (route: DesktopProfileRoute) => route } } as never
   vi.mocked(requestGatewayForAgent).mockReset()
-  vi.mocked(requestGatewayForAgent).mockResolvedValue({
-    session_id: 'created',
-    stored_session_id: 'created-stored',
-    info: {}
-  })
+  vi.mocked(requestGatewayForAgent).mockResolvedValue(
+    sessionResumeResult({ session_id: 'created', stored_session_id: 'created-stored' })
+  )
 })
 
 afterEach(() => {

@@ -1,6 +1,7 @@
 'use client'
 
 import { useAuiState } from '@assistant-ui/react'
+import type { ApprovalChoice } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
@@ -41,7 +42,6 @@ import { isApprovalActivity } from './approval-activity'
 import { toolEntryDisclosureId } from './fallback-model/targets'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 
-type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 export const ApprovalPlacementContext = createContext<'inline' | 'floating'>('inline')
 
 // One transcript-owned host for the session. Execution rows never mount,

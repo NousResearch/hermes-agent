@@ -2,7 +2,6 @@ import {
   type GatewayEvent,
   isGatewayReauthRequired,
   isGatewayWebSocketUrl,
-  JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
   reconnectBackoffDelayMs,
   resolveGatewayWsUrl
@@ -163,8 +162,8 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: GatewayEvent) => void
-  /** Server→client request from any registry socket; false = no handler (the channel answers -32601). */
-  handleServerRequest: (request: ScopedServerRequest) => boolean
+  /** Server→client request from any registry socket; the typed handler table covers every method. */
+  handleServerRequest: (request: ScopedServerRequest) => void
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
@@ -894,11 +893,7 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
-      onServerRequest: request => {
-        if (!callbacksRef.current.handleServerRequest(request)) {
-          request.fail(JSON_RPC_METHOD_NOT_FOUND, `Hermes Desktop cannot answer ${request.method}`)
-        }
-      },
+      onServerRequest: request => callbacksRef.current.handleServerRequest(request),
       // The primary socket has no secondary entry to carry registry identity.
       // Electron's published active descriptor is authoritative after boot;
       // a true legacy primary has no connectionId and remains unqualified.
@@ -1007,7 +1002,7 @@ export function useGatewayBoot({
     })
 
     // Secondary sockets reach the same handler through the registry's onServerRequest.
-    const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
+    const offRequest = gateway.onAnyServerRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.

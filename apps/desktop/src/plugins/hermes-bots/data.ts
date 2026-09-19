@@ -7,6 +7,8 @@
  */
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
+import type { JsonValue } from '@hermes/plugin-sdk'
+import type { ProfilesConfigureResult } from '@hermes/plugin-sdk'
 
 import { botsText } from './i18n'
 import { displayName } from './labels'
@@ -20,6 +22,7 @@ import {
   indexAliasRoutes,
   requestForBot,
   resolveBotConnectionRoute,
+  rosterRowFromProfile,
   setBotsWorkspaceOwner
 } from './routing'
 import { getPluginCtx, ID } from './shared'
@@ -168,9 +171,9 @@ export function clearBotAttention(key: string) {
  *  omits: `chat`, the dead canonical-chat pointer that mergeServerMeta strips
  *  on sight, and `pet`, the extracted pet icon that stays local and is never
  *  sent to the server. */
-interface StoredBotMeta extends BotMeta {
-  chat?: unknown
-  pet?: unknown
+type StoredBotMeta = BotMeta & {
+  chat?: JsonValue
+  pet?: JsonValue
 }
 
 /** Appearance records keyed by meta key — `connectionId::profile`, or the bare
@@ -304,12 +307,6 @@ interface BotMetaSaveResult {
   serverPersisted: boolean
 }
 
-/** `profiles.configure` reply. Older gateways answer without `applied` at all,
- *  which is what makes the field optional rather than the contract. */
-interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
-}
-
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
   const { bot, key, name, route } = botOwner(owner)
   const prevMeta = $botMeta.get()[key] || {}
@@ -366,7 +363,7 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
           }
         })
 
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    serverRequest = Promise.resolve(request)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -676,11 +673,17 @@ export function useRoster() {
         name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
       }
 
-      const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+      const listed = await requestForBot(activeBot, 'profiles.list', {})
+
+      const local: RosterSnapshot = {
+        bot_mode_protocol: listed.bot_mode_protocol,
+        profiles: listed.profiles.map(rosterRowFromProfile)
+      }
+
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
       // carry a second copy. Older gateways lack the flag: keep appending.
-      serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+      serverInjectsProtocol = local.bot_mode_protocol === true
 
       // Multi-source desktops (hermes-agent #86875) also expose the union
       // agent roster across every registered connection. Merge agents from
@@ -720,7 +723,7 @@ export function useRoster() {
       }
 
       return {
-        ...(local && typeof local === 'object' ? local : {}),
+        ...local,
         fetchedAt: issuedAt
       }
     },

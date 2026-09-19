@@ -22,10 +22,10 @@ def test_ping_registered_and_answers_pong():
     assert res == {"pong": True}
 
 
-def test_ping_ignores_params_and_returns_ok_envelope():
-    # The probe must be parameter-agnostic: the client sends {} but a stray
-    # future caller must not be able to make it fail.
+def test_ping_rejects_unknown_params_at_the_contract_boundary():
     envelope = srv._methods["ping"](7, {"anything": "value"})
     assert envelope["jsonrpc"] == "2.0"
     assert envelope["id"] == 7
-    assert envelope["result"] == {"pong": True}
+    assert envelope["error"]["code"] == 4000
+    assert envelope["error"]["message"].startswith("invalid params for ping: anything: ")
+    assert "hermes update" in envelope["error"]["message"]

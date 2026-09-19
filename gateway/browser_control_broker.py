@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from tui_gateway.contracts.events import BrowserControllerCancelPayload, BrowserControllerCommandPayload
+
 logger = logging.getLogger(__name__)
 _OWNER_UNSET = object()
 
@@ -163,7 +165,10 @@ class _PendingCommand:
 
 
 def _cancel_frame(pending: _PendingCommand) -> dict:
-    return {"method": FRAME_CANCEL, "params": {"command_id": pending.command_id, "tool_call_id": pending.tool_call_id}}
+    # Frames are plain JSON dicts: validate through the contract model, serialise once here so
+    # every sink (aiohttp ws, TUI transport) forwards ``params`` as-is.
+    return {"method": FRAME_CANCEL, "params": BrowserControllerCancelPayload(
+        command_id=pending.command_id, tool_call_id=pending.tool_call_id).model_dump(mode="json")}
 
 
 class BrowserControlBroker:
@@ -344,10 +349,9 @@ class BrowserControlBroker:
         if action in BROWSER_CONTROL_ARTIFACT_CAPABILITIES:
             self._validate_artifact_reference(scope, action, arguments)
         command_id = secrets.token_hex(16)
-        frame = {"method": FRAME_COMMAND, "params": {
-            "command_id": command_id, "action": action, "arguments": arguments, "controller_id": scope.controller_id,
-            "browser_profile_id": scope.browser_profile_id, "tool_call_id": tool_call_id,
-        }}
+        frame = {"method": FRAME_COMMAND, "params": BrowserControllerCommandPayload(
+            command_id=command_id, action=action, arguments=arguments, controller_id=scope.controller_id,
+            browser_profile_id=scope.browser_profile_id, tool_call_id=tool_call_id).model_dump(mode="json")}
         pending = _PendingCommand(scope=controller.scope, command_id=command_id, tool_call_id=tool_call_id)
         with controller.send_lock:
             with self._lock:

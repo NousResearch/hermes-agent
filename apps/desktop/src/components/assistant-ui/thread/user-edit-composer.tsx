@@ -71,6 +71,7 @@ import { useI18n } from '@/i18n'
 import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2Icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -454,8 +455,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       const remote = isSessionRemote(sessionId)
 
-      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
-        gateway.request<T>(method, params)
+      const requestGateway: GatewayRequest = (method, params) => gateway.request(method, params)
 
       const refs: InlineRefInput[] = []
 

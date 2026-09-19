@@ -12,6 +12,7 @@ stays silent, and a notify failure never breaks teardown.
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.events import SessionReclaimedPayload
 
 
 @pytest.fixture()
@@ -37,11 +38,11 @@ def test_reclaim_reasons_announce_to_clients(captured, reason):
     assert captured == [
         (
             "session.reclaimed",
-            {
-                "session_id": "live-abc",
-                "stored_session_id": "20260731_120000_aaaaaa",
-                "reason": reason,
-            },
+            SessionReclaimedPayload(
+                session_id="live-abc",
+                stored_session_id="20260731_120000_aaaaaa",
+                reason=reason,
+            ),
         )
     ]
 

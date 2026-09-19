@@ -9,7 +9,15 @@ import time
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.events import SessionInfoPayload, StreamDeltaPayload, ToolCompletePayload, ToolStartPayload
+from tui_gateway.contracts.server_requests import ApprovalRequestParams
 from tui_gateway.hosted_room_member_activity import HOOK_NAME
+
+
+def _approval(sid: str, command: str) -> ApprovalRequestParams:
+    return ApprovalRequestParams(
+        session_id=sid, request_id="req-1", command=command, description="", pattern_key=None, pattern_keys=None,
+        allow_permanent=None, allow_session=None, smart_denied=None, choices=["once", "deny"])
 
 
 def _wait_for(predicate, timeout: float = 2.0) -> None:
@@ -56,13 +64,13 @@ def _session(sid: str, hosted: bool):
 def test_room_member_session_events_reach_plugins_with_room_coordinates(observer):
     _session("room-sid", hosted=True)
     try:
-        server._emit("tool.start", "room-sid", {"tool_id": "call-1", "name": "terminal", "args": {"command": "ls"}})
+        server._emit("tool.start", "room-sid", ToolStartPayload(tool_id="call-1", name="terminal", args={"command": "ls"}))
         # An approval is a server→client REQUEST frame, not an event; it is member activity all the same.
         from tui_gateway import server_requests
-        server_requests.send_async("approval", "room-sid", {"request_id": "req-1", "command": "rm -rf build"},
-                                   lambda result: None)("test_done")
-        server._emit("session.info", "room-sid", {"title": "chrome, not member activity"})
-        server._emit("tool.complete", "room-sid", {"tool_id": "call-1", "name": "terminal", "result": "ok"})
+        server_requests.send_async("approval", "room-sid", _approval("room-sid", "rm -rf build"),
+                                   lambda result: None)("resolved")
+        server._emit("session.info", "room-sid", SessionInfoPayload(title="chrome, not member activity"))
+        server._emit("tool.complete", "room-sid", ToolCompletePayload(tool_id="call-1", name="terminal", result="ok"))
     finally:
         with server._sessions_lock:
             server._sessions.pop("room-sid", None)
@@ -82,9 +90,10 @@ def test_room_member_session_events_reach_plugins_with_room_coordinates(observer
 def test_ordinary_session_events_never_fire_the_room_hook(observer):
     _session("plain-sid", hosted=False)
     try:
-        server._emit("tool.start", "plain-sid", {"tool_id": "call-1", "name": "terminal"})
-        server._emit("approval.request", "plain-sid", {"request_id": "req-1", "command": "ls"})
-        server._emit("message.delta", "plain-sid", {"text": "hi"})
+        server._emit("tool.start", "plain-sid", ToolStartPayload(tool_id="call-1", name="terminal"))
+        from tui_gateway import server_requests
+        server_requests.send_async("approval", "plain-sid", _approval("plain-sid", "ls"), lambda result: None)("resolved")
+        server._emit("message.delta", "plain-sid", StreamDeltaPayload(text="hi"))
     finally:
         with server._sessions_lock:
             server._sessions.pop("plain-sid", None)

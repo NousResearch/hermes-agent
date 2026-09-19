@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { persistString, storedString } from '@/lib/storage'
 
 import { notifyError } from './notifications'
@@ -16,7 +17,7 @@ export interface ModelPreset {
   fast?: boolean
 }
 
-type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+type RequestGateway = GatewayRequest
 
 /** Stable `provider::model` key (matches the visibility-store format). */
 export const modelPresetKey = (provider: string, model: string): string => `${provider}::${model}`

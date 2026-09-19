@@ -105,7 +105,7 @@ describe('ingestBackendSkin', () => {
 
   it('ignores empty payloads', () => {
     ingestBackendSkin(undefined, { apply: true })
-    ingestBackendSkin({ name: '' }, { apply: true })
+    ingestBackendSkin({ name: '', colors: null }, { apply: true })
 
     expect($pendingSkinApply.get()).toBeNull()
   })

@@ -1,8 +1,8 @@
+import type { BillingStateResult } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { topupCommands } from '../app/slash/commands/topup.js'
-import type { BillingStateResponse } from '../gatewayTypes.js'
 
 vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: vi.fn(() => true)
@@ -10,7 +10,7 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 
 const topupCommand = topupCommands.find(cmd => cmd.name === 'topup')!
 
-const ownerState = (overrides: Partial<BillingStateResponse> = {}): BillingStateResponse => ({
+const ownerState = (overrides: Partial<BillingStateResult> = {}): BillingStateResult => ({
   auto_reload: {
     card: { kind: 'canonical' },
     enabled: false,

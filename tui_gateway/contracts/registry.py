@@ -1,29 +1,28 @@
 """The contract catalog: every method, server→client request and event the gateway speaks.
 
 Three tables, filled by the ``contracts.*`` topic modules at import time and read by
-``tui_gateway/server.py`` (runtime validation) and ``scripts/gen_gateway_contracts.py``
+``tui_gateway/server.py`` (runtime dispatch) and ``scripts/gen_gateway_contracts.py``
 (TypeScript + OpenRPC rendering). A handler registered with ``@method`` for a name that has
 no contract here fails at import: the wire has no undeclared surface.
 """
 
 from __future__ import annotations
 
-import logging
-import os
 from dataclasses import dataclass
+from types import UnionType
+from typing import TypeAlias
 
-from pydantic import ValidationError
+from .base import MethodParams, Params, Payload, Result
 
-from .base import Params, Payload, Result
 
-logger = logging.getLogger(__name__)
+ResultType: TypeAlias = type[Result] | UnionType
 
 
 @dataclass(frozen=True)
 class MethodContract:
     name: str
     params: type[Params]
-    result: type[Result]
+    result: ResultType
     doc: str = ""
 
 
@@ -33,7 +32,7 @@ class ServerRequestContract:
 
     name: str
     params: type[Params]
-    result: type[Result]
+    result: ResultType
     doc: str = ""
 
 
@@ -55,13 +54,18 @@ def _declare(table: dict, entry) -> None:
     table[entry.name] = entry
 
 
-def method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
+def method(name: str, *, params: type[MethodParams], result: ResultType, doc: str = "") -> MethodContract:
+    if not issubclass(params, MethodParams):
+        raise TypeError(f"{name}: method params must subclass MethodParams (carries the transport ``profile`` key)")
     entry = MethodContract(name, params, result, doc)
     _declare(METHODS, entry)
     return entry
 
 
-def server_request(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> ServerRequestContract:
+def server_request(name: str, *, params: type[Params], result: ResultType,
+                   doc: str = "") -> ServerRequestContract:
+    if isinstance(params, type) and issubclass(params, MethodParams):  # clarify passes a union alias
+        raise TypeError(f"{name}: server-request params must not carry the client-only ``profile`` key")
     entry = ServerRequestContract(name, params, result, doc)
     _declare(SERVER_REQUESTS, entry)
     return entry
@@ -73,91 +77,18 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
     return entry
 
 
-# ── runtime checks ────────────────────────────────────────────────────────────────────────────
-#
-# Params are validated on every call: an unknown or mistyped key is the CLIENT's bug and answers
-# JSON-RPC ``4000`` with the field path, never a silent ignore. Results and payloads are OUR bug when
-# they drift, so they never break a user's turn: outside the test suite a mismatch is logged once per
-# name; under ``HERMES_TEST_ISOLATION`` (set by ``scripts/run_tests.sh`` / ``tests/conftest.py``) it
-# raises, which is what makes the suite the gate.
-
-STRICT = bool(os.environ.get("HERMES_TEST_ISOLATION"))
-_reported: set[str] = set()
-
-
-class ContractViolation(AssertionError):
-    """A result/payload the gateway produced does not match its declared contract."""
-
-
-def _report(kind: str, name: str, exc: ValidationError) -> None:
-    if STRICT:
-        raise ContractViolation(f"{kind} {name!r} violates its contract: {exc}") from exc
-    if name not in _reported:
-        _reported.add(name)
-        logger.warning("%s %r violates its wire contract: %s", kind, name, exc)
-
-
-def validate_params(contract: MethodContract | ServerRequestContract, params: dict) -> tuple[dict | None, str | None]:
-    """Reject UNKNOWN keys (``4000`` with the key path) — the one check no handler performs, and the
-    one that catches a renamed or misspelled field on either side. Required / type errors are left to
-    the handler, which owns its documented domain codes (``4006`` missing session_id, ``4015`` bad
-    url, …) and which clients already branch on; ``check_params_accepted`` closes the loop by
-    flagging a handler that SUCCEEDS on params the contract calls invalid."""
-    try:
-        contract.params.model_validate(params)
-    except ValidationError as exc:
-        for err in exc.errors():
-            if err.get("type") == "extra_forbidden":
-                loc = ".".join(str(p) for p in err.get("loc", ())) or "params"
-                return None, (f"invalid params for {contract.name}: {loc}: {err.get('msg')} — the client and "
-                              "the Hermes backend are out of sync (different versions); run `hermes update` "
-                              "and restart both")
-    return params, None
-
-
-def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:
-    """The handler answered with a result: the params it accepted must be valid under the
-    contract, else the contract is narrower than the wire (a required field that is optional in
-    practice, a type the handler coerces). Same strict/log policy as results."""
-    try:
-        contract.params.model_validate(params)
-    except ValidationError as exc:
-        _report("params accepted by", contract.name, exc)
-
-
-def check_result(contract: MethodContract | ServerRequestContract, result: dict) -> None:
-    try:
-        contract.result.model_validate(result)
-    except ValidationError as exc:
-        _report("result of", contract.name, exc)
-
-
-def check_payload(name: str, payload: dict | None) -> None:
-    contract = EVENTS.get(name)
-    if contract is None:
-        # Completeness (every emitted name has a contract) is the generator's / the contract
-        # test's job; at emit time only a DECLARED contract can be violated.
-        return
-    if contract.payload is None:
-        if payload:
-            _report("payload of", name, _no_payload_error(payload))
-        return
-    try:
-        contract.payload.model_validate(payload or {})
-    except ValidationError as exc:
-        _report("payload of", name, exc)
-
-
 def assert_complete(methods: dict[str, object], emitted_events: set[str], server_requests: set[str]) -> None:
-    """Every registered method / emitted event name / sent server request has a contract, and no
-    contract is orphaned. Raises with the full lists."""
+    """Every registered method, every emitted event name and every sent server request has exactly one
+    contract, and no contract is orphaned. ``emitted_events`` comes from a source scan of the emitters:
+    ``_event_frame`` proves a payload's shape once it has found the contract, so a mistyped or undeclared
+    event name would otherwise surface only as a ``KeyError`` on the first execution of that path."""
     problems = []
     if missing := sorted(set(methods) - set(METHODS)):
         problems.append(f"methods without a contract: {missing}")
     if orphan := sorted(set(METHODS) - set(methods)):
         problems.append(f"method contracts with no handler: {orphan}")
     if missing := sorted(emitted_events - set(EVENTS)):
-        problems.append(f"events without a contract: {missing}")
+        problems.append(f"emitted events without a contract: {missing}")
     if orphan := sorted(set(EVENTS) - emitted_events):
         problems.append(f"event contracts nothing emits: {orphan}")
     if missing := sorted(server_requests - set(SERVER_REQUESTS)):
@@ -165,15 +96,4 @@ def assert_complete(methods: dict[str, object], emitted_events: set[str], server
     if orphan := sorted(set(SERVER_REQUESTS) - server_requests):
         problems.append(f"server request contracts nothing sends: {orphan}")
     if problems:
-        raise ContractViolation("tui_gateway/contracts is incomplete:\n  " + "\n  ".join(problems))
-
-
-def _no_payload_error(payload: dict) -> ValidationError:
-    class _Empty(Payload):
-        pass
-
-    try:
-        _Empty.model_validate(payload)
-    except ValidationError as exc:
-        return exc
-    raise AssertionError("unreachable")
+        raise RuntimeError("tui_gateway/contracts is incomplete:\n  " + "\n  ".join(problems))

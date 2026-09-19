@@ -13,7 +13,14 @@ import { host } from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
 import { botsText } from './i18n'
-import { backendTargetProfile, botConnectionRoute, botRosterMeta, botWorkspaceOwnerKey, requestForBot } from './routing'
+import {
+  backendTargetProfile,
+  botConnectionRoute,
+  botRosterMeta,
+  botWorkspaceOwnerKey,
+  requestForBot,
+  rosterRowFromProfile
+} from './routing'
 import type { RpcErrorLike } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, CanonicalSession, RosterRow } from './types'
@@ -239,7 +246,7 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   // update". Cross-connection lookups fail MORE often (network), so this
   // matters doubly for remote bots. Both open paths catch and toast "try
   // again", which is the correct outcome: retry, never mint.
-  let res: { sessions?: CanonicalChatRow[] }
+  let rows: readonly CanonicalChatRow[]
 
   try {
     // Every caller is a user gesture (roster click, Create Bot), and this is
@@ -247,7 +254,7 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
     // backend on a local pool. Dial foreground so the click is not queued
     // behind background roster hydration on a saturated pool (#105104: roster
     // click, zero backend activity, "try again" toast).
-    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(
+    const res = await requestForBot(
       bot,
       'session.list',
       {
@@ -258,6 +265,8 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
       },
       { spawnPriority: 'foreground' }
     )
+
+    rows = res.sessions
   } catch (error) {
     // Plugin tests and host bridges can return Error-like values from another
     // JS realm, where `instanceof Error` is false. Preserve the provider/RPC
@@ -267,7 +276,6 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
     throw new Error(`Could not check ${name}'s Bot Chat registry${detail} — not starting a new chat`)
   }
 
-  const rows = res?.sessions ?? []
   const match = rows.find(row => isCanonicalBotChatHistory(row))
 
   if (match) {
@@ -402,7 +410,7 @@ export function createCanonicalChat(
 
     // Same click gesture as the foreground lookup above: a first-ever open
     // has no row to find and mints one, still on the user's dial.
-    const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(
+    const res = await requestForBot(
       bot,
       'session.create',
       {
@@ -424,8 +432,8 @@ export function createCanonicalChat(
       { spawnPriority: 'foreground' }
     )
 
-    const sid = res?.stored_session_id
-    const runtime = res?.session_id
+    const sid = res.stored_session_id
+    const runtime = res.session_id
 
     // session.create is intentionally lazy: its stored row does not exist until
     // the first prompt. Mounting `sid` immediately therefore emits a noisy REST
@@ -614,16 +622,11 @@ export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
   const route = botConnectionRoute(bot)
   const backendProfile = backendTargetProfile(route, bot.name)
 
-  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'name' | 'ui_meta'>> }>(
-    bot,
-    'profiles.list',
-    {}
-  )
-
-  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile)
+  const result = await requestForBot(bot, 'profiles.list', {})
+  const row = result.profiles.map(rosterRowFromProfile).find(profile => profile.name === backendProfile)
   const server = row?.ui_meta?.['hermes-bots']
 
-  if (server && typeof server === 'object') {
+  if (server) {
     const key = botMetaKey(bot)
     $botMeta.set({
       ...$botMeta.get(),

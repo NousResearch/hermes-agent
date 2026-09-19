@@ -1,8 +1,9 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $petActivity, $petState, setPetActivity } from '@/store/pet'
+import { toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -15,8 +16,8 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}, sessionId = SID) {
-  act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
+function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K], sessionId = SID) {
+  act(() => stream.emit(type, payload, sessionId))
 }
 
 describe('pet tool-failure reaction', () => {
@@ -41,8 +42,9 @@ describe('pet tool-failure reaction', () => {
   it('briefly shows failed when the active session has an isolated tool error', () => {
     mountStream()
 
-    emit('tool.start', { name: 'terminal', tool_id: 'tool-1' })
-    emit('tool.complete', { name: 'terminal', tool_id: 'tool-1', error: 'exit code 1' })
+    emit('tool.start', toolStartPayload({ name: 'terminal', tool_id: 'tool-1' }))
+    // A failed tool rides the wire as a non-empty `result.error`.
+    emit('tool.complete', toolCompletePayload({ name: 'terminal', result: { error: 'exit code 1' }, tool_id: 'tool-1' }))
 
     expect($petActivity.get().error).toBe(true)
     expect($petState.get()).toBe('failed')
@@ -51,10 +53,14 @@ describe('pet tool-failure reaction', () => {
   it('does not show failed for a successful tool or a background-session failure', () => {
     mountStream()
 
-    emit('tool.complete', { name: 'terminal', tool_id: 'tool-1' })
+    emit('tool.complete', toolCompletePayload({ name: 'terminal', result: 'ok', tool_id: 'tool-1' }))
     expect($petActivity.get().error).toBe(false)
 
-    emit('tool.complete', { name: 'terminal', tool_id: 'tool-2', error: 'exit code 1' }, OTHER_SID)
+    emit(
+      'tool.complete',
+      toolCompletePayload({ name: 'terminal', result: { error: 'exit code 1' }, tool_id: 'tool-2' }),
+      OTHER_SID
+    )
     expect($petActivity.get().error).toBe(false)
   })
 })

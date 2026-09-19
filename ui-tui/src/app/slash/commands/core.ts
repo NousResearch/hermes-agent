@@ -4,16 +4,6 @@ import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
-import type {
-  ConfigGetValueResponse,
-  ConfigSetResponse,
-  SessionSaveResponse,
-  SessionStatusResponse,
-  SessionSteerResponse,
-  SessionTitleResponse,
-  SessionUndoResponse,
-  SystemBatteryResponse
-} from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import {
@@ -176,7 +166,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ mouseTracking: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
+      ctx.gateway.rpc('config.set', { key: 'mouse', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next}`))
     }
@@ -234,8 +224,8 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
-        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
+        .rpc('session.status', { session_id: ctx.sid })
+        .then(ctx.guarded(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
         .catch(ctx.guardedErr)
     }
   },
@@ -252,9 +242,9 @@ export const coreCommands: SlashCommand[] = [
 
       if (!arg) {
         ctx.gateway
-          .rpc<SessionTitleResponse>('session.title', { session_id: ctx.sid })
+          .rpc('session.title', { session_id: ctx.sid })
           .then(
-            ctx.guarded<SessionTitleResponse>(r => {
+            ctx.guarded(r => {
               const current = (r?.title ?? '').trim()
               ctx.transcript.sys(current ? `title: ${current}` : 'no title set')
             })
@@ -269,9 +259,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionTitleResponse>('session.title', { session_id: ctx.sid, title })
+        .rpc('session.title', { session_id: ctx.sid, title })
         .then(
-          ctx.guarded<SessionTitleResponse>(r => {
+          ctx.guarded(r => {
             const next = (r?.title ?? title).trim()
             const suffix = r?.pending ? ' (queued while session initializes)' : ''
             patchUiState({ sessionTitle: next })
@@ -293,7 +283,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ compact: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`density ${next ? 'on' : 'off'}`))
     }
@@ -308,7 +298,7 @@ export const coreCommands: SlashCommand[] = [
 
       if (!arg) {
         gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'details_mode' })
+          .rpc('config.get', { key: 'details_mode' })
           .then(r => {
             if (ctx.stale()) {
               return
@@ -341,9 +331,7 @@ export const coreCommands: SlashCommand[] = [
         const { [first]: _drop, ...rest } = ui.sections
 
         patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
-        gateway
-          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
-          .catch(() => {})
+        gateway.rpc('config.set', { key: `details_mode.${first}`, value: mode ?? '' }).catch(() => {})
         transcript.sys(`details ${first}: ${mode ?? 'reset'}`)
 
         return
@@ -358,7 +346,7 @@ export const coreCommands: SlashCommand[] = [
       const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
-      gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
+      gateway.rpc('config.set', { key: 'details_mode', value: next }).catch(() => {})
       transcript.sys(`details: ${next}`)
     }
   },
@@ -551,9 +539,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
+        .rpc('session.save', { session_id: ctx.sid })
         .then(
-          ctx.guarded<SessionSaveResponse>(r => {
+          ctx.guarded(r => {
             const file = r?.file
 
             if (file) {
@@ -591,7 +579,7 @@ export const coreCommands: SlashCommand[] = [
       // returns to whatever /verbose mode the user had. Optimistically patch the
       // badge so the status bar flips on the same frame.
       patchUiState({ focusView: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() =>
         ctx.transcript.sys(
@@ -623,7 +611,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
+      ctx.gateway.rpc('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
     }
@@ -642,7 +630,7 @@ export const coreCommands: SlashCommand[] = [
         const state = ctx.ui.battery ? 'on' : 'off'
 
         ctx.gateway
-          .rpc<SystemBatteryResponse>('system.battery', {})
+          .rpc('system.battery', {})
           .then(r => {
             if (r?.available && typeof r.percent === 'number') {
               ctx.transcript.sys(`battery indicator ${state} — currently ${r.plugged ? '⚡' : '🔋'} ${r.percent}%`)
@@ -662,7 +650,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`battery indicator ${next ? 'on' : 'off'}`))
     }
@@ -704,9 +692,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
+        .rpc('session.steer', { session_id: ctx.sid, text: payload })
         .then(
-          ctx.guarded<SessionSteerResponse>(r => {
+          ctx.guarded(r => {
             if (r?.status === 'queued') {
               ctx.transcript.sys(
                 `steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
@@ -728,8 +716,8 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys('nothing to undo')
       }
 
-      ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
-        ctx.guarded<SessionUndoResponse>(r => {
+      ctx.gateway.rpc('session.undo', { session_id: ctx.sid }).then(
+        ctx.guarded(r => {
           if ((r.removed ?? 0) > 0) {
             ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))
             ctx.transcript.sys(`undid ${r.removed} messages`)
@@ -755,8 +743,8 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.send(last)
       }
 
-      ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
-        ctx.guarded<SessionUndoResponse>(r => {
+      ctx.gateway.rpc('session.undo', { session_id: ctx.sid }).then(
+        ctx.guarded(r => {
           if ((r.removed ?? 0) <= 0) {
             return ctx.transcript.sys('nothing to retry')
           }

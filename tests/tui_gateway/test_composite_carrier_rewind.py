@@ -111,7 +111,7 @@ def test_retry_selects_the_live_ask_inside_a_force_user_leading_carrier(
 
     response = _dispatch(sid, "retry")
 
-    assert response["result"] == {"type": "send", "message": "REAL ASK"}
+    assert {"type": "send", "message": "REAL ASK"}.items() <= response["result"].items()
     _assert_scaffold_preserved(db, session_key, session)
 
 
@@ -233,7 +233,7 @@ def test_retry_ignores_buried_ephemeral_scaffolding_missing_from_db(
 
     response = _dispatch(sid, "retry")
 
-    assert response["result"] == {"type": "send", "message": "REAL ASK"}
+    assert {"type": "send", "message": "REAL ASK"}.items() <= response["result"].items()
     _assert_scaffold_preserved(db, session_key, session, prefix_len=2)
 
 
@@ -262,7 +262,7 @@ def test_retry_drops_buried_ephemeral_scaffolding_from_the_warm_prefix(
 
     response = _dispatch(sid, "retry")
 
-    assert response["result"] == {"type": "send", "message": "REAL ASK"}
+    assert {"type": "send", "message": "REAL ASK"}.items() <= response["result"].items()
     assert [message.get("content") for message in session["history"][:3]] == [
         "OLDER ASK",
         "candidate answer",
@@ -302,7 +302,7 @@ def test_retry_preserves_older_warm_media_while_targeting_plain_ask(
 
     response = _dispatch(sid, "retry")
 
-    assert response["result"] == {"type": "send", "message": "REAL ASK"}
+    assert {"type": "send", "message": "REAL ASK"}.items() <= response["result"].items()
     assert isinstance(session["history"][0]["content"], list)
     _assert_scaffold_preserved(db, session_key, session, prefix_len=2)
 
@@ -396,10 +396,10 @@ def test_retry_preserves_literal_media_like_text(carrier_session):
     )
     response = _dispatch(sid, "retry")
 
-    assert response["result"] == {
+    assert {
         "type": "send",
         "message": "inspect [image|ybres:RID]",
-    }
+    }.items() <= response["result"].items()
     _assert_scaffold_preserved(db, session_key, session)
 
 

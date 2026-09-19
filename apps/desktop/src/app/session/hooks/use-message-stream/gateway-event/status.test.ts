@@ -19,7 +19,7 @@ const OWNED_REFUSAL =
 
 function errorContext(message: string) {
   const failAssistantMessage = vi.fn()
-  const payload = { message } as GatewayEventContext['payload']
+  const payload = { message }
 
   const ctx: GatewayEventContext = {
     deps: {
@@ -36,7 +36,6 @@ function errorContext(message: string) {
     fromActiveSource: () => true,
     isActiveEvent: false,
     occurredAt: 1_700_000_100,
-    payload,
     scheduleConfigRefresh: vi.fn(),
     sessionId: 'sess-1'
   }

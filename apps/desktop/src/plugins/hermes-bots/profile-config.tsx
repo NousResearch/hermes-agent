@@ -18,6 +18,7 @@ import {
   surfaceModelSwitchConfirm,
   Textarea
 } from '@hermes/plugin-sdk'
+import type { ProfilesConfigureParams } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { $lastRoster, ROSTER_KEY } from './data'
@@ -93,18 +94,6 @@ export function CheckList({ items, onToggle, columns = 2 }: CheckListProps) {
   )
 }
 
-/** `profiles.describe` as the advanced editor reads it. */
-export interface ProfileDescribeResponse {
-  mcp_servers?: CapabilityEntry[]
-  model?: { default?: string; provider?: string }
-  skills?: CapabilityEntry[]
-  soul?: string
-  toolsets?: CapabilityEntry[]
-}
-/** `mcp.catalog` — the bundled, installable MCP menu. */
-export interface McpCatalogResponse {
-  servers?: CapabilityEntry[]
-}
 /** Staged advanced-config edits. Each `dirty*` flag gates one section of the
  *  `profiles.configure` payload, so an untouched section is never written. */
 interface AdvancedConfigState {
@@ -143,24 +132,22 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
     Promise.all([
       requestForBot(bot, 'profiles.describe', {
         name: bot.name
-      }) as Promise<ProfileDescribeResponse>,
-      (
-        requestForBot(bot, 'mcp.catalog', {
-          profile: bot.name
-        }) as Promise<McpCatalogResponse>
-      ).catch(() => null)
+      }),
+      requestForBot(bot, 'mcp.catalog', {
+        profile: bot.name
+      }).catch(() => null)
     ])
       .then(([res, cat]) => {
-        const configured = res.mcp_servers || []
+        const configured = res.mcp_servers
         const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+        const catalog = (cat?.servers || []).filter(s => !have.has(s.name))
         setState(prev => ({
           ...prev,
-          provider: res.model?.provider || '',
-          model: res.model?.default || '',
-          soul: res.soul || '',
-          skills: res.skills || [],
-          toolsets: res.toolsets || [],
+          provider: res.model.provider,
+          model: res.model.default,
+          soul: res.soul,
+          skills: res.skills,
+          toolsets: res.toolsets,
           mcp: [
             ...configured.map(m => ({
               ...m,
@@ -171,9 +158,8 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
               enabled: false,
               fromCatalog: true,
               installed: s.installed,
-              auth: s.auth,
-              requires: s.requires || [],
-              description: s.description || ''
+              requires: s.requires,
+              description: s.description
             }))
           ],
           loaded: true
@@ -523,26 +509,12 @@ export function emptyAdvancedState(): AdvancedConfigState {
   }
 }
 
-/** The `profiles.configure` body this editor writes — one key per dirty
- *  section. A type alias, not an interface: it is handed straight to
- *  `requestForBot`, whose params are a `Record<string, unknown>`, and only
- *  aliases pick up the implicit index signature that requires. */
-export type ProfileConfigurePayload = {
-  disabled_skills?: string[]
-  enabled_mcp_servers?: string[]
-  enabled_toolsets?: string[]
-  model?: string
-  name: string
-  provider?: string
-  soul?: string
-}
-/** What `profiles.configure` answers: per-section success, plus the #95293
- *  expensive-model / data-policy confirmation gate. */
-interface ProfileConfigureResult {
-  applied?: Record<string, boolean>
-  confirm_message?: string
-  confirm_required?: boolean
-}
+/** The `profiles.configure` body this editor writes — the generated params
+ *  with `name` pinned, since every write here targets one profile. */
+export type ProfileConfigurePayload = ProfilesConfigureParams & { name: string }
+
+/** The `profiles.configure` sections whose boolean outcome this editor reports. */
+const CONFIGURE_SECTIONS = ['description', 'mcp_servers', 'model', 'skills', 'soul', 'toolsets', 'ui_meta'] as const
 
 /** Persist only the dirty sections of the advanced editor. */
 export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigState) {
@@ -565,11 +537,11 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
       payload.provider = provider
     } else if (!model && !provider) {
       try {
-        const result = (await requestForBot(bot, 'cli.exec', {
+        const result = await requestForBot(bot, 'cli.exec', {
           argv: ['--profile', bot.name, 'config', 'unset', 'model']
-        })) as { blocked?: boolean; code?: number }
+        })
 
-        applied.model = result?.blocked !== true && result?.code === 0
+        applied.model = !result.blocked && result.code === 0
       } catch {
         applied.model = false
       }
@@ -600,11 +572,18 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
     }
   }
 
-  const result = (await requestForBot(bot, 'profiles.configure', payload)) as ProfileConfigureResult
+  const result = await requestForBot(bot, 'profiles.configure', payload)
+  const merged = { ...applied }
 
-  const merged = {
-    ...applied,
-    ...(result?.applied || {})
+  // `applied` also carries the ui_meta revision/conflict maps; only the
+  // per-section booleans are outcomes, and a section the request didn't
+  // carry comes back null (older gateways omit it).
+  for (const section of CONFIGURE_SECTIONS) {
+    const outcome = result.applied[section] ?? null
+
+    if (outcome !== null) {
+      merged[section] = outcome
+    }
   }
 
   // #95293 remainder: the gateway now guards data-policy / expensive models
@@ -613,23 +592,32 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
   // shared confirm handler the core picker uses (one applier, no forked
   // confirm logic per surface): a confirmed answer resends ONLY the model
   // section with `confirm_expensive_model: true`.
-  if (result?.confirm_required && payload.model && payload.provider) {
+  if (result.confirm_required && payload.model && payload.provider) {
     delete merged.model
     void surfaceModelSwitchConfirm({
-      confirmMessage: result.confirm_message,
+      confirmMessage: result.confirm_message ?? undefined,
       failureMessage: 'Model switch failed',
       finish: () =>
         queryClient.invalidateQueries({
           queryKey: ROSTER_KEY
         }),
       model: payload.model,
-      requestConfirmed: () =>
-        requestForBot(bot, 'profiles.configure', {
+      requestConfirmed: async () => {
+        const confirmed = await requestForBot(bot, 'profiles.configure', {
           name: bot.name,
           model: payload.model,
           provider: payload.provider,
           confirm_expensive_model: true
-        }) as Promise<ProfileConfigureResult>
+        })
+
+        // The shared confirm flow treats a second `confirm_required` as a
+        // failure rather than a loop, and hands `applied` to `finish`.
+        return {
+          applied: confirmed.applied,
+          confirm_message: confirmed.confirm_message ?? undefined,
+          confirm_required: confirmed.confirm_required ?? undefined
+        }
+      }
     })
   }
 

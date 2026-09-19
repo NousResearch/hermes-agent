@@ -43,11 +43,15 @@ def server():
 
 @pytest.fixture()
 def emits(server, monkeypatch):
+    """Captured ``(event, sid, payload)`` with the closed payload model dumped to its wire keys
+    (``None`` fields dropped) so the assertions read like the JSON a client sees."""
     captured: list = []
     monkeypatch.setattr(
         server,
         "_emit",
-        lambda event, sid, payload=None: captured.append((event, sid, payload)),
+        lambda event, sid, payload=None: captured.append(
+            (event, sid, None if payload is None else payload.model_dump(exclude_none=True))
+        ),
     )
     monkeypatch.setattr(server, "_tool_progress_enabled", lambda sid: True)
     return captured
@@ -161,6 +165,9 @@ def test_stale_child_run_not_reported_active(server, emits):
     server._active_child_runs["child-1"] = 0.0  # epoch — ancient
 
     assert server._child_run_active("child-1") is False
+    # The read reclaims it: the entry is the only record of a child whose completion frame never
+    # arrived, so keeping it would grow the registry for the life of the gateway process.
+    assert "child-1" not in server._active_child_runs
 
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
     assert server._child_run_active("child-1") is True

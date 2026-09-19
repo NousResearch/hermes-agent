@@ -9,6 +9,7 @@ import {
   releaseWorkspaceCwdOwner,
   setCurrentCwd
 } from '@/store/session'
+import { sessionInfoPayload } from '@/test/contract'
 
 import { handleSessionInfoEvent } from './session-info'
 import type { GatewayEventContext } from './types'
@@ -43,12 +44,16 @@ function sessionInfoEvent({
       updateSessionState: vi.fn(state => state),
       upsertToolCall: vi.fn()
     },
-    event: { profile: 'default', session_id: explicitSid, type: 'session.info' },
+    event: {
+      payload: sessionInfoPayload({ cwd, stored_session_id: storedSessionId }),
+      profile: 'default',
+      session_id: explicitSid,
+      type: 'session.info'
+    },
     explicitSid,
     fromActiveSource: () => true,
     isActiveEvent: !!sessionId && sessionId === activeSessionId,
     occurredAt: Date.now() / 1000,
-    payload: { cwd, stored_session_id: storedSessionId },
     scheduleConfigRefresh: vi.fn(),
     sessionId
   } as unknown as GatewayEventContext
@@ -126,12 +131,10 @@ describe('handleSessionInfoEvent workspace ownership', () => {
 
     let next: ClientSessionState | undefined
 
-    ctx.payload = {
-      ...ctx.payload,
-      fast: true,
-      model: 'model-1',
-      provider: 'provider-1'
+    if (ctx.event.type === 'session.info' && ctx.event.payload) {
+      ctx.event.payload = { ...ctx.event.payload, fast: true, model: 'model-1', provider: 'provider-1' }
     }
+
     ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-1', original)
     ctx.deps.updateSessionState = vi.fn(
       (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {

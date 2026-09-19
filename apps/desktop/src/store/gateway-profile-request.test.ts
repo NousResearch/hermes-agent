@@ -36,6 +36,7 @@ vi.mock('@/hermes', () => ({
     })
     close = vi.fn()
     onEvent = vi.fn(() => () => {})
+    onAnyServerRequest = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
 
     constructor() {
@@ -161,9 +162,9 @@ describe('requestGatewayForProfile', () => {
     )
     await ensureGatewayForProfile('default')
 
-    const first = requestGatewayForProfile('worker', 'profiles.list')
+    const first = requestGatewayForProfile('worker', 'profiles.list', {})
     await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
-    const second = requestGatewayForProfile('worker', 'profiles.list')
+    const second = requestGatewayForProfile('worker', 'profiles.list', {})
     const guardedSecond = second.catch(error => error)
 
     await Promise.resolve()
@@ -194,7 +195,7 @@ describe('requestGatewayForProfile', () => {
     )
     await ensureGatewayForProfile('default')
 
-    const request = requestGatewayForProfile('worker', 'profiles.list')
+    const request = requestGatewayForProfile('worker', 'profiles.list', {})
     await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
 
     pruneSecondaryGateways(new Set())
@@ -347,7 +348,7 @@ describe('requestGatewayForAgent', () => {
     }
     await ensureGatewayForProfile('default')
 
-    await expect(requestGatewayForAgent('local', 'worker', 'profiles.list')).resolves.toEqual({
+    await expect(requestGatewayForAgent('local', 'worker', 'profiles.list', {})).resolves.toEqual({
       method: 'profiles.list',
       params: {}
     })
@@ -375,13 +376,13 @@ describe('requestGatewayForAgent', () => {
     }
 
     await openGatewayForAgent('source-a', 'research')
-    await requestGatewayForAgent('source-a', 'research', 'session.list')
+    await requestGatewayForAgent('source-a', 'research', 'session.list', {})
     disposeSecondariesForConnection('source-a')
 
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
     expect(onActiveConnectionInvalidated).not.toHaveBeenCalled()
 
-    await requestGatewayForAgent('source-a', 'research', 'session.list')
+    await requestGatewayForAgent('source-a', 'research', 'session.list', {})
     expect(secondaryGateways).toHaveLength(2)
     expect(getConnectionFor).toHaveBeenCalledTimes(2)
   })

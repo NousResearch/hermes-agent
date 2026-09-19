@@ -1,4 +1,6 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { ToolStartPayload } from '@hermes/shared'
+
+import { restoredToolStartPayload } from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
@@ -52,21 +54,22 @@ export function restorePendingClarifyFromSnapshot(
   return { authoritativeAbsent: false, cleared: null, request: parked?.requestId === pending.id ? parked : null }
 }
 
-export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {
-  return {
-    args: request.questions?.length
-      ? {
-          questions: request.questions.map(question => ({
-            choices: question.choices ?? undefined,
-            multi_select: question.multiSelect || undefined,
-            question: question.question
-          }))
-        }
-      : {
-          choices: request.choices ?? [],
-          ...(request.multiSelect ? { multi_select: true } : {}),
-          question: request.question
-        },
-    tool_id: request.requestId
-  }
+export function pendingClarifyToolPayload(request: ClarifyRequest): ToolStartPayload {
+  return restoredToolStartPayload(
+    'clarify',
+    request.requestId,
+      request.kind === 'batch'
+        ? {
+            questions: request.questions.map(question => ({
+              ...(question.choices ? { choices: question.choices } : {}),
+              ...(question.multi_select ? { multi_select: true } : {}),
+              question: question.question
+            }))
+          }
+        : {
+            choices: request.choices ?? [],
+            ...(request.multi_select ? { multi_select: true } : {}),
+            question: request.question
+          }
+  )
 }

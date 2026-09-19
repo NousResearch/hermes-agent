@@ -7,12 +7,12 @@ import { appendToolShelfMessage, canHoldToolShelf, isTodoDone, mergeToolShelfInt
 describe('isTodoDone', () => {
   it('only treats non-empty all-completed/cancelled lists as done', () => {
     expect(isTodoDone([])).toBe(false)
-    expect(isTodoDone([{ content: 'x', id: 'x', status: 'completed' }])).toBe(true)
-    expect(isTodoDone([{ content: 'x', id: 'x', status: 'in_progress' }])).toBe(false)
+    expect(isTodoDone([{ content: 'x', id: 'x', parent: null, status: 'completed' }])).toBe(true)
+    expect(isTodoDone([{ content: 'x', id: 'x', parent: null, status: 'in_progress' }])).toBe(false)
     expect(
       isTodoDone([
-        { content: 'x', id: 'x', status: 'completed' },
-        { content: 'y', id: 'y', status: 'cancelled' }
+        { content: 'x', id: 'x', parent: null, status: 'completed' },
+        { content: 'y', id: 'y', parent: null, status: 'cancelled' }
       ])
     ).toBe(true)
   })

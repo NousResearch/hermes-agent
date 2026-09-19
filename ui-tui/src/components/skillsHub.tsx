@@ -1,4 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import type { SkillInspectInfo } from '@hermes/shared/gateway-events'
 import { useEffect, useState } from 'react'
 
 import { NO_SKILLS_INSTALLED } from '../app/userMessages.js'
@@ -20,7 +21,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
   const [catIdx, setCatIdx] = useState(0)
   const [skillIdx, setSkillIdx] = useState(0)
   const [stage, setStage] = useState<'actions' | 'category' | 'skill'>('category')
-  const [info, setInfo] = useState<null | SkillInfo>(null)
+  const [info, setInfo] = useState<null | SkillInspectInfo>(null)
   const [installing, setInstalling] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
@@ -31,7 +32,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
-    gw.request<{ skills?: Record<string, string[]> }>('skills.manage', { action: 'list' })
+    gw.request('skills.manage', { action: 'list' })
       .then(r => {
         setSkillsByCat(r?.skills ?? {})
         setErr('')
@@ -72,8 +73,8 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
     setInfo(null)
     setErr('')
 
-    gw.request<{ info?: SkillInfo }>('skills.manage', { action: 'inspect', query: name })
-      .then(r => setInfo(r?.info ?? { name }))
+    gw.request('skills.manage', { action: 'inspect', query: name })
+      .then(r => setInfo(r.info))
       .catch((e: unknown) => setErr(rpcErrorMessage(e)))
   }
 
@@ -81,7 +82,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
     setInstalling(true)
     setErr('')
 
-    gw.request<{ installed?: boolean; name?: string }>('skills.manage', { action: 'install', query: name })
+    gw.request('skills.manage', { action: 'install', query: name })
       .then(() => onClose())
       .catch((e: unknown) => setErr(rpcErrorMessage(e)))
       .finally(() => setInstalling(false))
@@ -275,9 +276,9 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
         {info?.name ?? skillName}
       </Text>
 
-      <Text color={t.color.muted}>{info?.category ?? selectedCat}</Text>
+      <Text color={t.color.muted}>{selectedCat}</Text>
       {info?.description ? <Text color={t.color.text}>{info.description}</Text> : null}
-      {info?.path ? <Text color={t.color.muted}>path: {info.path}</Text> : null}
+      {info?.source ? <Text color={t.color.muted}>source: {info.source}</Text> : null}
       {!info && !err ? <Text color={t.color.muted}>loading…</Text> : null}
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
       {installing ? <Text color={t.color.accent}>installing…</Text> : null}
@@ -285,13 +286,6 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
       <OverlayHint t={t}>i reinspect · x reinstall · Enter/Esc back · q close</OverlayHint>
     </Box>
   )
-}
-
-interface SkillInfo {
-  category?: string
-  description?: string
-  name?: string
-  path?: string
 }
 
 interface SkillsHubProps {

@@ -46,7 +46,7 @@ const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdate
  *  a delayed cancel for an older prompt must not erase a newer one the same
  *  session raised. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, occurredAt } = ctx
+  const { deps, event, sessionId, occurredAt } = ctx
 
   if (isConnectionRequestEvent(event)) {
     // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
@@ -85,7 +85,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return false
   }
 
-  const id = typeof payload?.id === 'string' ? payload.id : ''
+  const payload = event.payload
+  const id = payload?.id ?? ''
 
   if (!id) {
     return true

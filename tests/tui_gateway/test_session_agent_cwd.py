@@ -21,6 +21,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     # server imports start a background GitHub update check; disable it before import.
     monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
     from tui_gateway import server
+    from tui_gateway.contracts.common import SessionLiveInfo
 
     old, new, other = (tmp_path / name for name in ("old-repo", "new-repo", "other-repo"))
     for path in (old, new, other):
@@ -31,7 +32,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"cwd": session["cwd"]})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session: SessionLiveInfo(cwd=session["cwd"]))
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)
     monkeypatch.setattr("tools.terminal_tool_lifecycle.cleanup_vm", lambda *a: None)
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
@@ -91,9 +92,9 @@ def workspace_runtime(monkeypatch, tmp_path):
         if action == "project-tool":
             server._apply_project_workspace(session["session_key"], str(cwd))
         else:
-            response = server._methods[action]("move", {
-                "session_id": "ui-session", "session_key": session["session_key"], "cwd": str(cwd),
-            })
+            # Each method takes exactly its own key: cwd.set the live session, workspace.move the stored one.
+            target = {"session_id": "ui-session"} if action == "session.cwd.set" else {"session_key": session["session_key"]}
+            response = server._methods[action]("move", {**target, "cwd": str(cwd)})
             assert "error" not in response, response
         assert session["cwd"] == str(cwd)
 

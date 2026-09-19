@@ -13,7 +13,7 @@ describe('requestPetUpdate', () => {
 
     expect(update).toEqual({ cells: null, meta: { enabled: false } })
     expect(request).toHaveBeenCalledTimes(1)
-    expect(request).toHaveBeenCalledWith('pet.info.meta')
+    expect(request).toHaveBeenCalledWith('pet.info.meta', {})
     expect(needsCells).not.toHaveBeenCalled()
   })
 
@@ -38,7 +38,7 @@ describe('requestPetUpdate', () => {
     const update = await requestPetUpdate(gateway(request), 'review', false, () => true)
 
     expect(update?.cells).toEqual(cells)
-    expect(request).toHaveBeenNthCalledWith(1, 'pet.info.meta')
+    expect(request).toHaveBeenNthCalledWith(1, 'pet.info.meta', {})
     expect(request).toHaveBeenNthCalledWith(2, 'pet.cells', {
       graphics: false,
       state: 'review'

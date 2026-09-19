@@ -230,7 +230,12 @@ describe('a row without a reachable owner', () => {
 
 describe('requestForBot rides the bot’s own source', () => {
   it('pins same-name bots to their own connection under concurrent requests', async () => {
-    hostMock.requestProfile.mockImplementation(async (route: ProfileRoute) => ({ from: route.connectionId }))
+    // The roster the owning connection answers with: its own id as the row
+    // name, so each answer names the socket it actually rode.
+    hostMock.requestProfile.mockImplementation(async (route: ProfileRoute) => ({
+      bot_mode_protocol: false,
+      profiles: [{ name: route.connectionId }]
+    }))
 
     const rows = ['vera', 'mac-mini'].map(
       connectionId =>
@@ -242,9 +247,9 @@ describe('requestForBot rides the bot’s own source', () => {
         }) as RosterRow
     )
 
-    const answers = await Promise.all(rows.map(bot => requestForBot<{ from: string }>(bot, 'profiles.list', {})))
+    const answers = await Promise.all(rows.map(bot => requestForBot(bot, 'profiles.list', {})))
 
-    expect(answers.map(answer => answer.from)).toEqual(['vera', 'mac-mini'])
+    expect(answers.map(answer => answer.profiles[0].name)).toEqual(['vera', 'mac-mini'])
     expect(hostMock.request).not.toHaveBeenCalled()
   })
 
@@ -306,7 +311,7 @@ describe('requestForBot rides the bot’s own source', () => {
     // numeric JSON-RPC `name` crashed the Routines pane and hid the cause.
     hostMock.request.mockRejectedValue({ code: -32000, message: 'profile busy', name: -32000 })
 
-    const error = await requestForBot({ name: 'ops' }, 'cron.list', {}).catch((thrown: unknown) => thrown)
+    const error = await requestForBot({ name: 'ops' }, 'cron.manage', { action: 'list' }).catch((thrown: unknown) => thrown)
 
     expect(error).toBeInstanceOf(Error)
     expect(typeof (error as Error).name).toBe('string')
@@ -316,6 +321,7 @@ describe('requestForBot rides the bot’s own source', () => {
 
 describe('group transcript speaker meta (#96432)', () => {
   const localDefault = { name: 'default' } as RosterRow
+
   const remoteDefault = {
     name: 'default',
     connectionId: 'spark',
@@ -323,6 +329,7 @@ describe('group transcript speaker meta (#96432)', () => {
     remoteSource: true,
     sourceScoped: true
   } as RosterRow
+
   const allMeta = {
     default: { title: 'Local Default', image: 'local.png' },
     'spark::default': { title: 'Remote Default', image: 'remote.png' }

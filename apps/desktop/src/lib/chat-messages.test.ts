@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { toolResultRecord } from '@/lib/tool-result-metadata'
+import { todoItem, toolCompletePayload, toolStartPayload } from '@/test/contract'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
@@ -520,7 +521,7 @@ describe('interleaved reasoning/text boundaries', () => {
 
   it('starts a fresh text part after a tool call (segment boundary)', () => {
     let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.', 10.125)
-    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running', 11.25)
+    parts = upsertToolPart(parts, toolStartPayload({ name: 'read_file', tool_id: 'tc-1' }), 'running', 11.25)
     parts = appendAssistantTextPart(parts, 'Now editing.', 12.5)
 
     expect(parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
@@ -532,7 +533,7 @@ describe('interleaved reasoning/text boundaries', () => {
 
   it('does not merge reasoning across a tool call', () => {
     let parts: ChatMessagePart[] = appendReasoningPart([], 'before tool')
-    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
+    parts = upsertToolPart(parts, toolStartPayload({ name: 'read_file', tool_id: 'tc-1' }), 'running')
     parts = appendReasoningPart(parts, 'after tool')
 
     expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
@@ -729,18 +730,18 @@ describe('preserveLocalAssistantErrors', () => {
 
 describe('upsertToolPart', () => {
   it('preserves call time through progress and records completion time', () => {
-    const started = upsertToolPart([], { name: 'read_file', tool_id: 'call-1' }, 'running', 100.125)
+    const started = upsertToolPart([], toolStartPayload({ name: 'read_file', tool_id: 'call-1' }), 'running', 100.125)
 
     const progressed = upsertToolPart(
       started,
-      { name: 'read_file', preview: 'still reading', tool_id: 'call-1' },
+      toolStartPayload({ name: 'read_file', preview: 'still reading', tool_id: 'call-1' }),
       'running',
       101.5
     )
 
     const completed = upsertToolPart(
       progressed,
-      { name: 'read_file', result: { content: 'done' }, tool_id: 'call-1' },
+      toolCompletePayload({ name: 'read_file', result: { content: 'done' }, tool_id: 'call-1' }),
       'complete',
       102.875
     )
@@ -752,14 +753,14 @@ describe('upsertToolPart', () => {
 
   it('closes active commentary when a tool starts', () => {
     const text = appendAssistantTextPart([], 'Checking first.', 20)
-    const withTool = upsertToolPart(text, { name: 'read_file', tool_id: 'call-2' }, 'running', 21)
+    const withTool = upsertToolPart(text, toolStartPayload({ name: 'read_file', tool_id: 'call-2' }), 'running', 21)
 
     expect(withTool[0].completedAt).toBe(21)
   })
 
   it('closes active commentary when only a tool completion arrives', () => {
     const text = appendAssistantTextPart([], 'Checking first.', 20)
-    const withTool = upsertToolPart(text, { name: 'read_file', tool_id: 'call-2' }, 'complete', 21)
+    const withTool = upsertToolPart(text, toolCompletePayload({ name: 'read_file', tool_id: 'call-2' }), 'complete', 21)
 
     expect(withTool[0].completedAt).toBe(21)
   })
@@ -773,11 +774,11 @@ describe('upsertToolPart', () => {
   it('preserves inline diffs from tool completion events', () => {
     const parts = upsertToolPart(
       [],
-      {
+      toolCompletePayload({
         inline_diff: '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new',
         name: 'patch',
         tool_id: 'tool-1'
-      },
+      }),
       'complete'
     )
 
@@ -792,57 +793,57 @@ describe('upsertToolPart', () => {
   it('keeps live todo rows stable across sparse progress payloads', () => {
     const first = upsertToolPart(
       [],
-      {
+      toolCompletePayload({
         name: 'todo',
-        todos: [{ content: 'Boil water', id: 'boil', status: 'in_progress' }],
+        todos: [todoItem({ content: 'Boil water', id: 'boil', status: 'in_progress' })],
         tool_id: 'todo-1'
-      },
+      }),
       'running'
     )
 
     const progressed = upsertToolPart(
       first,
-      {
+      toolStartPayload({
         name: 'todo',
         preview: 'updating plan',
         tool_id: 'todo-1'
-      },
+      }),
       'running'
     )
 
     const [part] = progressed
     const args = part && 'args' in part ? (part.args as Record<string, unknown>) : {}
 
-    expect(args.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
+    expect(args.todos).toEqual([{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }])
   })
 
   it('archives todo state on completion and accepts explicit empty clears', () => {
     const started = upsertToolPart(
       [],
-      {
+      toolCompletePayload({
         name: 'todo',
-        todos: [{ content: 'Boil water', id: 'boil', status: 'in_progress' }],
+        todos: [todoItem({ content: 'Boil water', id: 'boil', status: 'in_progress' })],
         tool_id: 'todo-1'
-      },
+      }),
       'running'
     )
 
     const completed = upsertToolPart(
       started,
-      {
+      toolCompletePayload({
         name: 'todo',
         tool_id: 'todo-1'
-      },
+      }),
       'complete'
     )
 
     const cleared = upsertToolPart(
       completed,
-      {
+      toolCompletePayload({
         name: 'todo',
         todos: [],
         tool_id: 'todo-1'
-      },
+      }),
       'complete'
     )
 
@@ -850,48 +851,46 @@ describe('upsertToolPart', () => {
 
     const clearedResult = cleared[0] && 'result' in cleared[0] ? toolResultRecord(cleared[0]) : {}
 
-    expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
+    expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }])
     expect(clearedResult.todos).toEqual([])
   })
 
   it('keeps parallel same-name tools distinct without explicit ids', () => {
     const startedTokyo = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         context: 'tokyo weather',
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
     const startedReykjavik = upsertToolPart(
       startedTokyo,
-      {
+      toolStartPayload({
         context: 'reykjavik weather',
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
     const completedTokyo = upsertToolPart(
       startedReykjavik,
-      {
-        context: 'tokyo weather',
-        message: 'tokyo done',
+      toolCompletePayload({
+        args: { context: 'tokyo weather' },
         name: 'web_search',
         summary: 'Did 5 searches'
-      },
+      }),
       'complete'
     )
 
     const completedBoth = upsertToolPart(
       completedTokyo,
-      {
-        context: 'reykjavik weather',
-        message: 'reykjavik done',
+      toolCompletePayload({
+        args: { context: 'reykjavik weather' },
         name: 'web_search',
         summary: 'Did 5 searches'
-      },
+      }),
       'complete'
     )
 
@@ -912,18 +911,18 @@ describe('upsertToolPart', () => {
   it('pairs a terminal completion with its context-only start when event IDs differ', () => {
     const started = upsertToolPart(
       [],
-      { context: 'echo "Hello from the terminal"', name: 'terminal', tool_id: 'terminal-start' },
+      toolStartPayload({ context: 'echo "Hello from the terminal"', name: 'terminal', tool_id: 'terminal-start' }),
       'running'
     )
 
     const completed = upsertToolPart(
       started,
-      {
+      toolCompletePayload({
         args: { command: 'echo "Hello from the terminal"' },
         name: 'terminal',
         result: { exit_code: 0, stdout: 'Hello from the terminal' },
         tool_id: 'terminal-complete'
-      },
+      }),
       'complete'
     )
 
@@ -943,22 +942,22 @@ describe('upsertToolPart', () => {
   it('preserves query args when completion payload omits context', () => {
     const started = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         context: 'auckland weather today and tomorrow forecast',
         name: 'web_search',
         tool_id: 'search-1'
-      },
+      }),
       'running'
     )
 
     const completed = upsertToolPart(
       started,
-      {
+      toolCompletePayload({
         duration_s: 1.1,
         name: 'web_search',
         summary: 'Did 5 searches in 1.1s',
         tool_id: 'search-1'
-      },
+      }),
       'complete'
     )
 
@@ -976,27 +975,27 @@ describe('upsertToolPart', () => {
   it('does not append phantom same-name tool rows for id-less progress updates', () => {
     const startedA = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         context: 'reykjavik weather today and tomorrow forecast',
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
     const startedB = upsertToolPart(
       startedA,
-      {
+      toolStartPayload({
         context: 'kathmandu weather today and tomorrow forecast',
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
     const progressed = upsertToolPart(
       startedB,
-      {
+      toolStartPayload({
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
@@ -1011,22 +1010,22 @@ describe('upsertToolPart', () => {
   it('matches id-less live starts with later identified completions', () => {
     const started = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         context: 'asuncion paraguay weather today and tomorrow forecast',
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
     const completed = upsertToolPart(
       started,
-      {
-        context: 'asuncion paraguay weather today and tomorrow forecast',
+      toolCompletePayload({
+        args: { context: 'asuncion paraguay weather today and tomorrow forecast' },
         duration_s: 1.1,
         name: 'web_search',
         summary: 'Did 5 searches in 1.1s',
         tool_id: 'search-asuncion'
-      },
+      }),
       'complete'
     )
 
@@ -1043,20 +1042,20 @@ describe('upsertToolPart', () => {
   it('matches id-less live starts with later identified progress updates', () => {
     const started = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         context: 'reykjavik tashkent uzbekistan weather today and tomorrow forecast',
         name: 'web_search'
-      },
+      }),
       'running'
     )
 
     const progressed = upsertToolPart(
       started,
-      {
+      toolStartPayload({
         context: 'reykjavik tashkent uzbekistan weather today and tomorrow forecast',
         name: 'web_search',
         tool_id: 'search-reykjavik'
-      },
+      }),
       'running'
     )
 
@@ -1072,59 +1071,59 @@ describe('upsertToolPart', () => {
   it('reconciles preview-first progress rows with later stable-id starts', () => {
     const progressA = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         name: 'web_search',
         preview: 'tokyo weather'
-      },
+      }),
       'running'
     )
 
     const progressB = upsertToolPart(
       progressA,
-      {
+      toolStartPayload({
         name: 'web_search',
         preview: 'reykjavik weather'
-      },
+      }),
       'running'
     )
 
     const startedA = upsertToolPart(
       progressB,
-      {
+      toolStartPayload({
         args: { query: 'tokyo weather' },
         name: 'web_search',
         tool_id: 'search-tokyo'
-      },
+      }),
       'running'
     )
 
     const startedB = upsertToolPart(
       startedA,
-      {
+      toolStartPayload({
         args: { query: 'reykjavik weather' },
         name: 'web_search',
         tool_id: 'search-reykjavik'
-      },
+      }),
       'running'
     )
 
     const completedA = upsertToolPart(
       startedB,
-      {
+      toolCompletePayload({
         name: 'web_search',
         summary: 'Did 5 searches',
         tool_id: 'search-tokyo'
-      },
+      }),
       'complete'
     )
 
     const completedB = upsertToolPart(
       completedA,
-      {
+      toolCompletePayload({
         name: 'web_search',
         summary: 'Did 5 searches',
         tool_id: 'search-reykjavik'
-      },
+      }),
       'complete'
     )
 
@@ -1148,11 +1147,11 @@ describe('upsertToolPart', () => {
   it('uses structured live tool args for titles before hydrate', () => {
     const started = upsertToolPart(
       [],
-      {
+      toolStartPayload({
         args: { search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast' },
         name: 'web_search',
         tool_id: 'search-bishkek'
-      },
+      }),
       'running'
     )
 
@@ -1167,13 +1166,13 @@ describe('upsertToolPart', () => {
   it('keeps structured live tool results before hydrate', () => {
     const completed = upsertToolPart(
       [],
-      {
+      toolCompletePayload({
         args: { query: 'suva weather' },
         name: 'web_search',
         result: { data: { web: [{ title: 'Suva forecast', url: 'https://example.test', description: 'Sunny' }] } },
         summary: 'Did 1 search in 0.5s',
         tool_id: 'search-suva'
-      },
+      }),
       'complete'
     )
 
@@ -1437,7 +1436,7 @@ describe('sealOpenToolParts', () => {
       assistantWithParts(
         upsertToolPart(
           [],
-          { tool_id: 'old-provider-id', name: 'clarify', args: { question: 'Old question?', choices: ['A', 'B'] } },
+          toolStartPayload({ tool_id: 'old-provider-id', name: 'clarify', args: { question: 'Old question?', choices: ['A', 'B'] } }),
           'running',
           1
         ),
@@ -1449,7 +1448,7 @@ describe('sealOpenToolParts', () => {
 
     const restored = restorePendingClarifyToolCall(
       messages,
-      { id: 'new-request-id', name: 'clarify', args: { question: 'New question?', choices: ['C', 'D'] } },
+      toolStartPayload({ tool_id: 'new-request-id', name: 'clarify', args: { question: 'New question?', choices: ['C', 'D'] } }),
       3
     )
 
@@ -1469,7 +1468,7 @@ describe('sealOpenToolParts', () => {
       assistantWithParts(
         upsertToolPart(
           [],
-          { tool_id: 'provider-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } },
+          toolStartPayload({ tool_id: 'provider-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } }),
           'running',
           1
         ),
@@ -1479,7 +1478,7 @@ describe('sealOpenToolParts', () => {
 
     const restored = restorePendingClarifyToolCall(
       stopped,
-      { id: 'request-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } },
+      toolStartPayload({ tool_id: 'request-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } }),
       2
     )
 

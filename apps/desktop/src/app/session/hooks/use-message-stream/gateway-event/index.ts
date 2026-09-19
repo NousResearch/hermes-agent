@@ -1,7 +1,6 @@
 import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
-import type { GatewayEventPayload } from '@/lib/chat-messages'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
@@ -132,8 +131,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
   return useCallback(
     (event: GatewayEvent) => {
-      const payload = event.payload as GatewayEventPayload | undefined
-
       // "From the active profile" must mean "from the active SOURCE": every
       // registered connection exposes a 'default' profile, so a bare profile
       // comparison attributes gateway B's 'default' events to gateway A's
@@ -145,10 +142,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
           registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
-      const occurredAt =
-        typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
-          ? payload.timestamp
-          : Date.now() / 1000
+      // The wire carries no event clock; a row's time is its receipt time.
+      const occurredAt = Date.now() / 1000
 
       const explicitSid = event.session_id || ''
 
@@ -222,7 +217,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       const ctx: GatewayEventContext = {
         deps,
         event,
-        payload,
         sessionId,
         explicitSid,
         isActiveEvent,

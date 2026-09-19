@@ -34,7 +34,8 @@ describe('restorePendingClarifyFromSnapshot', () => {
     $clarifyRequests.set({
       'sess-1': {
         choices: null,
-        multiSelect: false,
+        kind: 'single',
+        multi_select: false,
         question: 'Proceed?',
         receivedAt: resumeStartedAt + 5,
         requestId: 'rid1',
@@ -69,7 +70,8 @@ describe('restorePendingClarifyFromSnapshot', () => {
     $clarifyRequests.set({
       'sess-6': {
         choices: null,
-        multiSelect: false,
+        kind: 'single',
+        multi_select: false,
         question: 'Old',
         receivedAt: resumeStartedAt - 10,
         requestId: 'old-rid',
@@ -77,7 +79,7 @@ describe('restorePendingClarifyFromSnapshot', () => {
       }
     })
 
-    const cleared = restorePendingClarifyFromSnapshot({}, 'sess-6', resumeStartedAt, 'old-rid')
+    const cleared = restorePendingClarifyFromSnapshot({ open_requests: null }, 'sess-6', resumeStartedAt, 'old-rid')
 
     expect(cleared.authoritativeAbsent).toBe(true)
     expect(cleared.cleared?.requestId).toBe('old-rid')
@@ -86,7 +88,8 @@ describe('restorePendingClarifyFromSnapshot', () => {
     $clarifyRequests.set({
       'sess-6': {
         choices: null,
-        multiSelect: false,
+        kind: 'single',
+        multi_select: false,
         question: 'Newer',
         receivedAt: resumeStartedAt + 1,
         requestId: 'new-rid',
@@ -94,7 +97,7 @@ describe('restorePendingClarifyFromSnapshot', () => {
       }
     })
 
-    const kept = restorePendingClarifyFromSnapshot({}, 'sess-6', resumeStartedAt, 'old-rid')
+    const kept = restorePendingClarifyFromSnapshot({ open_requests: null }, 'sess-6', resumeStartedAt, 'old-rid')
 
     expect(kept.cleared).toBeNull()
     expect(kept.request).toBeNull()
@@ -106,10 +109,9 @@ describe('pendingClarifyToolPayload', () => {
   it('mirrors the batch wire shape for in-place re-arm', () => {
     expect(
       pendingClarifyToolPayload({
-        choices: null,
-        multiSelect: false,
-        question: '',
-        questions: [{ choices: ['Yes', 'No'], multiSelect: false, qid: 'q0', question: 'Proceed?' }],
+        kind: 'batch',
+        lockedAnswers: null,
+        questions: [{ choices: ['Yes', 'No'], multi_select: false, qid: 'q0', question: 'Proceed?' }],
         requestId: 'rid',
         sessionId: 'sess'
       })
@@ -117,6 +119,10 @@ describe('pendingClarifyToolPayload', () => {
       args: {
         questions: [{ choices: ['Yes', 'No'], question: 'Proceed?' }]
       },
+      args_text: null,
+      context: null,
+      name: 'clarify',
+      preview: null,
       tool_id: 'rid'
     })
   })

@@ -1,6 +1,18 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  errorPayload,
+  messageCompletePayload,
+  messageDeltaPayload,
+  messageInterimPayload,
+  reasoningDeltaPayload,
+  reviewSummaryPayload,
+  sessionInfoPayload,
+  toolCompletePayload,
+  toolStartPayload
+} from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -8,8 +20,12 @@ const SID = 'timeline-session'
 
 let stream: MessageStreamHarness
 
-const event = (type: GatewayEventName, timestamp: number, payload: Record<string, unknown> = {}) =>
-  act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
+// The wire carries no event clock — a row's time is its receipt time — so
+// each frame is delivered with `Date.now()` pinned to the moment it "arrives".
+function event<K extends GatewayEventName>(type: K, receivedAt: number, payload: GatewayEventMap[K]) {
+  vi.spyOn(Date, 'now').mockReturnValue(receivedAt * 1000)
+  act(() => stream.emit(type, payload, SID))
+}
 
 describe('live transcript timeline events', () => {
   beforeEach(async () => {
@@ -22,13 +38,13 @@ describe('live transcript timeline events', () => {
   })
 
   it('records commentary, tool, resumed text, and turn-stop boundaries', () => {
-    event('message.start', 100)
-    event('message.delta', 101.125, { text: 'Let me inspect it.' })
-    event('message.interim', 101.75, { already_streamed: true, text: 'Let me inspect it.' })
-    event('tool.start', 102.25, { args: { path: 'README.md' }, name: 'read_file', tool_id: 'call-1' })
-    event('tool.complete', 104.5, { name: 'read_file', result: { content: 'ok' }, tool_id: 'call-1' })
-    event('message.delta', 105.625, { text: 'The file looks good.' })
-    event('message.complete', 106.875, { text: 'The file looks good.' })
+    event('message.start', 100, {})
+    event('message.delta', 101.125, messageDeltaPayload({ text: 'Let me inspect it.' }))
+    event('message.interim', 101.75, messageInterimPayload({ already_streamed: true, text: 'Let me inspect it.' }))
+    event('tool.start', 102.25, toolStartPayload({ args: { path: 'README.md' }, name: 'read_file', tool_id: 'call-1' }))
+    event('tool.complete', 104.5, toolCompletePayload({ name: 'read_file', result: { content: 'ok' }, tool_id: 'call-1' }))
+    event('message.delta', 105.625, messageDeltaPayload({ text: 'The file looks good.' }))
+    event('message.complete', 106.875, messageCompletePayload({ text: 'The file looks good.' }))
 
     const assistants = stream.state(SID).messages.filter(message => message.role === 'assistant') ?? []
 
@@ -45,10 +61,10 @@ describe('live transcript timeline events', () => {
   })
 
   it('preserves cross-channel delta order inside one flush window', () => {
-    event('message.start', 200)
-    event('reasoning.delta', 201.125, { text: 'Thinking first.' })
-    event('message.delta', 202.25, { text: 'Then speaking.' })
-    event('tool.start', 203.5, { args: {}, name: 'terminal', tool_id: 'call-2' })
+    event('message.start', 200, {})
+    event('reasoning.delta', 201.125, reasoningDeltaPayload({ text: 'Thinking first.' }))
+    event('message.delta', 202.25, messageDeltaPayload({ text: 'Then speaking.' }))
+    event('tool.start', 203.5, toolStartPayload({ args: {}, name: 'terminal', tool_id: 'call-2' }))
 
     const assistant = stream.state(SID).messages.find(message => message.role === 'assistant')
 
@@ -57,8 +73,8 @@ describe('live transcript timeline events', () => {
   })
 
   it('uses the gateway event time for an error boundary', () => {
-    event('message.start', 300)
-    event('error', 301.875, { error: 'provider failed' })
+    event('message.start', 300, {})
+    event('error', 301.875, errorPayload({ message: 'provider failed' }))
 
     const assistant = stream.state(SID).messages.find(message => message.role === 'assistant')
 
@@ -67,7 +83,7 @@ describe('live transcript timeline events', () => {
   })
 
   it('uses the gateway event time for a review summary system row', () => {
-    event('review.summary', 401.625, { text: 'Review saved.' })
+    event('review.summary', 401.625, reviewSummaryPayload({ text: 'Review saved.' }))
 
     const system = stream.state(SID).messages.find(message => message.role === 'system')
 
@@ -76,9 +92,9 @@ describe('live transcript timeline events', () => {
   })
 
   it('uses session.info time when it is the only stop boundary', () => {
-    event('message.start', 500)
-    event('tool.start', 501, { args: {}, name: 'terminal', tool_id: 'call-3' })
-    event('session.info', 502.75, { running: false })
+    event('message.start', 500, {})
+    event('tool.start', 501, toolStartPayload({ args: {}, name: 'terminal', tool_id: 'call-3' }))
+    event('session.info', 502.75, sessionInfoPayload({ running: false }))
 
     const assistant = stream.state(SID).messages.find(message => message.role === 'assistant')
 

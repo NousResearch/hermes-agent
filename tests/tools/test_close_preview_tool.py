@@ -4,8 +4,10 @@ import json
 
 import pytest
 
-from tools import close_preview_tool as cp, desktop_ui
+from tools import close_preview_tool as cp
+from tools import desktop_ui
 from tools.registry import registry
+from tui_gateway.contracts.events import PreviewClosePayload
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +38,7 @@ def test_emits_preview_close_for_the_whole_pane():
     out = json.loads(cp.close_preview_tool())
 
     assert out == {"success": True, "url": ""}
-    assert calls == [("preview.close", {"url": ""})]
+    assert calls == [("preview.close", PreviewClosePayload(url=""))]
 
 
 def test_normalizes_a_bare_domain_like_open_does():
@@ -46,7 +48,7 @@ def test_normalizes_a_bare_domain_like_open_does():
     out = json.loads(cp.close_preview_tool("www.cnn.com"))
 
     assert out == {"success": True, "url": "https://www.cnn.com"}
-    assert calls == [("preview.close", {"url": "https://www.cnn.com"})]
+    assert calls == [("preview.close", PreviewClosePayload(url="https://www.cnn.com"))]
 
 
 def test_reports_desktop_only_without_emitter():

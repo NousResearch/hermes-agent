@@ -2,6 +2,7 @@
 import threading
 
 from tui_gateway import server
+from tui_gateway.contracts.events import MessageCompletePayload
 
 
 class Peer:
@@ -25,7 +26,7 @@ def test_reattach_preserves_terminal_delivery(monkeypatch):
     monkeypatch.setitem(server._sessions, "shared", session)
     with session["history_lock"]:
         server._rebind_live_transport("shared", session, second)
-    server._emit("message.complete", "shared", {"text": "finished"})
+    server._emit("message.complete", "shared", MessageCompletePayload(text="finished"))
     assert first.received.wait(timeout=5)
     assert second.received.wait(timeout=5)
     assert first.frames == second.frames
@@ -34,6 +35,6 @@ def test_reattach_preserves_terminal_delivery(monkeypatch):
     assert server._close_sessions_for_transport(second) == (0, 0)
     assert second not in session.get("viewers", {})
     first.received.clear()
-    server._emit("message.complete", "shared", {"text": "still attached"})
+    server._emit("message.complete", "shared", MessageCompletePayload(text="still attached"))
     assert first.received.wait(timeout=5)
     assert len(first.frames) == 2

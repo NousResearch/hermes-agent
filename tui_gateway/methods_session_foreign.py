@@ -1,46 +1,62 @@
 """Desktop foreign-history browsing, scoped to the serving backend and profile."""
 
+from __future__ import annotations
+
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.profiles_vault_complete_foreign_subagents import (
+    SessionForeignIdParams,
+    SessionForeignImportResult,
+    SessionForeignListParams,
+    SessionForeignListResult,
+    SessionForeignPreviewResult,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method
 
 
 @method("session.foreign.list")
-def _foreign_list(rid, params):
+def _foreign_list(rid, params: SessionForeignListParams) -> SessionForeignListResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import SessionForeignListResult
     from hermes_cli.foreign_sessions_browser import list_foreign_sessions
     try:
-        return _ok(rid, list_foreign_sessions(params.get("source"), params.get("offset", 0), params.get("limit", 25)))
+        return SessionForeignListResult.model_validate(list_foreign_sessions(params.source.value if params.source else None, params.offset, params.limit))
     except ValueError as exc:
-        return _err(rid, -32602, str(exc))
+        return srv._err(rid, -32602, str(exc))
     except OSError:
-        return _err(rid, -32000, "Could not read session folders on this backend")
+        return srv._err(rid, -32000, "Could not read session folders on this backend")
 
 
 def _foreign_history_request(rid, params, importing):
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import (
+        SessionForeignImportResult, SessionForeignPreviewResult)
     from hermes_cli.foreign_sessions_browser import import_browser_session, preview_foreign_session
     try:
-        with _profile_db(params, writer=importing) as db:
+        with srv._profile_db(params, writer=importing) as db:
             if db is None:
-                return _db_unavailable_error(rid, code=-32000)
-            result = (import_browser_session(params.get("id"), db, _response_profile_name(params.get("profile")))
-                      if importing else preview_foreign_session(params.get("id"), db))
-            return _ok(rid, result)
+                return srv._db_unavailable_error(rid, code=-32000)
+            result = (import_browser_session(params.id, db, srv._response_profile_name(params.profile))
+                      if importing else preview_foreign_session(params.id, db))
+            return (SessionForeignImportResult if importing else SessionForeignPreviewResult).model_validate(result)
     except ValueError as exc:
-        return _err(rid, -32602, str(exc))
+        return srv._err(rid, -32602, str(exc))
     except OSError:
-        return _err(rid, -32000, "Could not read this session on the backend")
+        return srv._err(rid, -32000, "Could not read this session on the backend")
 
 
 @method("session.foreign.preview")
-def _foreign_preview(rid, params):
-    return _foreign_history_request(rid, params, False)
+def _foreign_preview(rid, params: SessionForeignIdParams) -> SessionForeignPreviewResult | dict:
+    return srv._foreign_history_request(rid, params, False)
 
 
 @method("session.foreign.import")
-def _foreign_import(rid, params):
-    return _foreign_history_request(rid, params, True)
+def _foreign_import(rid, params: SessionForeignIdParams) -> SessionForeignImportResult | dict:
+    return srv._foreign_history_request(rid, params, True)
 
 
 def register(server):
     bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -199,9 +199,8 @@ def test_oauth_callback_rpc_relays_iss():
     contract = contracts.METHODS["mcp.servers.oauth.callback"]
     params = {"session_id": "sess-relay-1", "name": "hosp", "code": "abc", "state": "s3cr3tstate",
               "iss": "https://as.example.com"}
-    params, problem = contracts.validate_params(contract, params)
-    assert problem is None
-    out = srv._methods["mcp.servers.oauth.callback"](1, params)
+    assert contract.params.model_validate(params).iss == "https://as.example.com"
+    out = srv._methods["mcp.servers.oauth.callback"](1, params)  # the dispatch wrapper validates the dict
     assert out["result"]["ok"] is True
     assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
 

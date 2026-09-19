@@ -2,6 +2,8 @@ import threading
 
 import pytest
 
+from tui_gateway.contracts.events import BrowserControllerCancelPayload
+
 from gateway.browser_control_broker import (
     BrowserControlBroker,
     browser_control_enabled,
@@ -219,10 +221,10 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
     assert replacement_frames == [
         {
             "method": "browser.controller.cancel",
-            "params": {
-                "command_id": command_id,
-                "tool_call_id": "tool-call-fixture",
-            },
+            "params": BrowserControllerCancelPayload(
+                command_id=command_id,
+                tool_call_id="tool-call-fixture",
+            ).model_dump(mode="json"),
         }
     ]
 
@@ -301,10 +303,10 @@ def test_cancel_with_pre_reconnect_scope_still_cancels_same_stable_identity():
     assert refreshed_frames == [
         {
             "method": "browser.controller.cancel",
-            "params": {
-                "command_id": frames[0]["params"]["command_id"],
-                "tool_call_id": "tool-call-before-reconnect",
-            },
+            "params": BrowserControllerCancelPayload(
+                command_id=frames[0]["params"]["command_id"],
+                tool_call_id="tool-call-before-reconnect",
+            ).model_dump(mode="json"),
         }
     ]
 

@@ -1,8 +1,8 @@
+import type { SubagentListResult } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useMemo } from 'react'
 
-import type { SubagentListResponse } from '../gatewayTypes.js'
 import type { SubagentProgress } from '../types.js'
 
 import { useTurnSelector } from './turnStore.js'
@@ -11,10 +11,10 @@ import { $uiState } from './uiStore.js'
 // Session-local presentation only; never persisted to config.
 export const $agentDockCollapsed = atom(false)
 
-const EMPTY: SubagentListResponse = { subagents: [], delegations: [] }
-export const $agentSnapshot = atom<{ sid: string | null; data: SubagentListResponse }>({ sid: null, data: EMPTY })
+const EMPTY: SubagentListResult = { subagents: [], delegations: [] }
+export const $agentSnapshot = atom<{ sid: string | null; data: SubagentListResult }>({ sid: null, data: EMPTY })
 
-export function applyAgentSnapshot(sid: string | null, data: SubagentListResponse = EMPTY) {
+export function applyAgentSnapshot(sid: string | null, data: SubagentListResult = EMPTY) {
   const previous = $agentSnapshot.get()
 
   if (previous.sid !== sid || JSON.stringify(previous.data) !== JSON.stringify(data)) {
@@ -22,7 +22,7 @@ export function applyAgentSnapshot(sid: string | null, data: SubagentListRespons
   }
 }
 
-export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListResponse): SubagentProgress[] {
+export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListResult): SubagentProgress[] {
   const merged = new Map(events.map(s => [s.id, s]))
 
   for (const [index, s] of data.subagents.entries()) {

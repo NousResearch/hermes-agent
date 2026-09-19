@@ -23,6 +23,7 @@ import {
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
+import { sessionActiveItem } from '@/test/contract'
 
 import {
   type ActiveTranscriptRefreshDeps,
@@ -888,18 +889,18 @@ describe('rehydrateLiveSessionStatuses', () => {
     rehydrateLiveSessionStatuses(
       {
         sessions: [
-          {
+          sessionActiveItem({
             id: 'runtime-overnight',
             last_active: (now - SESSION_WATCHDOG_TIMEOUT_MS - 1_000) / 1000,
             session_key: 'overnight-exam-learning',
             status: 'working'
-          },
-          {
+          }),
+          sessionActiveItem({
             id: 'runtime-cleanup',
             last_active: now / 1000,
             session_key: 'temporary-file-cleanup',
             status: 'working'
-          }
+          })
         ]
       },
       now
@@ -912,7 +913,7 @@ describe('rehydrateLiveSessionStatuses', () => {
 
   it('restores a waiting turn as working and needing attention', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-needs-user', session_key: 'needs-user', status: 'waiting' }]
+      sessions: [sessionActiveItem({ id: 'runtime-needs-user', session_key: 'needs-user', status: 'waiting' })]
     })
 
     expect($workingSessionIds.get()).toEqual(['needs-user'])
@@ -923,9 +924,9 @@ describe('rehydrateLiveSessionStatuses', () => {
   it('ignores idle, starting, and malformed live-session rows', () => {
     rehydrateLiveSessionStatuses({
       sessions: [
-        { id: 'runtime-idle', session_key: 'idle-session', status: 'idle' },
-        { id: 'runtime-starting', session_key: 'starting-session', status: 'starting' },
-        { id: 'runtime-malformed', status: 'working' }
+        sessionActiveItem({ id: 'runtime-idle', session_key: 'idle-session', status: 'idle' }),
+        sessionActiveItem({ id: 'runtime-starting', session_key: 'starting-session', status: 'starting' }),
+        sessionActiveItem({ id: 'runtime-malformed', status: 'working' })
       ]
     })
 

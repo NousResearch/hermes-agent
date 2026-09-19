@@ -1,6 +1,5 @@
 """Session flush / reaping / orphan sweep / cross-backend heartbeat: exit-flush signal handlers, idle + LRU
-eviction, orphaned session-row sweep, backend heartbeat refresher. Bodies are rebound onto server.py's
-globals at install time (method_ctx.bind_module), so they reference server.py globals bare — including the
+eviction, orphaned session-row sweep, backend heartbeat refresher. Reaches server.py state through ``srv`` — including the
 knobs _SESSION_TTL_S, _REAPER_SCAN_S, _EXIT_FLUSH_BUDGET_S and _INCREMENTAL_FLUSH_INTERVAL_S.
 """
 
@@ -13,6 +12,14 @@ import threading
 from tui_gateway._env import env_float
 
 from .method_ctx import bind_module
+from typing import Any
+from utils import is_truthy_value
+import atexit
+import os
+import time
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 
 # ── Flush-on-kill + periodic incremental flush ───────────────────────────
@@ -39,8 +46,8 @@ def _flush_session_messages(session: dict | None) -> bool:
 
 
 def _reaper_session_snapshot() -> list:
-    with _sessions_lock:
-        return list(_sessions.values())
+    with srv._sessions_lock:
+        return list(srv._sessions.values())
 
 
 def _flush_dirty_sessions(now: float | None = None) -> int:
@@ -48,17 +55,17 @@ def _flush_dirty_sessions(now: float | None = None) -> int:
     owns mid-turn persistence and mutates the live message list, so racing it from the reaper thread is never
     safe. Idle sessions flush at most once per ``_INCREMENTAL_FLUSH_INTERVAL_S``; ``now`` (monotonic) is
     injectable for tests."""
-    if _INCREMENTAL_FLUSH_INTERVAL_S <= 0:
+    if srv._INCREMENTAL_FLUSH_INTERVAL_S <= 0:
         return 0
     now = time.monotonic() if now is None else now
     flushed = 0
-    for session in _reaper_session_snapshot():
+    for session in srv._reaper_session_snapshot():
         if not isinstance(session, dict) or session.get("running"):
             continue
         last = float(session.get("_last_incremental_flush") or 0.0)
-        if last and (now - last) < _INCREMENTAL_FLUSH_INTERVAL_S:
+        if last and (now - last) < srv._INCREMENTAL_FLUSH_INTERVAL_S:
             continue
-        flushed += _flush_session_messages(session)
+        flushed += srv._flush_session_messages(session)
         session["_last_incremental_flush"] = now
     return flushed
 
@@ -67,17 +74,17 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     """Bounded flush of ALL in-memory sessions on the way out, on a daemon worker joined with the budget so a
     hung SQLite write can't block exit past ``HERMES_TUI_EXIT_FLUSH_BUDGET_S`` (default 5s). Running sessions
     are included — the process is dying, a partial transcript beats loss."""
-    budget = _EXIT_FLUSH_BUDGET_S if budget_s is None else max(0.0, budget_s)
+    budget = srv._EXIT_FLUSH_BUDGET_S if budget_s is None else max(0.0, budget_s)
     if budget <= 0:
         return 0
     result = {"flushed": 0}
 
     def _run() -> None:
         deadline = time.monotonic() + budget
-        for session in _reaper_session_snapshot():
+        for session in srv._reaper_session_snapshot():
             if time.monotonic() >= deadline:
                 break
-            result["flushed"] += _flush_session_messages(session)
+            result["flushed"] += srv._flush_session_messages(session)
 
     worker = threading.Thread(target=_run, daemon=True, name="hermes-exit-flush")
     worker.start()
@@ -93,9 +100,9 @@ def _handle_exit_flush_signal(signum, frame) -> None:
     """Flush in-memory sessions, then hand off to the prior handler (uvicorn's graceful shutdown, a supervisor's
     handler, or the default disposition) — this only *prepends* a bounded flush."""
     with contextlib.suppress(Exception):
-        _flush_sessions_before_exit()
+        srv._flush_sessions_before_exit()
     import signal as _signal
-    prev = _exit_flush_prev_handlers.get(signum)
+    prev = srv._exit_flush_prev_handlers.get(signum)
     if callable(prev):
         prev(signum, frame)
     elif prev is not _signal.SIG_IGN:
@@ -113,8 +120,7 @@ def install_exit_flush_signal_handlers() -> bool:
     signals: its ``capture_signals()`` saves these as the "original" handlers and re-raises into them after
     graceful shutdown, so the flush also covers terminations outside uvicorn's serve window. Idempotent; False
     off-main-thread/on failure."""
-    global _exit_flush_handlers_installed
-    if _exit_flush_handlers_installed:
+    if srv._exit_flush_handlers_installed:
         return True
     if threading.current_thread() is not threading.main_thread():
         return False
@@ -123,19 +129,19 @@ def install_exit_flush_signal_handlers() -> bool:
     for signum in (_signal.SIGTERM, _signal.SIGINT):
         with contextlib.suppress(ValueError, OSError, RuntimeError):
             prev = _signal.getsignal(signum)
-            _signal.signal(signum, _handle_exit_flush_signal)
-            _exit_flush_prev_handlers[signum] = prev
+            _signal.signal(signum, srv._handle_exit_flush_signal)
+            srv._exit_flush_prev_handlers[signum] = prev
             installed = True
-    _exit_flush_handlers_installed = installed
+    srv._exit_flush_handlers_installed = installed
     return installed
 
 
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-disconnect drop sentinel. _stdio_transport is the REAL transport for
     # standalone `hermes --tui` and must NOT count as dead.
-    if transport is _detached_ws_transport:
+    if transport is srv._detached_ws_transport:
         return True
-    if isinstance(transport, FanoutTransport):
+    if isinstance(transport, srv.FanoutTransport):
         # A fan-out is never the sentinel and has no ``_closed`` of its own, so without this arm every
         # multi-client session reads as alive forever — the TTL reaper, the LRU cap and the #77129 disconnect
         # revalidation all gate on this predicate. A fan-out can legitimately end up empty, or holding nothing
@@ -152,12 +158,12 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     it loses its client): never evict a session mid-turn, awaiting input, still building, owning live delegated
     work, or on a live transport. Lazy watch sessions never start a build, so their unset agent_ready must not
     make them immortal."""
-    if session.get("running") or _session_pending_kind(sid) or _session_has_active_delegations(sid, session):
+    if session.get("running") or srv._session_pending_kind(sid) or srv._session_has_active_delegations(sid, session):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
-    return _transport_is_dead(session.get("transport"))
+    return srv._transport_is_dead(session.get("transport"))
 
 
 def _sessions_quiescent(exclude: str | None = None) -> bool:
@@ -167,35 +173,35 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
     write deadline and interrupts their turns (#58576); this is the moment it costs no other session. The
     predicate is advisory (a turn can start right after), so the per-session checks — one may read state.db —
     run outside ``_sessions_lock``."""
-    with _sessions_lock:
-        others = [(sid, s) for sid, s in _sessions.items() if sid != exclude]
+    with srv._sessions_lock:
+        others = [(sid, s) for sid, s in srv._sessions.items() if sid != exclude]
     return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
-    if not _session_is_lru_evictable(sid, session):
+    if not srv._session_is_lru_evictable(sid, session):
         return False
     last_active = float(session.get("last_active") or 0.0)
     created_at = float(session.get("created_at") or 0.0)
-    return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
+    return (now - last_active) > srv._SESSION_TTL_S and (now - created_at) > srv._SESSION_TTL_S
 
 
 def _reap_idle_sessions() -> None:
     now = time.time()
     try:  # piggyback the incremental flush on the reaper tick — no new timer subsystem
-        _flush_dirty_sessions()
+        srv._flush_dirty_sessions()
     except Exception:
         logger.debug("periodic incremental session flush failed", exc_info=True)
-    with _sessions_lock:
-        victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
+    with srv._sessions_lock:
+        victims = [sid for sid, s in srv._sessions.items() if srv._session_is_evictable(sid, s, now)]
     for sid in victims:
-        _close_session_by_id(
+        srv._close_session_by_id(
             sid, end_reason="idle_timeout",
-            predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
-    _repair_missing_ws_orphan_reaps()
-    _enforce_session_cap()
-    _reclaim_orphaned_leases()
+            predicate=lambda session, vs=sid: srv._session_is_evictable(vs, session, time.time()))
+    srv._repair_missing_ws_orphan_reaps()
+    srv._enforce_session_cap()
+    srv._reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
     # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
     # pressure) are unaffected.
@@ -217,31 +223,31 @@ def _repair_missing_ws_orphan_reaps() -> None:
     path preserves reconnect and in-flight-work protections instead of stealing
     the lease directly.
     """
-    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+    if srv._WS_ORPHAN_REAP_GRACE_S <= 0:
         return
     # A socket can be closed before its disconnect cleanup reaches the sentinel.
     # Reuse that cleanup (including surviving viewers), never revoke a fence from
     # a stale liveness snapshot.
-    with _sessions_lock:
-        closed_transports = [session.get("transport") for session in _sessions.values()
-                             if session.get("transport") is not _detached_ws_transport
-                             and _transport_is_dead(session.get("transport"))]
+    with srv._sessions_lock:
+        closed_transports = [session.get("transport") for session in srv._sessions.values()
+                             if session.get("transport") is not srv._detached_ws_transport
+                             and srv._transport_is_dead(session.get("transport"))]
     for transport in closed_transports:
-        _close_sessions_for_transport(transport)
-    with _sessions_lock:
+        srv._close_sessions_for_transport(transport)
+    with srv._sessions_lock:
         missing = [
-            sid for sid, session in _sessions.items()
-            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps
+            sid for sid, session in srv._sessions.items()
+            if srv._ws_session_is_detached(session) and sid not in srv._pending_ws_reaps
         ]
         for sid in missing:
-            _schedule_ws_orphan_reap(sid)
+            srv._schedule_ws_orphan_reap(sid)
 
 
 def _reclaim_orphaned_leases() -> None:
     """Hand the registry the lease ids we still own so it can drop the rest."""
     try:
         from hermes_cli.active_sessions import release_orphaned_leases
-        if dropped := release_orphaned_leases(_own_live_lease_ids()):
+        if dropped := release_orphaned_leases(srv._own_live_lease_ids()):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
         logger.debug("orphaned lease reclaim failed", exc_info=True)
@@ -253,7 +259,7 @@ def _reclaim_orphaned_leases() -> None:
 def _max_live_sessions() -> int:
     try:
         from hermes_cli.active_sessions import coerce_max_concurrent_sessions
-        cfg = _load_cfg() or {}
+        cfg = srv._load_cfg() or {}
         raw = cfg.get("max_live_sessions")
         if raw is None and isinstance(gateway_cfg := cfg.get("gateway"), dict):
             raw = gateway_cfg.get("max_live_sessions")
@@ -264,21 +270,21 @@ def _max_live_sessions() -> int:
 
 
 def _enforce_session_cap() -> None:
-    cap = _max_live_sessions()
+    cap = srv._max_live_sessions()
     if cap <= 0:
         return
-    with _sessions_lock:
-        if len(_sessions) <= cap:
+    with srv._sessions_lock:
+        if len(srv._sessions) <= cap:
             return
-        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_lru_evictable(sid, s)]
+        evictable = [(sid, s) for sid, s in srv._sessions.items() if srv._session_is_lru_evictable(sid, s)]
     # Oldest-touched first; evict only down to the cap (may stop short: live sessions are never eligible).
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
     for sid, _s in evictable:
-        with _sessions_lock:
-            if len(_sessions) <= cap:
+        with srv._sessions_lock:
+            if len(srv._sessions) <= cap:
                 break
-        _close_session_by_id(
-            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_lru_evictable(vs, session))
+        srv._close_session_by_id(
+            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: srv._session_is_lru_evictable(vs, session))
 
 
 def _reaper_daemon_timer(delay: float, fn, fail_log: str, level: str = "debug") -> None:
@@ -296,7 +302,7 @@ def _reaper_daemon_timer(delay: float, fn, fail_log: str, level: str = "debug") 
 
 def _schedule_session_cap_enforcement() -> None:
     """Run the LRU sweep off the response path (eviction can call agent.close)."""
-    _reaper_daemon_timer(0.1, _enforce_session_cap, "session cap enforcement failed")
+    srv._reaper_daemon_timer(0.1, srv._enforce_session_cap, "session cap enforcement failed")
 
 
 # ── Startup sweep for orphaned session rows ──────────────────────────────
@@ -315,7 +321,7 @@ def _session_orphan_reaper_enabled() -> bool:
     """``dashboard.startup_orphan_sweep`` (default on). Fail-open on errors and on a missing key (raw yaml, no
     DEFAULT_CONFIG merge on this loader)."""
     try:
-        dashboard_cfg = (_load_cfg() or {}).get("dashboard") or {}
+        dashboard_cfg = (srv._load_cfg() or {}).get("dashboard") or {}
         if isinstance(dashboard_cfg, dict) and "startup_orphan_sweep" in dashboard_cfg:
             return is_truthy_value(dashboard_cfg.get("startup_orphan_sweep"), default=True)
     except Exception:
@@ -329,18 +335,18 @@ def _sweep_orphaned_session_rows() -> list[str]:
     that copied an old transcript is protected by its own ``started_at``). Rows held in memory (e.g. a
     ``session.resume`` in the startup grace window) are excluded. Cross-backend: the sweep refuses to close a
     row any live backend (heartbeat within ``2 * TTL``) could own — see ``SessionDB.sweep_orphaned_sessions``."""
-    db = _get_db()
-    if db is None or _SESSION_TTL_S <= 0:
+    db = srv._get_db()
+    if db is None or srv._SESSION_TTL_S <= 0:
         return []
     live_ids: set[str] = set()  # every id this process holds in memory: live sid, agent session_id, session_key
-    with _sessions_lock:
-        for sid, session in _sessions.items():
+    with srv._sessions_lock:
+        for sid, session in srv._sessions.items():
             candidates = [sid]
             if isinstance(session, dict):
                 candidates += [getattr(session.get("agent"), "session_id", None), session.get("session_key")]
             live_ids.update(str(c) for c in candidates if c)
     swept = db.sweep_orphaned_sessions(
-        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES, exclude_ids=tuple(sorted(live_ids)))
+        max_idle_seconds=srv._SESSION_TTL_S, sources=srv._ORPHAN_SWEEP_SOURCES, exclude_ids=tuple(sorted(live_ids)))
     if swept:
         logger.info(
             "Closed %d orphaned session row(s) from a previous gateway process (startup_orphan_reap): %s",
@@ -366,7 +372,7 @@ def _reaper_hostname() -> str:
 def _backend_id_for_this_process() -> str:
     """Stable identity for this process's heartbeat row: pid (readability) AND a startup nonce so a PID-reuse
     respawn cannot inherit the dead predecessor's heartbeat."""
-    return f"{_current_profile_name()}@{_reaper_hostname()}:{os.getpid()}:{_BACKEND_NONCE}"
+    return f"{srv._current_profile_name()}@{srv._reaper_hostname()}:{os.getpid()}:{srv._BACKEND_NONCE}"
 
 
 def _gateway_started_at() -> float:
@@ -379,13 +385,13 @@ def _gateway_started_at() -> float:
 
 def _refresh_backend_heartbeat() -> None:
     """Refresh this backend's heartbeat row. No-op when DB unavailable."""
-    db = _get_db()
+    db = srv._get_db()
     if db is None:
         return
     try:
         db.register_backend_heartbeat(
-            backend_id=_backend_id_for_this_process(), pid=os.getpid(), started_at=_gateway_started_at(),
-            profile=_current_profile_name(), host=_reaper_hostname())
+            backend_id=srv._backend_id_for_this_process(), pid=os.getpid(), started_at=srv._gateway_started_at(),
+            profile=srv._current_profile_name(), host=srv._reaper_hostname())
     except Exception:
         logger.debug("backend heartbeat refresh failed", exc_info=True)
 
@@ -394,32 +400,31 @@ def _start_backend_heartbeat_refresher() -> None:
     """Register this backend and start the refresher thread (once per process). The first refresh writes the row
     synchronously so this process's own sweep sees itself in the heartbeat table. ``_HEARTBEAT_REFRESH_S <= 0``
     means "register once, never refresh"."""
-    global _heartbeat_refresher_started
-    with _heartbeat_refresher_lock:
-        if _heartbeat_refresher_started:
+    with srv._heartbeat_refresher_lock:
+        if srv._heartbeat_refresher_started:
             return
-        _heartbeat_refresher_started = True
+        srv._heartbeat_refresher_started = True
     try:
-        _refresh_backend_heartbeat()
+        srv._refresh_backend_heartbeat()
     except Exception:
         logger.debug("initial backend heartbeat write failed", exc_info=True)
-    if _HEARTBEAT_REFRESH_S <= 0:
+    if srv._HEARTBEAT_REFRESH_S <= 0:
         return
     stop_event = threading.Event()
 
     def _loop() -> None:
         while not stop_event.is_set():
             try:
-                _refresh_backend_heartbeat()
+                srv._refresh_backend_heartbeat()
             except Exception:
                 logger.debug("heartbeat refresh loop iteration failed", exc_info=True)
-            stop_event.wait(_HEARTBEAT_REFRESH_S)
+            stop_event.wait(srv._HEARTBEAT_REFRESH_S)
 
     def _atexit_clear():
         stop_event.set()
         with contextlib.suppress(Exception):
-            if (db := _get_db()) is not None:
-                db.clear_backend_heartbeat(_backend_id_for_this_process())
+            if (db := srv._get_db()) is not None:
+                db.clear_backend_heartbeat(srv._backend_id_for_this_process())
 
     atexit.register(_atexit_clear)
     threading.Thread(target=_loop, name="hermes-gateway-heartbeat", daemon=True).start()
@@ -432,17 +437,20 @@ def _schedule_startup_orphan_sweep() -> None:
 
     See #65194.
     """
-    global _startup_orphan_sweep_ran
-    if _WS_ORPHAN_REAP_GRACE_S <= 0 or _SESSION_TTL_S <= 0 or not _session_orphan_reaper_enabled():
+    if srv._WS_ORPHAN_REAP_GRACE_S <= 0 or srv._SESSION_TTL_S <= 0 or not srv._session_orphan_reaper_enabled():
         return
-    with _startup_orphan_sweep_lock:
-        if _startup_orphan_sweep_ran:
+    with srv._startup_orphan_sweep_lock:
+        if srv._startup_orphan_sweep_ran:
             return
-        _startup_orphan_sweep_ran = True
-    _reaper_daemon_timer(
-        _WS_ORPHAN_REAP_GRACE_S, _sweep_orphaned_session_rows, "startup orphan session sweep failed", level="warning")
+        srv._startup_orphan_sweep_ran = True
+    srv._reaper_daemon_timer(
+        srv._WS_ORPHAN_REAP_GRACE_S, srv._sweep_orphaned_session_rows, "startup orphan session sweep failed", level="warning")
 
 
 def register(server) -> None:
-    """Publish this module's helpers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    """Publish this module's helpers onto ``server`` and install its handlers."""
+    bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

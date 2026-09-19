@@ -1,4 +1,9 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError, type RpcMethods } from '@hermes/shared'
+
+import { type GatewayRequest, paramsSessionId, type RoutableParams } from '@/lib/gateway-rpc'
+
+/** Every generated RPC result; the rebind guard reads the one field it cares about off the union. */
+type AnyRpcResult = RpcMethods[keyof RpcMethods]['result']
 
 /** Session ids the gateway has told us are gone. A session-scoped RPC against a
  *  runtime the gateway no longer holds fails 4001 "session not found" — terminal
@@ -84,20 +89,14 @@ export function resetBackgroundPollingGuard(sid?: string): void {
  *  any other method: a socket reconnect is NOT a rebind (the backend may have
  *  reaped the old runtime, and reopening a WebSocket does not make that id
  *  valid again). Only a successful resume/activate response is proof. */
-function reboundSessionIds(method: string, params: Record<string, unknown>, result: unknown): string[] {
+function reboundSessionIds(method: string, params: RoutableParams, result: AnyRpcResult): string[] {
   if (method !== 'session.activate' && method !== 'session.resume') {
     return []
   }
 
-  const ids: string[] = []
+  const answered = result && 'session_id' in result ? String(result.session_id ?? '').trim() : ''
 
-  for (const value of [params.session_id, (result as { session_id?: unknown } | null)?.session_id]) {
-    if (typeof value === 'string' && value.trim()) {
-      ids.push(value.trim())
-    }
-  }
-
-  return ids
+  return [paramsSessionId(params), answered].filter(Boolean)
 }
 
 /** Un-latch the ids a successful `session.resume` / `session.activate` just
@@ -110,8 +109,8 @@ function reboundSessionIds(method: string, params: Record<string, unknown>, resu
  *  every routed RPC result; a no-op for every method but resume/activate. */
 export function resetBackgroundPollingGuardAfterRebind(
   method: string,
-  params: Record<string, unknown>,
-  result: unknown
+  params: RoutableParams,
+  result: AnyRpcResult
 ): void {
   for (const id of reboundSessionIds(method, params, result)) {
     goneSessions.delete(id)
@@ -123,8 +122,6 @@ export function resetBackgroundPollingGuardAfterRebind(
  *  `ApprovalGateway` shape) to the ambient-request callback
  *  `requestForOwnedSession` expects. The pollers never pass a deadline, so the
  *  2-arg call shape is kept exactly (gateway.request callers assert on it). */
-export function ambientRequestFor(gateway: {
-  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
-}): <R>(method: string, params?: Record<string, unknown>) => Promise<R> {
-  return <R>(method: string, params?: Record<string, unknown>) => gateway.request(method, params ?? {}) as Promise<R>
+export function ambientRequestFor(gateway: { request: GatewayRequest }): GatewayRequest {
+  return (method, params) => gateway.request(method, params)
 }

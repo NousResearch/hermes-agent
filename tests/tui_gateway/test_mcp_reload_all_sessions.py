@@ -18,6 +18,8 @@ from tools import mcp_tool_agent as _mcp_agent
 from tools import mcp_tool_discovery as _mcp_discovery
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
 import tui_gateway.server as srv
+from tui_gateway.contracts.common import SessionLiveInfo
+from tui_gateway.contracts.tools_mcp_plugins import ReloadMcpParams
 
 
 @pytest.fixture()
@@ -37,7 +39,7 @@ def reload_env(monkeypatch, tmp_path):
                         lambda agent, **_kw: refreshed.append(agent.name) or set())
     monkeypatch.setattr(srv, "_compute_mcp_rev", lambda: "rev-a")
     monkeypatch.setattr(srv, "_emit", lambda *_a, **_k: True)
-    monkeypatch.setattr(srv, "_session_info", lambda agent, session=None: {})
+    monkeypatch.setattr(srv, "_session_info", lambda agent, session=None: SessionLiveInfo())
     monkeypatch.setattr(srv, "_mcp_reload_gen", 0)
     monkeypatch.setattr(srv, "_mcp_reload_loaded_rev", "")
 
@@ -56,16 +58,16 @@ def reload_env(monkeypatch, tmp_path):
 
 
 def test_reload_from_one_session_refreshes_every_live_agent(reload_env):
-    resp = srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+    resp = srv.invoke("reload.mcp", ReloadMcpParams(session_id="A", confirm=True))
 
-    assert resp["result"]["status"] == "reloaded"
+    assert resp.status == "reloaded"
     assert sorted(reload_env.refreshed) == ["agent-A", "agent-B"]
 
 
 def test_reload_without_session_id_still_refreshes_live_agents(reload_env):
-    resp = srv._methods["reload.mcp"](1, {"confirm": True})
+    resp = srv.invoke("reload.mcp", ReloadMcpParams(confirm=True))
 
-    assert resp["result"]["status"] == "reloaded"
+    assert resp.status == "reloaded"
     assert sorted(reload_env.refreshed) == ["agent-A", "agent-B"]
 
 
@@ -73,7 +75,7 @@ def test_reload_rediscovers_under_each_live_profile_scope(reload_env):
     """The unscoped shutdown tears down every profile's servers; discovery under the ambient home
     alone would leave a secondary-profile session refreshing against a registry that never
     regained its overlay, so it loses its MCP tools until its own reload."""
-    srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+    srv.invoke("reload.mcp", ReloadMcpParams(session_id="A", confirm=True))
 
     assert hermes_constants.hermes_home_key() in reload_env.discovered_homes
     assert hermes_constants.hermes_home_key(reload_env.profile_b) in reload_env.discovered_homes

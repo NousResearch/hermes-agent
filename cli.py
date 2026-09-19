@@ -2856,6 +2856,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
             failure = describe_storage_failure(e)
+            details = storage_failure_details(e)  # PEP 3110: bind now, the nested warning runs after the except block
             def _present_store_warning():
                 try:
                     Console(stderr=True).print(
@@ -2864,7 +2865,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                         "Searching past sessions is also disabled.\n"
                         f"  Reason: {failure.gloss}.\n"
                         f"  {failure.action}\n"
-                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
+                        f"  [dim]Details: {details}[/dim]"
                     )
                 except Exception:
                     print(

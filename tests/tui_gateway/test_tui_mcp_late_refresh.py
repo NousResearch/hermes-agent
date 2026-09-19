@@ -14,6 +14,8 @@ import types
 import model_tools
 from tui_gateway import server
 from tui_gateway import entry
+from tui_gateway.contracts.common import SessionLiveInfo
+from tui_gateway.contracts.events import SessionInfoPayload
 
 
 def _make_fake_agent(initial_tools, *, user_turns=0, api_calls=0):
@@ -23,6 +25,10 @@ def _make_fake_agent(initial_tools, *, user_turns=0, api_calls=0):
     agent._user_turn_count = user_turns
     agent._api_call_count = api_calls
     return agent
+
+
+def _tool_names(agent):
+    return [t["function"]["name"] for t in agent.tools]
 
 
 def _tool(name):
@@ -42,7 +48,10 @@ def _install(monkeypatch, *, in_flight, join_result, new_defs):
     monkeypatch.setattr(entry, "join_mcp_discovery", lambda timeout=None: join_result)
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: list(new_defs))
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"tools_len": len(agent.tools)})
+    # The producer must return the real model; the refreshed tool names ride in ``tools`` so the
+    # re-emitted ``session.info`` proves the snapshot was rebuilt.
+    monkeypatch.setattr(server, "_session_info",
+                        lambda agent, session: SessionLiveInfo(tools={"all": _tool_names(agent)}))
 
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
@@ -62,7 +71,8 @@ def test_late_refresh_adds_tools_and_reemits_when_pre_first_turn(monkeypatch):
 
         assert len(agent.tools) == 3
         assert "mcp__nous_support__a" in agent.valid_tool_names
-        assert ("session.info", sid, {"tools_len": 3}) in emitted
+        expected = SessionInfoPayload(tools={"all": ["read_file", "write_file", "mcp__nous_support__a"]})
+        assert ("session.info", sid, expected) in emitted
     finally:
         server._sessions.pop(sid, None)
 

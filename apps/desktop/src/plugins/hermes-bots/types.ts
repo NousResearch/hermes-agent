@@ -9,6 +9,9 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ClarifyQuestion } from '@hermes/plugin-sdk'
+import type { CronJobRow } from '@hermes/plugin-sdk'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -22,7 +25,7 @@ export interface SidebarRowLabels {
 }
 
 /** Where a row came from when several connections contribute to one roster. */
-export interface ProfileRoute {
+export type ProfileRoute = {
   connectionId: string
   mode: 'local' | 'remote'
   profile: string
@@ -37,8 +40,9 @@ export interface ProfileRoute {
 export interface CanonicalSession {
   /** Durable id, stable across reloads. */
   id?: string
-  /** Compression-lineage tip — the live session a durable id currently maps to. */
-  resolved_id?: string
+  /** Compression-lineage tip — the live session a durable id currently maps to.
+   *  Null on a listing row that followed no lineage. */
+  resolved_id?: null | string
   last_active?: number
   preview?: string
   root_title?: string
@@ -55,8 +59,10 @@ export interface SessionPreview {
   title?: string
 }
 
-/** Per-bot presentation state, persisted in the profile's `ui_meta`. */
-export interface BotMeta {
+/** Per-bot presentation state, persisted in the profile's `ui_meta`. A JSON
+ *  object type (not an interface) — it rides `profiles.configure`'s
+ *  `Record<string, JsonValue>` ui_meta bag. */
+export type BotMeta = {
   /** Which user-made section this bot is filed under (`user-sections.ts`).
    *  Membership lives on the BOT, not as a member list on the section: a bot
    *  can only be in one place, deleting a section cannot orphan anybody, and
@@ -136,21 +142,21 @@ export type GroupMember = Pick<
 
 export type AttachmentKind = 'file' | 'image' | 'pdf'
 
-export interface Attachment {
+export type Attachment = {
   /** Data URL. */
   data: string
   kind: AttachmentKind
   name: string
 }
 
-export interface GroupMessageAuthor {
+export type GroupMessageAuthor = {
   kind: 'member' | 'user'
   name: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
 }
 
-export interface GroupMessage {
+export type GroupMessage = {
   /** Milliseconds. */
   at: number
   from: GroupMessageAuthor
@@ -207,20 +213,6 @@ export interface GroupChat {
 
 export type GroupPromptKind = 'approval' | 'clarify'
 
-/**
- * One sub-question of a batch clarify, straight off the wire. `choices` and
- * `question` stay unknown because the card re-validates them; the two id
- * spellings are the keys it maps drafts and answers by.
- */
-export interface GroupPromptQuestion {
-  choices?: unknown
-  id?: string
-  multi_select?: boolean
-  multiSelect?: boolean
-  qid?: string
-  question?: unknown
-}
-
 export interface GroupPrompt {
   at: number
   choices: string[]
@@ -231,7 +223,7 @@ export interface GroupPrompt {
   memberKey: string
   multiSelect: boolean
   question: string
-  questions?: GroupPromptQuestion[] | null
+  questions?: ClarifyQuestion[] | null
   requestId: string
   sessionId?: null | string
   /** The thread the blocking question belongs to — part of the mirror key,
@@ -261,33 +253,8 @@ export interface GroupActivityEvent {
   preview?: string
 }
 
-/**
- * A cron job as Bot Mode reads it. Deliberately NOT the core `CronJob` type:
- * the gateway's `cron.manage` payload keys the id as `job_id`, carries the
- * schedule as a plain string rather than a structured object, and splits the
- * error into three separate fields. Reusing the core interface here would
- * typecheck against fields that never arrive.
- */
-export interface RoutineJob {
-  deliver?: string
-  enabled?: boolean
-  job_id: string
-  last_delivery_error?: string
-  last_fire_error?: string
-  last_run_at?: string
-  last_status?: string
-  model?: string
-  /** Prefixed `[bot:<slug>]` so the job can be scoped back to its bot. */
-  name?: string
-  next_run_at?: string
-  paused_reason?: string
-  prompt?: string
-  prompt_preview?: string
-  repeat?: number | string
-  schedule?: string
-  state?: string
-  workdir?: string
-}
+/** `cron.manage {action: 'list'}` row; `name` is prefixed `[bot:<slug>]` so the job scopes back to its bot. */
+export type RoutineJob = CronJobRow
 
 export interface ConnectionRow {
   id: string

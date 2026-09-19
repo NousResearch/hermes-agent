@@ -1,5 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { type HandoffStateResult, JsonRpcGatewayError } from '@hermes/shared'
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
@@ -43,15 +43,7 @@ import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
-import type {
-  ClientSessionState,
-  FileAttachResponse,
-  HandoffFailResponse,
-  HandoffRequestResponse,
-  HandoffStateResponse,
-  ImageAttachResponse,
-  SessionRedirectResponse
-} from '../../../types'
+import type { ClientSessionState } from '../../../types'
 
 import {
   appendMidTurnUserMessage,
@@ -165,18 +157,18 @@ export async function uploadComposerAttachment(
   const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
     if (attachment.kind === 'image') {
       const result = imagePayload
-        ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+        ? await requestGateway('image.attach_bytes', {
             session_id: liveSessionId,
             content_base64: imagePayload.contentBase64,
             filename: imagePayload.filename
           })
-        : await requestGateway<ImageAttachResponse>('image.attach', {
+        : await requestGateway('image.attach', {
             path,
             session_id: liveSessionId
           })
 
       if (!result.attached) {
-        throw new Error(result.message || `Could not attach ${label}`)
+        throw new Error(`Could not attach ${label}`)
       }
 
       const attachedPath = result.path || path
@@ -190,7 +182,7 @@ export async function uploadComposerAttachment(
       }
     }
 
-    const result = await requestGateway<FileAttachResponse>('file.attach', {
+    const result = await requestGateway('file.attach', {
       name: label,
       path,
       session_id: liveSessionId,
@@ -198,7 +190,7 @@ export async function uploadComposerAttachment(
     })
 
     if (!result.attached || !result.ref_text) {
-      throw new Error(result.message || `Could not attach ${label}`)
+      throw new Error(`Could not attach ${label}`)
     }
 
     return {
@@ -238,7 +230,7 @@ interface PromptActionsOptions {
   handleSkinCommand: (arg: string) => string
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -526,7 +518,7 @@ export function usePromptActions({
 
       try {
         options?.onProgress?.('pending')
-        await requestGateway<HandoffRequestResponse>('handoff.request', {
+        await requestGateway('handoff.request', {
           platform: target,
           session_id: sid
         })
@@ -547,10 +539,10 @@ export function usePromptActions({
       while (Date.now() < deadline) {
         await delay(800)
 
-        let record: HandoffStateResponse
+        let record: HandoffStateResult
 
         try {
-          record = await requestGateway<HandoffStateResponse>('handoff.state', { session_id: sid })
+          record = await requestGateway('handoff.state', { session_id: sid })
         } catch {
           continue
         }
@@ -571,7 +563,7 @@ export function usePromptActions({
         }
       }
 
-      const cleanup = await requestGateway<HandoffFailResponse>('handoff.fail', {
+      const cleanup = await requestGateway('handoff.fail', {
         error: copy.handoff.timedOut,
         session_id: sid
       }).catch(() => null)
@@ -784,7 +776,7 @@ export function usePromptActions({
           })
 
         try {
-          const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
+          const result = await requestGateway('session.redirect', { session_id: id, text })
 
           if (result?.status === 'redirected') {
             triggerHaptic('submit')
@@ -846,7 +838,7 @@ export function usePromptActions({
       }
 
       const send = async (id: string): Promise<boolean> => {
-        const response = await requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
+        const response = await requestGateway('session.steer', { session_id: id, text })
 
         return response?.status === 'queued'
       }

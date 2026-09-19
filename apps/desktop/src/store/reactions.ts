@@ -1,3 +1,5 @@
+import type { ReactionAuthor } from '@hermes/shared'
+
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -8,16 +10,12 @@ import type { MessageReaction } from '@/types/hermes'
 /** The six iOS Tapback defaults, in Apple's order. */
 export const QUICK_REACTIONS = ['❤️', '👍', '👎', '😂', '‼️', '❓'] as const
 
-interface MessageReactResponse {
-  row_id: number
-  reactions: MessageReaction[]
-}
 
 /** Apply the local half of a tapback: one reaction per author, re-tap retracts. */
 export function applyReaction(
   reactions: MessageReaction[] | undefined,
   emoji: null | string,
-  author: MessageReaction['author']
+  author: ReactionAuthor
 ): MessageReaction[] {
   const current = reactions ?? []
   const previous = current.find(reaction => reaction.author === author)
@@ -27,7 +25,7 @@ export function applyReaction(
     return without
   }
 
-  return [...without, { emoji, author, at: Date.now() / 1000 }]
+  return [...without, { at: Date.now() / 1000, author, emoji, seen: null }]
 }
 
 function writeReactions(messageId: string, reactions: MessageReaction[], rowId?: number) {
@@ -52,7 +50,7 @@ function writeReactions(messageId: string, reactions: MessageReaction[], rowId?:
 export async function toggleMessageReaction(
   message: ChatMessage,
   emoji: null | string,
-  author: MessageReaction['author'] = 'user'
+  author: ReactionAuthor = 'user'
 ): Promise<void> {
   // A live message hasn't round-tripped through a resume yet, so it carries no
   // rowId. Rather than disable the affordance (which made reactions invisible
@@ -86,7 +84,7 @@ export async function toggleMessageReaction(
     // requestForOwnedSession resolves the exact owner route and fails closed;
     // the ambient request stays the fallback for legacy single-profile
     // setups where the owner cannot be named.
-    const result = await requestForOwnedSession<MessageReactResponse>(
+    const result = await requestForOwnedSession(
       sessionId,
       ambientRequest,
       'message.react',
@@ -99,7 +97,7 @@ export async function toggleMessageReaction(
     )
 
     // Learn the row id from the response so later toggles address it directly.
-    writeReactions(message.id, result?.reactions ?? [], result?.row_id)
+    writeReactions(message.id, result.reactions, result.row_id)
   } catch (err) {
     // Be optimistic, THEN honest: a rejected write rolls back visibly and says
     // why, instead of the reaction quietly vanishing (desktop AGENTS.md).

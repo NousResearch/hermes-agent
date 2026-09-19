@@ -40,7 +40,14 @@ it('answers the vault.unlock server request with the master password, never the 
   const respond = vi.fn()
   $activeSessionId.set('session-b')
   $gateway.set({ request: ambient } as never)
-  rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'vault.unlock', params: {}, respond })
+  rememberServerRequest({
+    fail: vi.fn(),
+    id: 'req-a',
+    method: 'vault.unlock_prompt',
+    params: { backend: 'bitwarden', display_name: 'Bitwarden', session_id: 'session-a' },
+    respond,
+    sessionId: 'session-a'
+  })
   setVaultUnlockRequest({ backend: 'bitwarden', displayName: 'Bitwarden', requestId: 'req-a', sessionId: 'session-a' })
 
   render(<PromptOverlays sessionId="session-a" />)

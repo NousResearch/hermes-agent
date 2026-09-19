@@ -187,6 +187,7 @@ vi.mock('@/hermes', async importOriginal => ({
         )
       }
     })
+    onAnyServerRequest = vi.fn(() => () => {})
     onEvent = vi.fn((listener: (event: GatewayEvent) => void) => {
       this.eventListeners.add(listener)
 

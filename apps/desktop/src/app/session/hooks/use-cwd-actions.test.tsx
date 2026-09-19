@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import {
   $currentBranch,
   $currentCwd,
@@ -26,7 +27,7 @@ function Harness({
 }: {
   activeSessionIdRef: MutableRefObject<string | null>
   onReady: (handle: CwdActionsHandle) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }) {
   const actions = useCwdActions({
     activeSessionIdRef,

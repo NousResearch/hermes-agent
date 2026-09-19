@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
-  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   type DesktopThemeCommandOption,
@@ -82,7 +81,7 @@ export function useSlashCompletions(options: {
     }
 
     void cachedSlashCompletion(catalogKey, () =>
-      gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
+      gateway.request('commands.catalog', sessionParams)
     )
       .then(catalog => {
         filterDesktopCommandsCatalog(catalog)
@@ -163,7 +162,7 @@ export function useSlashCompletions(options: {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
             await cachedSlashCompletion(catalogKey, () =>
-              gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
+              gateway.request('commands.catalog', sessionParams)
             )
           )
 
@@ -205,7 +204,7 @@ export function useSlashCompletions(options: {
         }
 
         const result = await cachedSlashCompletion(`slash:${sessionId ?? ''}:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+          gateway.request('complete.slash', {
             text,
             ...sessionParams
           })

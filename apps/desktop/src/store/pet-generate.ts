@@ -1,3 +1,6 @@
+import type { PetDraft, PetGenProvider, PetSelectResult } from '@hermes/shared'
+
+export type { PetDraft, PetGenProvider }
 import { atom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -6,7 +9,7 @@ import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { type PetInfo } from '@/store/pet'
+import { PET_DISABLED, type PetInfo } from '@/store/pet'
 import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
@@ -74,12 +77,6 @@ export function cleanPetName(prompt: string): string {
   return name || 'Pet'
 }
 
-export interface PetDraft {
-  index: number
-  /** Downscaled PNG data URI preview from the gateway. */
-  dataUri: string
-}
-
 export type PetGenStatus = 'idle' | 'generating' | 'ready' | 'hatching' | 'preview' | 'adopting' | 'error' | 'stale'
 
 /** Live hatch step for the egg screen — which row is being drawn, then compose/save. */
@@ -98,14 +95,6 @@ export const $petGenError = atom<string | null>(null)
 // probed (treat as available so the prompt shows optimistically); the overlay
 // re-probes on open and on return from settings.
 export const $petGenAvailable = atom<boolean | null>(null)
-
-/** A reference-capable image backend the user can pick for generation. */
-export interface PetGenProvider {
-  name: string
-  label: string
-  /** Whether this is the backend's default pick (no override needed). */
-  default: boolean
-}
 
 const PROVIDER_KEY = 'hermes.desktop.petgen.provider'
 const REMIX_CONFIRMED_KEY = 'hermes.desktop.petgen.remixConfirmed'
@@ -133,7 +122,7 @@ export function markRemixConfirmed(): void {
 /** Probe whether generation is possible (a reference-capable backend exists). */
 export async function checkPetGenAvailable(request: GatewayRequest): Promise<void> {
   try {
-    const res = await request<{ available: boolean; providers?: PetGenProvider[] }>('pet.generate.status')
+    const res = await request('pet.generate.status', {})
     $petGenAvailable.set(Boolean(res?.available))
     const providers = res?.providers ?? []
     $petGenProviders.set(providers)
@@ -362,8 +351,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   // so the grid fills live instead of sitting on placeholders until all N land.
   const off =
     $gateway.get()?.on('pet.generate.progress', event => {
-      // Shared map types this payload as an open record; the pet backend's draft shape is desktop-owned.
-      const draft = event.payload as (PetDraft & { count: number; token: string }) | undefined
+      const draft = event.payload
 
       // Token-only init event (no draft yet): learn the token immediately so an
       // early Stop can still tell the backend to cancel this run.
@@ -399,7 +387,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     }) ?? (() => {})
 
   try {
-    const result = await request<{ ok: boolean; token: string; drafts: PetDraft[] }>(
+    const result = await request(
       'pet.generate',
       {
         prompt,
@@ -492,7 +480,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   // screen so a multi-minute hatch shows live progress instead of a black box.
   const offProgress =
     $gateway.get()?.on('pet.hatch.progress', event => {
-      const p = event.payload as { done?: string; event: string; state?: string; total?: string } | undefined
+      const p = event.payload
 
       if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
         return
@@ -513,7 +501,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
     }) ?? (() => {})
 
   try {
-    const result = await request<{ ok: boolean; slug: string; displayName: string; pet?: PetInfo }>(
+    const result = await request(
       'pet.hatch',
       {
         token,
@@ -542,7 +530,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
       throw new Error('hatch produced no preview')
     }
 
-    $petGenPreview.set({ ...result.pet, enabled: true })
+    $petGenPreview.set({ ...PET_DISABLED, ...result.pet, enabled: true })
     $petGenStatus.set('preview')
     notifyPetGenDone('Your pet hatched', 'Reopen to name and adopt it.', 'success')
 
@@ -567,11 +555,8 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   }
 }
 
-export interface AdoptOutcome {
-  ok: boolean
-  slug?: string
-  displayName?: string
-}
+/** `pet.select`'s result (its own `ok`), or `{ ok: false }` alone when there was nothing to adopt. */
+export type AdoptOutcome = { ok: false } | PetSelectResult
 
 /**
  * Adopt the previewed pet: optionally rename it to the user's chosen name (set
@@ -597,7 +582,7 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     let adoptSlug = preview.slug
 
     if (finalName && finalName !== preview.displayName) {
-      const renamed = await request<{ ok: boolean; slug: string }>('pet.rename', {
+      const renamed = await request('pet.rename', {
         slug: preview.slug,
         name: finalName
       }).catch(() => null)
@@ -607,7 +592,7 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
       }
     }
 
-    const result = await request<{ ok: boolean; slug: string; displayName: string }>('pet.select', {
+    const result = await request('pet.select', {
       slug: adoptSlug
     })
 
@@ -618,9 +603,10 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     // pet.select already set the active mascot (disk + config). Reflect it
     // locally — no remote petdex manifest fetch — and close immediately.
     resetPetGen()
-    void applyAdoptedPet(request, result.slug, result.displayName)
+    const displayName = result.displayName ?? result.slug
+    void applyAdoptedPet(request, result.slug, displayName)
 
-    return { ok: true, slug: result.slug, displayName: result.displayName }
+    return { ok: true, slug: result.slug, displayName }
   } catch (e) {
     $petGenStatus.set('preview')
     $petGenError.set(e instanceof Error ? e.message : 'Could not adopt the pet.')

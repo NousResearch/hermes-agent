@@ -94,6 +94,7 @@ import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/t
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
+import type { SessionRuntimeInfo } from '@/types/hermes'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
@@ -416,7 +417,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     useSessionListActions({ profileScope })
 
   const updateActiveSessionRuntimeInfo = useCallback(
-    (info: { branch?: string; cwd?: string }) => {
+    (info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => {
       const sessionId = activeSessionIdRef.current
 
       if (!sessionId) {
@@ -898,7 +899,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       emitGatewayEvent(event)
 
       if (event.type === 'wake.detected') {
-        const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
+        const payload = event.payload
 
         // Free the Mac mic so voice conversation can open getUserMedia.
         // Server already pauses the detector lease; this stops client PCM feed.

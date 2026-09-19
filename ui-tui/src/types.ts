@@ -1,4 +1,15 @@
-import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
+import type {
+  ApprovalChoice,
+  ClarifyParams,
+  CommandCategory,
+  McpServerStatus,
+  ProjectInfo,
+  SessionLiveInfo,
+  SubagentStatus,
+  TodoItem
+} from '@hermes/shared/gateway-events'
+
+export type { McpServerStatus, TodoItem }
 
 export interface ActiveTool {
   context?: string
@@ -6,14 +17,6 @@ export interface ActiveTool {
   name: string
   verboseArgs?: string
   startedAt?: number
-}
-
-export interface TodoItem {
-  content: string
-  id: string
-  /** Optional id of another item — renders this as a nested subtask. */
-  parent?: string
-  status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
 export interface ActivityItem {
@@ -97,7 +100,7 @@ export interface DelegationStatus {
 export interface ApprovalReq {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
-  choices?: string[]
+  choices?: ApprovalChoice[]
   command: string
   description: string
   /** Server→client request id; the answer is the response frame for it. */
@@ -114,22 +117,13 @@ export interface ConfirmReq {
   title: string
 }
 
-export interface ClarifyBatchQuestion {
-  choices: string[] | null
-  multiSelect?: boolean
-  qid: string
-  question: string
-}
-
 export interface ClarifyReq {
-  choices: string[] | null
-  question: string
+  /** The generated request payload; `kind` picks single vs batch. */
+  params: ClarifyParams
   requestId: string
-  /** Batch (multi-question) clarify: present instead of question/choices. */
-  questions?: ClarifyBatchQuestion[]
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
-  answers?: Record<string, string>
+  answers: Record<string, string>
 }
 
 export interface Msg {
@@ -173,15 +167,6 @@ export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
 export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
-export interface McpServerStatus {
-  connected: boolean
-  disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
-  name: string
-  tools: number
-  transport: string
-}
-
 /** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
 export type SessionInfo = SessionLiveInfo
 export type { ProjectInfo }
@@ -210,20 +195,16 @@ export interface PanelData {
 
 export interface PanelSection {
   items?: string[]
-  rows?: [string, string][]
+  /** `[label, value]` pairs — the wire's `commands.catalog` pairs shape. */
+  rows?: string[][]
   text?: string
   title?: string
 }
 
 export interface SlashCatalog {
   canon: Record<string, string>
-  categories: SlashCategory[]
-  pairs: [string, string][]
+  categories: CommandCategory[]
+  pairs: string[][]
   skillCount: number
   sub: Record<string, string[]>
-}
-
-export interface SlashCategory {
-  name: string
-  pairs: [string, string][]
 }

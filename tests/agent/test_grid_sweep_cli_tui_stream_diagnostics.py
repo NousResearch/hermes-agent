@@ -230,7 +230,9 @@ def test_tui_configured_model_adoption_failure_honors_policy(tmp_path, monkeypat
     i = src.index("except Exception as e:\n        logger.warning(\"Configured model %s could not be adopted")
     j = src.index("def _pending_switch_selection_warning", i)
     block = "try:\n    raise RuntimeError('boom')\n" + textwrap.dedent(src[i:j])
-    ns = dict(vars(server)); ns.update({"model": "gpt-x", "sid": "s1", "session": {"agent": types.SimpleNamespace(_notification_config=None)}})
+    # ``srv`` is the sibling module's own alias for the facade (the exec'd block runs as model_switch
+    # would); the simulated namespace has to carry it.
+    ns = dict(vars(server)); ns.update({"srv": server, "model": "gpt-x", "sid": "s1", "session": {"agent": types.SimpleNamespace(_notification_config=None)}})
     exec(compile(block, "<adopt-block>", "exec"), ns)
     assert (len(emitted) == 1 and emitted[0][0] == "error") is _visible(setting)
 
@@ -242,7 +244,7 @@ def test_tui_preview_restart_status_warning_honors_policy(tmp_path, monkeypatch,
     _policy(tmp_path, monkeypatch, setting)
     from tui_gateway import server
     emitted = []
-    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload: emitted.append(payload["text"]))
+    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload: emitted.append(payload.text))
     monkeypatch.setattr(server, "_session_get", lambda sid: {"agent": types.SimpleNamespace(_notification_config=None)}, raising=False)
     from gateway.warning_notifications import DiagnosticText
     cbs = server._preview_restart_callbacks("parent-1", "task-1")

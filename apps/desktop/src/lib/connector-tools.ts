@@ -1,5 +1,6 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
+import type { ConnectorRow as WireConnectorRow } from '@hermes/shared'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
@@ -74,6 +75,20 @@ export interface ConnectorRow {
   connectionStatus?: ConnectionStatus
   name?: string
   description?: string
+}
+
+/** A `connectors.list` row as the cards display it: nulls dropped, the status narrowed to the known set. */
+export function connectorRowFromWire(row: WireConnectorRow): ConnectorRow {
+  return {
+    connector: row.connector,
+    connected: row.connected,
+    enabled: row.enabled,
+    ...(row.connectionStatus !== null && isConnectionStatus(row.connectionStatus)
+      ? { connectionStatus: row.connectionStatus }
+      : {}),
+    ...(row.name !== null ? { name: row.name } : {}),
+    ...(row.description !== null ? { description: row.description } : {})
+  }
 }
 
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {

@@ -5,6 +5,7 @@ import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
 import { $hudMode } from '@/store/hud'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
+import { wakeStartResult, wakeStatusResult } from '@/test/contract'
 
 import { ComposerControls } from './controls'
 
@@ -179,24 +180,24 @@ describe('wake-word ear visibility', () => {
   }
 
   it('stays reachable during a busy agent turn', async () => {
-    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, enabled: true, listening: true, phrase: 'hey hermes' }))
     renderControls({ busy: true, busyAction: 'stop' })
 
     expect((await findEar()).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('stays reachable (enabled in config) even when a start was refused', async () => {
-    applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, enabled: true, listening: false, phrase: 'hey hermes' }))
     // Transient refusal marks available false but enabled keeps it mounted.
-    applyWakeStartResult({ hint: 'mic busy', reason: 'unavailable', started: false })
+    applyWakeStartResult(wakeStartResult({ hint: 'mic busy', reason: 'unavailable', started: false }))
     renderControls()
 
     expect((await findEar()).getAttribute('aria-pressed')).toBe('false')
   })
 
   it('stays reachable (never hides) even when unavailable and not enabled', async () => {
-    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
-    applyWakeStartResult({ hint: 'run `hermes tools` (Voice section)', reason: 'unavailable', started: false })
+    applyWakeStatus(wakeStatusResult({ available: false, enabled: false, listening: false, phrase: 'hey hermes' }))
+    applyWakeStartResult(wakeStartResult({ hint: 'run `hermes tools` (Voice section)', reason: 'unavailable', started: false }))
     renderControls()
 
     // The ear ALWAYS shows so the user can click to enable; a refused start
@@ -205,7 +206,7 @@ describe('wake-word ear visibility', () => {
   })
 
   it('shows a disabled paused ear inside the voice-conversation pill', () => {
-    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, enabled: true, listening: true, phrase: 'hey hermes' }))
     renderControls({
       conversation: {
         active: true,

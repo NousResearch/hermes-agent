@@ -2,10 +2,8 @@
  * payload so summaries cannot overwrite evidence, including false/null/"". */
 export interface ToolResultMetadata {
   duration_s?: number
-  error?: string | boolean
+  error?: string
   inline_diff?: string
-  message?: string
-  preview?: string
   summary?: string
   todos?: unknown
 }
@@ -33,9 +31,7 @@ export function toolResultRecord(source: ToolResultSource): Record<string, unkno
   return { ...source.toolResultMetadata, ...record }
 }
 
-/** The event's own account of a failure, for calls whose result carries none. */
+/** The failure text lifted off the result when the row was built (`result.error`). */
 export function envelopeErrorText(metadata: ToolResultMetadata | undefined): string {
-  const text = typeof metadata?.error === 'string' ? metadata.error : metadata?.message
-
-  return text?.trim() ?? ''
+  return metadata?.error?.trim() ?? ''
 }

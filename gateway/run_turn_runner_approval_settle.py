@@ -40,7 +40,7 @@ def register_timeout_notice(
 
     def settle(reason: str) -> None:
         if reason != "timeout":
-            return  # answered / interrupted / notify_failed already produced their own feedback
+            return  # resolved / session_closed / interrupted / notify_failed already produced their own feedback
         # Same guard as every other late notice in TurnRunner: after /stop, /new or a restart the
         # turn is over and this chat belongs to a newer run — do not edit or post into it.
         still_current = getattr(runner._ctx, "_run_still_current", None)

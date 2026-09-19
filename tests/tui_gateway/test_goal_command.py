@@ -292,7 +292,7 @@ def test_active_goal_retries_once_without_judging_failed_turn(
     assert GoalManager(session_key).state.turns_used == 0
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
     completes = [p for event, _sid, p in turn_env if event == "message.complete"]
-    assert [p["status"] for p in completes] == ["error", "complete"]
+    assert [p.status for p in completes] == ["error", "complete"]
 
 
 def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
@@ -331,9 +331,9 @@ def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
     assert "compression exhausted twice" in state.paused_reason
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
     notices = [
-        p["text"]
+        p.text
         for event, _sid, p in turn_env
-        if event == "status.update" and p.get("kind") == "goal"
+        if event == "status.update" and p.kind == "goal"
     ]
     assert any("Retrying the active goal once" in text for text in notices)
     assert any("Goal paused" in text for text in notices)

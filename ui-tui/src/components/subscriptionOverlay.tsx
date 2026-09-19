@@ -1,15 +1,21 @@
 import { randomUUID } from 'node:crypto'
 
 import { Box, Text, useInput } from '@hermes/ink'
+import type {
+  SubscriptionStateResult,
+  SubscriptionTierOption,
+  SubscriptionUpgradeResult
+} from '@hermes/shared/gateway-events'
 import { useEffect, useRef, useState } from 'react'
 
 import type {
+  BillingEnvelope,
+  StepUpResult,
   SubscriptionOverlayState,
   SubscriptionPendingChange,
   SubscriptionResult,
   SubscriptionStepUpRetry
 } from '../app/interfaces.js'
-import type { SubscriptionStateResponse, SubscriptionTierOption, SubscriptionUpgradeResponse } from '../gatewayTypes.js'
 import type { Theme } from '../theme.js'
 
 import { ActionRow, footer, MenuRow, type MenuRowSpec, UsageBars, useMenu } from './overlayPrimitives.js'
@@ -77,7 +83,7 @@ function centsDisplay(cents?: null | number): null | string {
 }
 
 /** True when a response is the insufficient_scope denial (route to step-up). */
-function isScopeDenial(r: { error?: string; ok?: boolean } | null): boolean {
+function isScopeDenial(r: BillingEnvelope | null): boolean {
   return !!r && !r.ok && r.error === 'insufficient_scope'
 }
 
@@ -85,7 +91,7 @@ function isScopeDenial(r: { error?: string; ok?: boolean } | null): boolean {
  * Map a failed RPC envelope to a result. (insufficient_scope is intercepted
  * earlier and routed to the step-up screen, so it should not reach here.)
  */
-function errorResult(r: { error?: string; message?: string; portal_url?: null | string } | null): SubscriptionResult {
+function errorResult(r: BillingEnvelope | null): SubscriptionResult {
   return {
     message: r?.message || r?.error || 'Something went wrong. Try again, or manage on the portal.',
     ok: false,
@@ -94,12 +100,12 @@ function errorResult(r: { error?: string; message?: string; portal_url?: null | 
 }
 
 /** Map a chargeless pending-change mutation (schedule / cancel / resume). */
-function mutationResult(r: null | { message?: string; ok?: boolean }, okMessage: string): SubscriptionResult {
+function mutationResult(r: BillingEnvelope | null, okMessage: string): SubscriptionResult {
   return r?.ok ? { message: r.message || okMessage, ok: true } : errorResult(r)
 }
 
 /** Map an upgrade response, routing SCA / decline to a portal recovery. */
-function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: null | string): SubscriptionResult {
+function upgradeResult(r: null | SubscriptionUpgradeResult, pendingTierId?: null | string): SubscriptionResult {
   if (!r) {
     // null = a transport failure (WS drop / request timeout) on the CHARGING
     // route — NAS may have already prorated + charged. Report it as ambiguous and
@@ -163,7 +169,7 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
 }
 
 /** Map a failed remote-spending step-up to the right recovery copy (typed). */
-function stepUpDenialResult(res: { error?: string; message?: string }): SubscriptionResult {
+function stepUpDenialResult(res: StepUpResult): SubscriptionResult {
   if (res.error === 'session_revoked') {
     return { message: 'Your session expired — run /portal to log in again, then retry the change.', ok: false }
   }
@@ -322,7 +328,7 @@ interface PendingTransition {
 }
 
 /** The scheduled downgrade/cancel as a from→to transition, or null. */
-function pendingTransition(c: SubscriptionStateResponse['current']): null | PendingTransition {
+function pendingTransition(c: SubscriptionStateResult['current']): null | PendingTransition {
   if (!c) {
     return null
   }
@@ -341,7 +347,7 @@ function pendingTransition(c: SubscriptionStateResponse['current']): null | Pend
 // ── Screen: Overview (plan + usage + entry to the change flow) ────────
 
 /** Status line — dollars-only, and echoes a pending "Ultra → Plus" transition. */
-function statusLine(s: SubscriptionStateResponse): string {
+function statusLine(s: SubscriptionStateResult): string {
   const u = s.usage
   const c = s.current
   const plan = c?.tier_name ?? u?.plan_name ?? null
@@ -378,7 +384,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // On Free the catalog renders inline; picking a plan hands off to the portal,
   // where starting a subscription needs card capture + checkout.
   const freePlans = isFree
-    ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
+    ? (s.tiers ?? []).filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
     : []
 
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
@@ -517,11 +523,11 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
 function PickerScreen({ onPatch, overlay, t }: ScreenProps) {
   const { ctx, state: s } = overlay
-  const currentOrder = s.tiers.find(tier => tier.is_current)?.tier_order ?? 0
+  const currentOrder = (s.tiers ?? []).find(tier => tier.is_current)?.tier_order ?? 0
 
   // Selectable = enabled, not the current plan, and not the free/no-sub tier
   // (going to free is a cancellation, offered on the overview). Sorted by price.
-  const choices: SubscriptionTierOption[] = s.tiers
+  const choices: SubscriptionTierOption[] = (s.tiers ?? [])
     .filter(tier => tier.is_enabled && !tier.is_current && tier.tier_order > 0)
     .sort((a, b) => a.tier_order - b.tier_order)
 
@@ -988,7 +994,7 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
 
 interface TeamContextScreenProps {
   onClose: () => void
-  s: SubscriptionStateResponse
+  s: SubscriptionStateResult
   t: Theme
 }
 

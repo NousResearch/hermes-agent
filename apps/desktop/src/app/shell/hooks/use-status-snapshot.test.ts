@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getStatus } from '@/hermes'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 
 import { deferred } from '../../../test/deferred'
@@ -12,7 +13,7 @@ vi.mock('@/hermes', () => ({
   getStatus: vi.fn()
 }))
 
-type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+type GatewayRequester = GatewayRequest
 
 async function flushAsync() {
   await act(async () => {

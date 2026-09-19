@@ -7,9 +7,9 @@ import { notify, notifyError } from '@/store/notifications'
  *  switch was intentionally NOT applied and the gateway is waiting for a
  *  resend that carries `confirm_expensive_model: true`. */
 export interface GuardedModelSwitchResult {
-  confirm_message?: string
-  confirm_required?: boolean
-  deferred?: boolean
+  confirm_message?: null | string
+  confirm_required?: boolean | null
+  deferred?: boolean | null
 }
 
 export interface SurfaceModelSwitchConfirmOptions<T extends GuardedModelSwitchResult> {

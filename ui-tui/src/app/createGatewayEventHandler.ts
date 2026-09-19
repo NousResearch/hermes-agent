@@ -3,19 +3,18 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type {
+  GatewayEvent,
+  JsonValue,
+  MessageCompletePayload,
+  SubagentStatus,
+  Usage
+} from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type {
-  AnyGatewayEvent,
-  CommandsCatalogResponse,
-  ConfigFullResponse,
-  DelegationStatusResponse,
-  GatewaySkin,
-  SessionMostRecentResponse
-} from '../gatewayTypes.js'
+import { type GatewaySkin, type HermesConfigTree, hermesConfigTree } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -28,7 +27,7 @@ import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, th
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
-import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
+import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
@@ -49,9 +48,6 @@ import {
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
-
-const NOTICE_LEVELS: readonly NoticeLevel[] = ['error', 'info', 'success', 'warn']
-const isNoticeLevel = (value: unknown): value is NoticeLevel => NOTICE_LEVELS.includes(value as NoticeLevel)
 
 type VoiceSubmitMode = 'direct' | 'draft'
 
@@ -88,6 +84,10 @@ export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined)
 }
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
+
+/** `spawn_tree.save` stores the render model as opaque JSON; round-trip it once at the wire edge. */
+// SAFETY: JSON.parse of a JSON.stringify'd plain record is JsonValue by construction.
+const spawnTreeJson = (subagents: SubagentProgress[]): JsonValue[] => JSON.parse(JSON.stringify(subagents))
 
 // The last gateway skin, kept so the theme can be re-derived when the OSC-11
 // background answer arrives after (or without) gateway.ready.
@@ -432,7 +432,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
 }
 
-export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
+export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   syncThemeToTerminalBackground()
 
   const { rpc } = ctx.gateway
@@ -480,9 +480,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     persistedAbandonedClarify.add(clarify.requestId)
     appendMessage({
       role: 'system',
-      text: clarify.questions?.length
-        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'timed out')
-        : formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+      text:
+        clarify.params.kind === 'batch'
+          ? formatAbandonedClarifyBatch(clarify.params.questions, clarify.answers, 'timed out')
+          : formatAbandonedClarify(clarify.params.question, clarify.params.choices, 'timed out')
     })
     patchOverlayState({ clarify: null })
   }
@@ -511,7 +512,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         label: label.slice(0, 120),
         session_id: sessionId ?? 'default',
         started_at: startedAt ? startedAt / 1000 : null,
-        subagents
+        subagents: spawnTreeJson(subagents)
       })
     } catch {
       // Persistence is best-effort; in-memory history is the authoritative
@@ -530,10 +531,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // Memoize the `config.get full` RPC so we make exactly one round-trip
   // instead of one per concern.  Resolves to null on RPC failure; callers
   // treat null as "use defaults".
-  let fullConfigPromise: null | Promise<ConfigFullResponse | null> = null
+  let fullConfigPromise: null | Promise<HermesConfigTree | null> = null
 
-  const getFullConfigOnce = (): Promise<ConfigFullResponse | null> => {
-    fullConfigPromise ??= rpc<ConfigFullResponse>('config.get', { key: 'full' }).catch(() => null)
+  const getFullConfigOnce = (): Promise<HermesConfigTree | null> => {
+    fullConfigPromise ??= rpc('config.get', { key: 'full' })
+      .then(hermesConfigTree)
+      .catch(() => null)
 
     return fullConfigPromise
   }
@@ -561,7 +564,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     agentsNudgeConfigFetched = true
     getFullConfigOnce().then(cfg => {
       // Only an explicit `false` disables it; absent/unknown keeps default on.
-      if (cfg?.config?.display?.tui_agents_nudge === false) {
+      if (cfg?.display?.tui_agents_nudge === false) {
         agentsNudgeEnabled = false
       }
     })
@@ -598,8 +601,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     lastDelegationFetchAt = now
-    rpc<DelegationStatusResponse>('delegation.status', {})
-      .then(r => applyDelegationStatus(r))
+    rpc('delegation.status', {})
+      .then(r => r && applyDelegationStatus(r))
       .catch(() => {})
   }
 
@@ -700,18 +703,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // uses the same workspace it seeds a new session with.
     const catalogSid = getUiState().sid
 
-    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
+    rpc('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
       .then(r => {
-        if (!r?.pairs) {
+        if (!r) {
           return
         }
 
         setCatalog({
-          canon: (r.canon ?? {}) as Record<string, string>,
-          categories: r.categories ?? [],
-          pairs: r.pairs as [string, string][],
-          skillCount: (r.skill_count ?? 0) as number,
-          sub: (r.sub ?? {}) as Record<string, string[]>
+          canon: r.canon,
+          categories: r.categories,
+          pairs: r.pairs,
+          skillCount: r.skill_count,
+          sub: r.sub
         })
 
         if (r.warning) {
@@ -754,7 +757,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // users aren't surprised.  (Shares the memoized full-config read.)
     getFullConfigOnce()
       .then(cfg => {
-        if (!cfg?.config?.display?.tui_auto_resume_recent) {
+        if (!cfg?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
           newSession()
           scheduleStartupPrompt()
@@ -762,7 +765,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+        return rpc('session.most_recent', {}).then(r => {
           const target = r?.session_id
 
           if (target) {
@@ -785,7 +788,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
-  return (ev: AnyGatewayEvent) => {
+  return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
     if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
@@ -805,7 +808,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        let info = ev.payload as SessionInfo | undefined
+        let info: SessionInfo | undefined = ev.payload
 
         if (!info) {
           return
@@ -924,10 +927,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (turnController.lastStatusNote !== p.text) {
           turnController.lastStatusNote = p.text
-          turnController.pushActivity(
-            p.text,
-            p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
-          )
+          turnController.pushActivity(p.text, p.kind === 'warn' ? 'warn' : 'info')
         }
 
         restoreStatusAfter(4000)
@@ -950,7 +950,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           id: p.id ?? undefined,
           key: p.key ?? undefined,
           kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
-          level: isNoticeLevel(p.level) ? p.level : 'info',
+          level: p.level,
           text: p.text,
           ttl_ms: p.ttl_ms ?? null
         })
@@ -1080,7 +1080,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         void getFullConfigOnce().then(cfg => {
-          const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
+          const submitMode = normalizeVoiceSubmitMode(cfg?.voice?.submit_mode)
 
           if (submitMode === 'draft') {
             setInput(current => (current.trim() ? `${current.trimEnd()} ${text}` : text))
@@ -1491,7 +1491,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.delta':
-        turnController.recordMessageDelta(ev.payload ?? ({} as StreamDeltaPayload))
+        turnController.recordMessageDelta(ev.payload ?? {})
 
         return
       case 'message.interim': {
@@ -1508,7 +1508,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          const payload = ev.payload ?? {}
+          const payload: Partial<MessageCompletePayload> = ev.payload ?? {}
           // A failed turn with no reply: the backend's assistant-slot text is
           // "Error: <raw provider body>". Render the structured error_surface
           // (layer/code/retryable) as a plain title + Details + next step

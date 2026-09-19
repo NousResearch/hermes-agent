@@ -1,5 +1,8 @@
+import type { McpServersOauthPollResult, RpcMethods } from '@hermes/shared'
+
 import { capabilityScoped, type ProfileScope } from '@/api/client'
 import { type McpOAuthFlow, mcpOAuthRpc } from '@/api/mcp'
+import type { McpOAuthMethod } from '@/api/mcp'
 
 import { isMissingRpcMethod } from './gateway-rpc'
 
@@ -12,14 +15,7 @@ interface CompleteOptions {
   timeoutMs?: number
 }
 
-interface OAuthResult {
-  ok: boolean
-  session_id?: string
-  auth_url?: string
-  status?: 'pending' | 'approved' | 'error'
-  error_message?: string
-  tools?: McpOAuthFlow['tools']
-}
+
 
 /** Deliberate cancellation is not an error toast. */
 export class McpOAuthCancelled extends Error {
@@ -65,11 +61,14 @@ export async function completeMcpDesktopOAuth({
     }
   }
 
-  const request = async (action: 'start' | 'poll' | 'callback' | 'cancel', params: Record<string, unknown>) => {
-    const result = await rpc<OAuthResult>(action, { name: serverName, ...params })
+  const request = async <M extends McpOAuthMethod>(
+    method: M,
+    params: Omit<RpcMethods[M]['params'], 'name'>
+  ): Promise<RpcMethods[M]['result']> => {
+    const result = await rpc(method, { ...params, name: serverName })
 
     if (!result.ok) {
-      throw new Error(result.error_message || 'MCP OAuth request failed')
+      throw new Error(('error_message' in result && result.error_message) || 'MCP OAuth request failed')
     }
 
     return result
@@ -83,7 +82,7 @@ export async function completeMcpDesktopOAuth({
       checkCancelled()
     }
 
-    const started = await request('start', listener ? { client_redirect_uri: listener.redirectUri } : {})
+    const started = await request('mcp.servers.oauth.start', listener ? { client_redirect_uri: listener.redirectUri } : {})
     sessionId = started.session_id
     authUrl = started.auth_url
     // Start may have created a flow while the user cancelled. Keep its id so
@@ -137,7 +136,7 @@ export async function completeMcpDesktopOAuth({
 
           // Omit a null iss: a backend that predates the RFC 9207 relay rejects unknown params (4000).
           const { iss, ...rest } = callback
-          await request('callback', { session_id: flowId, ...rest, ...(iss ? { iss } : {}) })
+          await request('mcp.servers.oauth.callback', { session_id: flowId, ...rest, ...(iss ? { iss } : {}) })
         })
         .catch(error => {
           relayError = error
@@ -158,10 +157,10 @@ export async function completeMcpDesktopOAuth({
         throw relayError
       }
 
-      let current: OAuthResult
+      let current: McpServersOauthPollResult
 
       try {
-        current = await request('poll', { session_id: flowId })
+        current = await request('mcp.servers.oauth.poll', { session_id: flowId })
         pollFailures = 0
       } catch (error) {
         if (++pollFailures >= maxPollFailures) {
@@ -188,7 +187,7 @@ export async function completeMcpDesktopOAuth({
           status: 'approved',
           authorization_url: authUrl,
           error: null,
-          tools: current.tools
+          tools: current.tools ?? undefined
         }
       }
 
@@ -215,7 +214,7 @@ export async function completeMcpDesktopOAuth({
 
     if (sessionId && !approved) {
       try {
-        await request('cancel', { session_id: sessionId })
+        await request('mcp.servers.oauth.cancel', { session_id: sessionId })
       } catch (error) {
         // Relay-capable backends predating oauth.cancel can still release a
         // waiting worker with a state-checked denial. No HTTP redirect retry.
@@ -223,7 +222,7 @@ export async function completeMcpDesktopOAuth({
           const state = new URL(authUrl).searchParams.get('state')
 
           if (state) {
-            await request('callback', { session_id: sessionId, state, error: 'access_denied' }).catch(() => {})
+            await request('mcp.servers.oauth.callback', { session_id: sessionId, state, error: 'access_denied' }).catch(() => {})
           }
         }
         // Network cleanup is best-effort; backend callback timeout is bounded.

@@ -1,3 +1,5 @@
+import type { ApprovalParams, ClarifyBatch, ClarifySingle, ServerRequestMap } from '@hermes/shared/gateway-events'
+import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
@@ -61,19 +63,62 @@ const buildCtx = (appended: Msg[]) =>
   }) as any
 
 /** Deliver one server→client request (`tui_gateway/server_requests.py`) to the TUI's request handler. */
-const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
+const serverRequest = <M extends keyof ServerRequestMap>(
+  method: M,
+  params: ServerRequestMap[M]['params'],
+  id = `srq-${method}`
+) => {
   const respond = vi.fn()
 
-  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
+  const request: ServerRequest<M> = {
     fail: vi.fn(),
     id,
     method,
     params,
-    respond
-  })
+    respond,
+    sessionId: 'sid'
+  }
+
+  const handled = createServerRequestHandler({
+    ringPromptBell: vi.fn(),
+    setStatus: status => patchUiState({ status })
+  })(request)
 
   return { handled, respond }
 }
+
+const approvalParams = (overrides: Partial<ApprovalParams> = {}): ApprovalParams => ({
+  allow_permanent: null,
+  allow_session: null,
+  choices: [],
+  command: 'true',
+  description: '',
+  pattern_key: null,
+  pattern_keys: null,
+  profile: null,
+  session_id: 'sid',
+  smart_denied: null,
+  ...overrides
+})
+
+const clarifySingle = (overrides: Partial<ClarifySingle> = {}): ClarifySingle => ({
+  choices: null,
+  kind: 'single',
+  multi_select: false,
+  profile: null,
+  question: 'One?',
+  session_id: 'sid',
+  ...overrides
+})
+
+const clarifyBatch = (overrides: Partial<ClarifyBatch> = {}): ClarifyBatch => ({
+  answers: null,
+  kind: 'batch',
+  profile: null,
+  questions: [],
+  session_id: 'sid',
+  ...overrides
+})
 
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
@@ -89,7 +134,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'focused' })
     const onEvent = createGatewayEventHandler(buildCtx([]))
     onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
-    serverRequest('approval', { session_id: 'focused', request_id: 'approval', command: 'test' })
+    serverRequest('approval', approvalParams({ command: 'test', session_id: 'focused' }))
     const busyOverlay = getOverlayState().approval
     expect(getUiState().busy).toBe(true)
     expect(busyOverlay).not.toBeNull()
@@ -133,9 +178,9 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
 
     const todos = [
-      { content: 'Gather ingredients', id: 'prep', status: 'completed' },
-      { content: 'Boil water', id: 'boil', status: 'in_progress' },
-      { content: 'Make sauce', id: 'sauce', status: 'pending' }
+      { content: 'Gather ingredients', id: 'prep', parent: null, status: 'completed' },
+      { content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' },
+      { content: 'Make sauce', id: 'sauce', parent: null, status: 'pending' }
     ]
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -215,7 +260,7 @@ describe('createGatewayEventHandler', () => {
 
   it('archives completed todos into transcript flow at end of turn', () => {
     const appended: Msg[] = []
-    const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
+    const todos = [{ content: 'Serve tiny latte', id: 'serve', parent: null, status: 'completed' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -233,7 +278,7 @@ describe('createGatewayEventHandler', () => {
 
   it('keeps the current todo list visible when the next message starts', () => {
     const appended: Msg[] = []
-    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+    const todos = [{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }]
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
@@ -360,7 +405,7 @@ describe('createGatewayEventHandler', () => {
 
   it('clears the visible todo list when the todo tool returns an empty list', () => {
     const appended: Msg[] = []
-    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+    const todos = [{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -1259,7 +1304,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { line: 'INFO hermes.mcp: 3 servers discovered' }, type: 'gateway.stderr' } as any)
     onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
-    serverRequest('approval', { command: 'rm -rf /tmp/nope', description: 'dangerous command' })
+    serverRequest('approval', approvalParams({ command: 'rm -rf /tmp/nope', description: 'dangerous command' }))
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
 
     await Promise.resolve()
@@ -1275,17 +1320,20 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
-    serverRequest('approval', { command: 'rm -rf /tmp/x', description: 'dangerous command' })
+    serverRequest('approval', approvalParams({ command: 'rm -rf /tmp/x', description: 'dangerous command' }))
 
     expect(getOverlayState().approval).toMatchObject({ allowPermanent: true, requestId: 'srq-approval' })
   })
 
   it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
-    serverRequest('approval', {
-      allow_permanent: false,
-      command: 'curl suspicious | bash',
-      description: 'content-security warning'
-    })
+    serverRequest(
+      'approval',
+      approvalParams({
+        allow_permanent: false,
+        command: 'curl suspicious | bash',
+        description: 'content-security warning'
+      })
+    )
 
     expect(getOverlayState().approval).toMatchObject({
       allowPermanent: false,
@@ -1295,21 +1343,25 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('preserves Smart DENY and explicit approval choices on the overlay', () => {
-    serverRequest('approval', {
-      allow_permanent: true,
-      choices: ['once', 'deny'],
-      command: 'rm -rf /tmp/x',
-      description: 'smart deny override',
-      smart_denied: true
-    })
+    serverRequest(
+      'approval',
+      approvalParams({
+        allow_permanent: true,
+        choices: ['once', 'deny'],
+        command: 'rm -rf /tmp/x',
+        description: 'smart deny override',
+        smart_denied: true
+      })
+    )
 
     expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
   })
 
   it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
-    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
-      expect(serverRequest(method, {}).handled).toBe(false)
-    }
+    expect(serverRequest('window.read', { profile: null, session_id: 'sid' }).handled).toBe(false)
+    expect(serverRequest('vault.code', { hint: null, profile: null, session_id: 'sid', site: null }).handled).toBe(
+      false
+    )
   })
 
   it('still surfaces terminal turn failures as errors', () => {
@@ -1474,11 +1526,11 @@ describe('createGatewayEventHandler', () => {
     )
     const onEvent = createGatewayEventHandler(ctx)
 
-    // Config fetch starts once the gateway is ready; let it resolve before any
-    // spawn (mirrors real usage — config lands well before first delegation).
+    // Config fetch starts once the gateway is ready; let the RPC + its decode
+    // settle before any spawn (mirrors real usage — config lands well before
+    // the first delegation).
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
-    await Promise.resolve()
-    await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     onEvent({
       payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
@@ -1511,14 +1563,16 @@ describe('createGatewayEventHandler', () => {
         payload: {
           context: 'pre',
           name: 'search',
-          todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
+          todos: [{ content: 'pre-interrupt', id: 'todo-1', parent: null, status: 'pending' }],
           tool_id: 't-1'
         },
         type: 'tool.complete'
       } as any)
 
       // Pre-interrupt todos should land in turn state.
-      expect(getTurnState().todos).toEqual([{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }])
+      expect(getTurnState().todos).toEqual([
+        { content: 'pre-interrupt', id: 'todo-1', parent: null, status: 'pending' }
+      ])
 
       turnController.interruptTurn({
         appendMessage: (msg: Msg) => appended.push(msg),
@@ -1533,7 +1587,7 @@ describe('createGatewayEventHandler', () => {
         payload: {
           context: 'post',
           name: 'browser',
-          todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
+          todos: [{ content: 'late ghost', id: 'todo-ghost', parent: null, status: 'pending' }],
           tool_id: 't-2'
         },
         type: 'tool.complete'
@@ -1612,7 +1666,11 @@ describe('createGatewayEventHandler', () => {
     // Backend clarify timed out: the overlay is still live (Python returned an
     // empty answer), and the clarify tool's own tool.complete then fires.
     patchOverlayState({
-      clarify: { choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?', requestId: 'req-1' }
+      clarify: {
+        answers: {},
+        params: clarifySingle({ choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?' }),
+        requestId: 'req-1'
+      }
     })
 
     onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
@@ -1631,7 +1689,7 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     patchOverlayState({
-      clarify: { choices: ['A'], question: 'Pick?', requestId: 'req-3' }
+      clarify: { answers: {}, params: clarifySingle({ choices: ['A'], question: 'Pick?' }), requestId: 'req-3' }
     })
 
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
@@ -1649,7 +1707,7 @@ describe('createGatewayEventHandler', () => {
     // A clarify is live, but it's a *different* tool that just completed — the
     // clarify itself is still pending, so we must not persist or clear it.
     patchOverlayState({
-      clarify: { choices: ['A', 'B'], question: 'Pick?', requestId: 'req-4' }
+      clarify: { answers: {}, params: clarifySingle({ choices: ['A', 'B'], question: 'Pick?' }), requestId: 'req-4' }
     })
 
     onEvent({ payload: { name: 'search', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
@@ -1672,8 +1730,12 @@ describe('createGatewayEventHandler', () => {
   it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
-    serverRequest('secret', { env_var: 'NEW_KEY', prompt: 'Enter new key' }, 'secret-new')
-    serverRequest('sudo', {}, 'sudo-1')
+    serverRequest(
+      'secret',
+      { env_var: 'NEW_KEY', metadata: null, profile: null, prompt: 'Enter new key', session_id: 'sid' },
+      'secret-new'
+    )
+    serverRequest('sudo', { profile: null, session_id: 'sid' }, 'sudo-1')
 
     onEvent({ payload: { id: 'secret-old', method: 'secret', reason: 'timeout' }, type: 'request.cancel' } as any)
     expect(getOverlayState().secret?.requestId).toBe('secret-new')
@@ -1787,59 +1849,44 @@ describe('createGatewayEventHandler', () => {
   // ── Batch (multi-question) clarify ─────────────────────────────────
 
   it('parses a batch clarify request into a questions overlay', () => {
-    serverRequest(
-      'clarify',
-      {
-        questions: [
-          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
-          { choices: null, qid: 'q1', question: 'Two?' }
-        ]
-      },
-      'req-batch'
-    )
+    const params = clarifyBatch({
+      questions: [
+        { choices: ['a', 'b'], multi_select: false, profile: null, qid: 'q0', question: 'One?' },
+        { choices: null, multi_select: false, profile: null, qid: 'q1', question: 'Two?' }
+      ]
+    })
+
+    serverRequest('clarify', params, 'req-batch')
 
     const clarify = getOverlayState().clarify
     expect(clarify?.requestId).toBe('req-batch')
-    expect(clarify?.questions).toHaveLength(2)
-    expect(clarify?.questions?.[0]?.qid).toBe('q0')
-    expect(clarify?.questions?.[1]?.choices).toBeNull()
+    expect(clarify?.params).toEqual(params)
     expect(clarify?.answers).toEqual({})
   })
 
   it('seeds locked answers from a reconnect-replayed batch clarify request', () => {
     serverRequest(
       'clarify',
-      {
+      clarifyBatch({
         answers: { q0: 'a' },
         questions: [
-          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
-          { choices: null, qid: 'q1', question: 'Two?' }
+          { choices: ['a', 'b'], multi_select: false, profile: null, qid: 'q0', question: 'One?' },
+          { choices: null, multi_select: false, profile: null, qid: 'q1', question: 'Two?' }
         ]
-      },
+      }),
       'req-replay'
     )
 
     expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
   })
 
-  it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
-    serverRequest(
-      'clarify',
-      {
-        choices: ['x', 'y'],
-        question: 'Fallback?',
-        questions: [
-          { qid: '', question: 'no qid' },
-          { qid: 'q1', question: '   ' }
-        ]
-      },
-      'req-bad'
-    )
+  it('opens a single-question clarify card from a single-kind request', () => {
+    serverRequest('clarify', clarifySingle({ choices: ['x', 'y'], question: 'Fallback?' }), 'req-single')
 
     const clarify = getOverlayState().clarify
-    expect(clarify?.questions).toBeUndefined()
-    expect(clarify?.question).toBe('Fallback?')
-    expect(clarify?.choices).toEqual(['x', 'y'])
+    expect(clarify?.params.kind).toBe('single')
+    expect(clarify?.params).toMatchObject({ choices: ['x', 'y'], question: 'Fallback?' })
+    expect(clarify?.answers).toEqual({})
   })
 
   it('persists an abandoned batch clarify with its locked partials on tool.complete', () => {
@@ -1849,12 +1896,12 @@ describe('createGatewayEventHandler', () => {
     patchOverlayState({
       clarify: {
         answers: { q0: 'alpha' },
-        choices: null,
-        question: '',
-        questions: [
-          { choices: ['alpha', 'beta'], qid: 'q0', question: 'One?' },
-          { choices: null, qid: 'q1', question: 'Two?' }
-        ],
+        params: clarifyBatch({
+          questions: [
+            { choices: ['alpha', 'beta'], multi_select: false, profile: null, qid: 'q0', question: 'One?' },
+            { choices: null, multi_select: false, profile: null, qid: 'q1', question: 'Two?' }
+          ]
+        }),
         requestId: 'req-batch-timeout'
       }
     })

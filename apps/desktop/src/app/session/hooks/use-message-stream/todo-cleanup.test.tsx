@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TodoItem } from '@/lib/todos'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
+import { messageCompletePayload, toolCompletePayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'session-1'
-const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
+const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, parent: null, status })
+/** The same item as the wire spells it (`parent` is always present). */
+const wireTodo = (id: string, status: TodoItem['status']) => ({ content: `task ${id}`, id, parent: null, status })
 
 let stream: MessageStreamHarness
 
@@ -16,7 +19,9 @@ function mountStream() {
 }
 
 const complete = () =>
-  act(() => stream.handleEvent({ payload: { text: 'done' }, session_id: SID, type: 'message.complete' }))
+  act(() =>
+    stream.handleEvent({ payload: messageCompletePayload({ text: 'done' }), session_id: SID, type: 'message.complete' })
+  )
 
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
@@ -62,7 +67,7 @@ describe('useMessageStream turn-end todo cleanup', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: { revision: 3, todos: [todo('live', 'in_progress')] },
+        payload: { revision: 3, todos: [wireTodo('live', 'in_progress')] },
         session_id: SID,
         type: 'todo.updated'
       })
@@ -85,12 +90,12 @@ describe('useMessageStream todo tool naming', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: {
+        payload: toolCompletePayload({
           args: {},
           name: 'todo_list',
-          result: { revision: 2, todos: [todo('wire', 'in_progress')] },
+          result: { revision: 2, todos: [wireTodo('wire', 'in_progress')] },
           tool_id: 'c1'
-        },
+        }),
         session_id: SID,
         type: 'tool.complete'
       })

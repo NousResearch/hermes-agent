@@ -1,4 +1,4 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 // Tool events route to the bubble that owns the call id, not to whatever is
 // streaming now. A result that lands AFTER its part was sealed (interim
 // commentary, mid-turn user insert, turn settle) must re-attach to that part
@@ -6,9 +6,16 @@ import type { GatewayEventName } from '@hermes/shared'
 // but a call id that repeats across turns (llama.cpp emits one constant id)
 // must never be routed back onto a finished row from an earlier turn.
 import { act, cleanup } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { appendMidTurnUserMessage } from '@/app/session/hooks/use-prompt-actions/rewind'
+import {
+  messageCompletePayload,
+  messageDeltaPayload,
+  messageInterimPayload,
+  toolCompletePayload,
+  toolStartPayload
+} from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -16,8 +23,12 @@ const SID = 'late-tool-events-session'
 
 let stream: MessageStreamHarness
 
-const event = (type: GatewayEventName, timestamp: number, payload: Record<string, unknown> = {}) =>
-  act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
+// The wire carries no event clock — a row's time is its receipt time — so
+// each frame is delivered with `Date.now()` pinned to the moment it "arrives".
+function event<K extends GatewayEventName>(type: K, receivedAt: number, payload: GatewayEventMap[K]) {
+  vi.spyOn(Date, 'now').mockReturnValue(receivedAt * 1000)
+  act(() => stream.emit(type, payload, SID))
+}
 
 const toolRows = (toolCallId: string) =>
   (stream.state(SID).messages ?? []).flatMap((message, messageIndex) =>
@@ -33,17 +44,18 @@ describe('tool events for a part that already exists on a sealed message', () =>
 
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
   })
 
   it('attaches a late completion to the sealed bubble that owns the call', () => {
-    event('message.start', 100)
-    event('message.delta', 101, { text: 'Scraping the page.' })
-    event('tool.start', 102, { args: { url: 'https://example.test' }, name: 'browser', tool_id: 'call-late-1' })
+    event('message.start', 100, {})
+    event('message.delta', 101, messageDeltaPayload({ text: 'Scraping the page.' }))
+    event('tool.start', 102, toolStartPayload({ args: { url: 'https://example.test' }, name: 'browser', tool_id: 'call-late-1' }))
     // Interim commentary seals the streaming bubble while the browser scrape
     // keeps running (minutes in practice). streamId drops; the tool part is
     // sealed with completedAt and no result.
-    event('message.interim', 103, { text: 'Scraping the page.' })
-    event('tool.complete', 260.5, { name: 'browser', result: 'ok', tool_id: 'call-late-1' })
+    event('message.interim', 103, messageInterimPayload({ already_streamed: true, text: 'Scraping the page.' }))
+    event('tool.complete', 260.5, toolCompletePayload({ name: 'browser', result: 'ok', tool_id: 'call-late-1' }))
 
     const state = stream.state(SID)
     const assistants = (state.messages ?? []).filter(message => message.role === 'assistant')
@@ -61,8 +73,8 @@ describe('tool events for a part that already exists on a sealed message', () =>
   })
 
   it('keeps one live row when the user types mid-turn and the running tool then completes', () => {
-    event('message.start', 300)
-    event('tool.start', 301, { args: { command: 'timeout 120 debug share' }, name: 'terminal', tool_id: 'call_02' })
+    event('message.start', 300, {})
+    event('tool.start', 301, toolStartPayload({ args: { command: 'timeout 120 debug share' }, name: 'terminal', tool_id: 'call_02' }))
 
     // Mid-turn user insert (steer): the desktop seals the live bubble and
     // clears streamId so the next assistant output lands below the user row.
@@ -80,14 +92,14 @@ describe('tool events for a part that already exists on a sealed message', () =>
 
     // A running-phase event for the same call (progress/replay) must update
     // the existing row, not seed a second live row under the user message.
-    event('tool.start', 303, { args: { command: 'timeout 120 debug share' }, name: 'terminal', tool_id: 'call_02' })
+    event('tool.start', 303, toolStartPayload({ args: { command: 'timeout 120 debug share' }, name: 'terminal', tool_id: 'call_02' }))
 
     const running = toolRows('call_02')
     expect(running).toHaveLength(1)
     expect(running[0].messageIndex).toBe(0)
     expect((running[0].part as { completedAt?: number }).completedAt).toBeUndefined()
 
-    event('tool.complete', 304, { name: 'terminal', result: 'shared', tool_id: 'call_02' })
+    event('tool.complete', 304, toolCompletePayload({ name: 'terminal', result: 'shared', tool_id: 'call_02' }))
 
     const found = toolRows('call_02')
     expect(found).toHaveLength(1)
@@ -98,17 +110,17 @@ describe('tool events for a part that already exists on a sealed message', () =>
   })
 
   it('draws a reused tool_call_id from a later turn as its own row, not over the finished one', () => {
-    event('message.start', 400)
-    event('tool.start', 401, { args: { command: 'echo step1' }, name: 'terminal', tool_id: 'call_const' })
-    event('tool.complete', 402, { name: 'terminal', result: 'step 1 output', tool_id: 'call_const' })
-    event('message.complete', 403, { text: 'first' })
+    event('message.start', 400, {})
+    event('tool.start', 401, toolStartPayload({ args: { command: 'echo step1' }, name: 'terminal', tool_id: 'call_const' }))
+    event('tool.complete', 402, toolCompletePayload({ name: 'terminal', result: 'step 1 output', tool_id: 'call_const' }))
+    event('message.complete', 403, messageCompletePayload({ text: 'first' }))
 
     // Same id in the next turn: a finished part is never the owner of a new
     // running event, so this call lands in the live bubble.
-    event('message.start', 500)
-    event('tool.start', 501, { args: { command: 'echo step2' }, name: 'terminal', tool_id: 'call_const' })
-    event('tool.complete', 502, { name: 'terminal', result: 'step 2 output', tool_id: 'call_const' })
-    event('message.complete', 503, { text: 'second' })
+    event('message.start', 500, {})
+    event('tool.start', 501, toolStartPayload({ args: { command: 'echo step2' }, name: 'terminal', tool_id: 'call_const' }))
+    event('tool.complete', 502, toolCompletePayload({ name: 'terminal', result: 'step 2 output', tool_id: 'call_const' }))
+    event('message.complete', 503, messageCompletePayload({ text: 'second' }))
 
     const rows = toolRows('call_const')
     expect(rows).toHaveLength(2)

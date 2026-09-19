@@ -1,14 +1,15 @@
 import { skillInvocationText } from '@hermes/shared'
 import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { type BrowserAction, isRecord, type JsonValue, type WakeInputDevice, type WakeStatusResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { toSessionMessages } from '@/lib/chat-messages/hydration'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
-  type CommandsCatalogLike,
   type DesktopActionId,
   type DesktopCommandSurface,
   type DesktopPickerId,
@@ -47,20 +48,10 @@ import { $sessionStates } from '@/store/session-states'
 import {
   applyWakeStartResult,
   applyWakeStatus,
-  applyWakeStopResult,
-  type WakeInputDeviceStatus,
-  type WakeStartResponse,
-  type WakeStatusResponse,
-  type WakeStopResponse
+  applyWakeStopResult
 } from '@/store/wake-word'
 
-import type {
-  BrowserManageResponse,
-  ClientSessionState,
-  SessionCompressResponse,
-  SessionTitleResponse,
-  SlashExecResponse
-} from '../../../types'
+import type { ClientSessionState } from '../../../types'
 
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
@@ -84,7 +75,7 @@ import {
 export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
-const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
+const wakeDeviceLabel = (device?: WakeInputDevice): string => {
   if (!device) {
     return 'system default'
   }
@@ -95,7 +86,16 @@ const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
   return device.hostapi?.trim() ? `${name} (${device.hostapi.trim()})` : name
 }
 
-const renderWakeStatus = (status: WakeStatusResponse): string => {
+const BROWSER_ACTIONS: readonly BrowserAction[] = ['connect', 'disconnect', 'status']
+
+// `host_ack` is free JSON on the wire; slash output only ever reads one scalar off it.
+const jsonText = (value: JsonValue | null, key: string): string => {
+  const field = isRecord(value) ? value[key] : undefined
+
+  return field === null || field === undefined || Array.isArray(field) || isRecord(field) ? '' : String(field)
+}
+
+const renderWakeStatus = (status: WakeStatusResult): string => {
   const lines = [
     'Wake Word Status',
     `State: ${status.listening ? 'LISTENING' : 'OFF'}`,
@@ -381,7 +381,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         try {
-          const result = await requestGateway<unknown>('slash.exec', {
+          const result = await requestGateway('slash.exec', {
             session_id: sessionId,
             command: command.replace(/^\/+/, '')
           })
@@ -394,18 +394,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
-          const body = output?.output || `/${name}: no output`
+          const body = result.output || `/${name}: no output`
 
           // `/goal status|pause|resume|clear` come back as plain exec output
           // ("⊙ Goal (active, 3/20 turns): …", "⏸ Goal paused: …", "✓ Goal
           // cleared." …). Mirror it into the goal store so the composer
           // indicator tracks pause/resume/clear immediately.
-          if (name === 'goal' && output?.output) {
-            applyGoalStatusText(sessionId, output.output)
+          if (name === 'goal' && result.output) {
+            applyGoalStatusText(sessionId, result.output)
           }
 
-          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+          renderSlashOutput(result.warning ? `warning: ${result.warning}\n${body}` : body)
 
           return
         } catch (error) {
@@ -417,7 +416,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         try {
           const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+            await requestGateway('command.dispatch', { session_id: sessionId, name, arg })
           )
 
           if (!dispatch) {
@@ -473,7 +472,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // Forward the surface's declared timeout when present; the default
           // requestGateway layer keeps (30s) is too tight for RPCs that do
           // real work.
-          const result = await requestGateway<unknown>(surface.rpc, params, surface.timeoutMs)
+          const result = await requestGateway(surface.rpc, params, surface.timeoutMs)
           const body = renderRpcResult(result, ctx.name)
 
           renderSlashOutput(body || `/${ctx.name}: no output`)
@@ -538,7 +537,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           try {
-            const result = await requestGateway<unknown>('process.stop', {})
+            const result = await requestGateway('process.stop', {})
             const processMessage = renderRpcResult(result, ctx.name)
 
             if (processMessage) {
@@ -574,7 +573,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           try {
-            const result = await requestGateway<{ task_id?: string }>('prompt.btw', {
+            const result = await requestGateway('prompt.btw', {
               session_id: sessionId,
               text: question
             })
@@ -646,7 +645,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               sessionId,
               storedSessionId,
               liveId =>
-                requestGateway<SessionCompressResponse>(
+                requestGateway(
                   'session.compress',
                   {
                     session_id: liveId,
@@ -691,7 +690,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             if (Array.isArray(result?.messages)) {
               updateSessionState(
                 sessionId,
-                state => ({ ...state, messages: toChatMessages(result.messages!) }),
+                state => ({ ...state, messages: toChatMessages(toSessionMessages(result.messages ?? [])) }),
                 storedSessionId
               )
             }
@@ -735,7 +734,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const hostOutput = result?.host_ack?.output?.trim()
+            const hostOutput = jsonText(result.host_ack, 'output').trim()
 
             if (hostOutput) {
               renderSlashOutput(hostOutput)
@@ -788,7 +787,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           try {
             if (!params) {
-              const current = await requestGateway<{ display?: string; value?: string }>('config.get', {
+              const current = await requestGateway('config.get', {
                 key: 'reasoning',
                 session_id: sessionId
               })
@@ -798,10 +797,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const result = await requestGateway<{ value?: string }>('config.set', params)
+            const result = await requestGateway('config.set', params)
+            const value = typeof result.value === 'string' ? result.value : undefined
 
-            applyReasoningSlashResult(result.value)
-            renderSlashOutput(`reasoning: ${result.value || params.value}`)
+            applyReasoningSlashResult(value)
+            renderSlashOutput(`reasoning: ${value || params.value}`)
           } catch (err) {
             if (isMissingRpcMethod(err)) {
               await runExec(ctx)
@@ -853,8 +853,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const status = async (): Promise<WakeStatusResponse> => {
-            const current = await requestGateway<WakeStatusResponse>('wake.status', {
+          const status = async (): Promise<WakeStatusResult> => {
+            const current = await requestGateway('wake.status', {
               client_capture: true,
               surface: 'gui'
             })
@@ -874,7 +874,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             }
 
             if (action === 'on') {
-              const started = await requestGateway<WakeStartResponse>(
+              const started = await requestGateway(
                 'wake.start',
                 { persist: true, surface: 'gui', client_capture: true },
                 WAKE_START_TIMEOUT_MS
@@ -890,7 +890,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 return
               }
             } else if (action === 'off') {
-              applyWakeStopResult(await requestGateway<WakeStopResponse>('wake.stop', { persist: true }))
+              applyWakeStopResult(await requestGateway('wake.stop', { persist: true }))
             }
 
             renderSlashOutput(renderWakeStatus(await status()))
@@ -1000,7 +1000,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const { arg } = ctx
 
           try {
-            const result = await requestGateway<SessionTitleResponse>('session.title', {
+            const result = await requestGateway('session.title', {
               session_id: sessionId,
               title: arg
             })
@@ -1029,7 +1029,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const { render: renderSlashOutput, sessionId } = resolved
 
           try {
-            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
+            const catalog = await requestGateway('commands.catalog', { session_id: sessionId })
 
             renderSlashOutput(renderCommandsCatalog(catalog, copy))
           } catch (err) {
@@ -1108,8 +1108,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
           const cmdAction = rawAction.toLowerCase()
+          const browserAction = BROWSER_ACTIONS.find(known => known === cmdAction)
 
-          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+          if (!browserAction) {
             renderSlashOutput(
               'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
             )
@@ -1117,15 +1118,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+          const url = browserAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
           if (url) {
             renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
           }
 
           try {
-            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
-              action: cmdAction,
+            const result = await requestGateway('browser.manage', {
+              action: browserAction,
               session_id: sessionId,
               ...(url && { url })
             })
@@ -1134,7 +1135,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // progress lines into `messages` — flush them inline.
             result?.messages?.forEach(message => renderSlashOutput(message))
 
-            if (cmdAction === 'status') {
+            if (browserAction === 'status') {
               renderSlashOutput(
                 result?.connected
                   ? `browser connected: ${result.url || '(url unavailable)'}`

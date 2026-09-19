@@ -8,7 +8,7 @@
 // Installed only under `import.meta.env.DEV` (see contrib/wiring.tsx), so none
 // of this ships in a production build.
 
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent, NotificationLevel } from '@hermes/shared'
 
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { registry } from '@/contrib/registry'
@@ -18,7 +18,7 @@ import { $activeSessionId } from '@/store/session'
 
 interface NoticeStep {
   key: string
-  level: string
+  level: NotificationLevel
   kind: 'sticky' | 'ttl'
   text: string
   ttl_ms?: number
@@ -47,7 +47,7 @@ function clearNotice(key: string): void {
     payload: { key },
     session_id: $activeSessionId.get() ?? '',
     type: 'notification.clear'
-  } as GatewayEvent)
+  } satisfies GatewayEvent<'notification.clear'>)
 }
 
 function showNotice(step: NoticeStep): void {
@@ -62,7 +62,7 @@ function showNotice(step: NoticeStep): void {
     },
     session_id: $activeSessionId.get() ?? '',
     type: 'notification.show'
-  } as GatewayEvent)
+  } satisfies GatewayEvent<'notification.show'>)
 }
 
 /** Fire the next notice in the scripted sequence, wrapping at the end. */

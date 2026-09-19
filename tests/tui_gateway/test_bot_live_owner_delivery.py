@@ -2,17 +2,24 @@
 import threading
 from types import SimpleNamespace
 
-from tui_gateway.method_ctx import rebind
+from tui_gateway import server as srv
 from tui_gateway.session_lifecycle import _session_turn_admission
 from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
-def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
+def _facade(monkeypatch, fn, overrides):
+    """Run a split-module function with facade state swapped: siblings reach server.py through
+    ``srv.<name>``, so patching the facade is the seam (the old ``rebind`` ran them against a fake
+    globals dict)."""
+    for name, value in overrides.items():
+        monkeypatch.setattr(srv, name, value)
+    return fn
+
+
+def test_refused_input_commits_failed_mailbox_receipt(tmp_path, monkeypatch):
     import contextlib
     import contextvars
-    import logging
-    import time
     from tui_gateway import prompt_turn
     from tui_gateway.session_lifecycle import _start_session_work
     from tools import bot_live_delivery as mailbox
@@ -25,15 +32,13 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     session = dict(agent=agent, session_key="chat", history_lock=threading.RLock(), running=True)
     retired = []
     noop = lambda *args, **kwargs: None
-    submit = rebind(prompt_turn._run_prompt_submit, {
-        "threading": threading, "time": time, "logger": logging.getLogger(__name__),
+    submit = _facade(monkeypatch, prompt_turn._run_prompt_submit, {
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
         "_admit_prompt_turn": lambda *args: ([], agent),
         "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
-        "_TurnRun": prompt_turn._TurnRun,
         "_record_turn_marker": lambda *args, **kwargs: "marker",
         "_prepare_turn_input": lambda *args: None,
         "_finish_turn": noop, "_clear_inflight_turn": noop,
@@ -56,11 +61,11 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     assert retired and session["running"] is False
 
 
-def test_imported_crash_marker_never_autocontinues(tmp_path):
+def test_imported_crash_marker_never_autocontinues(tmp_path, monkeypatch):
     record_turn_start(tmp_path, "chat", "imported", auto_continue=False)
     marker = read_turn_marker(tmp_path, "chat")
     assert marker["auto_continue"] is False
-    schedule = rebind(session_auto_continue._maybe_schedule_auto_continue, {
+    schedule = _facade(monkeypatch, session_auto_continue._maybe_schedule_auto_continue, {
         "_session_home": lambda session: tmp_path,
         "read_turn_marker": read_turn_marker,
     })
@@ -81,7 +86,7 @@ def test_local_work_blocks_mailbox_claim_without_consuming_envelope(monkeypatch,
         submitted.append((text, kwargs.get("turn_author")))
         kwargs["terminal_callback"]({"status": "settled", "text": "reply"})
         return True
-    poll = rebind(session_notifications._poll_bot_live_delivery_once, {
+    poll = _facade(monkeypatch, session_notifications._poll_bot_live_delivery_once, {
         "_session_home": lambda session: tmp_path,
         "_session_turn_admission": _session_turn_admission,
         "_run_prompt_submit": submit,
@@ -108,8 +113,8 @@ def test_mailbox_poll_skips_owner_lookup_without_a_mailbox(monkeypatch, tmp_path
     import tools.bot_live_delivery as mailbox
     lookups = []
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: lookups.append(home) or None)
-    poll = rebind(session_notifications._poll_bot_live_delivery_once, {
-        "_session_home": lambda session: tmp_path, "_session_turn_admission": _session_turn_admission})
+    monkeypatch.setattr(srv, "_session_home", lambda session: tmp_path)
+    poll = session_notifications._poll_bot_live_delivery_once
     session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
                "active_session_lease": SimpleNamespace(lease_id="lease", released=False)}
     assert poll("live", session) is False
@@ -119,7 +124,7 @@ def test_mailbox_poll_skips_owner_lookup_without_a_mailbox(monkeypatch, tmp_path
     assert lookups == [tmp_path]
 
 
-def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
+def test_failing_mailbox_poll_backs_off_and_warns_once_per_window(monkeypatch):
     """A failing poll is retried only after the backoff and logged at WARNING once per window."""
     import logging
     records = []
@@ -137,10 +142,9 @@ def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
         attempts.append(sid)
         raise RuntimeError("active session file lock unavailable")
 
-    guarded = rebind(session_notifications._poll_bot_live_delivery_guarded, {
-        "_poll_bot_live_delivery_once": failing, "logger": log,
-        "_BOT_POLL_FAILURE_BACKOFF_S": session_notifications._BOT_POLL_FAILURE_BACKOFF_S,
-        "_BOT_POLL_WARN_INTERVAL_S": session_notifications._BOT_POLL_WARN_INTERVAL_S})
+    monkeypatch.setattr(srv, "_poll_bot_live_delivery_once", failing)
+    monkeypatch.setattr(session_notifications, "logger", log)
+    guarded = session_notifications._poll_bot_live_delivery_guarded
     session = {}
     for now in (0.0, 0.5, 1.0, 6.0, 12.0, 61.0):
         guarded("live", session, now)

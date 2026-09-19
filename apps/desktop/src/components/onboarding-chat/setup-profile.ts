@@ -10,12 +10,14 @@
  * gateway and session hooks.
  */
 
+import type { SeedMessage } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { ProfileScope } from '@/api/client'
 import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
+import { seedMessage } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
@@ -248,7 +250,7 @@ export async function buildFirstTaskSeedMessages(
   answers: OnboardingAnswers,
   plan: HandoffPlan = 'build',
   scope?: ProfileScope
-): Promise<{ content: string; display_kind?: 'hidden'; role: 'assistant' | 'user' }[]> {
+): Promise<SeedMessage[]> {
   const root = plan === 'plugin' ? await window.hermesDesktop?.desktopPluginsRoot?.() : undefined
 
   const capabilities = plan === 'machine-setup' ? '' : await readOnboardingCapabilities(scope, {
@@ -256,7 +258,7 @@ export async function buildFirstTaskSeedMessages(
     context: `${task} ${answers.context}`
   })
 
-  return [{ content: buildFirstTaskRunbook(task, answers, plan, root, capabilities), display_kind: 'hidden', role: 'user' }]
+  return [seedMessage('user', buildFirstTaskRunbook(task, answers, plan, root, capabilities), 'hidden')]
 }
 
 /** The hidden note sent to the welcome chat once the build session is live. The check-ins after it come from the

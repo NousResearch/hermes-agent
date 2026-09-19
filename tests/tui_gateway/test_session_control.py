@@ -85,15 +85,21 @@ def _error(response):
     return response["error"]
 
 
+def _install_dispatch(server, monkeypatch, fn):
+    # session.control reaches command.dispatch through server.invoke, which calls the raw handler.
+    fn._hermes_raw_handler = fn
+    monkeypatch.setitem(server._methods, "command.dispatch", fn)
+
+
 def _observe_dispatch(server, monkeypatch):
     calls = []
-    original = server._methods["command.dispatch"]
+    original = server._methods["command.dispatch"]._hermes_raw_handler
 
     def observe(rid, params):
-        calls.append((rid, dict(params)))
+        calls.append((rid, params.model_dump(mode="json")))
         return original(rid, params)
 
-    monkeypatch.setitem(server._methods, "command.dispatch", observe)
+    _install_dispatch(server, monkeypatch, observe)
     return calls
 
 
@@ -101,7 +107,7 @@ def _forbid_dispatch(server, monkeypatch):
     def forbidden(_rid, _params):
         raise AssertionError("manager-only action must not call command.dispatch")
 
-    monkeypatch.setitem(server._methods, "command.dispatch", forbidden)
+    _install_dispatch(server, monkeypatch, forbidden)
 
 
 def _save_goal(key, **overrides):
@@ -291,16 +297,17 @@ class TestManagerOnlyMutations:
         assert _error(_call(server, "session.control", session_id=sid, action="subgoal.add", args={"text": "criterion"}))["code"] == 4004
 
         _save_goal(key, subgoals=["Only criterion"])
-        for args in (
-            {"text": "   "},
-            {"index": "1"},
-            {"index": 1.5},
-            {"index": True},
-            {"index": 0},
-            {"index": 2},
+        # A wrong type is refused by the model (4000); a wrong value by the handler (4004).
+        for args, code in (
+            ({"text": "   "}, 4004),
+            ({"index": "1"}, 4000),
+            ({"index": 1.5}, 4000),
+            ({"index": True}, 4000),
+            ({"index": 0}, 4004),
+            ({"index": 2}, 4004),
         ):
             action = "subgoal.add" if "text" in args else "subgoal.remove"
-            assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
+            assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == code
 
     def test_goal_unwait_clears_the_real_barrier_through_shared_command(self, server, session):
         from hermes_cli.goals import GoalManager
@@ -336,18 +343,18 @@ class TestManagerOnlyMutations:
 
 class TestErrorsAndEvents:
     @pytest.mark.parametrize(
-        ("action", "args"),
+        ("action", "args", "code"),
         [
-            ("", {}),
-            ("not.allowed", {}),
-            ("goal.gate.add", {"command": "echo should-not-run"}),
-            ("subgoal.add", []),
+            ("", {}, 4004),
+            ("not.allowed", {}, 4004),
+            ("goal.gate.add", {"command": "echo should-not-run"}, 4000),
+            ("subgoal.add", [], 4000),
         ],
     )
-    def test_invalid_actions_and_malformed_args_return_4004_without_dispatch(self, server, session, monkeypatch, action, args):
+    def test_invalid_actions_and_malformed_args_are_refused_without_dispatch(self, server, session, monkeypatch, action, args, code):
         sid, _, _ = session
         _forbid_dispatch(server, monkeypatch)
-        assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
+        assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == code
 
     def test_unknown_session_returns_4001(self, server):
         assert _error(_call(server, "session.control", session_id="gone", action="goal.pause"))["code"] == 4001
@@ -358,7 +365,7 @@ class TestErrorsAndEvents:
         _save_goal(key)
         emitted = []
         monkeypatch.setattr(server, "_emit", lambda *event: emitted.append(event))
-        monkeypatch.setitem(server._methods, "command.dispatch", lambda rid, params: server._err(rid, 4018, "dispatch failed"))
+        _install_dispatch(server, monkeypatch, lambda rid, params: server._err(rid, 4018, "dispatch failed"))
 
         response = _call(server, "session.control", session_id=sid, action="goal.pause")
         assert _error(response)["code"] == 4018
@@ -384,7 +391,12 @@ class TestUpdatePublication:
 
     def _capture(self, server, monkeypatch):
         emitted = []
-        monkeypatch.setattr(server, "_emit", lambda event, event_sid, payload=None: emitted.append((event, event_sid, payload)))
+        # Payloads are models now; compare their wire form.
+        monkeypatch.setattr(
+            server, "_emit",
+            lambda event, event_sid, payload=None: emitted.append(
+                (event, event_sid, payload.model_dump(mode="json") if payload is not None else None)),
+        )
         return emitted
 
     def test_control_action_publishes_exactly_one_update_matching_the_response(self, server, session, monkeypatch):

@@ -2,18 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import type { PluginRecord } from '@/contrib/plugins-store'
 import type { AgentPluginRow } from '@/store/agent-plugins'
+import { agentPluginRow } from '@/test/contract'
 
 import { mergePluginPackages } from './plugin-packages'
 
-const agent = (over: Partial<AgentPluginRow>): AgentPluginRow => ({
-  description: '',
-  key: over.name ?? 'x',
-  name: 'x',
-  source: 'git',
-  status: 'enabled',
-  version: '1.0.0',
-  ...over
-})
+const agent = (over: Partial<AgentPluginRow>): AgentPluginRow =>
+  agentPluginRow({ key: over.name ?? 'x', name: 'x', source: 'git', status: 'enabled', version: '1.0.0', ...over })
 
 const desktop = (over: Partial<PluginRecord>): PluginRecord => ({
   id: 'x',

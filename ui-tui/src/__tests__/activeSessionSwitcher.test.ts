@@ -1,4 +1,4 @@
-import type { SessionListRow } from '@hermes/shared/gateway-events'
+import type { SessionActiveItem, SessionListRow } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -28,7 +28,6 @@ import {
   sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
 import { listRowStyle } from '../components/overlayPrimitives.js'
-import type { SessionActiveItem } from '../gatewayTypes.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('session orchestrator helpers', () => {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { petInfoResult } from '@/test/contract'
 
 import {
   $petActivity,
@@ -84,14 +85,14 @@ describe('roam motion', () => {
 
 describe('pet info metadata cache helpers', () => {
   it('treats matching slug and spritesheet revision as a reusable sprite payload', () => {
-    const current = {
+    const current = petInfoResult({
       enabled: true,
       slug: 'boba',
       displayName: 'Old Boba',
       scale: 0.33,
       spritesheetBase64: 'large-sprite-payload',
       spritesheetRevision: '100:2048'
-    }
+    })
 
     const meta = {
       enabled: true,
@@ -113,14 +114,14 @@ describe('pet info metadata cache helpers', () => {
   })
 
   it('returns the same reference when nothing changed to avoid redundant store updates', () => {
-    const current: PetInfo = {
+    const current: PetInfo = petInfoResult({
       enabled: true,
       slug: 'boba',
       displayName: 'Boba',
       scale: 0.33,
       spritesheetBase64: 'large-sprite-payload',
       spritesheetRevision: '100:2048'
-    }
+    })
 
     const meta = {
       enabled: true,

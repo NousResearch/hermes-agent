@@ -1,4 +1,4 @@
-export { toChatMessages } from './hydration'
+export { toChatMessages, toSessionMessages } from './hydration'
 export {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -15,14 +15,17 @@ export {
 export type { UnspokenTurnSpeech } from './parts'
 export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
 export {
+  restoredToolStartPayload,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
   toolCallOwnerMessageId,
+  toolResultErrorText,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'
 export type { PendingClarifyProjection, SettledClarifyProjection } from './tool-parts'
-export type { ChatMessage, ChatMessagePart, GatewayEventPayload, TimelinePartMetadata } from './types'
+export { isToolCompletePayload, isToolStartPayload } from './types'
+export type { ChatMessage, ChatMessagePart, TimelinePartMetadata, ToolRowPayload } from './types'

@@ -1,7 +1,9 @@
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
+
 export type ApprovalMode = 'manual' | 'off' | 'smart'
-export type ApprovalModeRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+export type ApprovalModeRequester = GatewayRequest
 
 const APPROVAL_MODES = new Set<ApprovalMode>(['manual', 'smart', 'off'])
 const revisions = new Map<string, number>()
@@ -53,8 +55,8 @@ export async function syncApprovalModeForProfile(
 ): Promise<ApprovalMode> {
   const key = profileKey(profile)
   const revision = nextRevision(key)
-  const result = (await requestGateway('config.get', { key: 'approvals.mode' })) as { value?: string }
-  const mode = normalizeApprovalMode(result?.value)
+  const result = await requestGateway('config.get', { key: 'approvals.mode' })
+  const mode = normalizeApprovalMode(result.value)
 
   if (revisions.get(key) === revision) {
     confirmedModes.set(key, mode)

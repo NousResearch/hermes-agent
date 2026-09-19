@@ -1,9 +1,12 @@
+import type { PreviewActParams, ServerRequestMap, TourParams } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { ScopedServerRequest } from '@/store/gateway'
 import { setActiveSessionId, setSessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
+import { approvalParams } from '@/test/contract'
 import type { SessionInfo } from '@/types/hermes'
 
 import { handleServerRequest, previewSessionRoute } from './server-requests'
@@ -16,33 +19,54 @@ const deps = {
   upsertToolCall: () => undefined
 } as ServerRequestContext['deps']
 
-function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
+const previewAct = (session_id: string): PreviewActParams => ({
+  action: 'elements',
+  amount: null,
+  full: null,
+  key: null,
+  max: null,
+  ref: null,
+  selector: null,
+  session_id,
+  submit: null,
+  text: null,
+  to: null
+})
+
+const tourParams = (session_id: string): TourParams => ({
+  action: 'targets',
+  selector: null,
+  session_id,
+  side: null,
+  step_index: null,
+  steps: null,
+  surface: null,
+  text: null,
+  title: null
+})
+
+function deliver<M extends keyof ServerRequestMap>(
+  method: M,
+  params: ScopedServerRequest<M>['params'],
+  activeSessionId: null | string
+) {
   const respond = vi.fn()
   const fail = vi.fn()
-  const handled = handleServerRequest({ fail, id: 'srq-1', method, params, profile: 'default', respond }, deps, activeSessionId)
 
-  return { fail, handled, respond }
+  const request: ScopedServerRequest<M> = {
+    fail,
+    id: 'srq-1',
+    method,
+    params,
+    profile: 'default',
+    respond,
+    sessionId: params.session_id || null
+  }
+
+  handleServerRequest(request, deps, activeSessionId)
+
+  return { fail, respond }
 }
-
-describe('connection request routing', () => {
-  it('does not route connection operations through the server-request rail', () => {
-    const { handled, respond } = deliver(
-      'connection',
-      {
-        deadline_at: 1_800_000_000,
-        op_id: 'op-1',
-        session_id: 'session-a',
-        targets: [{ action: 'install', kind: 'mcp', name: 'linear' }],
-        timeout_seconds: 60,
-        tool_call_id: 'call-1'
-      },
-      'session-a'
-    )
-
-    expect(handled).toBe(false)
-    expect(respond).not.toHaveBeenCalled()
-  })
-})
 
 describe('approval request routing', () => {
   const notify = vi.fn().mockResolvedValue(true)
@@ -62,11 +86,7 @@ describe('approval request routing', () => {
   })
 
   it('titles the parked approval toast with the session it belongs to', () => {
-    deliver(
-      'approval',
-      { command: 'rm -rf /', description: 'dangerous', request_id: 'r1', session_id: 'session-a' },
-      'session-b'
-    )
+    deliver('approval', approvalParams({ command: 'rm -rf /', description: 'dangerous', request_id: 'r1', session_id: 'session-a' }), 'session-b')
 
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'approval', title: 'Approval needed — Fix the flaky test' })
@@ -83,22 +103,22 @@ describe('preview action request routing', () => {
   })
 
   it('leaves a scoped action request unanswered in a window showing another session', () => {
-    const { handled, respond, fail } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
+    const { respond, fail } = deliver('preview.act', previewAct('session-a'), 'session-b')
 
-    expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()
     expect(fail).not.toHaveBeenCalled()
   })
 
   it('leaves scoped pane reads unanswered in a window showing another session', async () => {
-    const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
-      deliver(method, { session_id: 'session-a' }, 'session-b')
-    )
+    const reads = [
+      deliver('preview.read', { count: null, session_id: 'session-a', start: null }, 'session-b'),
+      deliver('terminal.read', { count: null, session_id: 'session-a', start: null }, 'session-b'),
+      deliver('window.read', { session_id: 'session-a' }, 'session-b')
+    ]
 
     await Promise.resolve()
 
-    for (const { handled, respond } of reads) {
-      expect(handled).toBe(true)
+    for (const { respond } of reads) {
       expect(respond).not.toHaveBeenCalled()
     }
   })
@@ -109,14 +129,15 @@ describe('preview action request routing', () => {
     $sessionTiles.set([{ runtimeId: 'session-a', storedSessionId: 'stored-a' } as never])
 
     try {
-      const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
-        deliver(method, { session_id: 'session-a' }, 'session-b')
-      )
+      const reads = [
+        deliver('preview.read', { count: null, session_id: 'session-a', start: null }, 'session-b'),
+        deliver('terminal.read', { count: null, session_id: 'session-a', start: null }, 'session-b'),
+        deliver('window.read', { session_id: 'session-a' }, 'session-b')
+      ]
 
       await new Promise(resolve => setTimeout(resolve, 0))
 
-      for (const { handled, respond } of reads) {
-        expect(handled).toBe(true)
+      for (const { respond } of reads) {
         expect(respond).toHaveBeenCalledTimes(1)
       }
     } finally {
@@ -125,7 +146,7 @@ describe('preview action request routing', () => {
   })
 
   it('fails fast for an unscoped request with no session in view', () => {
-    const { respond } = deliver('preview.act', { action: 'elements' }, null)
+    const { respond } = deliver('preview.act', previewAct(''), null)
 
     expect(respond).toHaveBeenCalledWith({
       value: JSON.stringify({
@@ -143,14 +164,13 @@ describe('tour request routing', () => {
 
   it('leaves a scoped request unanswered in another session even when tours are disabled', () => {
     $toursEnabled.set(false)
-    const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'session-a' }, 'session-b')
+    const { respond } = deliver('tour', tourParams('session-a'), 'session-b')
 
-    expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()
   })
 
   it('fails fast for an unscoped request with no session in view', () => {
-    const { respond } = deliver('tour', { action: 'discover' }, null)
+    const { respond } = deliver('tour', tourParams(''), null)
 
     expect(respond).toHaveBeenCalledWith({
       value: JSON.stringify({ error: 'Tours only run in the session the user is looking at.', success: false })

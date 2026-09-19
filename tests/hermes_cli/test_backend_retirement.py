@@ -6,11 +6,12 @@ from fastapi.testclient import TestClient
 def test_retirement_reserves_admission_until_cancel_or_permanent_commit(monkeypatch):
     from hermes_cli import web_server
     from tui_gateway import server
+    from tui_gateway.contracts.base import Result
     from hermes_cli import backend_retirement
 
     monkeypatch.setattr(backend_retirement, "retirement", backend_retirement.RetirementFence())
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", "retirement-test-token")
-    monkeypatch.setitem(server._methods, "test.retirement", lambda rid, params: server._ok(rid, {}))
+    monkeypatch.setitem(server._methods, "test.retirement", lambda rid, params: server._ok(rid, Result()))
     client = TestClient(web_server.app)
     headers = {"X-Hermes-Session-Token": "retirement-test-token"}
     rpc = {"id": "test", "method": "test.retirement", "params": {}}

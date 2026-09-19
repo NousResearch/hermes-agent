@@ -13,11 +13,13 @@ from tools.registry import registry, tool_error
 
 def apply_layout_tool(preset: str) -> str:
     """Ask the desktop GUI to apply layout preset ``preset``."""
+    from tui_gateway.contracts.events import LayoutApplyPayload  # lazy: contracts pkg is ~200ms cold
+
     name = (preset or "").strip()
     if not name:
         return tool_error("preset is required — a layout preset id, e.g. 'default' or 'focus'.")
     return desktop_ui.emit_or_error(
-        "layout.apply", {"preset": name}, f"Failed to apply layout '{name}': ",
+        "layout.apply", LayoutApplyPayload(preset=name), f"Failed to apply layout '{name}': ",
         "Layout apply is only available in the Hermes desktop app.", {"success": True, "preset": name},
     )
 

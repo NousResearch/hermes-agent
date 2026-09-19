@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
 _PROFILE_REJECTED = object()

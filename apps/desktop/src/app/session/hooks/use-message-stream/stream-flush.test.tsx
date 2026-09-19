@@ -1,6 +1,8 @@
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { messageDeltaPayload } from '@/test/contract'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -30,7 +32,7 @@ describe('stream delta delivery', () => {
     // Reach the frame-gated branch: it is only taken once the coalescing floor
     // has already elapsed since the previous flush. Send one delta, let it
     // flush, then idle past the floor so the NEXT delta schedules immediately.
-    act(() => stream.handleEvent({ payload: { text: 'first ' }, session_id: SID, type: 'message.delta' }))
+    act(() => stream.handleEvent({ payload: messageDeltaPayload({ text: 'first ' }), session_id: SID, type: 'message.delta' }))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
     })
@@ -38,7 +40,7 @@ describe('stream delta delivery', () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS * 2)
     })
 
-    act(() => stream.handleEvent({ payload: { text: 'and the rest' }, session_id: SID, type: 'message.delta' }))
+    act(() => stream.handleEvent({ payload: messageDeltaPayload({ text: 'and the rest' }), session_id: SID, type: 'message.delta' }))
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)

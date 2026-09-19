@@ -11,6 +11,8 @@ import { useMemo } from 'react'
 type KanbanMessages = {
   nav: string
   openBoard: string
+  /** Palette row that enters the board page scoped to the fleet board. */
+  openFleetBoard: string
   /** Command label — shows in the ⌘K palette AND as the keybind panel row,
    *  so it carries the "Kanban: " prefix the palette convention wants. */
   newTaskCommand: string
@@ -120,6 +122,11 @@ type KanbanMessages = {
   // drawer — meta + sections
   metaPriority: string
   metaTenant: string
+  /** Fleet node a card lives on — the sync adapter's current_node, carried in `tenant`. */
+  node: string
+  // drawer — the fleet sync adapter's lifted bookkeeping (see card-face.ts)
+  fleetSync: string
+  sync: { pending: string; conflict: string; error: string }
   metaCreatedBy: string
   metaCreated: string
   metaWorkerPid: string
@@ -219,6 +226,7 @@ type KanbanMessages = {
 export const en: KanbanMessages = {
   nav: 'Kanban',
   openBoard: 'Kanban: Open board',
+  openFleetBoard: 'Kanban: Open Fleet board',
   newTaskCommand: 'Kanban: New task',
   countTip: (running, ready) => `Kanban — ${running} running, ${ready} ready`,
   col: {
@@ -338,6 +346,9 @@ export const en: KanbanMessages = {
   someone: 'someone',
   metaPriority: 'Priority',
   metaTenant: 'Tenant',
+  node: 'Node',
+  fleetSync: 'Fleet sync',
+  sync: { pending: 'Sync pending', conflict: 'Sync conflict', error: 'Sync error' },
   metaCreatedBy: 'Created by',
   metaCreated: 'Created',
   metaWorkerPid: 'Worker pid',
@@ -433,6 +444,7 @@ export const en: KanbanMessages = {
 const ja: KanbanMessages = {
   nav: 'カンバン',
   openBoard: 'カンバン: ボードを開く',
+  openFleetBoard: 'カンバン: Fleet ボードを開く',
   newTaskCommand: 'カンバン: 新しいタスク',
   countTip: (running, ready) => `カンバン — 実行中 ${running}、待機 ${ready}`,
   col: {
@@ -551,6 +563,9 @@ const ja: KanbanMessages = {
   someone: '誰か',
   metaPriority: '優先度',
   metaTenant: 'テナント',
+  node: 'ノード',
+  fleetSync: 'フリート同期',
+  sync: { pending: '同期待ち', conflict: '同期の競合', error: '同期エラー' },
   metaCreatedBy: '作成者',
   metaCreated: '作成',
   metaWorkerPid: 'ワーカー PID',
@@ -646,6 +661,7 @@ const ja: KanbanMessages = {
 const zh: KanbanMessages = {
   nav: '看板',
   openBoard: '看板：打开面板',
+  openFleetBoard: '看板：打开 Fleet 面板',
   newTaskCommand: '看板：新建任务',
   countTip: (running, ready) => `看板 — 运行中 ${running}、就绪 ${ready}`,
   col: {
@@ -763,6 +779,9 @@ const zh: KanbanMessages = {
   someone: '某人',
   metaPriority: '优先级',
   metaTenant: '租户',
+  node: '节点',
+  fleetSync: '车队同步',
+  sync: { pending: '待同步', conflict: '同步冲突', error: '同步错误' },
   metaCreatedBy: '创建者',
   metaCreated: '创建于',
   metaWorkerPid: '工作单元 PID',
@@ -856,6 +875,7 @@ const zh: KanbanMessages = {
 const zhHant: KanbanMessages = {
   nav: '看板',
   openBoard: '看板：開啟面板',
+  openFleetBoard: '看板：開啟 Fleet 面板',
   newTaskCommand: '看板：新增任務',
   countTip: (running, ready) => `看板 — 執行中 ${running}、就緒 ${ready}`,
   col: {
@@ -973,6 +993,9 @@ const zhHant: KanbanMessages = {
   someone: '某人',
   metaPriority: '優先順序',
   metaTenant: '租戶',
+  node: '節點',
+  fleetSync: '車隊同步',
+  sync: { pending: '待同步', conflict: '同步衝突', error: '同步錯誤' },
   metaCreatedBy: '建立者',
   metaCreated: '建立於',
   metaWorkerPid: '工作單元 PID',

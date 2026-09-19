@@ -46,6 +46,7 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
+import { cardFace } from './card-face'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -562,6 +563,8 @@ export function TaskDrawer({
   })
 
   const task = detail?.task
+  // The readable card behind the fleet sync adapter's decoration (card-face.ts).
+  const face = task ? cardFace(task) : null
   const running = task?.status === 'running'
   const defaultAssignee = useDefaultAssignee()
 
@@ -688,6 +691,12 @@ export function TaskDrawer({
               {shortId(task.id)}
             </span>
           )}
+          {/* Sync outbox state lives HERE, not on the card face. */}
+          {face?.syncState && (
+            <Badge size="xs" variant={face.syncState === 'pending' ? 'muted' : 'destructive'}>
+              {k.sync[face.syncState]}
+            </Badge>
+          )}
           <div className="ml-auto flex items-center gap-0.5">
             {task && (
               <DropdownMenu>
@@ -712,7 +721,7 @@ export function TaskDrawer({
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => {
-                      void navigator.clipboard.writeText(task.title || task.id)
+                      void navigator.clipboard.writeText(face?.title || task.id)
                       host.notify({ kind: 'info', message: k.copiedTitle })
                     }}
                   >
@@ -743,7 +752,7 @@ export function TaskDrawer({
         </div>
         {task && (
           <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-            {task.title || task.id}
+            {face?.title || task.id}
           </h2>
         )}
       </header>
@@ -799,7 +808,21 @@ export function TaskDrawer({
               </Section>
             )}
 
-            <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
+            <DescriptionSection body={face?.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
+
+            {/* The sync adapter's lifted bookkeeping — off the card face, kept
+                here where an operator debugging a stuck sync looks for it. */}
+            {face && face.meta.length > 0 && (
+              <Section label={k.fleetSync}>
+                <ul className="flex flex-col gap-0.5 font-mono text-[0.6875rem] text-(--ui-text-tertiary)">
+                  {face.meta.map(line => (
+                    <li className="break-words whitespace-pre-wrap" key={line}>
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            )}
 
             <EstimateSection id={task.id} />
 

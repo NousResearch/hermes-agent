@@ -1,0 +1,8 @@
+{
+  "name": "github-pr-dashboard",
+  "label": "GitHub Pull Requests",
+  "description": "Account-wide pull requests dashboard — Created, Review requested, and Closed views backed by the gh CLI. Read-only.",
+  "icon": "git-pull-request",
+  "version": "1.0.1",
+  "api": "plugin_api.py"
+}

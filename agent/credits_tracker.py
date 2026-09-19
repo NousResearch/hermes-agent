@@ -6,6 +6,7 @@ strings are preserved verbatim (never re-parsed to float)."""
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
@@ -418,7 +419,12 @@ def seed_credits_at_session_start(agent) -> bool:
                     _hydrate_seed_state(agent, state)
             except Exception:
                 logger.debug("credits ▸ session-start seed (background) failed", exc_info=True)
-        threading.Thread(target=_bg_seed, name="credits-seed", daemon=True).start()
+        threading.Thread(
+            target=contextvars.copy_context().run,
+            args=(_bg_seed,),
+            name="credits-seed",
+            daemon=True,
+        ).start()
         return True
     except Exception:
         logger.debug("credits ▸ session-start seed failed (fail-open)", exc_info=True)  # innermost log: diagnosable dead seed

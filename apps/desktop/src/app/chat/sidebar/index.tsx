@@ -3,12 +3,12 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -140,6 +140,7 @@ import {
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  SESSION_IMPORT_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution
 } from '../../routes'
@@ -341,6 +342,8 @@ export function ChatSidebar({
   const { t } = useI18n()
   const s = t.sidebar
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
@@ -1629,6 +1632,12 @@ export function ChatSidebar({
                               }
                             }}
                           />
+                          {isNewSession && (
+                            <ContextMenuItem onSelect={() => navigate(SESSION_IMPORT_ROUTE)}>
+                              <Codicon name="cloud-download" size="0.875rem" />
+                              <span>{t.sessionImport.action}</span>
+                            </ContextMenuItem>
+                          )}
                         </ContextMenuContent>
                       </ContextMenu>
                     ) : (
@@ -1858,6 +1867,22 @@ export function ChatSidebar({
                             }
                           }}
                         />
+                        {sessionsMode === 'flat' && (
+                          <Tip label={t.sessionImport.action}>
+                            <Button
+                              aria-label={t.sessionImport.action}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+                                navigate(SESSION_IMPORT_ROUTE)
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="cloud-download" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        )}
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>

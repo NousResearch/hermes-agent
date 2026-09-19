@@ -28,7 +28,7 @@ import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 
-import { navigateToWorkspacePage, NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '../routes'
+import { navigateToWorkspacePage, NEW_CHAT_ROUTE, SESSION_IMPORT_ROUTE, SETTINGS_ROUTE } from '../routes'
 
 import {
   $contextMenu,
@@ -556,6 +556,12 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         key="shell-new-chat"
         label={t.commandCenter.nav.newChat.title}
         onSelect={() => navigateToWorkspacePage(navigate, NEW_CHAT_ROUTE)}
+      />,
+      <Item
+        icon="cloud-download"
+        key="shell-import-session"
+        label={t.sessionImport.action}
+        onSelect={() => navigate(SESSION_IMPORT_ROUTE)}
       />,
       canOpenNewWindow() ? (
         <Item

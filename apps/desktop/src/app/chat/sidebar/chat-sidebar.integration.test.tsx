@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
+import { setSidebarGrouping, setSidebarShowArchived } from '@/store/layout'
+import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
@@ -24,9 +26,14 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
+function LocationProbe() {
+  return <span data-testid="location">{useLocation().pathname}</span>
+}
+
 const renderSidebar = (pathname: string, currentView: AppView) =>
   render(
     <MemoryRouter initialEntries={[pathname]}>
+      <LocationProbe />
       <SidebarProvider>
         <ChatSidebar
           currentView={currentView}
@@ -88,6 +95,10 @@ describe('ChatSidebar navigation activity', () => {
       ])
     )
     noteActiveTreeGroup('workspace-group')
+    setSidebarGrouping('date')
+    setSidebarShowArchived(false)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
   })
 
   afterEach(() => {
@@ -98,6 +109,10 @@ describe('ChatSidebar navigation activity', () => {
     $removedSessionIds.set(new Set())
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
+    setSidebarGrouping('date')
+    setSidebarShowArchived(false)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
   })
 
   it('keeps navigation and session activity coherent with the focused pane', () => {
@@ -160,5 +175,68 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+
+  it('offers import only from the New session context menu', async () => {
+    renderSidebar('/', 'chat')
+
+    const newSession = screen.getByText('New session', { selector: '[data-tour="sidebar-nav-new-session"]' }).closest(
+      'button'
+    ) as HTMLElement
+
+    fireEvent.contextMenu(newSession)
+
+    const importItem = await screen.findByRole('menuitem', { name: 'Import session' })
+    expect(screen.getByRole('menuitem', { name: 'Open in split' })).toBeTruthy()
+
+    const menuItems = screen.getAllByRole('menuitem')
+    expect(menuItems.indexOf(screen.getByRole('menuitem', { name: 'Open in split' }))).toBeLessThan(
+      menuItems.indexOf(importItem)
+    )
+
+    importItem.focus()
+    fireEvent.keyDown(importItem, { key: 'Enter' })
+    expect(screen.getByTestId('location').textContent).toBe('/session-import')
+
+    cleanup()
+    renderSidebar('/', 'chat')
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Capabilities' }))
+    expect(screen.queryByRole('menuitem', { name: 'Import session' })).toBeNull()
+  })
+
+  it('offers import from the flat Sessions header only', () => {
+    renderSidebar('/', 'chat')
+
+    const header = screen.getByText('Sessions').closest('.group\\/section') as HTMLElement
+    const actions = header.children[1] as HTMLElement
+    expect(within(actions).getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual([
+      'New session',
+      'Import session',
+      'Filters'
+    ])
+
+    fireEvent.click(within(actions).getByRole('button', { name: 'Import session' }))
+    expect(screen.getByTestId('location').textContent).toBe('/session-import')
+
+    cleanup()
+    act(() => setSidebarShowArchived(true))
+    renderSidebar('/', 'chat')
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
+
+    cleanup()
+    act(() => {
+      setSidebarShowArchived(false)
+      setSidebarGrouping('project')
+    })
+    renderSidebar('/', 'chat')
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
+
+    cleanup()
+    act(() => {
+      $projectTree.set([{ id: 'p_voice', label: 'Voice Assistant', path: '/voice', repos: [], sessionCount: 0 }])
+      $projectScope.set('p_voice')
+    })
+    renderSidebar('/', 'chat')
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
   })
 })

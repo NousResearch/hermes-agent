@@ -156,14 +156,25 @@ class GuardedFetchMixin:
     """SSRF/policy-guarded GETs, routed through ``tools.skills_hub`` (test-patchable)."""
 
     @staticmethod
-    def _fetch_text(url: str) -> Optional[str]:
-        resp = hub()._guarded_http_get(url, timeout=20)
+    def _fetch_text(url: str, timeout: int = 20) -> Optional[str]:
+        resp = hub()._guarded_http_get(url, timeout=timeout)
         return resp.text if resp is not None and resp.status_code == 200 else None
 
     @staticmethod
-    def _fetch_bytes(url: str) -> Optional[bytes]:
-        resp = hub()._guarded_http_get(url, timeout=20)
+    def _fetch_bytes(url: str, timeout: int = 20) -> Optional[bytes]:
+        resp = hub()._guarded_http_get(url, timeout=timeout)
         return resp.content if resp is not None and resp.status_code == 200 else None
+
+    @staticmethod
+    def _fetch_json(url: str, timeout: int = 20) -> Optional[Any]:
+        """Guarded GET + JSON decode; None on block/non-200/transport/decode error."""
+        resp = hub()._guarded_http_get(url, timeout=timeout)
+        if resp is None or resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:  # JSONDecodeError subclasses ValueError
+            return None
 
 
 # --- SKILL.md frontmatter ---------------------------------------------------

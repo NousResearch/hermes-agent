@@ -61,6 +61,10 @@ export interface ComposerAtCompletionItem {
   meta?: string
   /** Icon slug understood by the completion popover; defaults to 'simple'. */
   icon?: string
+  /** Where this row's agent lives, for a surface that can send to it directly
+   *  (the back workspace asks the mentioned agent). The composer ignores it:
+   *  there the row is text the user is writing, not a destination. */
+  target?: { connectionId?: null | string; profile: string }
 }
 
 /** Payload of a `composer.atCompletions` data contribution — an extra source

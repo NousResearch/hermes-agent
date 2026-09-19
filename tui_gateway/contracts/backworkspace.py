@@ -10,6 +10,7 @@ from .registry import method
 class BackworkspacePage(Result):
     id: str
     content: str
+    path: str  # the page file on the backend host, for handing to an agent's file tools
 
 
 class BackworkspaceOpenResult(Result):
@@ -31,11 +32,12 @@ class BackworkspaceSaveParams(ProfileParams):
 
 class BackworkspaceSaveResult(Result):
     id: str
+    path: str
 
 
 method(
     "backworkspace.save",
     params=BackworkspaceSaveParams,
     result=BackworkspaceSaveResult,
-    doc="Write a back-workspace page (a new page when no id is given) and return its id.",
+    doc="Write a back-workspace page (a new page when no id is given); returns its id and file path.",
 )

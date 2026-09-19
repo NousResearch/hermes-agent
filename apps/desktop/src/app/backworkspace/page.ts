@@ -20,6 +20,8 @@ export interface BackworkspacePageState {
   route: BackworkspaceRoute
   status: BackworkspacePageStatus
   content: string
+  /** The page's file on the backend host, once it has one. */
+  path: null | string
   saveFailed: boolean
 }
 
@@ -76,7 +78,7 @@ export async function loadBackworkspacePage(route: BackworkspaceRoute): Promise<
   // Queue the outgoing owner's text before this page replaces it in memory.
   const pendingSaves = flushBackworkspacePage()
 
-  $backworkspacePage.set({ content: '', key, route, saveFailed: false, status: 'loading' })
+  $backworkspacePage.set({ content: '', key, path: null, route, saveFailed: false, status: 'loading' })
 
   try {
     // Read only after every save queued so far landed, so a quick A → B → A
@@ -102,7 +104,7 @@ export async function loadBackworkspacePage(route: BackworkspaceRoute): Promise<
       queuedContent.delete(key)
     }
 
-    patchPage(key, { content, saveFailed: unsaved !== undefined, status: 'ready' })
+    patchPage(key, { content, path: page?.path ?? null, saveFailed: unsaved !== undefined, status: 'ready' })
 
     if (unsaved !== undefined) {
       void flushBackworkspacePage()
@@ -116,15 +118,15 @@ export async function loadBackworkspacePage(route: BackworkspaceRoute): Promise<
 
 async function savePage(key: string, route: BackworkspaceRoute, content: string): Promise<void> {
   try {
-    const { id } = await request<BackworkspaceSaveResult>(route, 'backworkspace.save', {
+    const saved = await request<BackworkspaceSaveResult>(route, 'backworkspace.save', {
       content,
       id: pageIds.get(key)
     })
 
     // Saves run in queue order, so a success supersedes any earlier failure.
-    pageIds.set(key, id)
+    pageIds.set(key, saved.id)
     unsavedContent.delete(key)
-    patchPage(key, { saveFailed: false })
+    patchPage(key, { path: saved.path, saveFailed: false })
   } catch {
     // Forget what was queued so the next edit or flush sends this text again.
     queuedContent.delete(key)

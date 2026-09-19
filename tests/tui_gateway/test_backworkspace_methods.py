@@ -4,10 +4,13 @@ The Desktop's flip-side page. Contracts:
 - a page saved without an id gets a session-shaped id, and saving with that id rewrites the
   same file instead of starting another page;
 - a client-supplied id can never name a file outside ``<HERMES_HOME>/backworkspace``;
+- the ``path`` a result carries is the file that was written, so an agent can open it;
 - ``params.profile`` decides whose home a page lives in (launch -> worker -> launch).
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -29,16 +32,17 @@ def test_save_then_open_round_trips_one_page(tmp_path, monkeypatch):
     assert _result(_call("backworkspace.open", {})) == {"page": None}
 
     page_id = _result(_call("backworkspace.save", {"content": "first"}))["id"]
-    again = _result(_call("backworkspace.save", {"id": page_id, "content": "second"}))[
-        "id"
-    ]
+    again = _result(_call("backworkspace.save", {"id": page_id, "content": "second"}))
 
     assert SESSION_ID_PATTERN.match(page_id)
-    assert again == page_id
+    assert again["id"] == page_id
     assert [p.name for p in (tmp_path / "backworkspace").iterdir()] == [f"{page_id}.md"]
+    assert again["path"] == str(tmp_path / "backworkspace" / f"{page_id}.md")
+    assert Path(again["path"]).read_text(encoding="utf-8") == "second"
     assert _result(_call("backworkspace.open", {}))["page"] == {
         "id": page_id,
         "content": "second",
+        "path": again["path"],
     }
 
 

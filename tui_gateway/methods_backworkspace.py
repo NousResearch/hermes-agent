@@ -3,9 +3,12 @@
 The Desktop's titlebar flips the window over to a blank page; its text is stored by
 ``tui_gateway/backworkspace.py``. Contracts:
 
-- ``backworkspace.open`` → ``{page: {id, content} | null}``, the most recent page.
+- ``backworkspace.open`` → ``{page: {id, content, path} | null}``, the most recent page.
 - ``backworkspace.save`` → writes ``content`` to page ``id`` (a new page when ``id`` is
-  omitted) and returns ``{id}``. The client keeps the returned id for later saves.
+  omitted) and returns ``{id, path}``. The client keeps the returned id for later saves.
+
+``path`` is the page's file on the backend host: the client can hand it to an agent, which
+reads the page with its own file tools instead of the text travelling back over the wire.
 
 Every handler honours ``params.profile``: the requested profile's HERMES_HOME is bound around
 the body, so each profile keeps its own pages.
@@ -39,14 +42,15 @@ def _(rid, params: dict) -> dict:
 @method("backworkspace.save")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Write ``content`` to page ``id`` (a new page when omitted). Result: ``{id}``."""
-    from tui_gateway.backworkspace import save_page
+    """Write ``content`` to page ``id`` (a new page when omitted). Result: ``{id, path}``."""
+    from tui_gateway.backworkspace import page_path, save_page
 
     content = params.get("content")
     if not isinstance(content, str):
         return _err(rid, 5097, "content must be a string")
     try:
-        return _ok(rid, {"id": save_page(str(params.get("id") or "") or None, content)})
+        page_id = save_page(str(params.get("id") or "") or None, content)
+        return _ok(rid, {"id": page_id, "path": str(page_path(page_id))})
     except Exception as e:
         return _err(rid, 5097, str(e))
 

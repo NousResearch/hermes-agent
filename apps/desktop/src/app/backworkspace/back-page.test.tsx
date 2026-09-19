@@ -10,11 +10,13 @@ import { BackworkspacePage } from './back-page'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
 
 const request = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const askAgent = vi.fn<(...args: unknown[]) => Promise<string>>()
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestGatewayForAgent: (...args: unknown[]) => request(...args)
 }))
+vi.mock('./ask', () => ({ askBackworkspace: (...args: unknown[]) => askAgent(...args) }))
 vi.mock('./store', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   toggleBackworkspace: vi.fn()
@@ -34,6 +36,7 @@ afterEach(() => {
   cleanup()
   $backworkspaceOpen.set(false)
   request.mockReset()
+  askAgent.mockReset()
   vi.mocked(toggleBackworkspace).mockClear()
 })
 
@@ -92,6 +95,29 @@ describe('BackworkspacePage', () => {
     fireEvent.keyDown(view.contentDOM, { key: 'Enter' })
     expect(view.state.doc.toString()).toBe('@hermes ')
     expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
+  it('sends the paragraph with the mod-enter chord and writes the reply under it', async () => {
+    request.mockResolvedValue({
+      page: { content: '@asking what is this?', id: '20260920_101010_abcdef', path: '/p.md' }
+    })
+    askAgent.mockResolvedValue('a short answer')
+    $activeGatewayProfile.set('asking')
+
+    renderPage()
+
+    const host = await screen.findByLabelText('Back workspace', { selector: '.cm-content' })
+    const view = EditorView.findFromDOM(host as HTMLElement)!
+    // CodeMirror resolves `Mod` per platform, exactly as it will at runtime.
+    const mod = /Mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+
+    fireEvent.keyDown(view.contentDOM, { key: 'Enter', ...mod })
+
+    await vi.waitFor(() => expect(askAgent).toHaveBeenCalledTimes(1))
+    expect(askAgent.mock.calls[0][1]).toBe('@asking what is this?')
+    await vi.waitFor(() => expect(view.state.doc.toString()).toContain('> asking · '))
+    // The chord must not also leave CodeMirror's own blank line behind.
+    expect(view.state.doc.toString().startsWith('@asking what is this?\n\n>')).toBe(true)
   })
 
   it('opens the stored page in the editor, ready to type', async () => {

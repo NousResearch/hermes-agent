@@ -70,6 +70,42 @@ function mentionItems(
   return rows.slice(0, 8)
 }
 
+/**
+ * The backend that answers `handle`: the window's own profile for `@hermes`,
+ * otherwise the route the completion row carries. A row without one (an older
+ * source) is not reachable from here, and the page says so rather than sending
+ * the question somewhere arbitrary.
+ */
+export function resolveMentionRoute(
+  sources: readonly { data?: unknown }[],
+  handle: string,
+  self: { connectionId: null | string; profile: string }
+): { connectionId: null | string; profile: string } | null {
+  if (handle === `@${selfMentionHandle(self.profile)}`) {
+    return self
+  }
+
+  for (const contribution of sources) {
+    const source = contribution.data as ComposerAtCompletionSource | undefined
+
+    if (typeof source?.provide !== 'function') {
+      continue
+    }
+
+    try {
+      for (const item of source.provide(handle.slice(1)) || []) {
+        if (item.insert === handle && item.target) {
+          return { connectionId: item.target.connectionId ?? null, profile: item.target.profile }
+        }
+      }
+    } catch {
+      // A broken source cannot answer; the next one might.
+    }
+  }
+
+  return null
+}
+
 /** Where the caret sits, for placing the list. A position that has no
  *  rectangle — not laid out yet, or a test environment without layout — falls
  *  back to the editor's own box, so the list still opens on the page. */

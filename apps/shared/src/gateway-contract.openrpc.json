@@ -98,7 +98,7 @@
     },
     {
       "name": "backworkspace.save",
-      "summary": "Write a back-workspace page (a new page when no id is given) and return its id.",
+      "summary": "Write a back-workspace page (a new page when no id is given); returns its id and file path.",
       "params": [
         {
           "name": "params",
@@ -4810,11 +4810,16 @@
           "content": {
             "title": "Content",
             "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "content"
+          "content",
+          "path"
         ],
         "title": "BackworkspacePage",
         "type": "object"
@@ -4868,10 +4873,15 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
           }
         },
         "required": [
-          "id"
+          "id",
+          "path"
         ],
         "title": "BackworkspaceSaveResult",
         "type": "object"

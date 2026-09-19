@@ -15,7 +15,9 @@ import {
   flushBackworkspacePage,
   loadBackworkspacePage
 } from './page'
+import { quoteDecorationPlugin, quoteTheme } from './quote-decorations'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
+import { useAskAgent } from './use-ask-agent'
 import { useMentionPopup } from './use-mention-popup'
 
 // The notice sits under the same centered column the editor paints (see editor.tsx).
@@ -48,7 +50,8 @@ function BackworkspaceSheet() {
   const sheetRef = useRef<HTMLElement>(null)
   const ready = page?.status === 'ready'
   const mention = useMentionPopup()
-  const notice = noticeFor(page, t.backworkspace)
+  const ask = useAskAgent(page?.path ?? null)
+  const notice = ask.notice ?? noticeFor(page, t.backworkspace)
 
   // While this is mounted styles.css hides the shell. Tying the attribute to
   // this component's life means anything that unmounts it — turning back, or
@@ -103,7 +106,7 @@ function BackworkspaceSheet() {
         <BackworkspaceEditor
           ariaLabel={t.backworkspace.label}
           autoFocus
-          extensions={mention.extension}
+          extensions={[mention.extension, ask.extension, quoteDecorationPlugin, quoteTheme]}
           initialValue={page.content}
           key={page.key}
           onChange={editBackworkspacePage}

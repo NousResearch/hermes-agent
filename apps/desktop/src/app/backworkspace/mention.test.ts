@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { mentionInsertion, mentionTokenAt } from './mention'
+import { firstMentionIn, mentionInsertion, mentionTokenAt, paragraphAt } from './mention'
 
 describe('mentionTokenAt', () => {
   it('reads the mention being typed at the caret', () => {
@@ -33,5 +33,20 @@ describe('mentionInsertion', () => {
       changes: { from: 4, insert: '@hermes ', to: 8 },
       selection: { anchor: 12 }
     })
+  })
+})
+
+describe('paragraphAt and firstMentionIn', () => {
+  const doc = 'a first note\n\n@hermes what is this?\nsecond line of the question\n\ntrailing note'
+
+  it('takes the block around the caret, not the whole page', () => {
+    expect(paragraphAt(doc, doc.indexOf('second line')).text).toBe('@hermes what is this?\nsecond line of the question')
+    expect(paragraphAt(doc, 0).text).toBe('a first note')
+  })
+
+  it('reads the mention a question is addressed to', () => {
+    expect(firstMentionIn('@hermes what is this?')).toBe('@hermes')
+    expect(firstMentionIn('ask the @research-bot about it')).toBe('@research-bot')
+    expect(firstMentionIn('nobody is mentioned here')).toBeNull()
   })
 })

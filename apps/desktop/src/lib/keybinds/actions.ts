@@ -213,7 +213,9 @@ export interface KeybindContribution {
 // React consumers pass their `useContributions(KEYBINDS_AREA)` snapshot in:
 // with React Compiler enabled, an independently-called `contributedKeybinds()`
 // can stay memoized across a late registration the subscription DID deliver.
-export function contributedKeybinds(contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)): KeybindContribution[] {
+export function contributedKeybinds(
+  contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)
+): KeybindContribution[] {
   return contributions
     .map(c => c.data as KeybindContribution)
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))
@@ -262,6 +264,10 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
   { id: 'composer.steer', category: 'composer', keys: ['enter'] },
   { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
+  // The back workspace's own surface keys: they belong to the page's editor,
+  // like the composer's, and are listed so the panel can teach them.
+  { id: 'backworkspace.ask', category: 'view', keys: ['mod+enter'] },
+  { id: 'backworkspace.mention', category: 'view', keys: ['@'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },

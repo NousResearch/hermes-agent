@@ -265,6 +265,9 @@ export const ar = defineLocale({
   },
 
   backworkspace: {
+    askPending: name => `${name} يجيب الآن…`,
+    askFailed: name => `${name} لم يستطع الإجابة. الصفحة لم تتغيّر.`,
+    askUnreachable: name => `${name} غير متاح من هذه النافذة.`,
     mentionSelf: 'وكيل · هذا الملف',
     label: 'مساحة العمل الخلفية',
     unsupported: 'لا تستطيع واجهة Hermes الخلفية هذه حفظ مساحة العمل الخلفية بعد. حدّث Hermes لاستخدامها.',
@@ -333,6 +336,8 @@ export const ar = defineLocale({
       'view.terminalPaste': 'لصق في الطرفية',
       'view.closePreviewTab': 'إغلاق علامة تبويب المعاينة',
       'view.flipPanes': 'تبديل جانبي الشريط الجانبي',
+      'backworkspace.ask': 'اسأل الوكيل المذكور (مساحة العمل الخلفية)',
+      'backworkspace.mention': 'اذكر وكيلاً (مساحة العمل الخلفية)',
       'view.toggleBackworkspace': 'اقلب النافذة إلى مساحة العمل الخلفية',
       'appearance.toggleMode': 'تبديل الفاتح / الداكن',
       'profile.default': 'الانتقال إلى الملف الشخصي الافتراضي',
@@ -725,7 +730,8 @@ export const ar = defineLocale({
     },
     fieldLabels: {
       model: 'النموذج الافتراضي',
-      modelContextLength: 'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
+      modelContextLength:
+        'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
       fallbackProviders: 'النماذج الاحتياطية',
       toolsets: 'مجموعات الأدوات المفعلة',
       timezone: 'المنطقة الزمنية',
@@ -840,7 +846,8 @@ export const ar = defineLocale({
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
-      'auxiliary.compression.timeout': 'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
+      'auxiliary.compression.timeout':
+        'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
@@ -3186,7 +3193,8 @@ export const ar = defineLocale({
     sudoSendFailed: 'فشل إرسال كلمة مرور sudo',
     secretSendFailed: 'فشل إرسال السر',
     sudoTitle: 'مطلوب sudo',
-    sudoDesc: 'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
+    sudoDesc:
+      'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
     sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',

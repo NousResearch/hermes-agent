@@ -33,3 +33,26 @@ export function mentionInsertion(token: MentionToken, insert: string) {
     selection: { anchor: token.from + text.length }
   }
 }
+
+export interface Paragraph {
+  from: number
+  text: string
+  to: number
+}
+
+/** The block of text around `pos`, bounded by blank lines — what a question is. */
+export function paragraphAt(doc: string, pos: number): Paragraph {
+  const before = doc.lastIndexOf('\n\n', Math.max(0, pos - 1))
+  const after = doc.indexOf('\n\n', pos)
+  const from = before === -1 ? 0 : before + 2
+  const to = after === -1 ? doc.length : after
+
+  return { from, text: doc.slice(from, to).trim(), to }
+}
+
+const MENTION_IN_TEXT = /(?:^|\s)(@[\p{L}\p{N}._-]+)/u
+
+/** The first `@name` in `text`, or null when it mentions nobody. */
+export function firstMentionIn(text: string): null | string {
+  return MENTION_IN_TEXT.exec(text)?.[1] ?? null
+}

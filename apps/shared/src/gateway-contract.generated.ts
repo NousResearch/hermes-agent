@@ -13,6 +13,7 @@ export interface BackworkspaceOpenResult {
 export interface BackworkspacePage {
   id: string
   content: string
+  path: string
 }
 export interface BackworkspaceSaveParams {
   profile?: string | null
@@ -21,6 +22,7 @@ export interface BackworkspaceSaveParams {
 }
 export interface BackworkspaceSaveResult {
   id: string
+  path: string
 }
 /** ``_serialize_usage_model`` — also embedded as ``usage`` in the billing / subscription states, where the fail-open form is a bare ``{available: false}`` (no ``ok``). */
 export interface UsageModel {
@@ -4217,7 +4219,7 @@ export interface RpcMethods {
   'approval.respond': { params: ApprovalRespondParams; result: ApprovalRespondResult }
   /** The most recent back-workspace page, or null before the first save. */
   'backworkspace.open': { params: ProfileParams; result: BackworkspaceOpenResult }
-  /** Write a back-workspace page (a new page when no id is given) and return its id. */
+  /** Write a back-workspace page (a new page when no id is given); returns its id and file path. */
   'backworkspace.save': { params: BackworkspaceSaveParams; result: BackworkspaceSaveResult }
   /** Enable/disable auto top-up with its threshold and reload amount (billing:manage). */
   'billing.auto_reload': { params: BillingAutoReloadParams; result: BillingMutationResult }

@@ -792,9 +792,10 @@ def _handle_heartbeat(args: dict, **kw) -> str:
 def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
     _reject_delegated_child_mutation("kanban_comment")
-    tid = args.get("task_id")
-    _check(tid, "task_id is required (use the current task id if that's what "
-                "you mean — pulls from env but kept explicit here)")
+    # Default resolution only — NOT _worker_guard: cross-task comments are the
+    # handoff channel between tasks (#19713), so no own-task ownership gate here.
+    tid = _default_task_id(args.get("task_id"))
+    _check(tid, "task_id is required (or set HERMES_KANBAN_TASK in the env)")
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity, never caller args: comments are
     # injected into future workers' system prompts, so an args["author"] override could

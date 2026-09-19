@@ -299,12 +299,13 @@ KANBAN_COMMENT_SCHEMA = _schema(
     ),
     {
         "task_id": _prop("string", (
-                "Task id. Required (may be your own task or "
-                "another's — comment threads are per-task)."
+                "Task id. Optional — defaults to HERMES_KANBAN_TASK (this "
+                "worker's own task); required for cross-task comments — "
+                "comment threads are per-task."
         )),
         "body": _prop("string", "Markdown-supported comment body."),
     },
-    ["task_id", "body"],
+    ["body"],
 )
 
 KANBAN_ATTACH_SCHEMA = _schema(

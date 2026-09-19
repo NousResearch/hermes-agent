@@ -460,6 +460,52 @@ def test_comment_ignores_caller_supplied_author(worker_env):
         conn.close()
 
 
+def test_comment_defaults_to_env_task_id(worker_env):
+    """kanban_comment without task_id falls back to HERMES_KANBAN_TASK —
+    the documented default every other lifecycle tool already honors
+    (_require_task_id). Regression: _handle_comment read args["task_id"]
+    raw and errored despite the schema promising the env fallback."""
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({"body": "implicit task id"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["task_id"] == worker_env
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        comments = kb.list_comments(conn, worker_env)
+        assert [c.body for c in comments] == ["implicit task id"]
+    finally:
+        conn.close()
+
+
+def test_comment_missing_task_id_without_env_fails(worker_env, monkeypatch):
+    """With the env var gone, omitting task_id is a clean tool error —
+    same message as _require_task_id."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({"body": "no target"})
+    assert "task_id is required" in out
+    assert "error" in out
+
+
+def test_comment_implicit_default_refused_for_delegated_child(worker_env, monkeypatch):
+    """A delegate_task child shares the parent's HERMES_KANBAN_TASK env. Two
+    fail-closed layers: the mutation reject fires first (child is never a run
+    owner), and beneath it _default_task_id refuses to resolve the implicit
+    default so an explicit cross-task comment is the only path."""
+    from agent.delegation_context import delegated_child_context
+    from tools import kanban_tools as kt
+    with delegated_child_context():
+        out = kt._handle_comment({"body": "child must not implicitly own this"})
+        # The default resolver itself must return None for a child even if a
+        # future handler reorder reaches task-id resolution first.
+        assert kt._default_task_id(None) is None
+    assert "delegate_task child agents are not Kanban run owners" in out
+    assert "error" in out
+
+
 def test_create_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({

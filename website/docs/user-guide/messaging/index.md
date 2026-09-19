@@ -600,6 +600,10 @@ journalctl -u hermes-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
+:::note No user bus in this session? The gateway still starts
+On a host where `systemctl --user` cannot reach your user instance (a bare SSH session without linger, `loginctl enable-linger` denied by polkit), `hermes gateway start` and `hermes setup` write the unit but start the gateway as a **detached background process** instead of aborting. `hermes gateway status` reports it as a detached fallback: it runs, but it will not auto-start at login or restart on crash until user systemd is reachable — run `sudo loginctl enable-linger $USER` and then `hermes gateway start` to hand it back to systemd. `hermes gateway stop` stops the detached process normally.
+:::
+
 :::danger Don't add a custom `ExecStopPost` kill drop-in
 The unit Hermes installs already shuts the gateway down cleanly with `KillMode=mixed` + `KillSignal=SIGTERM`, and uses `Restart=always` with `RestartForceExitStatus` so updates and `/restart` respawn correctly. Do **not** add a systemd drop-in such as `ExecStopPost=/bin/kill -9 $MAINPID` — `ExecStopPost` fires on *every* stop, including clean restarts, so it `SIGKILL`s the freshly spawned instance before it stabilizes and `Restart=always` immediately respawns it. The result is an infinite restart loop (and, on Telegram, a flood of restart messages). If you've added such a drop-in, remove it: `systemctl --user edit hermes-gateway` (or `sudo systemctl edit hermes-gateway` for a system service) and delete the `ExecStopPost` line, then `systemctl --user daemon-reload`.
 :::

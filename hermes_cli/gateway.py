@@ -1492,9 +1492,11 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         return
     print()
     pids_line = f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}"
-    # Managed detached fallback (launchd exit-5 path) vs. a genuinely manual run.
-    if _launchd_unsupported_marker_exists():
-        print("⚠ Gateway is running as a detached fallback process — launchd cannot supervise it")
+    # Managed detached fallback (launchd exit-5 path / user-systemd-unreachable path) vs. a manual run.
+    from hermes_cli import gateway_systemd_fallback as _fallback
+    if _launchd_unsupported_marker_exists() or _fallback.marker_exists():
+        who = "launchd" if _launchd_unsupported_marker_exists() else "user systemd"
+        print(f"⚠ Gateway is running as a detached fallback process — {who} cannot supervise it")
         print(pids_line)
         print("  Auto-start at login and auto-restart on crash are NOT available.")
         print("  Stop it with: hermes gateway stop")
@@ -3378,6 +3380,18 @@ def systemd_install(
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     unit_path.write_text(new_unit, encoding="utf-8")
 
+    if not system:
+        try:
+            _preflight_user_systemd()  # tries enable-linger first; a user bus may appear
+        except UserSystemdUnavailableError as exc:
+            # daemon-reload/enable would die with "Failed to connect to bus" and abort setup. The unit is
+            # on disk (systemd picks it up once the user instance exists) and systemd_start() degrades to a
+            # detached process meanwhile.
+            print_warning(f"  User systemd is not reachable in this session ({str(exc).splitlines()[0].strip()})")
+            print_info(f"  Unit written to {unit_path} but not enabled yet. Enable later:")
+            print_info(f"    systemctl --user daemon-reload && systemctl --user enable {get_service_name()}")
+            return
+
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     if enable_on_startup:
         _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
@@ -3462,10 +3476,21 @@ def _require_service_installed(action: str, system: bool = False) -> None:
 
 
 def systemd_start(system: bool = False):
-    system = _systemd_scope_preamble("start", system, preflight_user=True)
+    from hermes_cli import gateway_systemd_fallback as _fallback
+    try:
+        system = _systemd_scope_preamble("start", system, preflight_user=True)
+    except UserSystemdUnavailableError as exc:
+        # Same policy as launchd on macOS 26+ (_launchd_degrade_or_raise): a host whose service
+        # manager cannot supervise us still gets a running gateway, honestly labelled. Only when a
+        # user unit exists — "not installed" keeps its own message.
+        if not get_systemd_unit_path(system=False).exists():
+            raise
+        _fallback.fallback_to_detached(str(exc).splitlines()[0].strip(), exit_on_failure=False)
+        return
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; the unit is guaranteed to exist here.
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
+    _fallback.clear_marker()
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 
 
@@ -3623,8 +3648,15 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     if result.stdout.strip() == "active":
         print(f"✓ {scope_label} gateway service is running")
     else:
-        print(f"✗ {scope_label} gateway service is stopped")
-        print(f"  Run: {sudo}hermes gateway start{scope_flag}")
+        from hermes_cli import gateway_systemd_fallback as _fallback
+        from gateway.status import get_running_pid
+        if not system and _fallback.marker_exists() and (pid := get_running_pid(cleanup_stale=False)):
+            print(f"⚠ {scope_label} gateway service is stopped, but a detached fallback gateway is running (PID {pid})")
+            print("  User systemd was unreachable when it started; auto-start at login and crash restart are NOT available.")
+            print(f"  Fix for a supervised service:  sudo loginctl enable-linger $USER  # then: {sudo}hermes gateway start{scope_flag}")
+        else:
+            print(f"✗ {scope_label} gateway service is stopped")
+            print(f"  Run: {sudo}hermes gateway start{scope_flag}")
 
     configured_user = _read_systemd_user_from_unit(unit_path) if system else None
     if configured_user:

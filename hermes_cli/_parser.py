@@ -123,6 +123,7 @@ Examples:
 
 For more help on a command:
     hermes <command> --help
+    hermes commands               Every command and subcommand as one tree (--json for tooling)
 """
 
 
@@ -317,7 +318,7 @@ class HermesArgumentParser(argparse.ArgumentParser):
             close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
             if close:
                 lines.append(f"Did you mean: {', '.join(close)}?")
-            lines.append(f"Run `{self.prog} --help` to see all commands.")
+            lines.append(f"Run `{self.prog} --help` to see all commands (or `hermes commands` for the full tree).")
             self.exit(2, "\n".join(lines) + "\n")
         super()._check_value(action, value)
 

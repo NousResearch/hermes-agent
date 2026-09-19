@@ -810,6 +810,11 @@ DEFAULT_CONFIG = {
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
+        # Platform status DIAGNOSTICS (the platform's own route/health, e.g. a model-route fallback
+        # notice) on chat surfaces: true (default) delivers them; false keeps them in the agent log
+        # only — for a client-facing profile whose channel must carry the client's answers, not the
+        # platform's setup state. Per-platform via display.platforms.<platform>.status_diagnostics.
+        "status_diagnostics": True,
         "streaming": False,
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"

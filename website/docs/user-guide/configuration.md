@@ -2070,6 +2070,33 @@ display:
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
+  status_diagnostics: true  # Gateway: deliver the platform's own route/health statuses (e.g. a model-route
+                            # fallback notice) to chat surfaces. false keeps them in the agent log only —
+                            # for a client-facing profile whose channel must carry answers, not platform state.
+                            # Per-platform via display.platforms.<platform>.status_diagnostics.
+```
+
+### Platform status diagnostics on chat surfaces
+
+`display.status_diagnostics` (default `true`) controls whether the platform's **own route/health
+statuses** reach chat surfaces. Today that means the model-route fallback notice — the line
+`⚠️ Model fallback: <model> via <provider> unavailable (<reason>); using <model2> via <provider2>.`
+that the agent emits when the primary route fails and a fallback takes over.
+
+Set it to `false` on a profile whose chat surface belongs to someone other than the operator
+(a client-facing deployment): the surface then carries only answers and user-facing lifecycle
+messages, while the fallback notice remains in the agent log (`agent.log`) for the operator, and
+programmatic surfaces (`local`, `api_server`, `webhook`) keep receiving raw status text either way.
+The suppression is logged by the gateway status callback, so "why did nothing appear in chat" is
+answerable from the logs. Unlike `compression.progress_notices`, this switch defaults to **on** —
+the current behaviour is unchanged; only a deployment that opts out narrows what chat receives.
+
+```yaml
+display:
+  status_diagnostics: false        # e.g. a client-facing profile
+  platforms:
+    discord:
+      status_diagnostics: true     # …while this surface keeps the platform's diagnostics
 ```
 
 ### Per-turn summary and spinner token flow

@@ -98,6 +98,20 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL)
 
+# Platform status DIAGNOSTICS: the platform describing its own route/health rather than answering the
+# user's request. Delivered to chat surfaces by default; a client-facing profile turns delivery OFF
+# with `display.status_diagnostics` (the line still reaches the agent log, see run_turn_runner).
+# Membership today is the model-route fallback notice — the one status the firm's channel was
+# measured receiving (27/100 messages, REQ-INS1-SAAS-034); a new platform-diagnostic status is
+# added here so the switch keeps meaning "no platform diagnostics on this surface".
+_GATEWAY_STATUS_DIAGNOSTIC_RE = re.compile(
+    r"("
+    # agent/chat_completion_helpers.py::_buffer_fallback_notice — "⚠️ Model fallback: <m> via <p>
+    # unavailable (<reason>); using <m2> via <p2>."
+    r"model\s+fallback\s*:"
+    r")",
+    re.IGNORECASE | re.DOTALL)
+
 _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 # Ceiling on an escalated cooldown (cf. _RECONNECT_BACKOFF_CAP): base × ladder can reach 9h ≈ "compaction off".
 _HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
@@ -351,6 +365,29 @@ def _gateway_compression_progress_notices_enabled() -> bool:
     except Exception:
         pass
     return False
+
+
+def _gateway_status_diagnostics_enabled(platform: Any = None) -> bool:
+    """False only when the operator turned platform status diagnostics off for this surface.
+
+    Default True: chat surfaces receive the platform's own route/health statuses (the model-route
+    fallback notice). ``display.status_diagnostics: false`` — or the per-platform
+    ``display.platforms.<platform>.status_diagnostics: false`` — is the deployment switch for a
+    client-facing profile whose channel must carry the client's answers, not the platform's
+    diagnostics. Read live from the gateway's raw YAML config; fail-open (delivered) on a read
+    error, matching the default.
+    """
+    try:
+        from gateway.display_config import resolve_display_setting
+
+        config = _load_gateway_config()
+        # Accept a Platform, its name, or one of the string platforms the status path is also
+        # exercised with; an unknown value falls through to the default below.
+        resolved = platform if isinstance(platform, Platform) else Platform(str(platform))
+        platform_key = _platform_config_key(resolved)
+        return bool(resolve_display_setting(config, platform_key, "status_diagnostics", fallback=True))
+    except Exception:
+        return True
 
 # Surfaces consuming gateway text programmatically must keep RAW status/error text; unknown/empty -> chat.
 _GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})
@@ -677,6 +714,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (
         _gateway_compression_progress_notices_enabled() and _COMPRESSION_PROGRESS_STATUS_RE.search(text)
     ):
+        return None
+    # `display.status_diagnostics: false` (client-facing profiles) drops the platform's own route/health
+    # statuses here — ahead of the provider-error rewrite, so a diagnostic can never be delivered under
+    # a sanitized shape instead. DELIVERY only: the status callback logs the suppression and the line
+    # still reaches the agent log (gateway/run_turn_runner.py::_status_callback_sync).
+    if _GATEWAY_STATUS_DIAGNOSTIC_RE.search(text) and not _gateway_status_diagnostics_enabled(platform):
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)

@@ -1786,6 +1786,18 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
+  # Platform status DIAGNOSTICS on chat surfaces (gateway).
+  # The platform's own route/health statuses — today the model-route fallback
+  # notice ("⚠️ Model fallback: <model> via <provider> unavailable (<reason>);
+  # using <model2> via <provider2>.") — are delivered to chat surfaces by
+  # default. Set false on a profile whose chat surface belongs to someone other
+  # than the operator (client-facing deployment): the surface then carries the
+  # answers and user-facing lifecycle messages only, while the notice stays in
+  # the agent log (~/.hermes/logs/agent.log) for the operator. Programmatic
+  # surfaces (local, api_server, webhook) keep receiving raw status text either
+  # way. Per-platform override: display.platforms.<platform>.status_diagnostics
+  status_diagnostics: true
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

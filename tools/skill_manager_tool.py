@@ -8,6 +8,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+from collections import Counter
 import hashlib
 import json
 from contextlib import ExitStack, suppress
@@ -48,7 +49,17 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
+def _critical_finding_counts(result) -> Counter:
+    """Count critical findings without line numbers for stable before/after comparison."""
+    return Counter(
+        (finding.pattern_id, finding.severity, finding.category,
+         finding.file, finding.match)
+        for finding in getattr(result, "findings", ())
+        if finding.severity == "critical"
+    )
+
+
+def _security_scan_skill(skill_dir: Path, *, baseline=None) -> Optional[str]:
     """Post-write scan (opt-in); error string if blocked, else None. An "ask" verdict
     (dangerous findings) is surfaced as an error so the agent can retry without them."""
     if not _guard_agent_created_enabled():
@@ -56,6 +67,15 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     try:
         result = scan_skill(skill_dir, source="agent-created")
         allowed, reason = should_allow_install(result)
+        if allowed is not True and baseline is not None:
+            new_critical = _critical_finding_counts(result) - _critical_finding_counts(baseline)
+            if not new_critical:
+                logger.info(
+                    "Agent-created skill kept existing dangerous findings but introduced none: %s",
+                    skill_dir,
+                )
+                return None
+            reason = f"new dangerous findings introduced; {reason}"
         if allowed is None:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
         if allowed is not True:
@@ -365,10 +385,16 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8")
+    baseline = None
+    if _guard_agent_created_enabled():
+        try:
+            baseline = scan_skill(skill_dir, source="agent-created")
+        except Exception as e:
+            logger.warning("Pre-write security scan failed for %s: %s", skill_dir, e, exc_info=True)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = _security_scan_skill(skill_dir, baseline=baseline)
     if not scan_error:
         return None
     if original is not None:

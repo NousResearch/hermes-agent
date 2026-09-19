@@ -332,6 +332,17 @@ class TestGeneratedSystemdUnits:
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
 
+    @pytest.mark.parametrize("system", [False, True])
+    def test_unit_marks_main_pid_before_systemd_sends_sigterm(self, system):
+        unit = gateway_cli.generate_systemd_unit(system=system)
+        marker_lines = [line for line in unit.splitlines() if line.startswith("ExecStop=")]
+        assert marker_lines == [
+            line for line in marker_lines if line.endswith(" -m gateway.planned_stop_marker $MAINPID")
+        ]
+        assert len(marker_lines) == 1
+        assert unit.index(marker_lines[0]) < unit.index("ExecStopPost=")
+        assert "SuccessExitStatus=1" not in unit
+
     def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
         self, monkeypatch
     ):

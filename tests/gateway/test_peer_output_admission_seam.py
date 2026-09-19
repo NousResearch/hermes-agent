@@ -19,11 +19,14 @@ async def admission(target, issued):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider_state', ['absent', 'unbound', 'foreign', 'unavailable', 'no_receipt', 'changed'])
+@pytest.mark.parametrize('provider_state', ['absent', 'unbound', 'foreign', 'unavailable', 'no_receipt',
+                                          'changed', 'read_only', 'ack_only'])
 async def test_signed_output_cannot_fall_through_to_text(target, monkeypatch, provider_state):
     from gateway import session_api_turn
+    rights = {'read_only': ('artifact.read',), 'ack_only': ('artifact.ack',)}.get(
+        provider_state, ('artifact.read', 'artifact.ack'))
     target.adapter._room_output_invitation_permissions = MethodType(
-        lambda self, **kwargs: ('artifact.read', 'artifact.ack'), target.adapter)
+        lambda self, **kwargs: rights, target.adapter)
     issued = await invite(target)
     calls = []
 

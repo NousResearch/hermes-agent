@@ -151,3 +151,15 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home, monkeypatch):
+    """Once a second profile has been served, ``get_secret`` fails closed for unscoped reads. The
+    launch profile's vault.* calls (Desktop sends no ``profile`` for it) must still bind the launch
+    secret scope — otherwise every enabled manager's token read raises UnscopedSecretError and the
+    Passwords & Logins panel shows "Could not load vault items" until the gateway restarts."""
+    from agent.secret_scope import set_multiplex_active
+
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
+    set_multiplex_active(True)  # conftest resets the latch per test
+    assert _sources_rows(home)["onepassword"]["enabled"] is True

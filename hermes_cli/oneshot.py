@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -511,7 +512,7 @@ def _run_agent(
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
     ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
     from hermes_cli.config import load_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import resolve_runtime_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -523,12 +524,19 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
-    runtime = resolve_runtime_provider(
+    # Resolution-time fallback (#81209): a quota-exhausted/expired primary raises AuthError here, before
+    # AIAgent (and its mid-session ``fallback_model`` wiring) exists, so walk the chain like the gateway.
+    runtime, fallback_entry = resolve_runtime_with_fallback(
+        cfg,
         requested=choice.provider,
         target_model=choice.model or None,
         explicit_base_url=choice.base_url,
         explicit_api_key=choice.api_key,
     )
+    if fallback_entry is not None:
+        # The chosen entry names the model that will be sent; the primary's stored api_mode no longer applies.
+        choice = dataclasses.replace(choice, model=fallback_entry["model"], provider=runtime.get("provider"),
+                                     api_mode=None)
     if choice.api_mode:
         runtime["api_mode"] = choice.api_mode
 

@@ -1,0 +1,18 @@
+name: tailgate
+repo: https://github.com/c0mrade/tailgate
+sha: 1d497b91e249a9fb870a822126204ca055dabdfe
+description: Per-job progress updates in chat for jobs Hermes hands off to other machines (coding agents,
+  CI, scripts), with per-job mute and follow and no model calls.
+maintainer: c0mrade
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/c0mrade/tailgate#readme
+version: "0.2.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+  - tailgate_job_id
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

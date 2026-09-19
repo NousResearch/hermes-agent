@@ -651,13 +651,37 @@ dangerous block names the critical findings that caused it (e.g.
 `1 critical of 42 findings (destructive_root_rm)`), so a single blocking
 line is not hidden behind the total.
 
-Top-level test trees (`tests/`, `test/`, `testing/`, `spec/`, `specs/`,
-`fixtures/` at the plugin root) are still scanned — a plugin's `__init__.py`
-can import from them, so they are runtime code — but a critical finding
-there is capped at **caution**: their fixtures deliberately hold hostile
-strings to prove the plugin rejects them, so it asks for confirmation and
-`--force` overrides it instead of blocking the install outright. The same
-finding in any other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
+Text that cannot run on the host at install time is scored as **context**, not
+as the plugin's behaviour, so it can lower a finding but never delete it —
+every finding stays in the report with file and line:
+
+- **Documentation prose** (`README.md`, `AGENTS.md`, `docs/**/*.md`, `.txt`,
+  `.rst`, `.html`) can never on its own produce **dangerous**: a command or
+  credential path quoted there (an uninstall step, a refusal list naming
+  `~/.ssh`) steps down one severity, and a README removing the plugin's
+  **own** install directory (`rm -rf "$HOME/.hermes/plugins/<name>"`) is a
+  note. Agent-facing shapes keep full severity — prompt injection, Markdown
+  exfil, agent-config edits, `curl … | sh` one-liners, an `authorized_keys`
+  append, a leaked provider key — and so does anything under a bundled
+  `skills/` tree or in `after-install.md`, which the agent reads as
+  instructions.
+- **Test trees and fixtures** (`tests/`, `test/`, `testing/`, `spec/`,
+  `specs/`, `fixtures/` at the plugin root; `__tests__/` and `__fixtures__/`
+  at any depth; `*.test.*`, `*.spec.*`, `test_*.py`, `*_test.*`) are still
+  scanned — a plugin's `__init__.py` can import from them — but a quoted-only
+  hostile string (`verdict_for("rm -rf /")`, a redaction corpus with a fake
+  `sk-…` key) is a note, and test code that would execute on import
+  (`os.system('rm -rf /')`) is capped at **caution**. The same finding in any
+  other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
+- **Whole-line comments and `CHANGELOG.md`** describe a defense; they score as
+  prose does.
+- **Base64 that decodes to a media header** (PNG/JPEG/GIF/WOFF/PDF … in a
+  data URI or JSON scenery) is informational; `base64 -d` piped into a text
+  filter (`grep`, `jq`) is a note, piped into a shell or interpreter it keeps
+  full severity; `sudo` / `env|` as an alternation member of a regex literal
+  (`/approval|sudo|secret/`, a redaction pattern) is a note, in a command
+  string (`subprocess.run("sudo …")`) it is not.
+
 Likewise, a generic sample token (`hardcoded_secret`) inside a runtime `.py`
 file's `if __name__ == "__main__":` self-test block is capped at **caution**
 — the loader imports plugins and never runs that block — while every other

@@ -201,3 +201,37 @@ class TestRequiresHermesSpec:
             "requires_hermes" in f and "does not parse" in f for f in report.failures
         ), report.failures
 
+
+class TestDesktopSurface:
+    """Catalog-listed desktop plugins must stay inside the SDK surface: the renderer loader gives
+    plugin.js full app authority, so prototype patching / app-chunk imports are refused at admission."""
+
+    def _desktop_plugin(self, tmp_path, js: str) -> Path:
+        d = tmp_path / "desk"
+        (d / "desktop").mkdir(parents=True)
+        (d / "plugin.yaml").write_text(yaml.safe_dump(dict(BASE_MANIFEST, name="desk")), encoding="utf-8")
+        (d / "desktop" / "plugin.js").write_text(js, encoding="utf-8")
+        return d
+
+    def test_sdk_only_plugin_passes(self, tmp_path):
+        d = self._desktop_plugin(tmp_path, (
+            "import { definePlugin } from '@hermes/plugin-sdk'\n"
+            "// Storage.prototype.setItem = noop  (comments are not code)\n"
+            "export default definePlugin({ id: 'desk', register(ctx) { ctx.storage.set('k', 1) } })\n"
+        ))
+        report = validate_plugin_dir(d)
+        assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
+
+    def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
+        d = self._desktop_plugin(tmp_path, (
+            "const raw = Storage.prototype.setItem\n"
+            "Storage.prototype.setItem = function (k, v) { return raw.call(this, k, v) }\n"
+            "const mod = await import(/* @vite-ignore */ new URL('./chunk.js', base).href)\n"
+            "const sdk = await import('@hermes/plugin-sdk')\n"
+        ))
+        report = validate_plugin_dir(d)
+        failed = {name: detail for name, ok, detail in report.checks if not ok}
+        assert "desktop surface" in failed
+        assert "prototype patching (desktop/plugin.js:2)" in failed["desktop surface"]
+        assert "dynamic import outside the SDK (desktop/plugin.js:3)" in failed["desktop surface"]
+        assert ":4)" not in failed["desktop surface"]

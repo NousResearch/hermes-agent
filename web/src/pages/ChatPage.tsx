@@ -1553,7 +1553,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
         }
-        forwardPtyData(data);
+        // A mobile IME can re-emit just-committed composition text through
+        // onData; only the part that is not an echo of that commit is real.
+        const unechoed = compositionForwarder.filterTerminalData(data);
+        if (unechoed) {
+          forwardPtyData(unechoed);
+        }
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {

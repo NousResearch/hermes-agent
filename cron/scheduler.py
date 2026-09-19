@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import subprocess
+import sqlite3
 import sys
 import threading
 import time
@@ -3098,7 +3099,7 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(job: dict, *, _handoff_attempt: int = 0) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3106,6 +3107,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ownership handoff: in a transient user scope, or — when no user D-Bus
     session exists and ``cron.require_restart_safe_scope`` is false — as a
     direct subprocess (process separation kept, cgroup isolation lost).
+
+    A worker that exits before acknowledging is retried ONCE on the same tick
+    when the ledger proves it never adopted (row still ``claimed`` with no
+    ``started_at`` — no side effect can have run); a worker that recorded a
+    terminal outcome is trusted even if its ack lost the race (the exit-0
+    family).  Retries are bounded: a second pre-adoption death propagates.
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3207,11 +3214,36 @@ def _launch_external_cron_worker(job: dict) -> bool:
     with _running_lock:
         _restart_safe_waiter_job_ids.add(job_id)
 
+    def _worker_exited_before_ack(process, returncode: int) -> str:
+        """Classify a pre-ack worker exit against the durable ledger.
+
+        Returns ``"terminal"`` (the worker recorded an outcome — trust it),
+        ``"never_adopted"`` (row still claimed with no started_at — a retry
+        cannot duplicate side effects), or ``"uncertain"`` (adoption state
+        advanced but no terminal row — never retry).
+        """
+        try:
+            row = get_execution(execution_id)
+        except Exception:
+            logger.exception(
+                "Cron external worker pre-ack exit for %s: ledger unreadable",
+                execution_id,
+            )
+            return "uncertain"
+        if row is None:
+            return "uncertain"
+        if row.get("status") in _TERMINAL_STATES:
+            return "terminal"
+        if row.get("status") == "claimed" and not row.get("started_at"):
+            return "never_adopted"
+        return "uncertain"
+
     # Same window the dead-owner recovery ledger grants a pending handoff: a cold
     # worker start (imports + secret hydration) measures ~10-12s in the field, and
     # a dispatch deadline shorter than the adoption grace made the two guards
     # around one handoff disagree.
     deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
+    attempt = _handoff_attempt
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
@@ -3261,6 +3293,36 @@ def _launch_external_cron_worker(job: dict) -> bool:
             )
         returncode = process.poll()
         if returncode is not None:
+            disposition = _worker_exited_before_ack(process, returncode)
+            if disposition == "never_adopted" and attempt == 0:
+                # Pre-adoption death under load (busy ledger at adopt time):
+                # the ledger proves no side effect ran. Retry the SAME tick on
+                # the SAME execution row instead of dropping it — the field
+                # failures clustered exactly when the box was busiest, and the
+                # job's next schedule slot was a full monitoring gap.
+                attempt += 1
+                logger.warning(
+                    "Cron external worker for job '%s' exited before adoption "
+                    "(exit %d); retrying handoff once on the same tick",
+                    job_id, returncode,
+                )
+                with _running_lock:
+                    _restart_safe_waiter_job_ids.discard(job_id)
+                payload_path.unlink(missing_ok=True)
+                ack_path.unlink(missing_ok=True)
+                return _launch_external_cron_worker(job, _handoff_attempt=attempt)
+            if disposition == "terminal":
+                # The worker's outcome is durable; its ack merely lost the
+                # race (exit-0 family).  Never book a failure over it.
+                with _running_lock:
+                    _restart_safe_waiter_job_ids.discard(job_id)
+                payload_path.unlink(missing_ok=True)
+                logger.info(
+                    "Cron external worker for job '%s' exited (exit %d) with a "
+                    "terminal ledger row; trusting recorded outcome",
+                    job_id, returncode,
+                )
+                return True
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(job_id)
             payload_path.unlink(missing_ok=True)
@@ -3286,6 +3348,35 @@ def _launch_external_cron_worker(job: dict) -> bool:
         job_id=job_id,
         handoff_files=(payload_path, ack_path),
     )
+
+
+def _adopt_external_execution_with_retry(execution_id: str):
+    """Adopt the gateway-claimed execution with a bounded same-tick retry.
+
+    The adopt is a single sqlite UPDATE under the ledger's 5s busy timeout;
+    dispatch bursts + CI/campaign load can transiently exceed it (field
+    shape 2026-09-18/19: clustered "exited before ownership acknowledgement"
+    failures). A ``None`` refusal (lost adoption race, wrong fence) is
+    returned immediately — retrying a lost race only delays the honest
+    refusal; only transient ``sqlite3.OperationalError`` retries, twice
+    (0.5s, 1.0s backoff). The final attempt's result or exception propagates.
+    """
+    import cron.executions as executions_module
+
+    for attempt in range(3):
+        try:
+            return executions_module.adopt_claimed_execution(execution_id)
+        except sqlite3.OperationalError:
+            if attempt == 2:
+                raise
+            delay = 0.5 * (2 ** attempt)
+            logger.warning(
+                "Cron external worker adopt of %s hit busy ledger "
+                "(attempt %d/3); retrying in %.1fs",
+                execution_id, attempt + 1, delay,
+            )
+            time.sleep(delay)
+    return None  # unreachable; kept for readers
 
 
 def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
@@ -3316,7 +3407,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_multiplex_active,
         set_secret_scope,
     )
-    from cron.executions import adopt_claimed_execution
+    from cron.executions import adopt_claimed_execution  # noqa: F401  (worker-side probe + compat)
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3331,7 +3422,19 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            try:
+                adopted = _adopt_external_execution_with_retry(execution_id)
+            except Exception:
+                # The gateway spawns this worker with stdout/stderr on DEVNULL;
+                # without this catch an adopt-time transient (busy ledger) died
+                # unlogged and the tick was silently lost. Exit 1 WITH evidence.
+                logger.exception(
+                    "Cron external worker could not adopt execution %s "
+                    "(ledger unavailable?)",
+                    execution_id,
+                )
+                return False
+            if adopted is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",
@@ -3883,9 +3986,18 @@ if __name__ == "__main__":
             setup_logging(hermes_home=_get_hermes_home(), mode="cron")
         except Exception:
             pass
-        raise SystemExit(
-            0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
-        )
+        _ok = _run_external_worker_payload(args.external_worker_file, args.ack_file)
+        # File logging is queued (async QueueListener): a bare SystemExit can
+        # outrun the writer thread and lose the very log lines that explain a
+        # refusal — the worker would die "unlogged" even with logging armed.
+        # Drain (time-bounded, never blocks a hard exit) before exiting.
+        try:
+            from hermes_logging import drain_log_queue
+
+            drain_log_queue(timeout=2.0)
+        except Exception:
+            pass
+        raise SystemExit(0 if _ok else 1)
     tick(verbose=True)
 
 

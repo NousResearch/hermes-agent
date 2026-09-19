@@ -14,8 +14,6 @@ from hermes_state_registry import acquire, release_or_close
 
 
 _OWNER_TOKEN = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
-# A normal platform send finishes well inside this window. A replacement
-# container waits for expiry because a PID cannot prove liveness on another host.
 _OWNER_LEASE_SECONDS = 5 * 60
 
 T = TypeVar("T")

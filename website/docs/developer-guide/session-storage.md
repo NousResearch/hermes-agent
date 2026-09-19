@@ -1,8 +1,8 @@
 # Session Storage
 
 Hermes Agent uses SQLite by default (`~/.hermes/state.db`) to persist session
-metadata, full message history, and model configuration across CLI and gateway
-sessions. PostgreSQL 17 or later is an optional backend for conversation state.
+metadata, full message history, model configuration, and gateway delivery
+obligations. PostgreSQL 17 or later is an optional backend for this state.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
@@ -88,11 +88,17 @@ schema before moving a profile to another machine or directory. Restart Hermes
 after changing backend settings so existing shared handles can close.
 
 This backend stores sessions, messages, model usage, conversation generations,
-routing, compression/turn leases, and optional Telegram topic bindings. History,
-resume, search, analytics, and profile session readers use the same `SessionDB`
-API and existing field names. Cron, Kanban, delivery/delegation ledgers, and other
-application stores retain their existing SQLite storage. Local profile files are
-still required; this setting does not make an entire deployment stateless.
+routing, compression/turn leases, async delegations, gateway delivery obligations,
+and optional Telegram topic bindings. History, resume, search, analytics, profile
+session readers, and gateway delivery recovery retain their existing APIs and field
+names. Cron, Kanban, and other application stores retain their existing SQLite
+storage. Local profile files are still required; this setting does not make an
+entire deployment stateless.
+
+PostgreSQL delivery owners use a process token and an expiring lease because a
+PID cannot establish whether a process on another container host is alive. Claiming
+an expired delivery uses a row lock, so competing gateway replicas cannot both
+spend the same retry attempt. SQLite retains its PID and process-start checks.
 
 The PostgreSQL implementation uses native SQL and a bounded connection pool.
 Each write callback runs in one transaction under a per-schema advisory lock,
@@ -118,12 +124,14 @@ python scripts/migrate_sqlite_to_postgres.py /path/to/source/state.db \
 ```
 
 The command opens SQLite read-only, checks integrity and foreign keys, then copies
-conversation tables in batches. Message IDs, archived/rewound messages, usage,
-provenance, routing, and optional Telegram topic bindings are retained. Generated
-search/display fields are rebuilt. Table counts are checked before one final
-commit; a failed copy rolls back, and a populated destination is refused. The
-SQLite source remains unchanged. Active leases, heartbeats, and application
-ledgers are not copied. Restart the destination profile after a successful copy.
+conversation and delivery-obligation tables in batches. Message IDs,
+archived/rewound messages, usage, provenance, routing, optional Telegram topic
+bindings, and owed gateway responses are retained. Generated search/display fields
+are rebuilt. Table counts are checked before one final commit; a failed copy rolls
+back, and a populated destination is refused. The SQLite source remains unchanged.
+Active leases and heartbeats are not copied. Migrated delivery rows have no active
+PostgreSQL owner lease, so unfinished responses can be recovered after startup.
+Restart the destination profile after a successful copy.
 
 ### Test the backend
 
@@ -135,6 +143,7 @@ or its driver is unavailable.
 
 ```bash
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_state/test_postgres_*.py
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/gateway/test_postgres_delivery_ledger.py
 ```
 
 ### Desktop profile isolation and compaction generations

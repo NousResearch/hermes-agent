@@ -23,6 +23,7 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 _BACKEND_KEY = "browser-use"
+CAMOFOX_BACKEND_KEY = "camofox"
 BACKEND_DISABLED = "off"
 
 # Cloud daemon names become the BU_NAME env var
@@ -214,14 +215,64 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 
 def is_browser_use_cli_mode() -> bool:
-    """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
-    unset ``browser.backend`` ("") enables it whenever the CLI is runnable (installed binary or uvx);
-    ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
-    tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
+    """True when ``browser_exec`` replaces the built-in browser stack.
+
+    Two backends activate the script-per-call surface:
+
+    * ``browser.backend: "browser-use"`` — the Browser Use CLI 3.0 harness
+      (the default when the CLI is runnable and Camofox is not configured).
+    * ``browser.backend: "camofox"`` — the Camofox exec backend, which runs
+      the same script-per-call surface against the Camofox REST API. No
+      browser-use CLI install is needed (the runtime is the Hermes Python
+      interpreter); see ``tools/browser_camofox_exec.py``.
+
+    Camofox setups keep the built-in tools when the backend is unset or
+    explicitly ``browser-use`` — Camoufox is Firefox-based with a custom
+    HTTP API and no CDP surface, so the CDP-only browser-use harness cannot
+    drive it.
+    """
+    try:
+        from tools.browser_camofox import is_camofox_mode
+
+        def _camofox_active() -> bool:
+            try:
+                return bool(is_camofox_mode())
+            except Exception as e:
+                logger.debug("Camofox activity check failed: %s", e)
+                return False
+    except Exception as e:
+        logger.debug("Camofox activity check failed: %s", e)
+
+        def _camofox_active() -> bool:
+            return False
+
+    backend = get_browser_backend()
+    if backend == CAMOFOX_BACKEND_KEY:
+        # Camofox exec mode: only meaningful when a Camofox server is
+        # configured; otherwise fall through to the built-in tools.
+        return _camofox_active()
+    if backend == _BACKEND_KEY:
+        # Explicit Browser Use CLI mode — Camofox still falls back to the
+        # built-in tools (the CDP-only harness cannot drive Camoufox). A
+        # missing CLI is reported at execution time, not here: explicit
+        # opt-in means the user asked for the surface.
+        if _camofox_active():
+            return False
+        return True
+    if backend:
+        return False
+    if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        return True
+    # Default (backend unset): Browser Use mode when the CLI can run at all;
+    # Camofox setups keep the built-in tools; otherwise the built-in stack
+    # stays so browsing never silently breaks.
     if _camofox_active():
         return False
-    backend = get_browser_backend()
-    return backend == _BACKEND_KEY if backend else (is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None)
+    return _find_cli() is not None
+
+
+_NOTICE_STAMP_NAME = ".browser_use_default_notice"
+_NOTICE_INTERVAL_S = 24 * 3600
 
 
 def default_downgrade_notice() -> Optional[str]:
@@ -615,6 +666,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if blocked:
         return tool_error(blocked)
 
+    # Camofox exec backend: same script-per-call surface, driven by the
+    # Camofox REST API instead of the browser-use CLI.
+    if get_browser_backend() == CAMOFOX_BACKEND_KEY:
+        from tools.browser_camofox_exec import browser_exec as camofox_exec
+
+        return camofox_exec(
+            code=code,
+            session=session,
+            timeout_s=timeout_s,
+            task_id=task_id,
+        )
+
     cmd = _find_cli()
     if not cmd:
         return tool_error("browser-use CLI not found on PATH, and uvx is unavailable for a zero-install run. "
@@ -747,6 +810,22 @@ def _description_header() -> str:
 
 
 def _dynamic_schema_overrides() -> dict:
+    if get_browser_backend() == CAMOFOX_BACKEND_KEY:
+        from tools.browser_camofox_exec import (
+            CAMOFOX_DESCRIPTION_HEADER,
+            CAMOFOX_HELPERS_DIGEST,
+        )
+
+        properties = {
+            name: value
+            for name, value in BROWSER_EXEC_SCHEMA["parameters"]["properties"].items()
+            if name != "session"
+        }
+        return {
+            "description": CAMOFOX_DESCRIPTION_HEADER + CAMOFOX_HELPERS_DIGEST,
+            "parameters": {**BROWSER_EXEC_SCHEMA["parameters"], "properties": properties},
+        }
+
     overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
     # ``local`` exists ONLY when the user consented to real-profile browsing — everyone
     # else's schema carries zero extra surface. The caller memoizes on config.yaml mtime,
@@ -760,7 +839,10 @@ def _dynamic_schema_overrides() -> dict:
                             "cloud browser backend. Use when the user asks to act as themselves — their "
                             "accounts, their sessions. No-op when the backend is already local. Default false."),
         }
-        overrides["parameters"] = {**BROWSER_EXEC_SCHEMA["parameters"], "properties": props}
+        overrides["parameters"] = {
+            **BROWSER_EXEC_SCHEMA["parameters"],
+            "properties": props,
+        }
     return overrides
 
 

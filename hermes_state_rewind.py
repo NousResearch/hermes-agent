@@ -58,14 +58,29 @@ class SessionRewindMixin:
         carrier. ``adopt_row_ids`` (TUI): copy durable ``_row_id`` identities onto the installed warm prefix so
         clients can address follow-ups by row; the CLI leaves its history shape alone. Out-of-range /
         wrong-shape targets raise :class:`RewindTargetUnavailableError`."""
+        from agent.agent_runtime_helpers import repair_message_sequence
         from agent.context_compressor import (
             _DB_PERSISTED_MARKER, history_before_user_originated_turn, retryable_user_text,
-            split_user_originated_turn)
+            split_user_originated_turn, user_originated_turn_view)
         from agent.message_content import flatten_message_text
         from agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
         durable = self.get_messages_as_conversation(session_id, include_row_ids=True)
+        # The pre-request belt (repair_message_sequence) merges consecutive user rows in
+        # memory after both were flushed, so a caller-handed warm history can hold fewer user
+        # turns than the durable transcript while describing the same logical transcript.
+        # Repair the durable projection with the same passes before resolving the ordinal and
+        # the count comparison; the stored transcript is never mutated. The survivor of a merge
+        # keeps the first physical row's _row_id, so rewinding it archives the whole merged span.
+        pre_repair_live: Dict[Any, Any] = {}
+        for _durable_msg in durable:
+            _durable_row_id = _durable_msg.get("_row_id")
+            if isinstance(_durable_row_id, int):
+                _durable_live = user_originated_turn_view(_durable_msg)
+                if _durable_live is not None:
+                    pre_repair_live[_durable_row_id] = _durable_live.get("content")
+        repair_message_sequence(None, durable)
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -96,7 +111,11 @@ class SessionRewindMixin:
         try:
             result = self.rewind_to_message(
                 session_id, target_row_id, preserve_compaction_handoff=scaffold is not None,
-                expected_active_ids=expected_active_ids, expected_target_content=live_view.get("content"))
+                expected_active_ids=expected_active_ids,
+                # A merged target spans several physical rows: pin the survivor row's own live
+                # payload (pre-repair), not the merged projection, so the write still refuses a
+                # transcript that changed under us. Untouched targets map to their own content.
+                expected_target_content=pre_repair_live.get(target_row_id, live_view.get("content")))
         except ValueError as exc:  # target vanished / changed role under us: same class of failure as out-of-range
             raise RewindTargetUnavailableError(str(exc)) from exc
         if scaffold is not None:

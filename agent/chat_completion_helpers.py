@@ -2034,8 +2034,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 # Keys outside the Chat Completions schema that strict gateways (Fireworks-backed OpenCode
 # Go, Mistral, Moonshot/Kimi) reject with 422. The transport's convert_messages() drops them
 # in the main loop; the summary path calls chat.completions.create() directly, so mirror it.
+# display_kind/display_metadata are the main loop's display-only timeline metadata
+# (turn_context pops them from EVERY outgoing copy); a persisted mid-turn steer row
+# carries display_kind="steer" and — delivered after a tool result, where no user merge
+# can consume it — reached the wire here and 400'd on strict gateways
+# ("Extra inputs are not permitted, field: messages[N].display_kind"). Key-level pop on
+# the per-call copy only: the steer TEXT stays on the wire and persisted history keeps
+# its metadata for renderers/compaction recognizers.
 _SUMMARY_FOREIGN_MESSAGE_KEYS = ("reasoning", "finish_reason", "tool_name", "codex_reasoning_items",
-    "codex_message_items", "timestamp", "platform_message_id")
+    "codex_message_items", "timestamp", "platform_message_id", "display_kind", "display_metadata")
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
 
 

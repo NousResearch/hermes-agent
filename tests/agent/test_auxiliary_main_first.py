@@ -505,9 +505,12 @@ class TestResolveVisionCustomProvider:
         """custom main with recorded runtime endpoint → Step 1 builds a client."""
         import agent.auxiliary_client as aux
 
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_PROVIDER", "custom")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_MODEL", "claude-opus-4-8")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://my.endpoint.example/v1")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "runtime-test-key")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "anthropic_messages")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_AUTH_MODE", "")
 
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
@@ -533,16 +536,19 @@ class TestResolveVisionCustomProvider:
         # otherwise resolve_provider_client("custom") returns (None, None).
         kwargs = mock_resolve.call_args.kwargs
         assert kwargs.get("explicit_base_url") == "https://my.endpoint.example/v1"
-        assert kwargs.get("explicit_api_key") == "sk-runtime-key"
+        assert kwargs.get("explicit_api_key") == "runtime-test-key"
         assert kwargs.get("is_vision") is True
 
     def test_custom_prefixed_main_forwards_runtime_endpoint(self, monkeypatch):
         """A ``custom:<name>`` provider id also forwards the runtime endpoint."""
         import agent.auxiliary_client as aux
 
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_PROVIDER", "custom:copilot-gateway")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_MODEL", "claude-opus-4-8")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://named.example/v1")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-named")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_AUTH_MODE", "")
 
         with patch(
             "agent.auxiliary_client._read_main_provider",
@@ -573,9 +579,12 @@ class TestResolveVisionCustomProvider:
         """No recorded runtime endpoint → resolve the configured custom endpoint."""
         import agent.auxiliary_client as aux
 
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_PROVIDER", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_MODEL", "")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
         monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_AUTH_MODE", "")
 
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
@@ -586,7 +595,7 @@ class TestResolveVisionCustomProvider:
             return_value=("auto", None, None, None, None),
         ), patch(
             "agent.auxiliary_client._resolve_custom_runtime",
-            return_value=("https://configured.example/v1", "sk-configured", "chat_completions"),
+            return_value=("https://configured.example/v1", "runtime-test-key", "chat_completions"),
         ), patch(
             "agent.auxiliary_client.resolve_provider_client"
         ) as mock_resolve:
@@ -600,7 +609,7 @@ class TestResolveVisionCustomProvider:
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs
         assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
-        assert kwargs.get("explicit_api_key") == "sk-configured"
+        assert kwargs.get("explicit_api_key") == "runtime-test-key"
 
 
 # ── Constant cleanup ────────────────────────────────────────────────────────

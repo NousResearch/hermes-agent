@@ -3647,10 +3647,13 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+        emitted_events = []
+
         class _SlowAliveCreateStream:
             def __iter__(self):
-                for _ in range(5):
+                for index in range(5):
                     time.sleep(0.03)
+                    emitted_events.append(index)
                     yield SimpleNamespace(type="response.in_progress")
 
             def close(self): pass
@@ -3669,7 +3672,13 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        elapsed = time.monotonic() - started
+        # The contract is functional: the total timeout must abort the stream
+        # before all five live events are consumed. A tight wall-clock ceiling
+        # here was flaky under scheduler contention (the first 30 ms sleep can
+        # legitimately resume after the former 140 ms bound on macOS).
+        assert len(emitted_events) < 5
+        assert elapsed < 1.0
 
 
 class TestCodexAuxiliaryAdapterCacheScope:

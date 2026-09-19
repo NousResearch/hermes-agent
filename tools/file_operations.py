@@ -104,6 +104,14 @@ class FileOperations(ABC):
     def read_file_raw(self, path: str) -> ReadResult:
         """Whole file as a plain string: no pagination, line numbers or clamping."""
 
+    def validate_write_candidate(self, path: str, content: str) -> Optional[str]:
+        """Return an error when a candidate cannot safely be written.
+
+        Backends may override this non-mutating preflight. The default keeps
+        third-party backends compatible with V4A's validation phase.
+        """
+        return None
+
     @abstractmethod
     def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
         """Write content to a file, creating directories as needed."""
@@ -1126,6 +1134,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"{ext} syntax validation ({err}). The file was "
             "NOT created or modified. Fix the content and retry."))
 
+    def validate_write_candidate(self, path: str, content: str) -> Optional[str]:
+        """Share non-mutating write policy, encoding and syntax gates with V4A."""
+        path = self._expand_path(path)
+        denied = get_write_denied_error(path)
+        if denied:
+            return denied
+        refused = self._reject_unencodable(path, content)
+        if refused is None:
+            ext = os.path.splitext(path)[1].lower()
+            refused = self._fail_closed_syntax_error(path, ext, content)
+        return refused.error if refused is not None else None
+
     def _write_probe_cmd(self, path: str, sentinel: str, body: Optional[str]) -> str:
         """One shell command for the on-disk questions ``write_file`` asks. Two
         segments closed by a ``sentinel`` line: base64 of the first three bytes (BOM
@@ -1250,16 +1270,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         caller already has (skips the read); BOM detection always probes disk.
         """
         path = self._expand_path(path)
-        denied = get_write_denied_error(path)
-        if denied:
-            return WriteResult(error=denied)
-        refused = self._reject_unencodable(path, content)
-        if refused is not None:
-            return refused
+        candidate_error = self.validate_write_candidate(path, content)
+        if candidate_error:
+            return WriteResult(error=candidate_error)
         ext = os.path.splitext(path)[1].lower()
-        refused = self._fail_closed_syntax_error(path, ext, content)
-        if refused is not None:
-            return refused
 
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).

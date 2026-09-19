@@ -143,12 +143,41 @@ def _hint_ambiguity(content: str, hint: str, tail: str = "") -> Tuple[int, str]:
     return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
 
 
+def _candidate_validation_error(
+    candidate_validator: Any,
+    path: str,
+    content: str,
+) -> Optional[str]:
+    """Keep backend preflight exceptions inside the structured patch result."""
+    if not callable(candidate_validator):
+        return None
+    try:
+        result = candidate_validator(path, content)
+        # The interface contract is Optional[str]. Ignore other truthy values
+        # so duck-typed backends and unspecced mocks do not become accidental
+        # hard rejections merely because they expose a callable attribute.
+        return result if isinstance(result, str) and result else None
+    except Exception as exc:
+        return f"candidate preflight raised {type(exc).__name__}: {exc}"
+
+
+def _is_missing_read_error(error: Optional[str]) -> bool:
+    """Recognize the backend's missing diagnostic, not arbitrary read failures.
+
+    ShellFileOperations emits 'File not found: <expanded path>'; the bare
+    spelling is retained for the removed-path overlay and duck-typed backends.
+    """
+    return isinstance(error, str) and (
+        error.lower() == "file not found" or error.startswith("File not found: "))
+
+
 def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> List[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     errors: List[str] = []
     real_change_count = 0
+    candidate_validator = getattr(file_ops, "validate_write_candidate", None)
     # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets).
     pending_content: dict = {}
     removed_paths: set = set()
@@ -163,6 +192,7 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
 
     def _validate_update(op: PatchOperation) -> None:
         nonlocal real_change_count
+        operation_error_count = len(errors)
         simulated, read_err = _read(op.file_path)
         if read_err:
             errors.append(f"{op.file_path}: {read_err}")
@@ -175,14 +205,12 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                 real_change_count += any(l.prefix in '-+' for l in hunk.lines)
                 continue
             real_change_count += 1
-            if not search_lines:  # addition-only: the context hint must be unique
-                if hunk.context_hint:
-                    occurrences, ambiguous = _hint_ambiguity(simulated, hunk.context_hint)
-                    if occurrences == 0:
-                        errors.append(f"{op.file_path}: addition-only hunk context hint "
-                                      f"'{hunk.context_hint}' not found")
-                    elif ambiguous:
-                        errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
+            if not search_lines:
+                candidate, error = _insert_addition_only(simulated, hunk, '\n'.join(replace_lines))
+                if error:
+                    errors.append(f"{op.file_path}: {error}")
+                else:
+                    simulated = candidate
                 continue
             search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
             new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
@@ -197,6 +225,10 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                     + (f" — {match_error}" if match_error else "")
                     + _no_match_hint(match_error, search_pattern, simulated))
         pending_content[op.file_path] = simulated
+        if len(errors) == operation_error_count and simulated is not None:
+            candidate_error = _candidate_validation_error(candidate_validator, op.file_path, simulated)
+            if candidate_error:
+                errors.append(f"{op.file_path}: {candidate_error}")
 
     def _remove(path: str) -> None:
         removed_paths.add(path)
@@ -232,12 +264,19 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
             # same path in this patch stays legal, and the added content enters the
             # overlay so later hunks against it validate.
-            if not _read(op.file_path)[1]:
+            _, read_error = _read(op.file_path)
+            if not read_error:
                 errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
+            elif not _is_missing_read_error(read_error):
+                errors.append(f"{op.file_path}: {read_error}")
             else:
                 removed_paths.discard(op.file_path)
                 pending_content[op.file_path] = '\n'.join(
                     line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
+                candidate_error = _candidate_validation_error(
+                    candidate_validator, op.file_path, pending_content[op.file_path])
+                if candidate_error:
+                    errors.append(f"{op.file_path}: {candidate_error}")
     if not errors and real_change_count == 0:
         errors.append("Patch contains no changes (only context lines were provided)")
     return errors
@@ -328,6 +367,8 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
     read_back = file_ops.read_file_raw(op.file_path)
     if not read_back.error:
         return _fail(f"{op.file_path}: file already exists — use Update File, not Add File")
+    if not _is_missing_read_error(read_back.error):
+        return _fail(f"{op.file_path}: {read_back.error}")
     content_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+']
     result = file_ops.write_file(op.file_path, '\n'.join(content_lines))
     diff = f"--- /dev/null\n+++ b/{op.file_path}\n" + '\n'.join(f"+{line}" for line in content_lines)
@@ -355,6 +396,8 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
     if hunk.context_hint:
         occurrences, ambiguous = _hint_ambiguity(
             new_content, hunk.context_hint, " — provide a more unique hint")
+        if occurrences == 0:
+            return None, f"Addition-only hunk: context hint '{hunk.context_hint}' not found"
         if ambiguous:
             return None, f"Addition-only hunk: {ambiguous}"
         if occurrences == 1:
@@ -362,7 +405,7 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
             if eol == -1:
                 return new_content + '\n' + insert_text, None
             return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None
-    # No hint / hint not found — append at end as a safe fallback.
+    # No hint: append at end.
     return new_content.rstrip('\n') + '\n' + insert_text + '\n', None
 
 

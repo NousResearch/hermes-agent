@@ -511,14 +511,46 @@ def _timestamp_line(agent: Any) -> str:
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 
+def pinned_project_scope(agent: Any) -> str:
+    """Active project scope for the built-in MEMORY.md block ("" = unfiltered, issue #33638).
+
+    Pinned per session on the agent, keyed by the resolved cwd — the same shape as the
+    workspace pin in ``_coding_parts``, and for the same reason: the builder runs again at
+    every compaction boundary, so a re-resolved scope could change bytes mid-conversation.
+    A cwd switch (one gateway serves many cwds) re-resolves; ``reset_session_state`` drops
+    the pin at a session boundary. Fail-open — a disabled flag, an unconfigured cwd, or any
+    error all leave the block unfiltered.
+    """
+    cwd = resolve_context_cwd()
+    cwd_key = str(cwd) if cwd is not None else ""
+    pinned = getattr(agent, "_frozen_project_scope", None)
+    if pinned is not None and pinned[0] == cwd_key:
+        return pinned[1]
+    try:
+        from tools.memory_tool import get_builtin_memory_project_scoping
+        scope = ""
+        if get_builtin_memory_project_scoping():
+            from agent.runtime_cwd import resolve_project_scope
+            scope = resolve_project_scope(cwd)
+    except Exception:
+        logger.debug("Project-scope resolution failed; memory block left unfiltered", exc_info=True)
+        return ""
+    try:
+        agent._frozen_project_scope = (cwd_key, scope)
+    except Exception:
+        pass  # Uncacheable agent (no __dict__): still inject the resolved scope this build.
+    return scope
+
+
 def _memory_parts(agent: Any) -> List[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
     parts: List[str] = []
     if agent._memory_store:
+        scope = pinned_project_scope(agent) if agent._memory_enabled else ""
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
-            block = agent._memory_store.format_for_system_prompt(kind) if enabled else None
+            block = agent._memory_store.format_for_system_prompt(kind, scope) if enabled else None
             if block:
                 parts.append(block)
     # External memory provider system prompt block (additive to built-in). Gated on the same check

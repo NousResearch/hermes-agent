@@ -167,8 +167,13 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     store = getattr(agent, "_memory_store", None)
     if store is not None:
         try:
+            # Same pinned scope as the live block, so the reported memory size is the one
+            # actually riding in the prompt (they diverge once project scoping is on).
+            from agent.system_prompt import pinned_project_scope
+
+            scope = pinned_project_scope(agent)
             if getattr(agent, "_memory_enabled", True):
-                memory_block = store.format_for_system_prompt("memory") or ""
+                memory_block = store.format_for_system_prompt("memory", scope) or ""
             if getattr(agent, "_user_profile_enabled", True):
                 user_block = store.format_for_system_prompt("user") or ""
         except Exception:

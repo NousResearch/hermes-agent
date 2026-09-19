@@ -53,6 +53,7 @@ The format includes:
 - Usage percentage and character counts so the agent knows capacity
 - Individual entries separated by `§` (section sign) delimiters
 - Entries can be multiline
+- With [project scoping](#project-scoped-memory-project_scoping) on, the header also names the active scope (`· project: myapp`)
 
 **Frozen snapshot pattern:** The system prompt injection is captured once at session start and never changes mid-session. This is intentional — it preserves the LLM's prefix cache for performance. When the agent adds/removes memory entries during a session, the changes are persisted to disk immediately but won't appear in the system prompt until the next session starts. Tool responses always show the live state.
 
@@ -182,6 +183,84 @@ On January 5th, 2026, the user asked me to look at their project which is
 located at ~/code/api. I discovered it uses Go version 1.22 and...
 ```
 
+## Project-Scoped Memory (`project_scoping`)
+
+Memory is global by default: every entry rides in the system prompt in every session, whatever project you are working on. If you keep notes for several projects in one `MEMORY.md`, the entries for the *other* projects are pure noise — they cost tokens and occasionally mislead the agent about which paths, ports, or conventions apply.
+
+`memory.project_scoping: true` filters the injected `MEMORY.md` block by the directory the session is running in. It is **opt-in** (`false` by default) and changes nothing until you also tag entries.
+
+```yaml
+# In ~/.hermes/config.yaml
+memory:
+  project_scoping: true
+```
+
+### Tagging entries
+
+Add a scope tag at the **start** of an entry:
+
+```
+[global] SSH alias for the shared build box is `buildbox`
+[project:myapp] Local dev server runs on port 8650, cloud on 8660
+[project:invoice-runner] Script lives at ~/.hermes/scripts/process_invoices.py
+Untagged entries work too
+```
+
+| Entry starts with | Injected into a session scoped to `myapp` |
+|---|---|
+| `[project:myapp]` | yes |
+| `[global]` | yes |
+| no tag | yes |
+| `[project:anything-else]` | **no** |
+
+The rules:
+
+- **Untagged entries always survive.** Turning scoping on can never silently hide memory you wrote before — you opt each entry *out* of the global pool by tagging it.
+- **Matching is case-insensitive**, tolerates leading whitespace and Markdown list markers (`- [project:myapp] …`), and only looks at the *prefix* of an entry. A `[project:x]` mentioned mid-sentence is prose, not a tag, so it stays global.
+- **`USER.md` is never filtered** — it describes you, not the project.
+- **Tags are plain text.** No schema, no migration, no tool API change; delete the tag to make an entry global again.
+
+### How the scope is resolved
+
+The scope is the **basename of the nearest ancestor directory** of the session's working directory that contains any of these markers:
+
+| Marker | Typical use |
+|---|---|
+| `.git` | the repo root (a directory *or* a file) |
+| `AGENTS.md` | any project with agent instructions |
+| `.hermes-memory.md` | a project with no repo at all — see below |
+
+The walk is bounded (6 levels up) and stops at `$HOME` and the shared temp directory, so a `.git` sitting above your home directory never becomes a scope. The Hermes install tree is never a scope either, so a backend launched inside the checkout doesn't filter everything to `hermes-agent`.
+
+**A directory with no marker gets no scope** — and no scope means the full unfiltered block (fail-open). Working out of a plain document folder such as `~/Projects/invoices`? Drop an empty `.hermes-memory.md` in it and it becomes the scope `invoices`:
+
+```bash
+touch ~/Projects/invoices/.hermes-memory.md
+```
+
+Enabling the flag is not enough on its own: an untagged entry still shows up everywhere, and a `[project:invoices]` entry only matches if `invoices` is the exact basename of that directory.
+
+### What the agent sees
+
+Only the header changes shape — a scoped block names its scope and still reports the **whole file's** usage, because the character limit applies to `MEMORY.md` as a whole:
+
+```
+══════════════════════════════════════════════
+MEMORY (your personal notes) [67% — 1,474/2,200 chars] · project: myapp
+══════════════════════════════════════════════
+Local dev server runs on port 8650, cloud on 8660
+§
+SSH alias for the shared build box is `buildbox`
+```
+
+That way the agent sees the real remaining headroom (and can consolidate) instead of being told it has room it doesn't. Naming the scope also tells the agent which `[project:…]` tag to use if it saves a project-specific fact of its own.
+
+The scope is resolved once at the start of the session and pinned for its lifetime: rebuilds (compaction, `/context`) replay it so the block stays byte-identical and the prefix cache holds. A session whose working directory changes re-resolves; a new session (`/new`, `/resume`, `/branch`) re-resolves for its own directory.
+
+Fail-open applies everywhere: an unreadable config, a scope-resolution error, or a directory that isn't in a project all leave the block unfiltered.
+
+> **Entries are filtered in the prompt, not on disk.** A `[project:other]` entry still occupies `MEMORY.md` and still counts against `memory_char_limit`, so a large multi-project file can be over its cap while only a few entries are visible. Consolidation responses always list every entry in the file, filtered or not.
+
 ## Duplicate Prevention
 
 The memory system automatically rejects exact duplicate entries. If you try to add content that already exists, it returns success with a "no duplicate added" message.
@@ -248,6 +327,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  project_scoping: false    # filter MEMORY.md by the session's project (see below)
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the

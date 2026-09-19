@@ -821,9 +821,12 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  project_scoping: false    # true = filter MEMORY.md by the session's project directory
 ```
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+
+With `memory.project_scoping: true`, the injected `MEMORY.md` block is filtered to the session's project: entries tagged `[project:<name>]` are included only when `<name>` is the basename of the nearest ancestor holding `.git`, `AGENTS.md`, or `.hermes-memory.md`. Untagged and `[global]` entries always survive, `USER.md` is never filtered, and a directory that resolves to no scope injects the unfiltered block. See [Project-scoped memory](/user-guide/features/memory#project-scoped-memory-project_scoping).
 
 ## Context File Truncation
 

@@ -944,6 +944,14 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Project-scoped memory: filter the injected MEMORY.md block by the session's project.
+  # An entry tagged [project:<name>] is included only when <name> is the basename of the
+  # nearest ancestor holding .git / AGENTS.md / .hermes-memory.md. Untagged and [global]
+  # entries always survive; USER.md is never filtered. In a non-repo workspace (a document
+  # folder, for example) plant an empty .hermes-memory.md to give it a scope. Enabling this
+  # is not enough on its own — entries must carry the tag to be filtered.
+  project_scoping: false    # false = inject every entry (pre-feature behavior)
+
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)

@@ -82,6 +82,10 @@ class MemoryStore:
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Load-time sanitized entry lists behind that snapshot, for project-scoped
+        # re-rendering (issue #33638). Frozen alongside it so a scope renders identical
+        # bytes on every rebuild, same as the unscoped block.
+        self._snapshot_entries: Dict[str, List[str]] = {"memory": [], "user": []}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
@@ -140,7 +144,9 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            sanitized = [_sanitize(e, path.name) for e in entries]
+            self._system_prompt_snapshot[target] = self._render_block(target, sanitized)
+            self._snapshot_entries[target] = sanitized
 
     @staticmethod
     @contextmanager
@@ -366,10 +372,47 @@ class MemoryStore:
             return working, f"Applied {len(operations)} operation(s)."
         return self._mutate(target, _apply)
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
+    @staticmethod
+    def _scoped_entries(entries: List[str], project_scope: str) -> List[str]:
+        """``entries`` minus the ones tagged for a DIFFERENT project (issue #33638).
+
+        Untagged and ``[global]`` entries always survive, and an empty ``project_scope``
+        keeps everything (backward compatible). The tag is matched case-insensitively
+        after stripping leading whitespace and Markdown list markers — entries are
+        routinely hand-written as bullets, and a bulleted ``[project:other]`` that fell
+        through as "untagged" would leak that project's notes into every other project.
+        The ORIGINAL entry text is what gets rendered.
+        """
+        if not project_scope:
+            return list(entries)
+        tag = f"[project:{project_scope.lower()}]"
+        out = []
+        for entry in entries:
+            clean = entry.lstrip()
+            while clean[:1] in ("-", "*"):
+                clean = clean[1:].lstrip()
+            # Only a leading tag scopes an entry; a mid-text "[project:x]" is prose.
+            if not clean.lower().startswith("[project:") or clean.lower().startswith(tag):
+                out.append(entry)
+        return out
+
+    def format_for_system_prompt(self, target: str, project_scope: str = "") -> Optional[str]:
         """Frozen load-time snapshot (NOT live state — mid-session writes don't touch
-        it, preserving the prefix cache); None if empty."""
-        return self._system_prompt_snapshot.get(target, "") or None
+        it, preserving the prefix cache); None if empty.
+
+        ``project_scope`` filters the MEMORY.md block to the active project: entries
+        tagged ``[project:<other>]`` are dropped, untagged / ``[global]`` / matching
+        entries survive. The filter runs over the same frozen entries the unscoped block
+        renders, so one scope always yields the same bytes across rebuilds. USER.md is
+        never filtered — it describes the user, not the project.
+        """
+        if target == "user" or not project_scope:
+            block = self._system_prompt_snapshot.get(target, "")
+            return block if block else None
+        entries = self._snapshot_entries.get("memory", [])
+        block = self._render_block("memory", self._scoped_entries(entries, project_scope),
+                                   usage_over=entries, scope_label=project_scope)
+        return block if block else None
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
@@ -383,13 +426,24 @@ class MemoryStore:
                 "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),
                 "note": "Write saved. This update is complete — do not repeat it."}
 
-    def _render_block(self, target: str, entries: List[str]) -> str:
-        """System prompt block: header + usage indicator + entries ("" when empty)."""
+    def _render_block(self, target: str, entries: List[str], *, usage_over: Optional[List[str]] = None,
+                      scope_label: str = "") -> str:
+        """System prompt block: header + usage indicator + entries ("" when empty).
+
+        ``usage_over`` overrides what the usage indicator counts. The char limit is
+        enforced against the WHOLE file, so a project-scoped block still reports the
+        full set — a subset-sized header advertises headroom that the next write
+        refuses and contradicts the usage the write path reports (#33638 review).
+        ``scope_label`` names the active project scope on the header, so the block says
+        which ``[project:<name>]`` tag it is filtering by.
+        """
         if not entries:
             return ""
         content, sep = ENTRY_DELIMITER.join(entries), "═" * 46
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
-        return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]\n{sep}\n{content}"
+        counted = entries if usage_over is None else usage_over
+        scope = f" · project: {scope_label}" if scope_label else ""
+        return f"{sep}\n{title} [{self._usage_pct(target, len(ENTRY_DELIMITER.join(counted)))}]{scope}\n{sep}\n{content}"
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:

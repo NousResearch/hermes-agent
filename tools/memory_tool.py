@@ -225,6 +225,14 @@ def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> T
     return tuple(is_truthy_value(section.get(k), default=True) for k in ("memory_enabled", "user_profile_enabled"))
 
 
+def get_builtin_memory_project_scoping(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return whether the MEMORY.md block is filtered by the session's project (issue #33638).
+
+    Opt-in: absent/false leaves every entry in the block, exactly as before the feature.
+    """
+    return is_truthy_value(get_builtin_memory_config(config).get("project_scoping"), default=False)
+
+
 @no_cache_check_fn
 def check_memory_requirements() -> bool:
     """Snapshot store flags and report whether the built-in tool is available."""

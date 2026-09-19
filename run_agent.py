@@ -419,6 +419,9 @@ class AIAgent(
         # The workspace snapshot is pinned per session (agent/system_prompt.py::_coding_parts); a
         # /new, /resume or /branch on the same agent must re-snapshot at its own session start.
         self._frozen_workspace_snapshot = None
+        # Same boundary for the memory block's project scope (system_prompt.py::pinned_project_scope):
+        # replayed from the old session it would filter the new session's memory by the old project.
+        self._frozen_project_scope = None
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0

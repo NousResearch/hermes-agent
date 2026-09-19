@@ -910,3 +910,155 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+# =========================================================================
+# Project-scoped memory (issue #33638)
+# =========================================================================
+
+def _load_entries(tmp_path, store, entries):
+    (tmp_path / "MEMORY.md").write_text("\n§\n".join(entries), encoding="utf-8")
+    store.load_from_disk()
+
+
+class TestProjectScopedMemory:
+    """The opt-in [project:<name>] filter over the frozen memory snapshot."""
+
+    def test_other_project_filtered_matching_and_global_kept(self, store, tmp_path):
+        _load_entries(tmp_path, store, [
+            "[project:myapp] Myapp config",
+            "[project:other] Some other project fact",
+            "[global] Global preference",
+            "Untagged fact",
+        ])
+
+        block = store.format_for_system_prompt("memory", project_scope="myapp")
+
+        assert block is not None
+        assert "Myapp config" in block
+        assert "Global preference" in block
+        assert "Untagged fact" in block
+        assert "other project fact" not in block
+
+    def test_empty_scope_is_the_unfiltered_block(self, store, tmp_path):
+        _load_entries(tmp_path, store, ["[project:other] Other project", "[project:myapp] Myapp fact"])
+
+        assert store.format_for_system_prompt("memory", project_scope="") == store.format_for_system_prompt("memory")
+
+    def test_user_target_ignores_scope(self, store, tmp_path):
+        """USER.md describes the user, not the project, so it is never filtered."""
+        (tmp_path / "USER.md").write_text(
+            "\n§\n".join(["[project:other] User fact for other", "General user fact"]), encoding="utf-8")
+        store.load_from_disk()
+
+        block = store.format_for_system_prompt("user", project_scope="myapp")
+
+        assert block is not None
+        assert "User fact for other" in block and "General user fact" in block
+
+    def test_scope_with_no_matching_entries_renders_no_block(self, store, tmp_path):
+        _load_entries(tmp_path, store, ["[project:other] only other project entries"])
+
+        assert store.format_for_system_prompt("memory", project_scope="myapp") is None
+
+    def test_mid_session_write_does_not_reach_the_scoped_block(self, store, tmp_path):
+        """Prefix-cache invariant: the scoped block derives from the load-time snapshot."""
+        _load_entries(tmp_path, store, ["[project:myapp] Original entry"])
+
+        store.add("memory", "[project:myapp] Added later")
+        block = store.format_for_system_prompt("memory", project_scope="myapp")
+
+        assert "Original entry" in block
+        assert "Added later" not in block
+
+    def test_scope_render_is_byte_stable_across_calls(self, store, tmp_path):
+        _load_entries(tmp_path, store, ["[project:myapp] a", "[project:other] b", "plain"])
+
+        assert (store.format_for_system_prompt("memory", project_scope="myapp")
+                == store.format_for_system_prompt("memory", project_scope="myapp"))
+
+    # ── Tag-matching contract ────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("entry", [
+        "- [project:myapp] bulleted",
+        "* [project:myapp] star bullet",
+        "  [project:myapp] indented",
+        "[project:MyApp] different case",
+    ])
+    def test_tag_variants_match_the_scope(self, entry):
+        assert MemoryStore._scoped_entries([entry], "myapp") == [entry]
+
+    @pytest.mark.parametrize("entry", [
+        "- [project:other] bulleted other project",
+        "* [project:other] star bullet other project",
+        "[project:other] other project",
+    ])
+    def test_other_project_tag_variants_are_filtered(self, entry):
+        """A bulleted foreign tag must not slip through as 'untagged' and leak."""
+        assert MemoryStore._scoped_entries([entry], "myapp") == []
+
+    def test_mid_text_tag_is_treated_as_untagged(self):
+        """Only a leading tag scopes an entry; a mid-text '[project:x]' is prose."""
+        entry = "note mentioning [project:other] in passing"
+        assert MemoryStore._scoped_entries([entry], "myapp") == [entry]
+
+    def test_leading_tag_only_prefix_matches(self):
+        """`[project:myapplication]` is NOT the scope `myapp`."""
+        entry = "[project:myapplication] a different project"
+        assert MemoryStore._scoped_entries([entry], "myapp") == []
+
+    # ── Header reporting ─────────────────────────────────────────────────────
+
+    def _header(self, block):
+        return block.splitlines()[1]
+
+    def test_scoped_header_reports_the_whole_file(self, store, tmp_path):
+        """The char limit governs the FILE: a filtered header must not shrink with it.
+
+        The write path reports usage against every entry on disk, so a subset-sized
+        header would advertise headroom the next write refuses.
+        """
+        _load_entries(tmp_path, store, ["a" * 200, "[project:other] " + "b" * 200,
+                                        "[project:myapp] " + "c" * 200])
+
+        unscoped = store.format_for_system_prompt("memory")
+        scoped = store.format_for_system_prompt("memory", project_scope="myapp")
+
+        # Same file, same pressure — only the visible entries differ. A header derived from
+        # the filtered subset would advertise headroom the next write refuses.
+        assert self._header(scoped).split(" · project:")[0] == self._header(unscoped)
+
+    def test_scoped_header_names_the_scope_and_unscoped_is_unchanged(self, store, tmp_path):
+        _load_entries(tmp_path, store, ["[project:myapp] note"])
+
+        scoped = store.format_for_system_prompt("memory", project_scope="myapp")
+
+        assert "· project: myapp" in self._header(scoped)
+        assert "· project:" not in self._header(store.format_for_system_prompt("memory"))
+
+    def test_over_limit_file_reports_over_limit_in_a_scoped_block(self, store, tmp_path):
+        """A scoped block must still report the whole file, over-limit clamp included."""
+        _load_entries(tmp_path, store, ["[project:other] " + "b" * 600, "[project:myapp] tiny"])
+
+        header = self._header(store.format_for_system_prompt("memory", project_scope="myapp"))
+
+        # 616 + delimiter(3) + 20 = 639 chars on disk vs a 500-char cap, reported against the
+        # full file even though only the 20-char entry is visible.
+        assert header == "MEMORY (your personal notes) [100% — 639/500 chars] · project: myapp"
+
+
+class TestProjectScopingConfig:
+    def test_flag_is_registered_and_reads_through_the_default_config(self):
+        """A reader with no registry entry is invisible to `hermes config`: assert both."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert "project_scoping" in DEFAULT_CONFIG["memory"]
+        assert DEFAULT_CONFIG["memory"]["project_scoping"] is False
+
+    def test_flag_reads_explicit_values(self):
+        from tools.memory_tool import get_builtin_memory_project_scoping
+
+        assert get_builtin_memory_project_scoping({"memory": {"project_scoping": True}}) is True
+        assert get_builtin_memory_project_scoping({"memory": {"project_scoping": False}}) is False
+        assert get_builtin_memory_project_scoping({"memory": {}}) is False
+        assert get_builtin_memory_project_scoping({}) is False

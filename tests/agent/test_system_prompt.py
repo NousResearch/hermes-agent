@@ -270,7 +270,7 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
     agent = _make_agent(
         platform="cli", model="test-model", provider="test-provider",
         _memory_enabled=True, _user_profile_enabled=False,
-        _memory_store=SimpleNamespace(format_for_system_prompt=lambda _: decoy),
+        _memory_store=SimpleNamespace(format_for_system_prompt=lambda _target, _scope="": decoy),
     )
     parts = build_system_prompt_parts(agent)
     full = "\n\n".join(parts.values())

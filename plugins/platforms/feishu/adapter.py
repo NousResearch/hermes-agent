@@ -4268,7 +4268,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not await asyncio.to_thread(_load_lark_oapi):
         return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
     try:
-        adapter = FeishuAdapter(pconfig)
+        # Honor the platform's registered adapter factory: a plugin may replace the adapter
+        # (e.g. to add local policy or reply anchoring), and out-of-process sends must use the
+        # same adapter the gateway would. Falls back to the stock adapter when the registry has
+        # no entry (the standalone sender itself came from a registered plugin, so it normally does).
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get("feishu")
+        adapter_factory = getattr(entry, "adapter_factory", None) or FeishuAdapter
+        adapter = adapter_factory(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
         metadata = {"thread_id": thread_id} if thread_id else None
         last_result = None

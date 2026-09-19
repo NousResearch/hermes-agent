@@ -29,6 +29,8 @@ Suite layout:
   Section C — 无法静态修复的残余面（XFAIL 标注，属于 sandbox/运行时边界）：
               函数/λ 间接调用、非字面量 for 可迭代、动态 f-string 插值。
   Section D — benign no-false-positive controls for every new capability.
+  Section E — 2026-09-19：resolver 失败姿态（已修复）+ session kernel 跨 cell 残余
+              （E2 以 XFAIL strict 文档化，交给 post-hoc 完整性层兜底）。
 
 All Section B tests were empirically verified to FAIL on head 5902589454
 (auto-approve in local CLI) and PASS on the fix head — they pin the fixes.
@@ -51,6 +53,8 @@ from tools.exec_code_policy import (
     _execute_code_touches_sensitive_path,
     _classify_exec_code_imports,
     _log_blocked_exec_code,
+    _hermes_home_candidates,
+    _write_target_is_sensitive,
 )
 from agent.turn_tool_round import _tool_results_contain_user_blocked
 
@@ -1144,3 +1148,58 @@ def test_syntax_error_script_not_crash(monkeypatch):
 def test_empty_script_auto_approves():
     result = check_execute_code_guard("", env_type="local")
     assert result["approved"] is True
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Section E — 2026-09-19：resolver 失败姿态（已修复）+ session kernel 跨 cell 残余（XFAIL）
+# ═════════════════════════════════════════════════════════════════════════
+#
+# E1 修复前实测（2026-09-19）：把 hermes_constants.get_hermes_home 换成抛异常后，
+#    check_execute_code_guard 直接把 RuntimeError 抛进工具调用层——任何含写形状调用的 cell
+#    都会失败（纯计算 cell 不受影响，因为候选集只在写目标判定时才被触达）。修复后 resolver
+#    失败降级到 env/legacy 候选，判定照常进行：不扩大保护面，也不把异常交给调用方。
+#
+# E2 是静态层在**默认执行模型**下的文档化残余：session kernel 常驻（kernel_mode 已在 #96787
+#    退役，本地执行恒为持久内核），受保护路径可先在**前一个 cell** 绑定到变量，本 cell 只见
+#    Name，静态不可解析。2026-09-19 实拍：单 cell 字面量 → hard_blocked；跨 cell（cell 1
+#    `p = "<home>/config.yaml"`、cell 2 `open(p,"w")`）→ 写入真实落盘。该格由 post-hoc 内容
+#    完整性层兜底（#113450 / #113458 用内容哈希，路径形态无关），本 PR 不假装覆盖它。
+
+def test_home_resolver_failure_does_not_escape_guard(monkeypatch, tmp_path):
+    """E1: a broken home resolver must not abort the guard for write-shaped cells."""
+    import hermes_constants as homes
+
+    target = tmp_path / "config.yaml"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("resolver unavailable")
+
+    monkeypatch.setattr(homes, "get_hermes_home", _boom)
+    monkeypatch.setattr(homes, "_get_platform_default_hermes_home", _boom)
+
+    assert str(tmp_path) in _hermes_home_candidates()
+    assert _write_target_is_sensitive(str(target)) is True
+    result = check_execute_code_guard(f'open({str(target)!r}, "w").write("x")', env_type="local")
+    assert result["approved"] is False
+    assert result["outcome"] == "hard_blocked"
+
+
+def test_same_cell_literal_protected_target_blocked_control():
+    """E2 control (non-XFAIL): the same destination as a literal in one cell IS blocked."""
+    assert _execute_code_has_sensitive_write(
+        'open("/root/.hermes/config.yaml", "w").write("x")'
+    ) is not None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "静态层边界（文档化残余，2026-09-19 实拍）：session kernel 常驻时，受保护路径可先在"
+        "前一个 cell 绑定到变量，本 cell 只见 Name，静态不可解析。若将来补上 cell 边界记忆，"
+        "本用例会 XPASS——请更新标记与文档，不要忽略它。"
+    ),
+)
+def test_cross_cell_bound_protected_target_visible():
+    """E2: a target bound in an earlier cell stays invisible to the per-cell static layer."""
+    assert _execute_code_has_sensitive_write('open(target, "w").write("x")') is not None

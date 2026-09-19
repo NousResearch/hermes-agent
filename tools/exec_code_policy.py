@@ -1298,9 +1298,11 @@ def _execute_code_has_dangerous_ops(code: str):
 # (`os.path.join(home, name)`) is not statically visible — that residual
 # surface belongs to the runtime/sandbox boundary.
 
-# Sensitive prefixes mirrored from tools/file_tools._SENSITIVE_PATH_PREFIXES
-# plus the credential trees (#49578 names the same class of destination).
-# Matched after ~/env expansion and normpath.
+# Sensitive prefixes mirrored from tools/file_tools_write_guards._SENSITIVE_PATH_PREFIXES,
+# plus two entries that side does not carry (`/run/`, `/var/run/`) and the credential trees
+# (#49578 names the same class of destination). Matched after ~/env expansion and normpath.
+# The drift was re-checked on 2026-09-19 and is deliberate: the two extra runtime prefixes make
+# this layer strictly narrower (more blocks), so the list is not slaved to the file-tool one.
 _EXEC_CODE_SENSITIVE_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/", "/private/etc/",
     "/private/var/db/", "/private/var/root/",
@@ -1564,10 +1566,21 @@ def _hermes_home_candidates() -> tuple:
 
     Resolve the active profile and platform default per call, as the file-tool guard does.
     Retain the explicit environment and legacy HOME-based roots without caching a profile.
-    """
-    from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
 
-    homes = [str(get_hermes_home()), str(_get_platform_default_hermes_home())]
+    A resolver failure must not escape this function (2026-09-19 probe): the guard runs in the
+    tool-dispatch thread, and raising there aborts ``execute_code`` for every cell that merely
+    contains a write-shaped call. A broken resolver therefore degrades to the environment and
+    legacy roots below instead of widening or dropping the protected set. The file-tool guard
+    re-derives its home from the same getter on that path (#107327 / #107335) — this module
+    keeps judging rather than handing the caller an exception.
+    """
+    homes: list[str] = []
+    try:
+        from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
+
+        homes.extend((str(get_hermes_home()), str(_get_platform_default_hermes_home())))
+    except Exception:
+        pass
     env_home = os.environ.get("HERMES_HOME")
     if env_home:
         homes.append(env_home)

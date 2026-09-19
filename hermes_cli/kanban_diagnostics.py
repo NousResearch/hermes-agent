@@ -736,8 +736,92 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+# ---------------------------------------------------------------------------
+# Tamper detection — writes that went around the kernel (#110080)
+#
+# The kernel is the only writer that should move a task into a terminal status
+# or append to its audit log. A worker process can still run raw SQL against
+# kanban.db (the incident behind #110080 did exactly that after the completion
+# gate refused it), so these rules pair the projected state with its event and
+# verify the chain hashes the kernel wrote. Read-only, no side effects, and
+# silent for boards whose rows predate the chain.
+# ---------------------------------------------------------------------------
+
+# status -> event the kernel appends in the same transaction as the flip.
+_TERMINAL_STATUS_EVENTS = {"done": "completed", "archived": "archived"}
+
+
+def _rule_out_of_band_transition(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A terminal status with no kernel event behind it: ``tasks.status`` was
+    flipped by raw SQL. Fires only when the log proves the task was
+    kernel-tracked (≥1 event); ``review`` is left alone — several legitimate
+    paths reach it (see ``_set_status_direct``)."""
+    status = _task_field(task, "status")
+    expected = _TERMINAL_STATUS_EVENTS.get(status or "")
+    if not expected or not events:
+        return []
+    # ``gc_events`` retains terminal transitions, so a missing one is not aging.
+    if any(_event_kind(ev) == expected for ev in events):
+        return []
+    task_id = _task_field(task, "id") or "<task_id>"
+    latest = max(_event_ts(ev) for ev in events)
+    return [Diagnostic(
+        kind="out_of_band_transition", severity="critical",
+        title=f"Status {status!r} without a {expected!r} event",
+        detail=f"This card sits in {status!r} but its event log holds no {expected!r} event, so the "
+               f"transition never went through the kernel (completion gate, review handoff, or archive "
+               f"path). Treat the state as unverified: check the event log and the worker log, then "
+               f"re-drive the card through the CLI so the audit trail matches reality.",
+        actions=[
+            _cli_hint(f"Inspect the event log: hermes kanban show {task_id}",
+                      f"hermes kanban show {task_id}", suggested=True),
+            _log_hint_action(task_id),
+        ],
+        first_seen_at=latest, last_seen_at=latest, count=1,
+        data={"status": status, "expected_event": expected, "event_count": len(events)},
+    )]
+
+
+def _rule_event_chain_tampered(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """``task_events`` rows that don't match the kernel's per-task hash chain:
+    a raw-SQL INSERT/UPDATE/DELETE against the audit log (#110080)."""
+    if not events:
+        return []
+    from hermes_cli import kanban_db  # local: keep this module storage-agnostic
+
+    task_id = _task_field(task, "id") or ""
+    findings = kanban_db.verify_event_chain(task_id, events)
+    if not findings:
+        return []
+    kinds = sorted({f["kind"] for f in findings})
+    summary = "; ".join(
+        f"{f['kind']} on event {f['event_id']} ({f['event_kind']})" for f in findings[:5]
+    )
+    latest = max(_event_ts(ev) for ev in events)
+    return [Diagnostic(
+        kind="event_chain_tampered", severity="error",
+        title=f"Event log fails the kernel hash chain ({', '.join(kinds)})",
+        detail=f"At least one task_events row was written, edited, or deleted outside the kernel — "
+               f"{summary}. Every kernel transition hashes its row against the previous one, so this "
+               f"log cannot be trusted as the audit trail for the card.",
+        actions=[
+            _cli_hint(f"Inspect the event log: hermes kanban show {task_id}",
+                      f"hermes kanban show {task_id}", suggested=True),
+            _log_hint_action(task_id),
+        ],
+        first_seen_at=latest, last_seen_at=latest, count=len(findings),
+        data={
+            "finding_kinds": kinds,
+            "event_ids": [f["event_id"] for f in findings if f["event_id"] is not None][:10],
+            "finding_count": len(findings),
+        },
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
+    _rule_out_of_band_transition,
+    _rule_event_chain_tampered,
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
@@ -840,6 +924,8 @@ def compute_task_diagnostics(
 # The whole block is removed by reverting the commit that added it.
 
 DIAGNOSTIC_KINDS = (
+    "out_of_band_transition",
+    "event_chain_tampered",
     "hallucinated_cards",
     "triage_aux_unavailable",
     "prose_phantom_refs",

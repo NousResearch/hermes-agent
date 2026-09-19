@@ -12,6 +12,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -853,6 +854,10 @@ class Event:
     payload: Optional[dict]
     created_at: int
     run_id: Optional[int] = None
+    # Tamper-evidence chain (see ``_append_event``); NULL on rows written
+    # before the chain existed or by a raw-SQL writer.
+    prev_hash: Optional[str] = None
+    event_hash: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Event":
@@ -860,6 +865,7 @@ class Event:
         return cls(
             id=row["id"], task_id=row["task_id"], kind=_lossy_text(row["kind"]),
             payload=_json_or(_lossy_text(row["payload"])), created_at=row["created_at"], run_id=_opt_int(run_id),
+            prev_hash=_row_get(row, "prev_hash"), event_hash=_row_get(row, "event_hash"),
         )
 
 
@@ -983,13 +989,20 @@ CREATE TABLE IF NOT EXISTS task_comments (
     created_at INTEGER NOT NULL
 );
 
+-- ``prev_hash``/``event_hash`` are the tamper-evidence chain: every row the
+-- kernel writes hashes (prev link + its own fields). A state change that
+-- arrives as raw SQL either leaves NULLs (unsigned) or does not recompute
+-- (mismatch) — see ``verify_event_chain``. Rows predating the chain stay NULL
+-- and are not findings. #110080
 CREATE TABLE IF NOT EXISTS task_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
     run_id     INTEGER,
     kind       TEXT NOT NULL,
     payload    TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    prev_hash  TEXT,
+    event_hash TEXT
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -1934,15 +1947,150 @@ def _insert_comment(
     )
 
 
+# --- Event chain (tamper evidence) ---
+#
+# The kernel is the only writer that should ever move a task to a terminal
+# status, and every kernel transition appends an event. Anything that writes
+# ``tasks``/``task_events`` with raw SQL (the worker in #110080 that ran
+# ``UPDATE tasks SET status='done'`` after the completion gate refused it)
+# either skips the event entirely — caught by the diagnostics rule that pairs a
+# terminal status with its event — or fabricates the row, which is caught here:
+# each row carries a hash over its own fields plus the previous row's hash, so
+# an inserted/edited/deleted row stops recomputing.
+
+def _ev_get(ev: Any, col: str, default: Any = None) -> Any:
+    """``col`` from a sqlite3.Row, dict, or :class:`Event` (rules see all three)."""
+    try:
+        if hasattr(ev, "keys") and col in ev.keys():
+            return ev[col]
+    except Exception:
+        pass
+    if isinstance(ev, dict):
+        return ev.get(col, default)
+    return getattr(ev, col, default)
+
+
+def _canonical_payload(payload: Any) -> str:
+    """Canonical text for the chain hash, from stored JSON text OR a decoded value.
+
+    ``_append_event`` hashes the value it writes; a reader may hold the raw
+    column text (``sqlite3.Row``) or the decoded payload (:class:`Event`), so
+    both must fold to the same string — parse first when the input is text.
+    """
+    if payload is None:
+        return ""
+    value = payload
+    if isinstance(payload, str):
+        try:
+            value = json.loads(payload)
+        except Exception:
+            value = payload
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except Exception:
+        return str(value)
+
+
+def _event_chain_hash(
+    prev_hash: Optional[str], task_id: Optional[str], run_id: Optional[int],
+    kind: Optional[str], payload: Any, created_at: Any,
+) -> Optional[str]:
+    """sha256 over the link + the event's identity fields; None on unsortable input."""
+    try:
+        body = "\x1f".join((
+            prev_hash or "", str(task_id or ""),
+            "" if run_id is None else str(int(run_id)),
+            str(kind or ""), _canonical_payload(payload), str(int(created_at)),
+        ))
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()
+
+
+def verify_event_chain(task_id: str, events: Iterable[Any]) -> list[dict]:
+    """Read-only audit of ONE task's event log against its chain hashes (#110080).
+
+    Findings (empty list = the log the kernel wrote, nothing to report):
+      * ``unsigned_event`` — a NULL-hash row following a hashed one: something
+        INSERTed into ``task_events`` without going through :func:`_append_event`.
+      * ``hash_mismatch`` — ``event_hash`` doesn't recompute from the row's own
+        fields + its stored ``prev_hash``: the row was edited after the fact.
+      * ``chain_broken`` — ``prev_hash`` skips a row that used to sit between it
+        and the previous hashed row: an event was deleted.
+
+    Rows that predate the chain (NULL hash, no hashed row before them) are
+    legacy, not findings; a pruned prefix (``gc_events``) keeps each surviving
+    row anchored on the hash it still carries. Ceiling: anyone who can read
+    this code can recompute a whole suffix — this is evidence, not a lock.
+    """
+    findings: list[dict] = []
+    prev_hash: Optional[str] = None
+    saw_hash = False
+    for ev in events:
+        stored = _ev_get(ev, "event_hash")
+        event_id = _ev_get(ev, "id")
+        kind = _ev_get(ev, "kind")
+        if not stored:
+            if saw_hash:
+                findings.append({
+                    "kind": "unsigned_event", "event_id": event_id, "event_kind": kind,
+                    "detail": "event row has no chain hash but follows hashed rows",
+                })
+            continue
+        row_prev = _ev_get(ev, "prev_hash")
+        expected = _event_chain_hash(
+            row_prev, _ev_get(ev, "task_id") or task_id, _ev_get(ev, "run_id"),
+            kind, _ev_get(ev, "payload"), _ev_get(ev, "created_at"),
+        )
+        if expected != stored:
+            findings.append({
+                "kind": "hash_mismatch", "event_id": event_id, "event_kind": kind,
+                "detail": "event_hash does not recompute from this row's fields",
+            })
+        elif prev_hash is not None and row_prev != prev_hash:
+            findings.append({
+                "kind": "chain_broken", "event_id": event_id, "event_kind": kind,
+                "detail": "prev_hash does not link to the previous surviving event",
+            })
+        prev_hash = stored
+        saw_hash = True
+    return findings
+
+
 def _append_event(
     conn: sqlite3.Connection, task_id: str, kind: str, payload: Optional[dict] = None, *,
     run_id: Optional[int] = None,
 ) -> None:
-    """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped)."""
-    conn.execute(
-        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-        "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),
-    )
+    """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped).
+
+    Rows are chained per task (:func:`verify_event_chain`); the link is read
+    inside the same write txn, so concurrent writers can't fork it.
+    """
+    payload_text = _json_or_null(payload)
+    created_at = int(time.time())
+
+    def _insert() -> None:
+        prev = conn.execute(
+            "SELECT event_hash FROM task_events WHERE task_id = ? AND event_hash IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1", (task_id,),
+        ).fetchone()
+        prev_hash = _row_get(prev, "event_hash")
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at, prev_hash, event_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id, run_id, kind, payload_text, created_at, prev_hash,
+                _event_chain_hash(prev_hash, task_id, run_id, kind, payload, created_at),
+            ),
+        )
+
+    if getattr(conn, "in_transaction", False):
+        _insert()
+    else:
+        # Autocommit caller: the head read + insert must share a txn or two
+        # writers could both chain onto the same row.
+        with write_txn(conn):
+            _insert()
 
 
 def _end_run(
@@ -4137,11 +4285,17 @@ def task_age(task: Task) -> dict:
 # --- Retention + garbage collection ---
 
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
-    """Prune old done/archived events, retaining decomposition identity until task deletion."""
+    """Prune old done/archived events, retaining decomposition identity until task deletion.
+
+    Terminal transitions (``completed``/``archived``) are retained too: they are
+    the audit anchor that pairs a terminal ``tasks.status`` with its event, so
+    pruning them would make an old completed task look out-of-band (#110080).
+    """
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
+            "DELETE FROM task_events WHERE created_at < ? "
+            "AND kind NOT IN ('decomposed', 'completed', 'archived') AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
     return int(cur.rowcount or 0)

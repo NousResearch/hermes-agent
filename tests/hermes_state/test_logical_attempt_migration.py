@@ -53,6 +53,24 @@ def test_real_erased_legacy_preserves_physical_ambiguity(tmp_path, monkeypatch):
         assert lookup(db, sid='unrelated') is None
 
 
+@pytest.mark.parametrize('field,bad', [('status', 'queued'), ('payload_digest', 'broken'), ('intent', 'broken')])
+def test_independent_legacy_identity_scopes_corrupt_nonidentity_fields(tmp_path, monkeypatch, field, bad):
+    from hermes_state_terminal import ADMISSION_PREFIX
+    with SessionDB(tmp_path / 'state.db') as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        row = legacy_accept_and_retire(db, epoch, monkeypatch)
+        key = ADMISSION_PREFIX + row['admission_id']
+        saved = json.loads(db._conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
+        saved[field] = bad
+        db._execute_write(lambda c: c.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(saved), key)))
+        result = prepare(db)
+        assert result['error'] == 'scoped_terminal_corruption'
+        assert result['coverage_complete'] and not result['complete']
+        assert lookup(db, sid='unrelated') is None
+        with pytest.raises(rt.RuntimeStoreError, match='storage_unavailable'):
+            lookup(db, sid='old-member')
+
+
 def test_migration_interleaved_retirement_projects_before_erasure(tmp_path, monkeypatch):
     with SessionDB(tmp_path / 'state.db') as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')

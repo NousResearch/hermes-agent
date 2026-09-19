@@ -15,13 +15,13 @@ Humanize text: strip AI-isms and add real voice.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative\humanizer` |
+| Path | `skills/creative/humanizer` |
 | Version | `2.5.1` |
 | Author | Siqi Chen (@blader, https://github.com/blader/humanizer), ported by Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `writing`, `editing`, `humanize`, `anti-ai-slop`, `voice`, `prose`, `text` |
-| Related skills | [`songwriting-and-ai-music`](./creative-songwriting-and-ai-music.md) |
+| Related skills | [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md) |
 
 ## Reference: full SKILL.md
 

@@ -21,6 +21,7 @@ from tui_gateway.host_supervisor import HostSupervisor
 def _supervisor() -> tuple[HostSupervisor, list]:
     sup = HostSupervisor(argv=[sys.executable, "-c", ""], autostart=False)
     sent: list = []
+    sup._proc = types.SimpleNamespace(poll=lambda: None)
     sup._send_frame = lambda frame: sent.append(frame)
     sup.start = lambda: None  # never spawn a child
     return sup, sent
@@ -67,6 +68,33 @@ def test_control_timeout_registers_one_shot_late_ack_handler():
     sup._handle_host_frame(late)
     assert fired == [late]
     assert request_id not in sup._late_control_handlers
+
+
+def test_control_timeout_returns_ack_delivered_before_timeout_handoff(monkeypatch):
+    from tui_gateway import host_supervisor as hs
+
+    sup, sent = _supervisor()
+    ack = {"type": "control.ack", "result": {"status": "compressed"}}
+
+    class TimeoutRaceQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            if timeout is not None:
+                request_id = sent[0]["request_id"]
+                ack["request_id"] = request_id
+                sup._deliver_control_frame(request_id, ack)
+                raise queue.Empty
+            return super().get(block=block, timeout=timeout)
+
+    monkeypatch.setattr(hs.queue, "Queue", TimeoutRaceQueue)
+
+    result = sup.control(
+        "sid", route_name="session.compress", wait=True, timeout=0.01,
+        on_late_ack=lambda _frame: pytest.fail("settled ack must not become late"),
+    )
+
+    assert result == ack
+    assert sup._pending_controls == {}
+    assert sup._late_control_handlers == {}
 
 
 def test_control_timeout_without_handler_still_drops_late_ack():
@@ -118,6 +146,97 @@ def test_host_crash_fails_outstanding_late_ack_handlers():
     assert fired[0]["type"] == "control.error"
     assert fired[0]["request_id"] == sent[0]["request_id"]
     assert sup._late_control_handlers == {}
+
+
+def test_old_host_exit_fails_only_its_controls_and_replacement_late_ack_still_fires():
+    class Proc:
+        def poll(self):
+            return None
+
+    sup = HostSupervisor(argv=[sys.executable, "-c", ""], autostart=False)
+    old, replacement = Proc(), Proc()
+    sent: list[tuple[Proc, dict]] = []
+    sup.start = lambda: None
+    sup._proc = old
+    sup._send_frame = lambda frame: sent.append((sup._proc, frame))
+    old_fired: list[dict] = []
+    replacement_fired: list[dict] = []
+
+    with pytest.raises(queue.Empty):
+        sup.control("old", route_name="session.compress", wait=True, timeout=0.01,
+                    on_late_ack=old_fired.append)
+    old_request = sent[-1][1]["request_id"]
+    sup._proc = replacement
+    with pytest.raises(queue.Empty):
+        sup.control("new", route_name="session.compress", wait=True, timeout=0.01,
+                    on_late_ack=replacement_fired.append)
+    replacement_request = sent[-1][1]["request_id"]
+
+    sup._fail_pending_turns(reason="crash", message="old host exited", host=old)
+
+    assert old_fired == [{"type": "control.error", "request_id": old_request,
+                          "reason": "crash", "message": "old host exited"}]
+    assert replacement_fired == []
+    assert replacement_request in sup._late_control_handlers
+
+    ack = {"type": "control.ack", "request_id": replacement_request,
+           "result": {"status": "compressed"}}
+    sup._handle_host_frame(ack, host=old)
+    assert replacement_fired == []
+    assert replacement_request in sup._late_control_handlers
+    sup._handle_host_frame(ack, host=replacement)
+    assert replacement_fired == [ack]
+    assert replacement_request not in sup._late_control_handlers
+
+
+def test_old_host_exit_unblocks_only_its_pending_control_waiter():
+    class Proc:
+        def poll(self):
+            return None
+
+    sup = HostSupervisor(argv=[sys.executable, "-c", ""], autostart=False)
+    old, replacement = Proc(), Proc()
+    sent = threading.Condition()
+    frames: list[tuple[Proc, dict]] = []
+    sup.start = lambda: None
+    sup._proc = old
+
+    def send(frame):
+        with sent:
+            frames.append((sup._proc, frame))
+            sent.notify_all()
+    sup._send_frame = send
+    old_result: list[dict] = []
+    replacement_result: list[dict] = []
+
+    old_waiter = threading.Thread(target=lambda: old_result.append(
+        sup.control("old", route_name="session.save", wait=True, timeout=5)))
+    old_waiter.start()
+    with sent:
+        assert sent.wait_for(lambda: len(frames) == 1, timeout=2)
+    sup._proc = replacement
+    replacement_waiter = threading.Thread(target=lambda: replacement_result.append(
+        sup.control("new", route_name="session.save", wait=True, timeout=5)))
+    replacement_waiter.start()
+    with sent:
+        assert sent.wait_for(lambda: len(frames) == 2, timeout=2)
+
+    sup._fail_pending_turns(reason="crash", message="old host exited", host=old)
+    old_waiter.join(timeout=2)
+
+    assert not old_waiter.is_alive()
+    assert old_result == [{"type": "control.error", "request_id": frames[0][1]["request_id"],
+                           "reason": "crash", "message": "old host exited"}]
+    replacement_request = frames[1][1]["request_id"]
+    assert sup._pending_controls[replacement_request][0] is replacement
+    assert replacement_waiter.is_alive()
+
+    ack = {"type": "control.ack", "request_id": replacement_request,
+           "result": {"status": "saved"}}
+    sup._handle_host_frame(ack, host=replacement)
+    replacement_waiter.join(timeout=2)
+    assert not replacement_waiter.is_alive()
+    assert replacement_result == [ack]
 
 
 # ── session.compress RPC: pending answer + late adoption ────────────────────

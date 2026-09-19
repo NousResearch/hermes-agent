@@ -49,6 +49,18 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session. Background completions carry the ``session_key`` of the
     session that started the work; async delegation completions also carry ``origin_ui_session_id`` (the live TUI tab)."""
+    evt_home = evt.get("profile_home")
+    if evt_home and evt_home != str(_session_home(session).resolve()):
+        return _notif_other_profile_session_owns(sid, session, evt)
+    owner = evt.get("owner_task_id") if evt_home else None
+    if owner and owner in getattr(session.get("agent"), "_process_owner_task_ids", ()):
+        return False
+    if owner and _notif_locked_sessions(
+            lambda ss: any(s is not session and not s.get("_finalized")
+                           and str(_session_home(s).resolve()) == evt_home
+                           and owner in getattr(s.get("agent"), "_process_owner_task_ids", ())
+                           for s in ss.values()), False):
+        return True
     evt_ui_sid = str(evt.get("origin_ui_session_id") or "")
     if evt_ui_sid:
         if evt_ui_sid == str(sid or "") and not session.get("_finalized"):
@@ -96,6 +108,12 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     resolved matches) — the fail-closed gate for addressed notifications, without the orphan-adoption fallback."""
     if session.get("_finalized"):
         return False
+    evt_home = evt.get("profile_home")
+    if evt_home and evt_home != str(_session_home(session).resolve()):
+        return False
+    owners = getattr(session.get("agent"), "_process_owner_task_ids", ())
+    if evt_home and (owner := evt.get("owner_task_id")) and owners:
+        return owner in owners
     if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
         return True
     evt_key = str(evt.get("session_key") or "")
@@ -155,18 +173,18 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
+def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
         from gateway.warning_notifications import render_notification
         with _session_profile_runtime_scope(session):
             render_notification(lambda: _emit("message.start", sid), platform="tui",
                                 diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        return _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
         _notif_release_turn(session)
-        raise
+        return False
 
 
 def _notif_loop_status(sid: str, text: str) -> None:
@@ -547,12 +565,20 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         _notif_release_turn(session)
     try:
         if text is not None:
-            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+            started = _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                           "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
                           display_metadata={"display_text": batch.display_text(registry)})
+            if started is False:
+                for event, _text, claim in claimed:
+                    release_event_delivery(event, claim)
+                    registry.completion_queue.put(event)
+                return
+            for event, _text, _claim in claimed:
+                registry.acknowledge_completion(event["session_id"])
     except Exception:
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+            registry.completion_queue.put(event)
         return
     for event, _text, claim in claimed:
         complete_event_delivery(event, claim)
@@ -751,7 +777,9 @@ def _wire_desktop_sinks() -> None:
         if not session_key:
             return ""
         with _sessions_lock:
-            return next((sid for sid, s in _sessions.items() if str(s.get("session_key") or "") == session_key), "")
+            return next((sid for sid, s in _sessions.items()
+                         if str(s.get("session_key") or "") == session_key
+                         and (not session.profile_home or str(_session_home(s).resolve()) == session.profile_home)), "")
     if getattr(process_registry, "on_output", None) is None:
         process_registry.on_output = lambda session, chunk: _emit(
             "agent.terminal.output", _owner_sid(session), {"process_id": session.id, "chunk": chunk})

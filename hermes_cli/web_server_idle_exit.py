@@ -10,7 +10,7 @@ Two pieces, both scoped to the SSH-isolated case (a session token was handed ove
 
 * An ASGI wrapper counts accepted WebSocket connections (every dashboard WS route: /api/ws,
   /api/pty, /api/console, /api/pub, /api/events, /api/audio/speak-stream) without touching the
-  handlers. When the count has been zero for the grace window and no agent turn is running, the
+  handlers. When the count has been zero for the grace window and no agent work is pending, the
   watchdog asks uvicorn to exit gracefully (WAL checkpoint, exit 0). An indeterminate turn probe
   fails closed: the backend stays up.
 * Loopback normally disables uvicorn's WS ping (a dead local client sends FIN/RST). Across an SSH
@@ -120,7 +120,12 @@ def busy_ledger() -> Optional[str]:
         if retirement.active_count():
             return "retirement_admission"
         with gateway._sessions_lock:
-            busy_sessions = [sid for sid, s in gateway._sessions.items() if _session_work_in_flight(s)]
+            busy_sessions = [
+                sid
+                for sid, session in gateway._sessions.items()
+                if _session_work_in_flight(session)
+                or gateway._session_has_background_processes(session)
+            ]
         if busy_sessions:
             return "session:" + ",".join(str(sid) for sid in busy_sessions)
         from tools.async_delegation import active_count
@@ -145,7 +150,7 @@ def turn_in_flight() -> Optional[bool]:
 
 def should_exit_idle(tracker: IdleClientTracker, grace_s: float,
                      probe: Callable[[], Optional[bool]] = turn_in_flight) -> bool:
-    """Exit only when no client has been connected for ``grace_s`` AND no turn is provably running.
+    """Exit only when no client has been connected for ``grace_s`` AND work is provably settled.
     A probe that cannot answer keeps the process (fail closed)."""
     return tracker.idle_for() >= grace_s and probe() is False  # idle_for() is 0 while a client is connected
 

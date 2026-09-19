@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { once } from 'node:events'
 
 import { test } from 'vitest'
 
@@ -715,7 +716,7 @@ test.skipIf(process.platform === 'win32')(
   }
 )
 
-test('disconnect reaps the backend recorded for this desktop ownership', async () => {
+test('disconnect preserves the backend and its reconnect ownership record', async () => {
   const lock = ownedLock()
 
   const ssh = fakeSsh([
@@ -726,8 +727,8 @@ test('disconnect reaps the backend recorded for this desktop ownership', async (
 
   await disconnect(ssh, OWNERSHIP_ID)
 
-  assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
-  assert.ok(ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
+  assert.ok(!ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
 })
 
 test('disconnect is a no-op when this desktop has no lockfile', async () => {
@@ -1084,7 +1085,7 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
   assert.ok(!ssh.calls.some(c => /setsid/.test(c)), 'reuse path must not spawn a new dashboard')
 })
 
-test('connect() respawns when the requested remote profile differs from the lockfile profile', async () => {
+test('connect() preserves live work when the requested profile differs', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ profile: 'desktop-work', tokenFingerprint: fingerprintToken(reuseToken) })
 
@@ -1104,15 +1105,10 @@ test('connect() respawns when the requested remote profile differs from the lock
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=52050\n']
   ])
 
-  const result = await connect(
+  await assert.rejects(() => connect(
     connectDeps(ssh, { profile: 'default', reuseToken, adoptServedToken: async () => 'fresh' })
-  )
-
-  assert.equal(result.reused, false)
-  assert.ok(
-    ssh.calls.some(c => /setsid/.test(c)),
-    'profile mismatch must spawn a fresh dashboard'
-  )
+  ), (error: any) => error.kind === 'remote-backend-in-use')
+  assert.ok(!ssh.calls.some(c => /setsid|kill 333\b/.test(c)))
 })
 
 test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {
@@ -1750,7 +1746,7 @@ test('connect preserves an exact-owned backend when reuse proof transport fails'
   assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
 })
 
-test('connect replaces an exact-owned backend only after authenticated stale proof', async () => {
+test('connect preserves an exact-owned backend after authenticated stale proof', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
 
@@ -1768,7 +1764,7 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=43000\n']
   ])
 
-  const result = await connect(
+  await assert.rejects(() => connect(
     connectDeps(ssh, {
       reuseToken,
       probeReuseProof: async (_baseUrl, token, nonce) => {
@@ -1779,17 +1775,46 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
       },
       adoptServedToken: async () => 'fresh'
     })
-  )
-
-  assert.equal(result.reused, false)
-  // The kill goes through main's cleanupStale (ownership-proved SIGTERM with
-  // SIGKILL escalation, #91668) — the PR's python re-proof command shape is
-  // used by the managed-update path (terminateOwnedDashboardForUpdate), not
-  // by connect's stale replacement. Assert the CONTRACT: the owned pid was
-  // signalled and the record reclaimed.
-  assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
-  assert.ok(ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
+  ), (error: any) => error.kind === 'remote-backend-in-use')
+  assert.ok(!ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
 })
+
+test.each(['missing-token', 'changed-token', 'profile', 'home', 'path', 'stale-proof'])(
+  'disconnect/reconnect preserves a real child with %s', async mismatch => {
+    const child = spawn(process.execPath, ['-e',
+      'process.stdin.resume(); process.stdin.on("end", () => process.exit(0)); console.log("READY")'],
+      { stdio: ['pipe', 'pipe', 'pipe'] })
+    const exit = once(child, 'exit')
+    await once(child.stdout, 'data')
+    const overrides: Record<string, Record<string, string>> = {
+      profile: { profile: 'other' }, home: { hermesHome: '/other/home' },
+      path: { hermesPath: '/other/hermes' },
+    }
+    const lock = ownedLock({ pid: child.pid, ...(overrides[mismatch] || {}) })
+    const ssh = fakeSsh([
+      [/uname/, 'Linux\nx86_64'], [/\[ -x/, 'OK'],
+      [/cat .*lock\.json/, JSON.stringify(lock)], [/kill -0/, 'ALIVE'],
+      [/print\("OWNED"/, 'OWNED\n'],
+      [command => command.startsWith(`kill ${child.pid} `), () => { child.kill(); return '' }],
+    ])
+    try {
+      await disconnect(ssh, OWNERSHIP_ID)
+      const tokens: Record<string, string> = { 'missing-token': '', 'changed-token': 'changed' }
+      await assert.rejects(() => connect(connectDeps(ssh, {
+        reuseToken: tokens[mismatch] ?? 'stored-token',
+        probeReuseProof: async () => 'authenticated-stale',
+      })), (error: any) => error.kind === 'remote-backend-in-use')
+      assert.equal(child.exitCode, null)
+      assert.equal(child.killed, false)
+      assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
+      assert.ok(!ssh.calls.some(command => /setsid|nohup/.test(command)))
+    } finally {
+      child.stdin.end()
+      await exit
+    }
+  },
+)
 
 test('remote SSH ownership capability requires both secure bootstrap flags', async () => {
   let helpProbe = ''

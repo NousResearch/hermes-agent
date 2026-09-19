@@ -237,6 +237,7 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
+                session["_compute_host_work_token"] = frame.get("turn_id")
                 server._start_inflight_turn(session, inflight)
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
@@ -263,9 +264,13 @@ class ComputeHost:
             session_info = server._session_info(session.get("agent"), session)
             with self._progress_lock:
                 self._progress_counter += 1
-            self._reply(
-                "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
-                session_info=session_info, session_info_emitted=True)
+            # Serialize observation AND publication with heartbeat snapshots.
+            # A pre-admission False must never overtake the settled turn's True.
+            with session["history_lock"]:
+                self._reply(
+                    "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
+                    session_info=session_info, session_info_emitted=True,
+                    pending_work=self._session_work_pending(server, sid, session))
         except Exception as exc:
             with contextlib.suppress(Exception):
                 from tui_gateway import server
@@ -431,6 +436,9 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
+        if route_name == "session.close":
+            return {"result": {"closed": server._close_session_by_id(
+                sid, end_reason=str(frame.get("end_reason") or "tui_close"))}}
         if route_name in {"session.save", "session.compress"}:
             params = {"session_id": sid}
             if route_name == "session.compress":
@@ -458,8 +466,37 @@ class ComputeHost:
         with self._turn_futures_lock:
             return [f for f in self._turn_futures if not f.done()]
 
+    @staticmethod
+    def _session_work_pending(server, sid: str, session: dict) -> bool:
+        # The owner process sees terminal registries and autonomous notifier turns
+        # that do not have a submit_turn future in the supervising process.
+        try:
+            with server._session_profile_runtime_scope(session):
+                return bool(session.get("running") or session.get("queued_prompt") or session.get("queued_prompts")
+                            or session.get("_auto_continue_scheduled")
+                            or server._session_has_background_processes(session)
+                            or server._session_has_active_delegations(sid, session))
+        except Exception:
+            logging.getLogger(__name__).exception("compute host work probe failed sid=%s", sid)
+            return True  # unknown ownership must not authorize parent shutdown
+
+    def _publish_session_work(self) -> None:
+        from tui_gateway import server
+        with server._sessions_lock:
+            sessions = list(server._sessions.items())
+        for sid, session in sessions:
+            with session["history_lock"]:
+                token = session.get("_compute_host_work_token")
+                if not token or session.get("_finalized"):
+                    continue
+                pending = self._session_work_pending(server, sid, session)
+                meta = _history_meta(session)
+                self._transport.write({"jsonrpc": "2.0", "method": "compute_host.work", "params": {
+                    "session_id": sid, "work_token": token, "pending_work": pending, **meta}})
+
     def _heartbeat_loop(self) -> None:
         while not self._closed.wait(self._heartbeat_secs):
+            self._publish_session_work()
             active_turns = len(self._live_turns())
             with self._progress_lock:
                 counter = self._progress_counter

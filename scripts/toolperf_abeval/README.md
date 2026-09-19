@@ -9,7 +9,9 @@ in real production traffic.
 
 ## Design
 
-- **Two arms, one variable.** `baseline` and `fixes` runs differ ONLY by
+- **Counterbalanced pairs.** The runner alternates which arm goes first for each
+  adjacent task/repetition pair to reduce time and load confounding. The intended
+  code difference between `baseline` and `fixes` is
   `PYTHONPATH` (a checkout of `origin/main` vs your integration branch). Same
   Hermes home, same model, same tasks, same reps.
 - **Tasks are traps.** Each of the 9 tasks is constructed so a specific
@@ -22,8 +24,24 @@ in real production traffic.
   ATOF traces emitted by the run itself (`llm`/`tool` scope events), plus wall
   clock and a per-task programmatic success check (marker strings + on-disk
   verification).
+- **Conservative pass criteria.** Completeness is recorded separately. A pass requires
+  every fixes run to satisfy its task success predicate and, for each task, no
+  increase in mean LLM calls, tool calls, errors, retries, result bytes, or wall
+  time versus baseline. Wall time is noisy; a failure requires investigation,
+  not automatic promotion or relaxed thresholds.
+- **Completed traces only.** After a successful CLI exit, the harness appends a
+  run-end event. Scoring requires this final event, at least one completed LLM
+  scope, and balanced scopes. Older traces must be rerun.
+- **Configuration provenance.** Both provider configuration views (including
+  legacy custom providers) enter the digest. Credential values enter only as
+  SHA-256 fingerprints, including provider API-key variables from the dedicated
+  profile and inherited environment; raw credentials are never published. A configuration or
+  evaluator change invalidates resume data.
+- **Workspace isolation.** The default workspace lives in the system temporary
+  directory. Explicit workspaces must be outside both evaluated checkouts.
 - **Resume-safe.** Completed `run_id`s in `meta.jsonl` are skipped, so a
-  killed battery continues where it left off. Startup crashes (nonzero exit
+  killed battery continues where it left off. Corrupt metadata is rejected
+  before further model calls and requires explicit repair. Startup crashes (nonzero exit
   with empty output) are NOT recorded — they retry on resume instead of
   polluting cells (this bit the first pass of the Aug 2026 run).
 

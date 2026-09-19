@@ -119,7 +119,7 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+async def test_internal_silence_token_suppresses_delivery_but_hides_control_row(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
@@ -141,7 +141,11 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
     assert response == ""
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
+    assert appended[-1]["display_kind"] == "hidden"
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+    runner._session_db.set_latest_matching_message_display_kind.assert_called_once_with(
+        "sess-silent", role="assistant", content="[SILENT]", display_kind="hidden",
+    )
 
 
 @pytest.mark.asyncio

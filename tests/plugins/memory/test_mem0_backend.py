@@ -286,6 +286,7 @@ def _install_fake_mem0(monkeypatch):
                 config=copy.deepcopy(vector_store.get("config", {})),
             )
             self.version = config.get("version", "v1.1")
+            self.custom_instructions = config.get("custom_instructions")
 
     class Memory:
         instances = []
@@ -418,6 +419,54 @@ class TestOSSBackend:
         assert state.from_config_calls == 0
         assert raw == before
         assert dict(os.environ) == environment
+
+    @pytest.mark.parametrize(
+        "llm_provider, expected_from_config_calls", [("openai", 0), ("ollama", 1)]
+    )
+    def test_custom_instructions_reach_mem0_config(
+        self, monkeypatch, llm_provider, expected_from_config_calls
+    ):
+        state, Memory, _ = _install_fake_mem0(monkeypatch)
+        raw = {
+            "llm": {
+                "provider": llm_provider,
+                "config": {"model": "gpt-5-mini", "api_key": "sentinel"},
+            },
+            "embedder": {"provider": "ollama", "config": {}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+            "custom_instructions": "  Do not extract duplicate facts.  ",
+        }
+        before = copy.deepcopy(raw)
+
+        OSSBackend(raw)
+
+        assert Memory.instances[0].config.custom_instructions == (
+            "Do not extract duplicate facts."
+        )
+        assert state.from_config_calls == expected_from_config_calls
+        assert raw == before
+
+    def test_custom_instructions_reject_non_string_values(self, monkeypatch):
+        _install_fake_mem0(monkeypatch)
+        reconciliation_calls = []
+        monkeypatch.setattr(
+            OSSBackend,
+            "_recreate_collection_if_dims_changed",
+            staticmethod(lambda *args: reconciliation_calls.append(args)),
+        )
+        raw = {
+            "llm": {"provider": "ollama", "config": {}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"embedding_dims": 1536},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+            "custom_instructions": ["not", "a", "prompt"],
+        }
+
+        with pytest.raises(TypeError, match="custom_instructions must be a string"):
+            OSSBackend(raw)
+        assert reconciliation_calls == []
 
     def test_direct_openai_uses_openai_credentials_and_request_shape(self, monkeypatch):
         state, _, factory = _install_fake_mem0(monkeypatch)

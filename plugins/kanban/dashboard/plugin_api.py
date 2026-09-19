@@ -359,7 +359,7 @@ def get_task(
         return {
             "task": task_d,
             "comments": [asdict(c) for c in kanban_db.list_comments(conn, task_id)],
-            "events": [asdict(e) for e in kanban_db.list_events(conn, task_id)],
+            "events": [kanban_db.event_to_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": links,
             "child_results": [

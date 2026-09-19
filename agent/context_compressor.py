@@ -4238,7 +4238,12 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     @classmethod
     def _is_real_user_turn(cls, message: Dict[str, Any]) -> bool:
-        """Actionable user turn that is not synthetic scaffolding — the shared row test for both index scans."""
+        """Actionable user turn that is not synthetic scaffolding — the row test both index scans share.
+
+        Weaker than ``agent.conversation_compression._is_real_user_message``, which also rejects
+        metadata-flagged scaffolding this pair cannot see; use that one when the question is
+        "is this a genuine inbound user message".
+        """
         return cls._is_actionable_user_turn(message) and not cls._is_synthetic_compression_user_turn(message)
 
     @classmethod
@@ -4417,9 +4422,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return compressed
 
         for msg in compressed[carrier_idx + 1:]:
-            if self._is_actionable_user_turn(
-                msg
-            ) and not self._is_synthetic_compression_user_turn(msg):
+            if self._is_real_user_turn(msg):
                 # A real request already follows the summary.
                 return compressed
 
@@ -4572,9 +4575,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # soft ceiling, anchoring its opening request retains the whole turn and blows the budget by
         # design — then the clean tool-group boundary above wins and that request rides the handoff
         # (#80449). The N-user promise (#70250) is never relaxed.
-        # Only batch/manual compaction can take the exception below, and only that path reads the
-        # newest user index, so the scan is not paid on the rolling micro-compaction pass.
-        last_user_idx = self._find_last_user_message_idx(messages, head_end) if allow_split_turn else -1
+        last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
         split_oversized_turn = False
         # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the
@@ -5187,7 +5188,7 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[Dict[str, Any]], 
             candidate["display_metadata"] = durable_metadata
     drop_stale_api_content(candidate)
     cls = ContextCompressor
-    if cls._is_synthetic_compression_user_turn(candidate) or not cls._is_actionable_user_turn(candidate):
+    if not cls._is_real_user_turn(candidate):
         return handoff, None
     return handoff, candidate
 
@@ -5264,10 +5265,7 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
         role = message.get("role")
         if (
             role == "tool" or (role == "assistant" and message.get("tool_calls"))
-            or (
-                ContextCompressor._is_actionable_user_turn(message)
-                and not ContextCompressor._is_synthetic_compression_user_turn(message)
-            )
+            or ContextCompressor._is_real_user_turn(message)
             or (is_compaction_summary_message(message) and _handoff_carries_live_user_content(message))
         ):
             return False

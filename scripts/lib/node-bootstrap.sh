@@ -25,6 +25,10 @@
 
 HERMES_NODE_MIN_VERSION="${HERMES_NODE_MIN_VERSION:-20}"
 HERMES_NODE_TARGET_MAJOR="${HERMES_NODE_TARGET_MAJOR:-22}"
+# Full floor a managed tree must clear, mirroring engines.node in package.json.
+# A major-only staleness check judges a managed 22.14.0 tree "current" while
+# every `npm ci` rejects it with EBADENGINE under engine-strict=true.
+HERMES_NODE_TARGET_MIN_VERSION="${HERMES_NODE_TARGET_MIN_VERSION:-22.22.0}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_NODE_AVAILABLE=false
 
@@ -160,6 +164,25 @@ _nb_ensure_bundled_npm_range() {
     rm -rf "$tmp_cwd"
     _nb_warn "Could not upgrade bundled npm to $range — \`npm ci\` may fail with EBADENGINE."
     _nb_warn "Fix manually: npm install -g --prefix \"$HERMES_HOME/node\" npm@\"$range\""
+    return 1
+}
+
+# True when version $1 is strictly below version $2 (numeric major.minor.patch;
+# a prerelease suffix is stripped, missing components read as 0). Unparseable
+# input fails closed (returns 1 = "not below") so a probe we cannot read never
+# triggers a redownload loop.
+_nb_version_lt() {
+    local have="${1#v}" want="${2#v}" i h w
+    have="${have%%-*}"; want="${want%%-*}"
+    for i in 1 2 3; do
+        h="$(printf '%s' "$have" | cut -d. -f"$i")"
+        w="$(printf '%s' "$want" | cut -d. -f"$i")"
+        [ -n "$h" ] || h=0
+        [ -n "$w" ] || w=0
+        case "$h$w" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$h" -lt "$w" ] && return 0
+        [ "$h" -gt "$w" ] && return 1
+    done
     return 1
 }
 
@@ -372,19 +395,22 @@ _nb_managed_tool_broken() {
     return 1
 }
 
-# The managed node runs but is below HERMES_NODE_TARGET_MAJOR — an old tree
-# from a previous install (e.g. 22). Outdated heals the same way broken does,
-# so existing users get upgraded on the next heal probe, not just on a full
-# installer re-run. Mirrors _managed_node_tree_outdated() in
-# hermes_constants.py.
+# The managed node runs but is below the target floor — an old tree from a
+# previous install (e.g. 22.14.0 when the floor is 22.22.0). Outdated heals the
+# same way broken does, so existing users get upgraded on the next heal probe,
+# not just on a full installer re-run. The comparison uses the FULL floor, not
+# just the major: `.npmrc` sets engine-strict=true, so a within-major stale tree
+# fails every `npm ci` with EBADENGINE while a major-only check calls it current.
+# Mirrors _managed_node_tree_outdated() in hermes_constants.py.
 _nb_managed_node_outdated() {
-    local probe ver major
+    local probe ver
     for probe in "$HERMES_HOME/node/bin/node" "$HERMES_HOME/node/node"; do
         [ -x "$probe" ] || continue
         ver="$("$probe" --version 2>/dev/null)" || return 1
-        major="${ver#v}"; major="${major%%.*}"
-        case "$major" in ''|*[!0-9]*) return 1 ;; esac
-        [ "$major" -lt "$HERMES_NODE_TARGET_MAJOR" ] && return 0
+        # A pre-release is outdated whatever its version: nodejs.org publishes
+        # headers only for final releases, so node-gyp cannot build node-pty.
+        case "$ver" in *-*) return 0 ;; esac
+        _nb_version_lt "${ver#v}" "$HERMES_NODE_TARGET_MIN_VERSION" && return 0
         return 1
     done
     return 1

@@ -3347,6 +3347,7 @@ export const ru = defineLocale({
       toggleCacheHitRate: 'Попадания в кэш',
       toggleCommandCenter: 'Командный центр',
       toggleContextUsage: 'Шкала контекста',
+      toggleDateTime: 'Дата и время',
       toggleRunningTimer: 'Таймер хода',
       toggleSessionTimer: 'Таймер сеанса',
       toggleTerminal: 'Терминал',

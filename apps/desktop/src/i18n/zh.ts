@@ -3764,6 +3764,7 @@ export const zh = defineLocale({
       toggleCacheHitRate: '缓存命中率',
       toggleCommandCenter: '命令中心',
       toggleContextUsage: '上下文用量',
+      toggleDateTime: '日期和时间',
       toggleRunningTimer: '回合计时',
       toggleSessionTimer: '会话计时',
       toggleTerminal: '终端',

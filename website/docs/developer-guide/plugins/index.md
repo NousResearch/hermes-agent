@@ -586,6 +586,47 @@ def register(ctx):
 
 The dispatched tool goes through the normal approval, redaction, and budget pipelines — it's a real tool invocation, not a shortcut around them.
 
+### Read current agent-turn attribution
+
+Hooks and registered plugin tools can inspect the immutable metadata snapshot for the
+agent turn currently executing:
+
+```python
+def register(ctx):
+    def record_call(**kwargs):
+        turn = ctx.agent_context()
+        if turn is None:
+            return  # outside a shared agent turn
+        logger.info(
+            "session=%s task=%s turn=%s platform=%s source=%s parent=%s",
+            turn.session_id,
+            turn.task_id,
+            turn.turn_id,
+            turn.platform,
+            turn.source,
+            turn.parent_session_id,
+        )
+
+    ctx.register_hook("post_tool_call", record_call)
+```
+
+`ctx.agent_context()` returns `None` when no agent turn is bound. Otherwise it returns a
+frozen `AgentContext` with `session_id`, `task_id`, `turn_id`, `platform`, `source`, and
+optional `parent_session_id`. The host resolves `source`, including session source
+overrides; plugins should not infer it from process environment variables. Delegated
+agent turns receive their own identity and report `subagent` rather than borrowing the
+parent's platform or source. The snapshot is captured after turn admission and stays fixed
+for that execution; if compression later rotates the session, `session_id` still identifies
+the session at admission, not a live database-session pointer.
+
+This is execution attribution only. It grants no authorization, contains no user message
+or credentials, and is not evidence that the turn is still live or that a human initiated
+it; review forks and other internal work may share session lineage. Context-copying workers
+may retain the originating immutable snapshot after the turn ends. Standalone auxiliary
+LLM calls do not create a new agent turn, and off-turn slash, shutdown, or lifecycle hooks
+are not guaranteed to have a snapshot. Hermes does not query the session database or
+guess an identity when the binding is absent.
+
 ### Store settings and runtime state
 
 Use plugin-relative config keys for user-visible behavior. Hermes resolves them

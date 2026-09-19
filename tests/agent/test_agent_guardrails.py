@@ -118,6 +118,103 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_empty_tool_call_id_gets_repaired_and_stubbed(self):
+        """Tool call with empty string id gets deterministic ID and stub result."""
+        msgs = [
+            {"role": "user", "content": "run command"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command": "ls"}'},
+                    }
+                ],
+            },
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 3
+        assert out[0]["role"] == "user"
+        assert out[1]["role"] == "assistant"
+        assert out[2]["role"] == "tool"
+        
+        tc = out[1]["tool_calls"][0]
+        assert tc["id"]  # non-empty
+        assert tc["id"].startswith("call_")
+        assert out[2]["tool_call_id"] == tc["id"]
+        assert out[2]["name"] == "terminal"
+        assert "[Result unavailable" in out[2]["content"]
+
+    def test_empty_tool_call_id_non_dict_object_repaired(self):
+        """Non-dict tool-call object with empty ID gets converted/repaired and stubbed."""
+        tc_obj = types.SimpleNamespace(
+            id="",
+            type="function",
+            function=types.SimpleNamespace(name="terminal", arguments='{"command": "pwd"}'),
+        )
+        msgs = [
+            {"role": "user", "content": "where am i"},
+            {"role": "assistant", "tool_calls": [tc_obj]},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 3
+        assert out[1]["role"] == "assistant"
+        assert out[2]["role"] == "tool"
+
+        tc = out[1]["tool_calls"][0]
+        tc_id = AIAgent._get_tool_call_id_static(tc)
+        assert tc_id
+        assert tc_id.startswith("call_")
+        assert out[2]["tool_call_id"] == tc_id
+        assert out[2]["name"] == "terminal"
+        assert "[Result unavailable" in out[2]["content"]
+
+    def test_empty_tool_call_id_paired_with_existing_tool_message(self):
+        """Tool message with empty tool_call_id is paired with preceding assistant tool call."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "file1.txt", "tool_call_id": ""},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 3
+        assert out[2]["tool_call_id"] == "call_abc"
+        assert out[2]["name"] == "terminal"
+
+    def test_trailing_assistant_with_tool_calls_always_gets_stubs(self):
+        """Request ending on assistant with tool calls receives stubs so request ends with role='tool'."""
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "Running tools",
+                "tool_calls": [
+                    assistant_dict_call("call_1", name="tool_a"),
+                    assistant_dict_call("call_2", name="tool_b"),
+                ],
+            },
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 4
+        assert out[0]["role"] == "user"
+        assert out[1]["role"] == "assistant"
+        assert out[2]["role"] == "tool"
+        assert out[2]["tool_call_id"] == "call_1"
+        assert out[3]["role"] == "tool"
+        assert out[3]["tool_call_id"] == "call_2"
+        # Ensure it does NOT end with assistant turn
+        assert out[-1]["role"] == "tool"
+
 
 
 

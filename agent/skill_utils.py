@@ -623,6 +623,22 @@ def is_external_skill_path(path) -> bool:
     return any(candidate.is_relative_to(_resolve_for_skill_ownership(root)) for root in roots)
 
 
+def is_under_external_skills_dirs(path) -> bool:
+    """True when ``path`` lives under configured ``skills.external_dirs`` only.
+
+    Trusted project dirs are NOT included (unlike ``is_external_skill_path``).
+    Empty config, missing dirs, or lookup errors fail open (False).
+    """
+    try:
+        roots = get_external_skills_dirs()
+        if not roots:
+            return False
+        candidate = _resolve_for_skill_ownership(path)
+        return any(candidate.is_relative_to(_resolve_for_skill_ownership(root)) for root in roots)
+    except Exception:
+        return False
+
+
 def _hermes_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
     """``metadata.hermes`` mapping from frontmatter, or ``{}`` when malformed."""
     metadata = frontmatter.get("metadata")

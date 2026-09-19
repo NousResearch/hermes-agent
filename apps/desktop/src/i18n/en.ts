@@ -1773,7 +1773,8 @@ export const en: Translations = {
     provenance: {
       agent: 'Learned',
       bundled: 'Built-in',
-      hub: 'Hub'
+      hub: 'Hub',
+      external: 'External'
     },
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,

@@ -374,61 +374,6 @@ def _count_real_sudo_invocations(command: str) -> int:
     return _rewrite_real_sudo_invocations(command)[1]
 
 
-def _rewrite_compound_background(command: str) -> str:
-    """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0. Bash binds `&&` tighter
-    than `&`, so `A && B &` backgrounds a subshell that runs B in the foreground and waits for
-    it; a long-running B leaves that subshell stuck in ``wait4`` forever, and its open stdout
-    pipe can keep the terminal tool from returning. The brace group keeps `&&`'s
-    skip-B-on-failure semantics without a fork: bash backgrounds B as a simple command and
-    exits immediately, orphaning B normally. Redirects (``&>``, ``2>&1``), quoted strings,
-    comments and ``(...)``/``{ ... }`` bodies never count as the backgrounding ``&`` (see
-    ``_scan_shell``); tracking brace depth also makes the rewrite idempotent. `(...)` subshells
-    have the same bug class but are not the common agent pattern; left for a follow-up.
-    Simple ``cmd &`` is left alone — it doesn't have the subshell-wait bug."""
-    chain_end = -1  # just after the last depth-0 `&&`/`||` of this statement; -1 = none active
-    rewrites: list[tuple[int, int]] = []  # (chain_op_end, amp_pos)
-    for kind, start, end, _ in _scan_shell(command, background=True):
-        text = command[start:end]
-        if kind == "op" and text in ("&&", "||"):
-            chain_end = end
-        elif kind == "ws" and text == "\n" or kind == "op" and text in (";", "|", "}"):
-            # Newline / `;` end a statement, `|` starts a pipeline stage, `}` closes a group.
-            chain_end = -1
-        elif kind == "op" and text == "&":
-            # `&&` and `&>` never reach here; a `>&` / `<&` fd target (look back past
-            # whitespace) is a redirect, anything else is the real background operator.
-            j = start - 1
-            while j >= 0 and command[j].isspace():
-                j -= 1
-            if j >= 0 and command[j] in "<>":
-                continue
-            if chain_end >= 0:
-                rewrites.append((chain_end, start))
-            chain_end = -1
-
-    # Apply rewrites back-to-front so earlier indices remain valid.
-    result = command
-    for chain_end, amp_pos in reversed(rewrites):
-        # Skip whitespace right after the `&&`/`||` so the brace group opens flush against
-        # the inner command. `{` needs a trailing space in bash; the closing `}` needs to be
-        # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        insert_pos = chain_end
-        while insert_pos < amp_pos and result[insert_pos].isspace():
-            insert_pos += 1
-        # The consumed `&` also separated the compound from any statement that followed
-        # on the same line (`A && B & C`); `{ B & } C` is a syntax error, so restore a `;`
-        # when the suffix resumes with command text. No separator when the suffix already
-        # starts with a terminator (`;` `&` `|` newline `)` `}`) — except `&>`, which is a
-        # redirect prefix for the NEXT command, not a terminator. Strip only spaces/tabs:
-        # a newline already terminates the group.
-        suffix = result[amp_pos + 1 :]
-        tail = suffix.lstrip(" \t")
-        needs_separator = bool(tail) and (tail[0] not in ";\n&|)}" or tail.startswith("&>"))
-        separator = " ;" if needs_separator else ""
-        result = result[:insert_pos] + "{ " + result[insert_pos:amp_pos] + "& }" + separator + suffix
-    return result
-
-
 def _transform_sudo_command(
     command: str | None,
     sudo_nopasswd_check: Callable[[], bool] | None = None,

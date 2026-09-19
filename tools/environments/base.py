@@ -214,7 +214,7 @@ class BaseEnvironment(ABC):
         # ``readlink -f`` output before any bytes move.
         result = self.execute(
             f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
-            timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
+            timeout=_FETCH_TIMEOUT_SECONDS)
         output = result.get("output") or ""
         first, last = output.find(marker), output.rfind(marker)
         if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
@@ -229,7 +229,7 @@ class BaseEnvironment(ABC):
 
     def fetch_realpath(self, remote_path: str) -> str | None:
         """``readlink -f`` inside the backend, or None when it cannot be resolved."""
-        result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False)
+        result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null")
         if int(result.get("returncode") or 0) != 0:
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
@@ -494,7 +494,6 @@ class BaseEnvironment(ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
-        rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
         yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
@@ -511,11 +510,6 @@ class BaseEnvironment(ABC):
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
-        # Guard against the `A && B &` subshell-wait trap by default; callers
-        # that already produce shell-safe wrappers (spawn_via_env) pass False.
-        if rewrite_compound_background:
-            from tools.terminal_tool_sudo import _rewrite_compound_background
-            exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
 

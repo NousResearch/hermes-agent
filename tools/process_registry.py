@@ -20,6 +20,12 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+try:
+    import msvcrt
+    import _winapi
+except ImportError:
+    msvcrt = None
+    _winapi = None
 # systemd transient scopes exist only on Linux; gate every scope-path branch on this
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
@@ -1039,18 +1045,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
-        # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
-        # pipe open forever when B is a long-running server. The rewriter turns it into
-        # ``A && { B & }``. Lazy import: terminal_tool imports this module.
-        # Guard against the `A && B &` subshell-wait trap (issue #68915).
-        from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
-
-        safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
         pty_scope_attempted = False
         if use_pty:
             try:
-                return self._spawn_local_pty(session, safe_command, env_vars)
+                return self._spawn_local_pty(session, command, env_vars)
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
@@ -1066,7 +1065,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
+        spawn_argv = self._scope_argv(session, command, unit_suffix, "Local")
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
@@ -1148,7 +1147,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
         try:
-            result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
+            result = env.execute(bg_command, timeout=timeout)
             output = result.get("output", "").strip()
             session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
             # No PID from the wrapper (syntax error, broken redirect): a failed launch,
@@ -1177,10 +1176,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         end so EOF never arrives while it lives, which would park this thread and never
         fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
         after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
-
-        Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
-        poll()/wait() remains the safety net. See #68915, #8340.
+        Windows pipes lack select(), so the same loop runs on ``PeekNamedPipe``:
+        read only when bytes are available, otherwise check the direct child and stop
+        after the same short idle grace. Streams without a real OS fd still use the
+        blocking fallback. See #68915, #8340.
         """
         first_chunk = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
@@ -1198,6 +1197,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 chunk = self._clean_shell_noise(chunk)
                 first_chunk = False
             self._ingest_output(session, chunk)
+
+        def _read_raw_chunk():
+            raw = raw_read(4096)
+            if not raw:
+                return None
+            chunk = decoder.decode(raw)
+            if chunk:
+                _append_chunk(chunk)
+            return chunk
+
         try:
             proc = session.process
             if proc is None or proc.stdout is None:
@@ -1211,19 +1220,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     return stdout.read(4096) or None
                 raw = raw_read(4096)
                 return decoder.decode(raw) if raw else None
-            # select() needs a real OS fd; mocked streams (tests, adapters) may lack
-            # fileno() and use the blocking read instead.
-            try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
-            except Exception:
-                fd = None
-            if not (isinstance(fd, int) and fd >= 0):
-                fd = None
-            if fd is not None:
+
+            fd = None
+            if raw_read is not None:
+                fileno = getattr(stdout, "fileno", None)
+                try:
+                    candidate = fileno() if callable(fileno) else None
+                except Exception:
+                    candidate = None
+                if isinstance(candidate, int) and candidate >= 0:
+                    fd = candidate
+
+            peek_handle = None
+            if fd is not None and _IS_WINDOWS and msvcrt is not None and _winapi is not None:
+                try:
+                    peek_handle = msvcrt.get_osfhandle(fd)
+                except OSError:
+                    peek_handle = None
+
+            if fd is not None and not _IS_WINDOWS:
                 import select as _select
-            idle_after_exit = 0
-            while True:
-                if fd is not None:
+                idle_after_exit = 0
+                while True:
                     try:
                         ready, _, _ = _select.select([fd], [], [], 0.2)
                     except (ValueError, OSError):
@@ -1233,17 +1251,49 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # buffered tail, then stop rather than wait forever on an orphaned
                         # grandchild's pipe.
                         if proc.poll() is not None:
-                            # See #68915.
                             idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
                         continue
-                chunk = _read_once()
-                if chunk is None:
-                    break  # true EOF — all writers closed
-                if chunk:
-                    _append_chunk(chunk)
+                    chunk = _read_once()
+                    if chunk is None:
+                        break  # true EOF — all writers closed
+                    if chunk:
+                        _append_chunk(chunk)
+                    idle_after_exit = 0
+            elif peek_handle is not None:
                 idle_after_exit = 0
+                while True:
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError, BrokenPipeError):
+                        break  # all writers closed and buffer drained
+                    if n_avail > 0:
+                        if _read_raw_chunk() is None:
+                            break
+                        idle_after_exit = 0
+                        continue
+                    time.sleep(0.2)
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError, BrokenPipeError):
+                        break
+                    if n_avail > 0:
+                        if _read_raw_chunk() is None:
+                            break
+                        idle_after_exit = 0
+                        continue
+                    if proc.poll() is not None:
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+            else:
+                while True:
+                    chunk = _read_once()
+                    if chunk is None:
+                        break
+                    if chunk:
+                        _append_chunk(chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:

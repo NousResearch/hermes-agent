@@ -2455,7 +2455,7 @@ class TestKimiTemperatureOmitted:
         "model",
         [
             "anthropic/claude-sonnet-4-6",
-            "gpt-5.4",
+            "gpt-4.1",
             "deepseek-chat",
         ],
     )

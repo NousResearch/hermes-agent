@@ -84,7 +84,7 @@ def test_reasoning_effort_none_unsupported_reversed_wording():
 def test_fallback_candidate_recovers_from_rejected_temperature():
     client = _rejecting_client("temperature")
     resp = _call_fallback_candidate_sync(
-        client, "gpt-5-mini", "fallback_chain[0](openai)", task="title_generation",
+        client, "relay-model-x", "fallback_chain[0](openai)", task="title_generation",
         messages=[{"role": "user", "content": "hi"}], temperature=0.3, max_tokens=16, tools=None,
         effective_timeout=30.0, effective_extra_body={}, reasoning_config=None,
     )

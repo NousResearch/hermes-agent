@@ -628,12 +628,40 @@ def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> boo
     return _codex_route_bare_model(model, provider) == "gpt-5.3-codex-spark"
 
 
+def _is_openai_default_temperature_only(model: Optional[str]) -> bool:
+    """True for OpenAI reasoning families that 400 (``unsupported_value``) on any non-default
+    ``temperature``: gpt-5.x (incl. dated snapshots, ``-pro``, ``-codex``), o1/o3/o4. The
+    ``gpt-5-chat`` non-reasoning line still accepts it (#51083)."""
+    bare = _bare_model(model)
+    return bare.startswith(("gpt-5", "o1", "o3", "o4")) and not bare.startswith("gpt-5-chat")
+
+
+# Routes (host + model) that rejected ``temperature`` at runtime; the next call omits it up front
+# instead of paying the 400 round-trip again (the retry alone left #51083's first call to time out).
+_TEMPERATURE_REJECTED_ROUTES: set = set()
+
+
+def remember_temperature_rejection(
+    provider: Optional[str], base_url: Optional[str], rejected_kwargs: Dict[str, Any], error: BaseException,
+) -> None:
+    from agent.auxiliary_structured_output import _route_key
+    _TEMPERATURE_REJECTED_ROUTES.add((_route_key(provider, base_url), _bare_model(rejected_kwargs.get("model"))))
+
+
 def _fixed_temperature_for_model(
-    model: Optional[str], base_url: Optional[str] = None
+    model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
 ) -> "Optional[float] | object":
-    """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot), a fixed ``float``, or ``None``."""
+    """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, routes that
+    already rejected it), a fixed ``float``, or ``None``."""
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
+    if _is_openai_default_temperature_only(model):
+        logger.debug("Omitting temperature for %r (accepts only the default)", model)
+        return OMIT_TEMPERATURE
+    from agent.auxiliary_structured_output import _route_key
+    if (_route_key(provider, base_url), _bare_model(model)) in _TEMPERATURE_REJECTED_ROUTES:
+        logger.debug("Omitting temperature for %r (route rejected it earlier)", model)
         return OMIT_TEMPERATURE
     return 0.5 if _is_arcee_trinity_thinking(model) else None
 
@@ -6441,9 +6469,10 @@ def _build_call_kwargs(
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
+    effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
     # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
     # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
-    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    fixed_temperature = _fixed_temperature_for_model(model, effective_base, provider)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
@@ -6452,7 +6481,6 @@ def _build_call_kwargs(
         from agent.anthropic_adapter import _forbids_sampling_params
         if not _forbids_sampling_params(model):
             kwargs["temperature"] = temperature
-    effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
     provider_norm = str(provider or "").strip().lower()
     if max_tokens is not None and _forwards_max_tokens(provider, provider_norm, model, effective_base, task):
         kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
@@ -7230,7 +7258,7 @@ def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
     (optional) records the rejection per route so the next call omits the field up front."""
     return (
         (lambda exc: _is_unsupported_parameter_error(exc, "temperature"), _without_temperature,
-         "provider rejected temperature; retrying without it", None),
+         "provider rejected temperature; retrying without it", remember_temperature_rejection),
         (_is_structured_output_rejection, _without_structured_output_format,
          "provider rejected the structured-output format field; retrying without it "
          "(schema enforcement degrades to prompt compliance)", remember_structured_output_rejection),
@@ -7269,7 +7297,10 @@ def _ladder_parameter_rungs(
             _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
         if first_err is None:
             if remember is not None:
-                remember(route.resolved_provider, route.base_info, kwargs, rejection)
+                # Same key _build_call_kwargs looks up (base_info or resolved_base_url), so the
+                # memory hits when the client exposes no base_url but the task resolved one.
+                remember(route.resolved_provider, route.base_info or route.resolved_base_url,
+                         kwargs, rejection)
             return resp, None, retry_kwargs
         kwargs = retry_kwargs
     return None, first_err, kwargs

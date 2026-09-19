@@ -35,6 +35,35 @@ def test_native_consumer_fences_stale_owner_and_recovers_same_physical_resume(tm
     assert second.inject(content, event).result()["status"] == "stopping"
 
 
+def test_native_readiness_rpc_contract_accepts_ready_and_refused_destinations(monkeypatch, tmp_path):
+    from hermes_cli import plugins
+    from tui_gateway import server
+    from tui_gateway.contracts.registry import METHODS, check_params_accepted, check_result
+
+    destination = {"profile_name": "default", "session_id": "physical-1"}
+    record = {"agent": SimpleNamespace(session_id="physical-1", api_mode="codex_responses", provider="openai-codex"),
+              "profile_home": str(tmp_path), "transport": object(), "running": False}
+    runtime = SimpleNamespace(_sessions={"ui-1": record}, _sessions_lock=threading.RLock(),
+                              _session_has_live_transport=lambda row: row.get("transport") is not None)
+    manager = SimpleNamespace(home_path=tmp_path)
+    consumer = plugin_events.DesktopPluginConsumer(manager, runtime)
+    manager._desktop_consumer = consumer
+    manager._desktop_contexts = {"example": SimpleNamespace(desktop_continuation_readiness=consumer.readiness)}
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    contract = METHODS["session.continuation.readiness"]
+    for target, ready in [(destination, True), ({**destination, "session_id": "stale"}, False)]:
+        params = {"plugin_id": "example", "destination": target}
+        response = server._methods[contract.name]("probe", params)
+        result = response["result"]
+        assert result["ready"] is ready
+        check_params_accepted(contract, params)
+        check_result(contract, result)
+    result = server._methods[contract.name]("missing", {})["result"]
+    assert result == {"ready": False, "status": "host_unsupported"}
+    check_params_accepted(contract, {})
+    check_result(contract, result)
+
+
 def test_native_consumer_rejects_busy_or_cancelled_without_model_admission(tmp_path):
     record = {"session_key": "physical-1", "agent": SimpleNamespace(session_id="physical-1", api_mode="codex_responses", provider="openai-codex"),
               "history_lock": threading.RLock(), "history": [], "running": True,

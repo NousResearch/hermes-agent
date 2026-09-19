@@ -5,6 +5,7 @@ import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 
 import { reorderBidi } from './bidi.js'
+import { CharCache } from './char-cache.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
 import {
   blitRegion,
@@ -175,7 +176,7 @@ export default class Output {
 
   private readonly operations: Operation[] = []
 
-  private charCache: Map<string, ClusteredChar[]> = new Map()
+  private readonly charCache = new CharCache<ClusteredChar[]>()
 
   constructor(options: Options) {
     const { width, height, stylePool, screen } = options
@@ -190,8 +191,8 @@ export default class Output {
 
   /**
    * Reuse this Output for a new frame. Zeroes the screen buffer, clears
-   * the operation list (backing storage is retained), and caps charCache
-   * growth. Preserving charCache across frames is the main win — most
+   * the operation list (backing storage is retained). Preserving charCache
+   * across frames is the main win — most
    * lines don't change between renders, so tokenize + grapheme clustering
    * becomes a cache hit.
    */
@@ -201,10 +202,6 @@ export default class Output {
     this.screen = screen
     this.operations.length = 0
     resetScreen(screen, width, height)
-
-    if (this.charCache.size > 16384) {
-      this.charCache.clear()
-    }
   }
 
   /**
@@ -686,7 +683,7 @@ function writeLineToScreen(
   y: number,
   screenWidth: number,
   stylePool: StylePool,
-  charCache: Map<string, ClusteredChar[]>
+  charCache: CharCache<ClusteredChar[]>
 ): number {
   let characters = charCache.get(line)
 

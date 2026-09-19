@@ -7,6 +7,9 @@ const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
 const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
 const PUNCTUATED_PARAGRAPH_BREAK_RE = /([.!?])([*_~`>"'’”)}\]]*)[ \t]*\n{2,}[ \t]*/g
 const SOFT_BREAK_RE = /[ \t]*\n[ \t]*/g
+// Only remove fillers emitted as whitespace-delimited tokens. A filler next to
+// punctuation can be intentional dialogue, and a filler inside a word is prose.
+const STANDALONE_CHINESE_FILLER_RE = /(^|\s)[嗯哼](?=\s|$)/g
 
 const THINKING_PREFIX_RE =
   /^\s*(?:\([^)\n]{1,48}\)\s*)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -162,6 +165,7 @@ export function sanitizeTextForSpeech(text: string): string {
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[*_~>#]/g, '')
     .replace(/^\s*[-+*]\s+/gm, '')
+    .replace(STANDALONE_CHINESE_FILLER_RE, '$1')
     .replace(/\s+/g, ' ')
     .trim()
 }

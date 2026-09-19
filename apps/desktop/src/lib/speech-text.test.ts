@@ -13,6 +13,19 @@ describe('sanitizeTextForSpeech', () => {
     expect(sanitizeTextForSpeech('Use `git status` after the change.')).toBe('Use git status after the change.')
   })
 
+  it('removes standalone Chinese filler interjections from speech input', () => {
+    expect(sanitizeTextForSpeech('嗯\n今天的任务已经完成。\n哼\n请查看结果。')).toBe(
+      '今天的任务已经完成。 请查看结果。'
+    )
+  })
+
+  it('preserves Chinese filler characters when they are part of normal prose', () => {
+    expect(sanitizeTextForSpeech('他发出嗯声，然后哼着歌继续工作。')).toBe(
+      '他发出嗯声，然后哼着歌继续工作。'
+    )
+    expect(sanitizeTextForSpeech('嗯，我明白了。')).toBe('嗯，我明白了。')
+  })
+
   it('skips markdown table data while preserving surrounding human text', () => {
     const text = `Here is the quick takeaway: the totals remain unchanged.
 

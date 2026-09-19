@@ -2302,6 +2302,13 @@ def _resolve_gateway_model_context(
             provider = route.get("provider") or provider
             base_url = route["base_url"]
             api_key = route.get("api_key")
+            if not api_key and provider:
+                # Durable /model overrides omit secrets. Resolve probe credentials here (off-loop,
+                # profile-scoped), without rehydrating the session or storing runtime state in it.
+                from hermes_cli.route_identity import normalize_route_base_url
+                runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=resolved_model)
+                if normalize_route_base_url(runtime.get("base_url")) == normalize_route_base_url(base_url):
+                    api_key = runtime.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()
         provider = runtime.get("provider") or provider

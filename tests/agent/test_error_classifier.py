@@ -1348,6 +1348,43 @@ class TestSSLCertVerificationFailFast:
 
 # ── Test: RateLimitError without status_code (Copilot/GitHub Models) ──────────
 
+class TestProviderCodeOnlyErrors:
+    """Bare ``{"error": {"code": …}}`` bodies with no HTTP status map to the
+    provider's structured reason instead of ``unknown`` (#70414)."""
+
+    @pytest.mark.parametrize("provider, code, reason", [
+        ("gemini", "UNAVAILABLE", FailoverReason.overloaded),
+        ("google", "DEADLINE_EXCEEDED", FailoverReason.timeout),
+        ("vertex", "INTERNAL", FailoverReason.server_error),
+        ("anthropic", "API_ERROR", FailoverReason.server_error),
+        ("openai-codex", "SERVER_ERROR", FailoverReason.server_error),
+    ])
+    def test_provider_native_code_maps_to_structured_reason(self, provider, code, reason):
+        e = MockAPIError(code, body={"error": {"code": code}})
+        result = classify_api_error(e, provider=provider)
+        assert result.reason == reason
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_code_meaning_does_not_leak_across_providers(self):
+        e = MockAPIError("UNAVAILABLE", body={"error": {"code": "UNAVAILABLE"}})
+        assert classify_api_error(e, provider="openai").reason == FailoverReason.unknown
+
+    def test_gemini_wire_body_numeric_code_falls_back_to_status(self):
+        """Gemini's real body carries the HTTP status in ``error.code`` and the
+        symbolic code in ``error.status``; the numeric code must not shadow it."""
+        body = {"error": {"code": 503, "status": "UNAVAILABLE", "message": "Service unavailable."}}
+        e = MockAPIError("Service unavailable.", body=body)
+        assert classify_api_error(e, provider="gemini").reason == FailoverReason.overloaded
+
+    def test_anthropic_rate_limit_error_code_rotates_credential(self):
+        e = MockAPIError("rate limited", body={"error": {"code": "rate_limit_error"}})
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+
 class TestRateLimitErrorWithoutStatusCode:
     """Regression tests for the Copilot/GitHub Models edge case where the
     OpenAI SDK raises RateLimitError but does not populate .status_code."""

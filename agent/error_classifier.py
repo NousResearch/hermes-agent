@@ -567,6 +567,19 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
 }
 
+# Provider-native status codes that arrive as a bare ``{"error": {"code": …}}`` body
+# (no HTTP status, no prose): gRPC canonical names from Gemini, Anthropic error
+# types, OpenAI's ``server_error``. Scoped per provider so a coincidentally named
+# code from another backend stays ``unknown`` (#70414). Provider aliases collapse
+# to the family key before lookup.
+_PROVIDER_CODE_FAMILIES = {"openai-codex": "openai", "google": "gemini", "google-gemini": "gemini",
+                           "google-ai-studio": "gemini", "vertex": "gemini", "google-vertex": "gemini"}
+_PROVIDER_CODE_VERDICTS: Dict[str, Dict[str, Verdict]] = {
+    "openai": {"server_error": _V_SERVER_ERROR},
+    "gemini": {"unavailable": _V_OVERLOADED, "deadline_exceeded": _V_TIMEOUT, "internal": _V_SERVER_ERROR},
+    "anthropic": {"api_error": _V_SERVER_ERROR, "rate_limit_error": _V_RATE_LIMIT},
+}
+
 # Generic ``invalid_request_error`` is deliberately NOT a 400 validation
 # signal — OpenAI stamps it on genuine overflow 400s too.
 _400_VALIDATION_CODES = {"unknown_parameter", "unsupported_parameter"}
@@ -736,7 +749,11 @@ def _by_error_code(c: _Ctx) -> Optional[Verdict]:
     # HTTP 200: retrying cannot succeed, a configured fallback still may.
     if c.code == PROVIDER_STREAM_NON_JSON_ERROR_CODE and "request validation failed:" in c.msg:
         return _V_FORMAT_ERROR
-    return _ERROR_CODE_VERDICTS.get(c.code)
+    verdict = _ERROR_CODE_VERDICTS.get(c.code)
+    if verdict is None:
+        family = _PROVIDER_CODE_FAMILIES.get(c.provider_slug, c.provider_slug)
+        verdict = _PROVIDER_CODE_VERDICTS.get(family, {}).get(c.code)
+    return verdict
 
 
 def _by_message(c: _Ctx) -> Optional[Verdict]:
@@ -1201,12 +1218,16 @@ def _extract_error_body(error: Exception) -> dict:
 def _code_from_payload(payload: Any, top_keys: Sequence[str], peek_message: bool) -> str:
     """Code/type from ``payload.error`` or a top-level key; ``"400"`` is not a code.
     ``peek_message`` also parses a JSON ``error.message`` for a nested code
-    (Responses API surfaces ``invalid_encrypted_content`` this way)."""
+    (Responses API surfaces ``invalid_encrypted_content`` this way). Gemini
+    puts the HTTP status in ``error.code`` and the symbolic code
+    (``UNAVAILABLE``) in ``error.status``, so a numeric code defers to it."""
     if not isinstance(payload, dict):
         return ""
     error_obj = payload.get("error", {})
     if isinstance(error_obj, dict):
         code = error_obj.get("code") or error_obj.get("type") or ""
+        if not isinstance(code, str):
+            code = error_obj.get("status") or code
         if isinstance(code, str) and code.strip() and code.strip() != "400":
             return code.strip()
         message = error_obj.get("message")

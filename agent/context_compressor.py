@@ -1377,10 +1377,11 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     def _shrink(obj: Any) -> Any:
         nonlocal changed
         if isinstance(obj, str):
-            # Already marked: the compressor always writes the marker at ``head_chars``, so test
-            # that exact shape — a leaf that merely mentions the marker must still shrink. Never
-            # re-apply it (the counts are the marker's anti-imitation value, see header).
-            if len(obj) <= head_chars or obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars):
+            # Already marked: the compressor writes the head and the marker as the whole tail, so
+            # key on that shape. A substring/prefix test alone would exempt a leaf that merely
+            # quotes the marker — including the imitation #83714 is about — from shrinking forever.
+            marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
+            if len(obj) <= head_chars or marked:
                 return obj
             marker = _COMPRESSION_MARKER_TEMPLATE.format(
                 omitted=len(obj) - head_chars, total=len(obj)
@@ -1403,7 +1404,8 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     if not changed:
         return args
     # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+    out = json.dumps(shrunken, ensure_ascii=False)
+    return out if len(out) < len(args) else args
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})

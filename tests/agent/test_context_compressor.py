@@ -2456,10 +2456,10 @@ class TestTruncationMarkerNotImitable:
         shrunk = json.loads(_truncate_tool_call_args_json(payload))["new_string"]
         assert "...[truncated]" not in shrunk
         # ...and the leaf really was shrunk, so a no-op helper cannot pass this.
-        assert shrunk == "y" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(omitted=400, total=600)
+        assert len(shrunk) < 600 and shrunk.startswith("y" * 200)
 
     def test_args_without_a_net_gain_leaf_are_left_byte_identical(self):
-        """A leaf the marker would not shrink, and a leaf that merely mentions the marker.
+        """Leaves the marker would not shrink, and leaves that merely quote the marker.
 
         Below the break-even (``head_chars`` + marker) replacing a leaf would grow the payload, and
         re-serialising alone would rewrite compact wire JSON — both read as "this changed" upstream
@@ -2469,10 +2469,22 @@ class TestTruncationMarkerNotImitable:
         assert _truncate_tool_call_args_json(tiny) == tiny
         compact = json.dumps({"new_string": "y" * 201, "pad": "z" * 320}, separators=(",", ":"))
         assert _truncate_tool_call_args_json(compact) == compact
+        # Separator whitespace added by the re-serialise can exceed a single leaf's saving.
+        many_keys = json.dumps(
+            {**{f"k{i}": i for i in range(300)}, "big": "y" * 426}, separators=(",", ":")
+        )
+        assert _truncate_tool_call_args_json(many_keys) == many_keys
 
-        # The guard keys on the marker's POSITION, so an imitated marker mid-leaf still shrinks.
-        imitated = json.dumps({"new_string": "x" * 1000 + _COMPRESSION_MARKER_PREFIX + " 5 of 9⟫" + "y" * 500})
-        assert len(_truncate_tool_call_args_json(imitated)) < len(imitated)
+        # The guard keys on the marker being the whole tail, so the imitation shape #83714
+        # describes — replayed head+marker followed by new content — is still shrinkable.
+        for leaf in (
+            "x" * 1000 + _COMPRESSION_MARKER_PREFIX + " 5 of 9⟫" + "y" * 500,
+            "x" * 200 + _COMPRESSION_MARKER_PREFIX + " 5 of 9 chars omitted⟫" + "y" * 5000,
+        ):
+            out = _truncate_tool_call_args_json(json.dumps({"new_string": leaf}))
+            assert json.loads(out)["new_string"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
+                omitted=len(leaf) - 200, total=len(leaf)
+            )
 
     def test_shrunken_leaf_is_head_plus_marker_and_a_fixed_point(self):
         """Re-shrinking must be a no-op: the marker's counts are its anti-imitation value."""

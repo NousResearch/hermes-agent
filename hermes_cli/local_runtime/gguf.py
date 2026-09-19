@@ -57,6 +57,8 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    ffn_tensor_bytes: int = 0      # tensors matched by the hybrid spill override
+    expert_tensor_bytes: int = 0   # tensors matched by the MoE spill override
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -180,6 +182,8 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        ffn_bytes = 0
+        expert_bytes = 0
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -197,7 +201,12 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
+            if re.fullmatch(r"blk\.\d+\.ffn_.*\.weight", name):
+                ffn_bytes += nbytes
+            if re.fullmatch(r"blk\.\d+\.ffn_.*_exps\.weight", name):
+                expert_bytes += nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes)
+                      embd_table_bytes=embd_bytes, ffn_tensor_bytes=ffn_bytes,
+                      expert_tensor_bytes=expert_bytes)

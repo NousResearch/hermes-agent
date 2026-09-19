@@ -45,6 +45,10 @@ class ModelProfile:
     moe: bool = False
     architecture: str = ""
     n_vocab: int = 0            # prices logits buffers (ubatch x vocab)
+    # Tensors the managed ``-ot`` policy intentionally leaves on the GPU. ``None`` means the
+    # profile was estimated before its GGUF tensor table was available, so it must retain the
+    # existing total-memory admission behavior until the staged file is inspected.
+    pinned_weights_bytes: int | None = None
     # Context-cost multiplier. MTP spec decode keeps a small draft context beside the main one;
     # calibrated against four measured server-RSS points on Qwen3.8 Q4 (128K/221K/256K, both
     # postures): the draft adds ~17% to per-token KV; 1.2 rounds up so the error stays on the safe
@@ -94,10 +98,19 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         layers.append((kind, per_token))
         n_attn_seen += 1
 
+    recurrent = any(kind == LayerKind.RECURRENT for kind, _ in layers)
+    if header.expert_count > 0:
+        pinned_weights = header.tensor_bytes - header.expert_tensor_bytes
+    elif recurrent:
+        pinned_weights = header.tensor_bytes - header.ffn_tensor_bytes
+    else:
+        pinned_weights = None
+
     return ModelProfile(
         name=header.path, weights_bytes=header.tensor_bytes, embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
-        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab)
+        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
+        pinned_weights_bytes=pinned_weights)
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:
@@ -141,14 +154,24 @@ def footprint_bytes(profile: ModelProfile, window: int, *, flash_attention: bool
 def physics_check(profile: ModelProfile, budget: HardwareBudget,
                   floor: int, *, flash_attention: bool = True,
                   overhead_bytes: int = 0) -> PhysicsRefusal | None:
-    needed = footprint_bytes(profile, min(floor, profile.n_ctx_train or floor),
-                             flash_attention=flash_attention, overhead_bytes=overhead_bytes)
+    floor_window = min(floor, profile.n_ctx_train or floor)
+    context = ctx_bytes(profile, floor_window, flash_attention=flash_attention)
+
+    def refusal(needed: int, available: int, location: str) -> PhysicsRefusal:
+        gib = 1 << 30
+        return PhysicsRefusal(
+            needed_bytes=needed, available_bytes=available,
+            message=(f"{profile.name}: needs ~{needed / gib:.1f} GiB at the "
+                     f"{floor // 1024}K floor but only ~{available / gib:.1f} GiB "
+                     f"of {location} are available — try a smaller model or a supported smaller quant"))
+
+    if profile.pinned_weights_bytes is not None:
+        gpu_needed = profile.pinned_weights_bytes + context + max(0, overhead_bytes)
+        if gpu_needed > budget.usable_vram_bytes:
+            return refusal(gpu_needed, budget.usable_vram_bytes, "VRAM")
+
+    needed = profile.weights_bytes + context + max(0, overhead_bytes)
     available = budget.usable_vram_bytes + budget.ram_available_bytes
     if needed <= available:
         return None
-    gib = 1 << 30
-    return PhysicsRefusal(
-        needed_bytes=needed, available_bytes=available,
-        message=(f"{profile.name}: needs ~{needed / gib:.1f} GiB at the "
-                 f"{floor // 1024}K floor but only ~{available / gib:.1f} GiB "
-                 "of VRAM+RAM are available — try a smaller model or a supported smaller quant"))
+    return refusal(needed, available, "VRAM+RAM")

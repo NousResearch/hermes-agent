@@ -3,7 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_cli.local_runtime import presets, supervisor
-from hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile
+from hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile, profile_from_gguf
+from hermes_cli.local_runtime.gguf import GGUFHeader
 
 
 def test_preset_roundtrip_keeps_refusals_and_dense_spill(tmp_path, monkeypatch):
@@ -24,6 +25,76 @@ def test_preset_roundtrip_keeps_refusals_and_dense_spill(tmp_path, monkeypatch):
     assert reread["allowed"].spilled
     assert reread["allowed"].keys["model"] == str(mdir / "allowed.gguf")
     assert "override-tensor" not in reread["allowed"].keys  # Dense spill has no tensor-pattern override.
+
+
+def test_hybrid_with_unspillable_floor_over_vram_is_refused(tmp_path, monkeypatch):
+    """#112787: a hybrid's pinned tensors and runtime buffers must fit GPU memory.
+
+    Host RAM may hold the FFN tensors selected by ``-ot``, but it cannot rescue
+    attention/SSM tensors or the KV cache that llama.cpp allocates on the GPU.
+    """
+    gguf = tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf"
+    gguf.touch()
+    profile = ModelProfile(
+        name=gguf.stem,
+        weights_bytes=int(15.32 * (1 << 30)),
+        embd_table_bytes=0,
+        n_ctx_train=65536,
+        layers=[])
+    profile.pinned_weights_bytes = int(5.93 * (1 << 30))
+    monkeypatch.setattr(presets, "read_gguf_header", lambda path: SimpleNamespace(
+        path=path, sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda header: profile)
+
+    # The complete footprint fits in VRAM + RAM, reproducing the old
+    # false admission; the pinned GPU allocation does not fit the 7-GiB budget.
+    budget = HardwareBudget(7 << 30, 8 << 30, int(22.8 * (1 << 30)))
+    result = presets.preset_for_model(gguf, budget, set())
+
+    assert result is not None
+    assert result.keys is None
+    assert result.refusal
+    assert "VRAM" in result.refusal
+
+
+def test_hybrid_profile_keeps_only_spill_override_tensors_out_of_gpu_budget():
+    header = GGUFHeader(
+        path="hybrid.gguf", version=3,
+        metadata={
+            "general.architecture": "qwen35",
+            "qwen35.block_count": 2,
+            "qwen35.context_length": 65536,
+            "qwen35.embedding_length": 128,
+            "qwen35.attention.head_count": 2,
+            "qwen35.attention.head_count_kv": 1,
+            "qwen35.full_attention_interval": 2,
+        },
+        tensor_bytes=12 << 30,
+        ffn_tensor_bytes=8 << 30,
+    )
+
+    profile = profile_from_gguf(header)
+
+    assert profile.recurrent_layer_count == 1
+    assert profile.pinned_weights_bytes == 4 << 30
+
+
+def test_hybrid_spill_remains_admitted_when_pinned_floor_fits(tmp_path, monkeypatch):
+    gguf = tmp_path / "hybrid.gguf"
+    gguf.touch()
+    profile = ModelProfile(
+        name="hybrid", weights_bytes=12 << 30, embd_table_bytes=0,
+        n_ctx_train=65536, layers=[])
+    profile.pinned_weights_bytes = 4 << 30
+    monkeypatch.setattr(presets, "read_gguf_header", lambda path: SimpleNamespace(
+        path=path, sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda header: profile)
+
+    result = presets.preset_for_model(gguf, HardwareBudget(8 << 30, 8 << 30, 8 << 30), set())
+
+    assert result is not None
+    assert result.keys is not None
+    assert result.spilled
 
 
 def test_optional_draft_is_enabled_only_with_room_at_the_selected_window(tmp_path, monkeypatch):

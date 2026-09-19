@@ -142,7 +142,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Add a vault item. ``secret`` values go straight into the encrypted store.
 
-    Params: ``kind`` (login|payment|address), ``label``, ``origin?``,
+    Params: ``kind`` (login|payment|address|identity), ``label``, ``origin?``,
     ``secret`` (dict). Result: ``{id}`` — metadata only. Exception text is
     scrubbed of secret values before it can reach a response or a log line.
     """

@@ -36,7 +36,7 @@ import {
  */
 export function FindBar() {
   const { t } = useI18n()
-  const { active, query, matchOrdinal, matchCount } = useStore($findInPage)
+  const { active, query, matchOrdinal, matchCount, focusRequest } = useStore($findInPage)
   const inputRef = useRef<HTMLInputElement>(null)
   const nativeSearchRequestRef = useRef(0)
   const [localQuery, setLocalQuery] = useState('')
@@ -57,18 +57,32 @@ export function FindBar() {
     return () => closeFindBar()
   }, [pathname])
 
-  // Focus input when find bar opens.
+  // Focus input when find bar opens, or when the user presses ⌘F again while
+  // the bar is already visible (focusRequest bumps on each re-open).
   useEffect(() => {
     if (active) {
-      setLocalQuery('')
+      // Only reset the local query on first open, not on re-focus.
+      if (focusRequest === 0) {
+        setLocalQuery('')
+      }
+
       // Small delay so the DOM paints the input before we focus.
-      const id = requestAnimationFrame(() => inputRef.current?.focus())
+      const id = requestAnimationFrame(() => {
+        inputRef.current?.focus()
+
+        // Select existing text on re-focus so the user can immediately type
+        // a replacement query (matches Chrome/Safari/VS Code ⌘F behavior).
+        // Skip on first open — there's no existing query to select.
+        if (focusRequest > 0) {
+          inputRef.current?.select()
+        }
+      })
 
       return () => cancelAnimationFrame(id)
     }
 
     return undefined
-  }, [active])
+  }, [active, focusRequest])
 
   // The files pane (right sidebar, `aside[aria-label="Right sidebar"]`) is a
   // floating right rail. The find bar is `fixed right-4` by default, which

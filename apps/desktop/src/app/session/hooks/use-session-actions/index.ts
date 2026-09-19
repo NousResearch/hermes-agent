@@ -855,16 +855,20 @@ export function useSessionActions({
         // flag) into the bot's chat; omitting them lets the selected profile
         // supply its configured defaults. Ordinary Sessions tiles keep the
         // sticky composer override.
-        const params = {
-          ...(await desktopSessionCreateParams(
-            cwd,
-            capturedRoute,
-            requestedProfile,
-            options?.route === null || defaultTarget?.route === null,
-            workspaceScope.workspaceMode !== 'bots'
-          )),
-          ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
-        }
+        // A generic New-session tile is an ordinary user conversation even
+        // when opened from the Bots workspace — the scope decides where the
+        // tab docks, not whether the conversation is Bot Mode plumbing.
+        // Plugin-owned sessions (canonical Bot Chat, group-member rooms) set
+        // `hidden: true` in their own session.create calls; deriving it here
+        // made ordinary side chats vanish from the Sessions sidebar (and its
+        // search) with no user-facing way back.
+        const params = await desktopSessionCreateParams(
+          cwd,
+          capturedRoute,
+          requestedProfile,
+          options?.route === null || defaultTarget?.route === null,
+          workspaceScope.workspaceMode !== 'bots'
+        )
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the

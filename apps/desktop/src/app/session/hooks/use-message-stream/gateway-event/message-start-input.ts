@@ -45,20 +45,13 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
 
   const input = ctx.payload?.input as { role?: unknown; text?: unknown; display_kind?: unknown } | null
 
-  if (!ids.length || input?.role !== 'user' || typeof input.text !== 'string' || input.display_kind === 'hidden') {
+  if (
+    (!ids.length && ctx.payload?.inputs_complete !== false) ||
+    input?.role !== 'user' ||
+    typeof input.text !== 'string' ||
+    input.display_kind === 'hidden'
+  ) {
     return next
-  }
-
-  // A reference is consumed once. Reusing it for a new RPC occurrence is a new input.
-  const own = state.messages.find(
-    message => message.role === 'user' && !message.inputIds?.length && inputs.some(item => item.ref === message.id)
-  )
-
-  if (own) {
-    return {
-      ...next,
-      messages: state.messages.map(message => (message === own ? { ...message, inputIds: ids } : message))
-    }
   }
 
   const [message] = toChatMessages([
@@ -70,14 +63,34 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
     }
   ])
 
-  return message
-    ? {
-        ...next,
-        messages: [
-          ...finalizeInterruptedMessages(state.messages, state.streamId),
-          { ...message, id: `input-${execution}-${ids[0]}`, inputIds: ids }
-        ],
-        streamId: null
-      }
-    : next
+  if (!message) {
+    return next
+  }
+
+  // One start projects the whole merged input. Binding only one optimistic constituent
+  // would hide the other clients' words; replace all matched constituents with that projection.
+  const own = state.messages.filter(
+    row => row.role === 'user' && !row.inputIds?.length && inputs.some(item => item.ref === row.id)
+  )
+
+  if (own.length) {
+    const first = own[0]!
+    const matched = new Set(own)
+
+    return {
+      ...next,
+      messages: state.messages.flatMap(row =>
+        row === first ? [{ ...first, ...message, id: first.id, inputIds: ids }] : matched.has(row) ? [] : [row]
+      )
+    }
+  }
+
+  return {
+    ...next,
+    messages: [
+      ...finalizeInterruptedMessages(state.messages, state.streamId),
+      { ...message, id: `input-${execution}-${ids[0] ?? 'projection'}`, inputIds: ids }
+    ],
+    streamId: null
+  }
 }

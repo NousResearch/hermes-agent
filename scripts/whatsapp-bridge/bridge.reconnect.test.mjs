@@ -147,4 +147,84 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   assert.ok(Date.now() - before < 1000);
 }
 
+// A stale answer (isLatest: false, the build baked into the library) is the
+// shape fetchLatestBaileysVersion() returns when its own fetch fails, and
+// WhatsApp rejects pairing against it with HTTP 405. The fallback resolver
+// runs and its fresh version wins (#88516).
+{
+  const logs = [];
+  const resolveVersion = createVersionResolver(
+    async () => ({ version: [2, 3000, 1035194821], isLatest: false }),
+    {
+      log: line => logs.push(line),
+      fallbackFetchVersionFn: async () => ({ version: [2, 3000, 1045340097], isLatest: true }),
+    },
+  );
+  assert.deepEqual(await resolveVersion(), [2, 3000, 1045340097]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /stale WhatsApp build \(2\.3000\.1035194821\)/);
+  assert.match(logs[0], /trying the next resolver/);
+}
+
+// A failing primary hands over to the fallback rather than giving up on the
+// library default.
+{
+  const logs = [];
+  const resolveVersion = createVersionResolver(
+    async () => { throw new Error('version host 503'); },
+    {
+      log: line => logs.push(line),
+      fallbackFetchVersionFn: async () => ({ version: [2, 3000, 1045340097], isLatest: true }),
+    },
+  );
+  assert.deepEqual(await resolveVersion(), [2, 3000, 1045340097]);
+  assert.match(logs[0], /version host 503/);
+  assert.match(logs[0], /trying the next resolver/);
+}
+
+// With no fallback configured a stale answer is still returned: it is what
+// Baileys itself would have used, and it beats sending no version at all.
+{
+  const logs = [];
+  const resolveVersion = createVersionResolver(
+    async () => ({ version: [2, 3000, 1035194821], isLatest: false }),
+    { log: line => logs.push(line) },
+  );
+  assert.deepEqual(await resolveVersion(), [2, 3000, 1035194821]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /library default/);
+}
+
+// When both resolvers come back stale, a version cached from an earlier
+// success is preferred over either stale answer.
+{
+  let primaryCalls = 0;
+  const resolveVersion = createVersionResolver(
+    async () => {
+      primaryCalls += 1;
+      return primaryCalls === 1
+        ? { version: [2, 3000, 42], isLatest: true }
+        : { version: [2, 3000, 1035194821], isLatest: false };
+    },
+    {
+      log: () => {},
+      fallbackFetchVersionFn: async () => ({ version: [2, 3000, 7], isLatest: false }),
+    },
+  );
+  assert.deepEqual(await resolveVersion(), [2, 3000, 42]);
+  assert.deepEqual(await resolveVersion(), [2, 3000, 42]);
+}
+
+// A response without a version field is treated as a failure, not as a
+// version of `undefined` handed to makeWASocket().
+{
+  const logs = [];
+  const resolveVersion = createVersionResolver(
+    async () => ({ isLatest: true }),
+    { log: line => logs.push(line) },
+  );
+  assert.equal(await resolveVersion(), null);
+  assert.match(logs[0], /version missing from response/);
+}
+
 console.log('bridge.reconnect.test.mjs: all assertions passed');

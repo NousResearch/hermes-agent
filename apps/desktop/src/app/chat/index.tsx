@@ -49,6 +49,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
+import { $wallpaperActive } from '@/store/wallpaper'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
@@ -511,6 +512,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const selectedSessionId = useStore(view.$storedId)
   const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+  const wallpaperActive = useStore($wallpaperActive)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
   // does not wipe an in-progress draft or orphan /queue entries. For the
@@ -719,7 +721,8 @@ const ChatViewContent = memo(function ChatViewContent({
   return (
     <div
       className={cn(
-        'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
+        'relative isolate flex h-full min-w-0 flex-col overflow-hidden',
+        wallpaperActive ? 'bg-transparent' : 'bg-(--ui-chat-surface-background)',
         className
       )}
       data-chat-surface=""
@@ -727,6 +730,7 @@ const ChatViewContent = memo(function ChatViewContent({
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
+      data-wallpaper-active={wallpaperActive || undefined}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
@@ -755,7 +759,7 @@ const ChatViewContent = memo(function ChatViewContent({
         suppressMessages={routeSessionMismatch}
       >
         <div
-          className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          className="relative min-h-0 max-w-full flex-1 overflow-hidden contain-[layout_paint]"
           data-slot="composer-bounds"
           {...dropHandlers}
         >

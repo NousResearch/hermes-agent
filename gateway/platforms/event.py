@@ -98,8 +98,13 @@ class MessageEvent:
         if not self.is_command():
             return None
         raw = (self.text or "").lstrip().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        # Some platform command pickers render argument-taking commands with a
+        # trailing Unicode ellipsis and submit that display token verbatim
+        # (for example ``/steer… message``).  The ellipsis is UI affordance,
+        # not part of the registered command name.
+        raw = raw.removesuffix("\u2026")
         # Reject file paths: valid command names never contain /
-        return None if "/" in raw else raw
+        return None if not raw or "/" in raw else raw
 
     def get_command_args(self) -> str:
         """Get the arguments after a command."""

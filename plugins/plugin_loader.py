@@ -112,14 +112,18 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     mod = _new_module(module_name, init_file, [str(plugin_dir)])
     if mod is None:
         return None
-    loaded_submodules = []
     for sub_file in plugin_dir.glob("*.py"):
         full_sub_name = f"{module_name}.{sub_file.stem}"
-        if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
+        if sub_file.name == "__init__.py":
+            continue
+        if full_sub_name in sys.modules:
+            setattr(mod, sub_file.stem, sys.modules[full_sub_name])
             continue
         sub_mod = _new_module(full_sub_name, sub_file)
         if _exec(sub_mod, logger):
-            loaded_submodules.append((sub_file.stem, sub_mod))
+            # Bind before the next sibling or __init__ executes: importing a
+            # pre-registered child does not make Python bind it onto its parent.
+            setattr(mod, sub_file.stem, sub_mod)
     if not _exec(mod, logger):
         sys.modules.pop(module_name, None)
         return None
@@ -127,8 +131,6 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     parent_mod = sys.modules.get(parent_name)
     if parent_mod is not None:
         setattr(parent_mod, child_name, mod)
-    for sub_name, sub_mod in loaded_submodules:
-        setattr(mod, sub_name, sub_mod)
     return mod
 
 

@@ -251,6 +251,7 @@ class _FakeAzureIdentity:
         self.last_credential_kwargs = None
         self.last_scope = None
         self.credential_count = 0
+        self.scoped_calls = []
 
     def DefaultAzureCredential(self, **kwargs):  # noqa: N802 — match SDK
         self.last_credential_kwargs = kwargs
@@ -259,6 +260,18 @@ class _FakeAzureIdentity:
             get_token=lambda scope: SimpleNamespace(token="fake-jwt", expires_on=9999999999),
             kwargs=kwargs,
         )
+
+    def ClientSecretCredential(self, tenant_id, client_id, client_secret):  # noqa: N802
+        self.scoped_calls.append(("client_secret", tenant_id, client_id, client_secret))
+        return SimpleNamespace(kind="client_secret", tenant_id=tenant_id, client_id=client_id)
+
+    def WorkloadIdentityCredential(self, **kwargs):  # noqa: N802
+        self.scoped_calls.append(("workload_identity", kwargs))
+        return SimpleNamespace(kind="workload_identity", kwargs=kwargs)
+
+    def ManagedIdentityCredential(self, **kwargs):  # noqa: N802
+        self.scoped_calls.append(("managed_identity", kwargs))
+        return SimpleNamespace(kind="managed_identity", kwargs=kwargs)
 
     def get_bearer_token_provider(self, credential, scope):
         self.last_scope = scope
@@ -274,6 +287,9 @@ def fake_azure_identity(monkeypatch):
 
     fake_module = SimpleNamespace(
         DefaultAzureCredential=fake.DefaultAzureCredential,
+        ClientSecretCredential=fake.ClientSecretCredential,
+        WorkloadIdentityCredential=fake.WorkloadIdentityCredential,
+        ManagedIdentityCredential=fake.ManagedIdentityCredential,
         get_bearer_token_provider=fake.get_bearer_token_provider,
     )
     monkeypatch.setitem(sys.modules, "azure", SimpleNamespace(identity=fake_module))
@@ -318,6 +334,161 @@ class TestBuildCredential:
         c2 = build_credential(EntraIdentityConfig(scope="s2"))
         assert c1 is not c2
         assert fake_azure_identity.credential_count == 2
+
+
+class TestScopedCredential:
+    """Multiplex isolation: a routed profile must never mint the launch
+    profile's ambient credential chain (vertex_adapter refuses the same
+    pattern for GOOGLE_APPLICATION_CREDENTIALS)."""
+
+    @pytest.fixture
+    def routed_home(self, tmp_path):
+        """Install a HERMES_HOME override so build_credential takes the scoped path."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(str(tmp_path / "profile_home"))
+        yield
+        reset_hermes_home_override(token)
+
+    @pytest.fixture
+    def multiplex(self):
+        from agent import secret_scope
+        secret_scope.set_multiplex_active(True)
+        yield secret_scope
+        secret_scope.set_multiplex_active(False)
+
+    @pytest.fixture
+    def scoped(self, multiplex, request):
+        """Install a secret scope for the duration of a test."""
+        def _set(secrets):
+            token = multiplex.set_secret_scope(secrets)
+            request.addfinalizer(lambda: multiplex.reset_secret_scope(token))
+        return _set
+
+    def test_multiplex_refuses_ambient_chain(
+        self, fake_azure_identity, routed_home, multiplex, monkeypatch, scoped,
+    ):
+        """The finding: scope has no AZURE_* of its own but the process env
+        carries the launch profile's service principal. The served profile
+        must not mint it."""
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        monkeypatch.setenv("AZURE_TENANT_ID", "launch-tenant")
+        monkeypatch.setenv("AZURE_CLIENT_ID", "launch-client")
+        monkeypatch.setenv("AZURE_CLIENT_SECRET", "launch-secret")
+        scoped({})
+        with pytest.raises(RuntimeError, match="ambient DefaultAzureCredential"):
+            build_credential(EntraIdentityConfig())
+        assert fake_azure_identity.credential_count == 0
+        assert fake_azure_identity.scoped_calls == []
+
+    def test_multiplex_unscoped_refuses_too(
+        self, fake_azure_identity, routed_home, multiplex,
+    ):
+        """No secret scope installed at all still refuses (fail closed)."""
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        with pytest.raises(RuntimeError, match="ambient DefaultAzureCredential"):
+            build_credential(EntraIdentityConfig())
+
+    def test_multiplex_scope_builds_client_secret(
+        self, fake_azure_identity, routed_home, multiplex, scoped,
+    ):
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        scoped({
+            "AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s",
+        })
+        cred = build_credential(EntraIdentityConfig())
+        assert cred.kind == "client_secret"
+        assert fake_azure_identity.scoped_calls == [("client_secret", "t", "c", "s")]
+        assert fake_azure_identity.credential_count == 0
+
+    def test_multiplex_scope_builds_workload_identity(
+        self, fake_azure_identity, routed_home, multiplex, scoped,
+    ):
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        scoped({
+            "AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c",
+            "AZURE_FEDERATED_TOKEN_FILE": "/var/run/secrets/token",
+        })
+        cred = build_credential(EntraIdentityConfig())
+        assert cred.kind == "workload_identity"
+        assert fake_azure_identity.scoped_calls == [
+            ("workload_identity", {"tenant_id": "t", "client_id": "c",
+                                   "token_file_path": "/var/run/secrets/token"})]
+
+    def test_client_id_alone_routes_to_managed_identity(
+        self, fake_azure_identity, routed_home, multiplex, scoped,
+    ):
+        """Explicit per-profile opt-in to the host's user-assigned managed identity."""
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        scoped({"AZURE_CLIENT_ID": "user-assigned-id"})
+        cred = build_credential(EntraIdentityConfig())
+        assert cred.kind == "managed_identity"
+        assert fake_azure_identity.scoped_calls == [
+            ("managed_identity", {"client_id": "user-assigned-id"})]
+        assert fake_azure_identity.credential_count == 0
+
+    def test_non_multiplex_override_keeps_default_chain(
+        self, fake_azure_identity, routed_home, monkeypatch,
+    ):
+        """A single-profile override run (hermes -p beta) legitimately inherits
+        the process env: the refusal only applies while multiplexing."""
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        cred = build_credential(EntraIdentityConfig())
+        assert cred is not None
+        assert fake_azure_identity.credential_count == 1
+
+    def test_e2e_token_provider_refuses_under_multiplex(
+        self, fake_azure_identity, routed_home, multiplex, scoped,
+    ):
+        """The real consumer chain: build_token_provider -> build_credential ->
+        _scoped_credential. A cred-less served profile fails at construction."""
+        from agent.azure_identity_adapter import build_token_provider
+        scoped({})
+        with pytest.raises(RuntimeError, match="ambient DefaultAzureCredential"):
+            build_token_provider()
+
+    def test_e2e_token_provider_mints_scoped_identity(
+        self, fake_azure_identity, routed_home, multiplex, scoped,
+    ):
+        """A profile with its own SP gets a working provider minting via its
+        scope, never the process env."""
+        from agent.azure_identity_adapter import build_token_provider, materialize_bearer_for_http
+        scoped({"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s"})
+        provider = build_token_provider()
+        assert materialize_bearer_for_http(provider).startswith("jwt-for-")
+        assert fake_azure_identity.scoped_calls == [("client_secret", "t", "c", "s")]
+
+    def test_e2e_per_home_cache_isolation(
+        self, fake_azure_identity, multiplex, scoped, tmp_path,
+    ):
+        """Two routed homes, one process: A's scoped credential is cached under
+        A's home key and never served to cred-less B."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        tok_a = set_hermes_home_override(str(tmp_path / "home_a"))
+        try:
+            scoped({"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s"})
+            cred_a = build_credential(EntraIdentityConfig())
+            assert cred_a.kind == "client_secret"
+        finally:
+            reset_hermes_home_override(tok_a)
+        tok_b = set_hermes_home_override(str(tmp_path / "home_b"))
+        try:
+            scoped({})
+            with pytest.raises(RuntimeError, match="ambient DefaultAzureCredential"):
+                build_credential(EntraIdentityConfig())
+        finally:
+            reset_hermes_home_override(tok_b)
+
+    def test_probe_surfaces_refusal_as_error(
+        self, fake_azure_identity, routed_home, multiplex, scoped,
+    ):
+        """Doctor/probe path must not raise: the refusal lands in the error field."""
+        from agent.azure_identity_adapter import describe_active_credential, has_azure_identity_credentials
+        scoped({})
+        assert has_azure_identity_credentials() is False
+        info = describe_active_credential()
+        assert info["ok"] is False
+        assert "ambient DefaultAzureCredential" in info["error"]
 
 
 

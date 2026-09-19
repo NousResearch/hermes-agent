@@ -123,6 +123,120 @@ class TestHasAwsCredentials:
             assert has_aws_credentials({}) is False
 
 
+class TestScopedAwsSessionKwargs:
+    """Multiplex isolation: a routed profile must not mint the launch context's
+    ambient AWS chain (same refusal the Entra adapter applies to
+    DefaultAzureCredential)."""
+
+    @pytest.fixture
+    def routed_home(self, tmp_path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(str(tmp_path / "profile_home"))
+        yield
+        reset_hermes_home_override(token)
+
+    @pytest.fixture
+    def multiplex(self):
+        from agent import secret_scope
+        secret_scope.set_multiplex_active(True)
+        yield secret_scope
+        secret_scope.set_multiplex_active(False)
+
+    @pytest.fixture
+    def scoped(self, multiplex, request):
+        def _set(secrets):
+            token = multiplex.set_secret_scope(secrets)
+            request.addfinalizer(lambda: multiplex.reset_secret_scope(token))
+        return _set
+
+    def test_multiplex_refuses_ambient_chain(
+        self, routed_home, multiplex, scoped, monkeypatch,
+    ):
+        """Scope has no AWS_* of its own but the process env carries the launch
+        profile's keys: Session({}) would silently sign with them."""
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "launch-key")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "launch-secret")
+        scoped({})
+        with pytest.raises(RuntimeError, match="ambient default chain"):
+            scoped_aws_session_kwargs()
+
+    def test_multiplex_unscoped_refuses_too(self, routed_home, multiplex):
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        with pytest.raises(RuntimeError, match="ambient default chain"):
+            scoped_aws_session_kwargs()
+
+    def test_multiplex_partial_set_refused(self, routed_home, multiplex, scoped):
+        """A lone session token still leaves boto3 to fill key/secret from the
+        ambient chain, so an incomplete set refuses too."""
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        scoped({"AWS_SESSION_TOKEN": "only-token"})
+        with pytest.raises(RuntimeError, match="ambient default chain"):
+            scoped_aws_session_kwargs()
+
+    def test_multiplex_complete_key_pair_passes(self, routed_home, multiplex, scoped):
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        scoped({"AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"})
+        assert scoped_aws_session_kwargs() == {
+            "aws_access_key_id": "k", "aws_secret_access_key": "s"}
+
+    def test_multiplex_aws_profile_is_explicit_optin(self, routed_home, multiplex, scoped):
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        scoped({"AWS_PROFILE": "named"})
+        assert scoped_aws_session_kwargs() == {"profile_name": "named"}
+
+    def test_non_multiplex_override_keeps_ambient(self, routed_home):
+        """Single-profile override run: the process env is the operator's own."""
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        assert scoped_aws_session_kwargs() == {}
+
+    def test_bearer_token_reads_scope_under_multiplex(
+        self, routed_home, multiplex, scoped, monkeypatch,
+    ):
+        """The launch profile's AWS_BEARER_TOKEN_BEDROCK must not leak to a served
+        profile whose scope does not define it."""
+        from agent.bedrock_adapter import resolve_bedrock_bearer_token
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "launch-token")
+        scoped({})
+        assert resolve_bedrock_bearer_token() == ""
+        scoped({"AWS_BEARER_TOKEN_BEDROCK": "own-token"})
+        assert resolve_bedrock_bearer_token() == "own-token"
+
+    def test_e2e_cached_client_refuses_before_session(
+        self, routed_home, multiplex, scoped, monkeypatch,
+    ):
+        """The real consumer path: _cached_client must refuse BEFORE constructing
+        boto3.Session, so no ambient chain is ever consulted."""
+        import agent.bedrock_adapter as ba
+        session = MagicMock()
+        fake_boto3 = MagicMock()
+        fake_boto3.Session = session
+        monkeypatch.setattr(ba, "_require_boto3", lambda: fake_boto3)
+        ba.reset_client_cache()
+        scoped({})
+        with pytest.raises(RuntimeError, match="ambient default chain"):
+            ba._cached_client({}, "bedrock-runtime", "us-east-1")
+        session.assert_not_called()
+        ba.reset_client_cache()
+
+    def test_e2e_cached_client_builds_scoped_session(
+        self, routed_home, multiplex, scoped, monkeypatch,
+    ):
+        """A profile with its own key pair gets a Session built from ITS scope."""
+        import agent.bedrock_adapter as ba
+        session = MagicMock()
+        fake_boto3 = MagicMock()
+        fake_boto3.Session = session
+        monkeypatch.setattr(ba, "_require_boto3", lambda: fake_boto3)
+        ba.reset_client_cache()
+        scoped({"AWS_ACCESS_KEY_ID": "k", "AWS_SECRET_ACCESS_KEY": "s"})
+        cache = {}
+        ba._cached_client(cache, "bedrock-runtime", "us-east-1")
+        session.assert_called_once_with(
+            aws_access_key_id="k", aws_secret_access_key="s")
+        ba.reset_client_cache()
+
+
 class TestResolveBedrocRegion:
     def test_prefers_aws_region(self):
         from agent.bedrock_adapter import resolve_bedrock_region

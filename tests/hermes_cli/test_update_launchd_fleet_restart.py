@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -245,7 +246,7 @@ class TestGetServicePidsScoping:
 def _fleet(monkeypatch, tmp_path, *, current, labels, located,
            registered=None, plist_exists=True,
            drain_results=None, kick_errors=None, wait_results=None,
-           current_supervised=True):
+           current_supervised=True, legacy_labels=()):
     """Wire a fake launchd fleet through hermes_cli.gateway seams.
 
     ``located`` maps label -> (domain, pid) as ``_locate_launchd_gateway_service``
@@ -287,6 +288,9 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
     monkeypatch.setattr(gw, "get_launchd_label", lambda: current)
     monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist)
     monkeypatch.setattr(gw, "launchd_gateway_labels_for_install", lambda: list(labels))
+    monkeypatch.setattr(
+        gw, "legacy_launchd_labels_for_install", lambda exclude=(): list(legacy_labels)
+    )
     monkeypatch.setattr(gw, "_locate_launchd_gateway_service", fake_locate)
     monkeypatch.setattr(gw, "_launchd_service_registered", fake_registered)
     monkeypatch.setattr(
@@ -611,6 +615,134 @@ class TestRestartMacosLaunchdGateways:
 
         assert restarted == ["ai.hermes.gateway"]
         assert failed == ["ai.hermes.gateway-zombie"]
+
+
+def _write_launchd_plist(agents_dir: Path, label: str, *, argv=(), hermes_home=None, raw=None):
+    """One gateway LaunchAgent plist under a fake account's LaunchAgents dir."""
+    import plistlib
+
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / f"{label}.plist"
+    if raw is not None:
+        path.write_text(raw)
+        return path
+    data: dict = {"Label": label, "ProgramArguments": list(argv)}
+    if hermes_home is not None:
+        data["EnvironmentVariables"] = {"HERMES_HOME": str(hermes_home)}
+    path.write_bytes(plistlib.dumps(data))
+    return path
+
+
+def _fake_launchd_account(monkeypatch, tmp_path) -> Path:
+    """Point the real-account-home lookup (pwd.getpwuid) at a tmp home; return its LaunchAgents dir."""
+    import pwd as pwd_module
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        pwd_module, "getpwuid", lambda _uid: SimpleNamespace(pw_dir=str(tmp_path))
+    )
+    return tmp_path / "Library" / "LaunchAgents"
+
+
+class TestLegacyLaunchdLabelsForInstall:
+    """#115254 — hash-suffixed labels of THIS install join the restart pass;
+    attribution is fail-closed so another install's fleet stays untouched."""
+
+    def test_hash_suffixed_unit_running_this_installs_venv_is_credited(self, monkeypatch, tmp_path):
+        agents = _fake_launchd_account(monkeypatch, tmp_path)
+        venv = tmp_path / "install" / ".venv"
+        monkeypatch.setattr(gw, "_detect_venv_dir", lambda: venv)
+        _write_launchd_plist(
+            agents, "ai.hermes.gateway-398559f7",
+            argv=[str(venv / "bin" / "python"), "-m", "hermes_cli.stderr_timestamp"],
+            hermes_home=tmp_path / "elsewhere",  # venv anchor alone must suffice
+        )
+        assert gw.legacy_launchd_labels_for_install() == ["ai.hermes.gateway-398559f7"]
+
+    def test_unit_pinning_this_installs_profile_home_is_credited(self, monkeypatch, tmp_path):
+        agents = _fake_launchd_account(monkeypatch, tmp_path)
+        root = tmp_path / "hermes-root"
+        monkeypatch.setattr(gw, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr(gw, "_native_service_homes", lambda: set())
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
+        _write_launchd_plist(
+            agents, "ai.hermes.gateway-gopod",
+            argv=[], hermes_home=root / "profiles" / "gopod",
+        )
+        assert gw.legacy_launchd_labels_for_install() == ["ai.hermes.gateway-gopod"]
+
+    def test_another_installs_unit_is_never_credited(self, monkeypatch, tmp_path):
+        """The #41403 boundary: a sandboxed HERMES_HOME must not restart (or
+        even enumerate) a sibling install's units — neither anchor matches."""
+        agents = _fake_launchd_account(monkeypatch, tmp_path)
+        venv = tmp_path / "this-install" / ".venv"
+        monkeypatch.setattr(gw, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gw, "_native_service_homes", lambda: set())
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path / "this-root")
+        _write_launchd_plist(
+            agents, "ai.hermes.gateway-5db8084b",
+            argv=[str(tmp_path / "other-install" / ".venv" / "bin" / "python")],
+            hermes_home=tmp_path / "other-root" / "profiles" / "gopod",
+        )
+        assert gw.legacy_launchd_labels_for_install() == []
+
+    def test_malformed_plist_is_skipped_fail_closed(self, monkeypatch, tmp_path):
+        agents = _fake_launchd_account(monkeypatch, tmp_path)
+        monkeypatch.setattr(gw, "_detect_venv_dir", lambda: None)
+        _write_launchd_plist(agents, "ai.hermes.gateway-broken", raw="not a plist at all")
+        assert gw.legacy_launchd_labels_for_install() == []
+
+    def test_exclude_hides_derived_and_current_labels(self, monkeypatch, tmp_path):
+        agents = _fake_launchd_account(monkeypatch, tmp_path)
+        venv = tmp_path / "install" / ".venv"
+        monkeypatch.setattr(gw, "_detect_venv_dir", lambda: venv)
+        _write_launchd_plist(agents, "ai.hermes.gateway-398559f7", argv=[str(venv / "bin" / "python")])
+        _write_launchd_plist(agents, "ai.hermes.gateway-gopod", argv=[str(venv / "bin" / "python")])
+        assert gw.legacy_launchd_labels_for_install(
+            exclude={"ai.hermes.gateway-gopod", "ai.hermes.gateway"}
+        ) == ["ai.hermes.gateway-398559f7"]
+
+    def test_missing_agents_dir_means_no_legacy_units(self, monkeypatch, tmp_path):
+        _fake_launchd_account(monkeypatch, tmp_path)  # home exists; LaunchAgents does not
+        monkeypatch.setattr(gw, "_detect_venv_dir", lambda: None)
+        assert gw.legacy_launchd_labels_for_install() == []
+
+
+class TestRestartMacosLaunchdGatewaysLegacyUnits:
+    def test_legacy_labelled_sibling_is_restarted_like_any_other(self, monkeypatch, tmp_path, capsys):
+        """The update restart pass iterates the derivation PLUS the install's
+        legacy-labelled units (#115254): the hash-suffixed sibling is drained,
+        kickstarted and verified in its own domain."""
+        current = "ai.hermes.gateway"
+        legacy = "ai.hermes.gateway-398559f7"
+        rec = _fleet(
+            monkeypatch,
+            tmp_path,
+            current=current,
+            labels=[current, "ai.hermes.gateway-gopod"],
+            legacy_labels=[legacy],
+            located={
+                current: (f"gui/{UID}", 100),
+                "ai.hermes.gateway-gopod": (f"gui/{UID}", 200),
+                legacy: (f"user/{UID}", 300),
+            },
+        )
+        restarted: list[str] = []
+        failed: list[str] = []
+
+        _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
+
+        assert rec.kickstarts == [
+            f"gui/{UID}/ai.hermes.gateway-gopod",
+            f"user/{UID}/{legacy}",
+        ]
+        assert restarted == [current, "ai.hermes.gateway-gopod", legacy]
+        assert failed == []
+        assert set(rec.drains) == {200, 300}
+        out = capsys.readouterr().out
+        assert legacy in out  # the join is announced, not silent
 
 
 class TestWaitForLaunchdServicePid:

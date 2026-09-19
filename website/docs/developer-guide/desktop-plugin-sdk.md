@@ -217,6 +217,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 
 ### Panes
 
@@ -405,6 +406,15 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 `middleware`) let a plugin add controls around the message composer, provide an
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
+
+### Appearance settings
+
+`APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
+Appearance**. For colour picking, use the app's own swatch grid —
+`ColorSwatches` renders exactly what the profile rail and project dialog render,
+with your own `onChange`; pair it with `host.sessions.setColor(id, color)` for
+session colours — instead of injecting nodes into the page or driving app
+widgets through React internals.
 
 ### Transcript directives — inline components the model addresses
 

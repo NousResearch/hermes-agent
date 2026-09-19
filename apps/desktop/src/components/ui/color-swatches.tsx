@@ -1,6 +1,6 @@
 import { Codicon } from './codicon'
 
-interface ColorSwatchesProps {
+export interface ColorSwatchesProps {
   swatches: readonly string[]
   value: null | string
   onChange: (color: null | string) => void

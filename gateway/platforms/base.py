@@ -378,6 +378,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -580,18 +581,76 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     return str(filepath)
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+# Telegram listing albums: one inbound media_group / message → one timestamped
+# subfolder so drain never clusters unrelated img_*.jpg by mtime.
+_ALBUM_DIRS: dict[str, Path] = {}
+_ALBUM_DIR_LOCK = threading.Lock()
+_ALBUM_KEY_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def clear_inbound_album_dirs() -> None:
+    """Test helper: drop the process album-dir map."""
+    with _ALBUM_DIR_LOCK:
+        _ALBUM_DIRS.clear()
+
+
+def _safe_album_key(album_key: str) -> str:
+    raw = (album_key or "").strip() or "unknown"
+    safe = _ALBUM_KEY_RE.sub("_", raw).strip("._-") or "unknown"
+    return safe[:48]
+
+
+def resolve_inbound_album_dir(album_key: str) -> Path:
+    """Return (and remember) ``cache/images/albums/<YYYYMMDD-HHMMSS>-<key>/``.
+
+    Same ``album_key`` reuses the first folder so a 4-shot Telegram album stays
+    together. Different keys never share a folder.
+    """
+    key = _safe_album_key(album_key)
+    with _ALBUM_DIR_LOCK:
+        existing = _ALBUM_DIRS.get(key)
+        if existing is not None:
+            return existing
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        dest = get_image_cache_dir() / "albums" / f"{ts}-{key}"
+        dest.mkdir(parents=True, exist_ok=True)
+        _ALBUM_DIRS[key] = dest
+        return dest
+
+
+def _write_album_photo(album_dir: Path, ext: str, data: bytes) -> str:
+    """Write the next ``photo-NN<ext>`` in *album_dir*; return the path string."""
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    album_dir.mkdir(parents=True, exist_ok=True)
+    for n in range(1, 100):
+        dest = album_dir / f"photo-{n:02d}{ext}"
+        if not dest.exists():
+            dest.write_bytes(data)
+            return str(dest)
+    raise ValueError(f"album already has 99 photos: {album_dir}")
+
+
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg", *, album_key: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
-    ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
+    ValueError when *data* isn't an image (e.g. an upstream HTML error page).
+
+    *album_key*: Telegram media_group_id / message id. When set, write
+    ``albums/<ts>-<key>/photo-NN`` instead of a flat ``img_<uuid>`` file.
+    """
     validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
+    if album_key:
+        return _write_album_photo(resolve_inbound_album_dir(album_key), ext, data)
     return _write_cache_file(get_image_cache_dir(), "img", ext, data)
 
 
-async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg", *, album_key: str | None = None) -> str:
     """Cache image bytes without blocking the caller's event loop."""
+    if album_key:
+        return await asyncio.to_thread(cache_image_from_bytes, data, ext, album_key=album_key)
     return await asyncio.to_thread(cache_image_from_bytes, data, ext)
 
 
@@ -633,7 +692,10 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
 
 
 def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
-    """Delete files in *cache_dir* older than *max_age_hours*; return the count removed."""
+    """Delete files in *cache_dir* older than *max_age_hours*; return the count removed.
+
+    Also drops stale ``albums/<ts>-<key>/`` trees (Telegram media-group isolation).
+    """
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
     for f in cache_dir.iterdir():
@@ -641,6 +703,17 @@ def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
             with contextlib.suppress(OSError):
                 f.unlink()
                 removed += 1
+    albums = cache_dir / "albums"
+    if albums.is_dir():
+        for d in albums.iterdir():
+            if not d.is_dir():
+                continue
+            try:
+                if d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                continue
     return removed
 
 

@@ -84,9 +84,17 @@ class _BoundedOutputCollector:
             try:
                 self._spill_fh.close()
             except OSError:
-                pass
+                # A failed close can lose buffered tail bytes, so the file is
+                # no longer guaranteed to hold the complete stream (#109757).
+                self._spill_capped = True
             self._spill_fh = None
             return str(self._spill_path)
+
+    @property
+    def spill_capped(self) -> bool:
+        """Whether the spill file is only a prefix of the stream (cap hit or I/O failure)."""
+        with self._lock:
+            return self._spill_capped
 
     @property
     def buffered_chars(self) -> int:
@@ -203,6 +211,8 @@ def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, ret
     if spill:
         result["output_total_chars"] = collector.total_chars
         result["full_output_path"] = spill
+        if collector.spill_capped:
+            result["full_output_capped"] = True
     return result
 
 

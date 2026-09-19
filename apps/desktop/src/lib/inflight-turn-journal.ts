@@ -782,7 +782,12 @@ export function mergeInFlightMessages(
     return { ...noop, caughtUp: true }
   }
 
-  const projectionIndex = baseMessages.findIndex(
+  // The genuinely live tail, not a sealed interim row that merely still
+  // carries an assistant-stream-* id (finalizeInterimAssistantMessage keeps
+  // the id on seal) — a turn that streams interim text and then keeps
+  // streaming leaves BOTH rows matching isLiveProjectionRow, and the sealed
+  // one comes first.
+  const projectionIndex = baseMessages.findLastIndex(
     (message, index) => index > matchingUserIndex && message.role === 'assistant' && isLiveProjectionRow(message)
   )
 
@@ -812,8 +817,9 @@ export function mergeInFlightMessages(
   const projection = baseMessages[projectionIndex]
   const merged = lastJournalRow ? overlayProjectionRow(projection, lastJournalRow) : projection
 
-  const sealedRows = tailAssistants.filter(
-    message => message !== lastJournalRow && assistantHasRecoverableContent(message)
+  const sealedRows = withoutBaseIds(
+    tailAssistants.filter(message => message !== lastJournalRow && assistantHasRecoverableContent(message)),
+    baseMessages
   )
 
   const messages = [

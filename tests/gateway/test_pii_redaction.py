@@ -1,5 +1,7 @@
 """Tests for PII redaction in gateway session context prompts."""
 
+import json
+
 from gateway.session import (
     SessionContext,
     SessionSource,
@@ -73,6 +75,14 @@ class TestBuildSessionContextPromptRedaction:
         # user_id should not appear when user_name is present (name takes priority)
         assert "user-123" not in prompt
 
+
+    def test_telegram_chat_id_hashed_when_redact_pii(self):
+        """Numeric Telegram chat ids are route identity; hash them with the flag."""
+        ctx = _make_context(chat_id="-5388221570")
+        prompt = build_session_context_prompt(ctx, redact_pii=True)
+        assert "-5388221570" not in prompt
+        hashed = _hash_chat_id("-5388221570")
+        assert f"**Telegram Chat ID:** {json.dumps(hashed)}" in prompt
 
     def test_home_channel_id_preserved_without_redaction(self):
         hc = {

@@ -1885,11 +1885,22 @@ interface FetchJSONOptions {
   allowUnauthorized?: boolean;
 }
 
+export interface UpdateReceiptSummary {
+  outcome: string;
+  started_at?: string;
+  finished_at?: string;
+  pre_sha?: string | null;
+  post_sha?: string | null;
+  post_version?: string | null;
+  fleet_states?: string[];
+}
+
 export interface ActionStatusResponse {
   exit_code: number | null;
   lines: string[];
   name: string;
   pid: number | null;
+  receipt?: UpdateReceiptSummary;
   running: boolean;
 }
 

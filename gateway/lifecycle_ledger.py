@@ -61,9 +61,56 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
     return found
 
 
+_CGROUP_ROOT = "/sys/fs/cgroup"  # test seam — monkeypatch to redirect cgroup reads in tests
+
+
+def _cgroup_v2_memory(cgroup_root: str) -> Optional[Dict[str, int]]:
+    """Read cgroup v2 memory.max / memory.current / memory.stat for the process cgroup.
+
+    Returns ``{mem_total_kib, mem_available_kib}`` under a finite limit; ``None`` when there is
+    no limit (``memory.max == "max"``), files are absent (non-Linux / cgroup v1 / bare host), or
+    any parse fails.  ``available`` includes reclaimable page cache (``file`` +
+    ``slab_reclaimable`` from memory.stat), mirroring what ``MemAvailable`` does for the host so
+    a cache-warm pod is not falsely classified as critical.
+    """
+    try:
+        with open(f"{cgroup_root}/memory.max", encoding="utf-8") as fh:
+            max_raw = fh.read().strip()
+        if max_raw == "max":
+            return None
+        memory_max_bytes = int(max_raw)
+        if memory_max_bytes <= 0:
+            return None
+        with open(f"{cgroup_root}/memory.current", encoding="utf-8") as fh:
+            memory_current_bytes = int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+    file_bytes = slab_reclaimable_bytes = 0
+    try:
+        with open(f"{cgroup_root}/memory.stat", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2:
+                    if parts[0] == "file":
+                        file_bytes = int(parts[1])
+                    elif parts[0] == "slab_reclaimable":
+                        slab_reclaimable_bytes = int(parts[1])
+    except (OSError, ValueError):
+        pass  # no memory.stat → reclaimable stays 0; total/available still usable
+    reclaimable_bytes = file_bytes + slab_reclaimable_bytes
+    available_bytes = memory_max_bytes - memory_current_bytes + reclaimable_bytes
+    available_bytes = max(0, min(available_bytes, memory_max_bytes))
+    return {
+        "mem_total_kib": memory_max_bytes // 1024,
+        "mem_available_kib": available_bytes // 1024,
+    }
+
+
 def sample_memory() -> Dict[str, Any]:
     """Cheap /proc snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used.  Linux-only
-    (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable."""
+    (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable.
+    Prefers cgroup v2 values for ``mem_total_kib``/``mem_available_kib`` when the process runs
+    inside a container with a finite memory limit; falls back to ``/proc/meminfo`` otherwise."""
     sample = _proc_fields("/proc/self/status", {"VmRSS": "rss_kib"})
     mem = _proc_fields("/proc/meminfo", {"MemTotal": "mem_total_kib", "MemAvailable": "mem_available_kib",
                                          "SwapTotal": "SwapTotal", "SwapFree": "SwapFree"})
@@ -71,6 +118,9 @@ def sample_memory() -> Dict[str, Any]:
     sample.update(mem)
     if swap_total is not None and swap_free is not None:
         sample["swap_used_kib"] = swap_total - swap_free
+    cgroup = _cgroup_v2_memory(_CGROUP_ROOT)
+    if cgroup:
+        sample.update(cgroup)
     return sample
 
 

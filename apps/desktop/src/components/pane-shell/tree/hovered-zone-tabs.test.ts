@@ -88,10 +88,12 @@ describe('hovered zone retargets the tab verbs', () => {
     expect(model.allPaneIds(tree.$layoutTree.get()!)).toContain('workspace')
   })
 
-  // Hovering chrome that is not a zone at all (the sidebar, the titlebar, the
-  // statusbar) reports no group. The keys must fall through to focus rather
+  // Hovering chrome that cannot serve the verb must fall through to focus rather
   // than dead-ending — pointing away from the panes is not a reason to stop
-  // switching tabs.
+  // switching tabs. Note that the sidebar IS a zone like any other in the wide
+  // layout: it falls through because it hosts no chat strip, not because it
+  // reports no group. Only chrome genuinely outside the tree (the titlebar, the
+  // statusbar) reports null.
   it('hovering non-pane chrome falls through to the focused zone', async () => {
     const { activeOf, tree } = await setup()
 

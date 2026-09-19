@@ -814,6 +814,43 @@ class TestTwoFactor:
         code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
         assert code not in raw  # the code went to the page, not to the model
 
+    def test_saved_authenticator_key_on_another_origin_asks_the_user(self, store):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "gh", {"identifier_type": "username", "identifier": "tek", "password": "pw",
+                                              "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://github.com")
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Authentication code",
+                     "autocomplete": "one-time-code"}]
+        asked = []
+        seen = {}
+
+        def fake_eval(task_id, expr):
+            result = json.dumps(controls) if "querySelectorAll" in expr else "https://evil.example/verify"
+            return {"success": True, "result": result}
+
+        def fake_secret(task_id, expr):
+            seen["expr"] = expr
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "000000")
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch("agent.vault_backends.local.LocalLoginBackend.resolve_otp", return_value="111111") as resolve_otp, \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+
+        assert out["success"] and out["source"] == "user"
+        assert asked == ["evil.example"]
+        resolve_otp.assert_not_called()
+        assert '"value": "000000"' in seen["expr"]
+        assert "111111" not in seen["expr"]
+
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool

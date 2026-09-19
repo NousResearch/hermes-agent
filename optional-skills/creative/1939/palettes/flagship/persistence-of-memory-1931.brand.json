@@ -1,0 +1,205 @@
+{
+  "name": "Melting",
+  "slug": "persistence-of-memory-1931",
+  "year": 1931,
+  "collection": "1939-flagship",
+  "source": "The Persistence of Memory",
+  "source_type": "artwork",
+  "roles": {
+    "Background": {
+      "hex": "#1C2129",
+      "tints": [
+        "#656B75",
+        "#4E555E",
+        "#393F48",
+        "#2A3038",
+        "#1C2129",
+        "#131820",
+        "#080C14",
+        "#020409",
+        "#000002",
+        "#000002"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C8D0DD",
+      "tints": [
+        "#F0F9FF",
+        "#F0F9FF",
+        "#E3EBF8",
+        "#D5DDEA",
+        "#C8D0DD",
+        "#E3EBF8",
+        "#AFB7C3",
+        "#9CA4B0",
+        "#8A929D",
+        "#78808B"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#732218",
+      "tints": [
+        "#E78A7B",
+        "#C56B5D",
+        "#A44E41",
+        "#833025",
+        "#732218",
+        "#742218",
+        "#4B0000",
+        "#320000",
+        "#1A0000",
+        "#0A0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#EF745F",
+      "tints": [
+        "#FFCFB6",
+        "#FFC5AC",
+        "#FFA48D",
+        "#FF846E",
+        "#EF745F",
+        "#BB4533",
+        "#C14B38",
+        "#A63120",
+        "#8B1202",
+        "#700000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#6A81BB",
+      "tints": [
+        "#D5F1FF",
+        "#B5D0FF",
+        "#96B0ED",
+        "#7890CC",
+        "#6A81BB",
+        "#4E649C",
+        "#455B92",
+        "#31447A",
+        "#1D2E62",
+        "#0B194A"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#ABD4FF",
+      "tints": [
+        "#CFFAFF",
+        "#CFFAFF",
+        "#CFFAFF",
+        "#BBE5FF",
+        "#ABD4FF",
+        "#83ABEC",
+        "#83ABEC",
+        "#6B91D1",
+        "#5479B7",
+        "#3D619D"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#EDC25A",
+      "tints": [
+        "#FFF28C",
+        "#FFF28C",
+        "#FFF28C",
+        "#FED26B",
+        "#EDC25A",
+        "#E7BC54",
+        "#C3992A",
+        "#A98000",
+        "#906800",
+        "#785100"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#84765F",
+      "tints": [
+        "#BCAC94",
+        "#AC9D85",
+        "#9D8D76",
+        "#91816A",
+        "#84765F",
+        "#8E7F68",
+        "#6D5F49",
+        "#60523D",
+        "#60523D",
+        "#60523D"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.52,
+    "highlight_on_background": 5.65,
+    "highlight_on_canvas": 1.84,
+    "support_on_background": 4.21,
+    "chart1_on_background": 10.46,
+    "chart2_on_background": 9.6,
+    "canvas_on_background": 10.41
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00548
+}

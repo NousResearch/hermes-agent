@@ -1,0 +1,205 @@
+{
+  "name": "L'Air de Panache",
+  "slug": "lair-de-panache-2014",
+  "year": 2014,
+  "collection": "1939-flagship",
+  "source": "The Grand Budapest Hotel",
+  "source_type": "film_screenshot",
+  "roles": {
+    "Background": {
+      "hex": "#1E1416",
+      "tints": [
+        "#685C5E",
+        "#514648",
+        "#3C3133",
+        "#2C2224",
+        "#1E1416",
+        "#150C0E",
+        "#090304",
+        "#020000",
+        "#010000",
+        "#010000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#D2BEBA",
+      "tints": [
+        "#FFF2EE",
+        "#FDE8E4",
+        "#EDD8D4",
+        "#DFCBC7",
+        "#D2BEBA",
+        "#EDD8D4",
+        "#B8A5A1",
+        "#A6928E",
+        "#93807D",
+        "#816F6B"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#6B2C12",
+      "tints": [
+        "#DC9276",
+        "#BB7359",
+        "#9B563C",
+        "#7B3920",
+        "#6B2C12",
+        "#6C2C12",
+        "#440500",
+        "#2D0000",
+        "#160000",
+        "#070000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#E86A63",
+      "tints": [
+        "#FFCCC0",
+        "#FFBBAF",
+        "#FF9A90",
+        "#F97A72",
+        "#E86A63",
+        "#B43B38",
+        "#BA413D",
+        "#9F2627",
+        "#84000F",
+        "#690000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#678CAD",
+      "tints": [
+        "#D4FDFF",
+        "#B4DBFE",
+        "#94BBDD",
+        "#769CBC",
+        "#678CAD",
+        "#4B6F8E",
+        "#426684",
+        "#2C4F6D",
+        "#163A56",
+        "#00253F"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#A0C2DD",
+      "tints": [
+        "#DAFDFF",
+        "#DAFDFF",
+        "#D0F3FF",
+        "#B0D3EE",
+        "#A0C2DD",
+        "#799AB4",
+        "#799AB4",
+        "#61819A",
+        "#4A6A82",
+        "#34536B"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#BC62AA",
+      "tints": [
+        "#FFD0FF",
+        "#FFB0FB",
+        "#EF90DA",
+        "#CD71BA",
+        "#BC62AA",
+        "#B65CA4",
+        "#923A82",
+        "#78226A",
+        "#5F0253",
+        "#47003D"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#6F4C5B",
+      "tints": [
+        "#A5808F",
+        "#967180",
+        "#876372",
+        "#7A5766",
+        "#6F4C5B",
+        "#785564",
+        "#6B4958",
+        "#6B4958",
+        "#6B4958",
+        "#6B4958"
+      ],
+      "curve": "surface",
+      "legend_text": "#f0ede8",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.71,
+    "highlight_on_background": 5.72,
+    "highlight_on_canvas": 1.77,
+    "support_on_background": 5.08,
+    "chart1_on_background": 9.65,
+    "chart2_on_background": 4.68,
+    "canvas_on_background": 10.13
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.0058
+}

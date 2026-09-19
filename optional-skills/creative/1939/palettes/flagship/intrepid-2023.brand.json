@@ -1,0 +1,205 @@
+{
+  "name": "Intrepid",
+  "slug": "intrepid-2023",
+  "year": 2023,
+  "collection": "1939-flagship",
+  "source": "Intrepid",
+  "source_type": "photograph",
+  "roles": {
+    "Background": {
+      "hex": "#111714",
+      "tints": [
+        "#585F5B",
+        "#424946",
+        "#2D3431",
+        "#1F2522",
+        "#111714",
+        "#090F0C",
+        "#020503",
+        "#000100",
+        "#000000",
+        "#000000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#CBC9C6",
+      "tints": [
+        "#FAF8F4",
+        "#F6F4F0",
+        "#E6E4E0",
+        "#D8D6D2",
+        "#CBC9C6",
+        "#E6E4E0",
+        "#B2B0AC",
+        "#9F9D9A",
+        "#8D8B87",
+        "#7B7976"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#1F4260",
+      "tints": [
+        "#82A8CB",
+        "#6489AB",
+        "#486C8C",
+        "#2C4F6E",
+        "#1F4260",
+        "#1F4260",
+        "#00203B",
+        "#000C26",
+        "#000012",
+        "#000009"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#4E93C9",
+      "tints": [
+        "#B9FFFF",
+        "#9CE3FF",
+        "#7DC2FB",
+        "#5DA2D9",
+        "#4E93C9",
+        "#1D6699",
+        "#246B9F",
+        "#005486",
+        "#003D6E",
+        "#002756"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#AB8168",
+      "tints": [
+        "#FFEDD2",
+        "#FDCFB4",
+        "#DBAF95",
+        "#BB9077",
+        "#AB8168",
+        "#8C644C",
+        "#825B43",
+        "#6A452E",
+        "#532F19",
+        "#3D1B04"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FFE6C2",
+      "tints": [
+        "#FFF2CD",
+        "#FFF2CD",
+        "#FFF2CD",
+        "#FFF2CD",
+        "#FFE6C2",
+        "#DCBC99",
+        "#DCBC99",
+        "#C1A280",
+        "#A88A68",
+        "#8F7251"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#2CB9A4",
+      "tints": [
+        "#94FFFB",
+        "#8DFFF4",
+        "#6AEAD3",
+        "#43C9B3",
+        "#2CB9A4",
+        "#21B39E",
+        "#00907C",
+        "#007865",
+        "#00604F",
+        "#00493A"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#84828A",
+      "tints": [
+        "#BBB9C2",
+        "#ABA9B2",
+        "#9C9AA3",
+        "#908E97",
+        "#84828A",
+        "#8D8B94",
+        "#6C6A73",
+        "#5B5962",
+        "#55535C",
+        "#55535C"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.73,
+    "highlight_on_background": 5.48,
+    "highlight_on_canvas": 2.0,
+    "support_on_background": 5.25,
+    "chart1_on_background": 15.0,
+    "chart2_on_background": 7.42,
+    "canvas_on_background": 10.99
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00641
+}

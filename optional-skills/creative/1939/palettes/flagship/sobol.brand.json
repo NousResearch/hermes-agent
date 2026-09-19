@@ -1,0 +1,205 @@
+{
+  "name": "Sobol",
+  "slug": "sobol",
+  "year": 2006,
+  "collection": "1939-flagship",
+  "source": "Sobol",
+  "source_type": "design",
+  "roles": {
+    "Background": {
+      "hex": "#110F11",
+      "tints": [
+        "#575457",
+        "#423F42",
+        "#2D2A2D",
+        "#1F1C1F",
+        "#110F11",
+        "#090709",
+        "#020102",
+        "#000000",
+        "#000000",
+        "#000000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#B2BDC4",
+      "tints": [
+        "#ECF8FF",
+        "#DCE7EE",
+        "#CCD7DE",
+        "#BFCAD0",
+        "#B2BDC4",
+        "#CCD7DE",
+        "#99A4AA",
+        "#879198",
+        "#757F86",
+        "#646E74"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#134861",
+      "tints": [
+        "#7CAFCC",
+        "#5D90AC",
+        "#40728D",
+        "#23556F",
+        "#134861",
+        "#134861",
+        "#00253C",
+        "#001127",
+        "#000214",
+        "#000008"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#C38858",
+      "tints": [
+        "#FFE9B7",
+        "#FFD7A6",
+        "#F4B786",
+        "#D39767",
+        "#C38858",
+        "#935C2C",
+        "#996132",
+        "#804A18",
+        "#683400",
+        "#501E00"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#378EAC",
+      "tints": [
+        "#AAFFFF",
+        "#89DDFD",
+        "#68BDDC",
+        "#489DBC",
+        "#378EAC",
+        "#0A708D",
+        "#006783",
+        "#00506C",
+        "#003A54",
+        "#00243E"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FFAD4F",
+      "tints": [
+        "#FFDB80",
+        "#FFDB80",
+        "#FFDB80",
+        "#FFBE61",
+        "#FFAD4F",
+        "#EB8416",
+        "#EA8416",
+        "#CF6A00",
+        "#B45200",
+        "#993900"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#57BFDD",
+      "tints": [
+        "#A3FFFF",
+        "#A3FFFF",
+        "#8AF0FF",
+        "#68CFEE",
+        "#57BFDD",
+        "#50B9D7",
+        "#2496B3",
+        "#007D9A",
+        "#006681",
+        "#004F69"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#6F7A7E",
+      "tints": [
+        "#A5B0B5",
+        "#95A1A5",
+        "#869296",
+        "#7A8589",
+        "#6F7A7E",
+        "#788387",
+        "#586366",
+        "#4C575A",
+        "#4C575A",
+        "#4C575A"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.93,
+    "highlight_on_background": 6.35,
+    "highlight_on_canvas": 1.57,
+    "support_on_background": 5.11,
+    "chart1_on_background": 10.31,
+    "chart2_on_background": 9.0,
+    "canvas_on_background": 9.97
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00306
+}

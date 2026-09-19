@@ -119,7 +119,8 @@ class TestRegisterPlatformHandlerAPI:
         assert len(mgr.get_platform_handler_factories("telegram")) == 1
 
         mgr.discover_and_load(force=True)
-        assert mgr.get_platform_handler_factories("telegram") == []
+        # Only the leased entry is gone; bundled plugins (Wisdom) legitimately re-register theirs on rediscovery.
+        assert all(name != "test_plugin" for _, name in mgr.get_platform_handler_factories("telegram"))
 
 
 # ===========================================================================

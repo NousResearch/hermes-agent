@@ -613,7 +613,8 @@ class TestGatewaySkillCollector:
                 platform="discord", max_slots=100, reserved_names=set(), desc_limit=100,
             )
         assert hidden == 0
-        name, _desc, cmd_key, raw_name = entries[0]
+        # Plugin rows (cmd_key "") precede skills; pick the skill row by its key.
+        name, _desc, cmd_key, raw_name = next(e for e in entries if e[2] == f"/{long_name}")
         assert len(name) == _CMD_NAME_LIMIT
         assert cmd_key == f"/{long_name}", "cmd_key must survive name clamping"
         assert raw_name == long_name

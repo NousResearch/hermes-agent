@@ -1,0 +1,10 @@
+{
+  "name": "wisdom",
+  "label": "Collective Wisdom",
+  "description": "Backend routes for the Desktop Team Skills page (/api/plugins/wisdom/). No dashboard tab.",
+  "icon": "Puzzle",
+  "version": "2.0.0",
+  "tab": { "path": "/wisdom", "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,9 @@
+name: wisdom
+version: 2.0.0
+description: "Collective Wisdom — browse, install, update and share instruction-only skills inside your Nous organization. Tools gate on a Nous login whose token carries `wisdom:*` scopes; `hermes wisdom` and `/wisdom` expose the same actions."
+author: NousResearch
+kind: backend
+provides_tools:
+  - wisdom_browse
+  - wisdom_install
+  - wisdom_share

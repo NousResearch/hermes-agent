@@ -5,6 +5,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 import contextlib
 import functools
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,12 +37,43 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def _discover_fnm_node_dirs() -> tuple[str, ...]:
+    """Find stable Node installation directories managed by fnm."""
+    roots: list[Path] = []
+    configured_root = os.environ.get("FNM_DIR", "").strip()
+    if configured_root:
+        roots.append(Path(configured_root).expanduser())
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        roots.append(Path(appdata) / "fnm")
+
+    dirs: list[str] = []
+    seen_roots: set[str] = set()
+    for root in roots:
+        root_key = os.path.normcase(os.path.abspath(str(root)))
+        if root_key in seen_roots:
+            continue
+        seen_roots.add(root_key)
+        versions_root = root / "node-versions"
+        try:
+            entries = os.listdir(versions_root)
+        except OSError:
+            continue
+        entries.sort(key=lambda value: tuple(int(part) for part in re.findall(r"\d+", value)), reverse=True)
+        for entry in entries:
+            installation = versions_root / entry / "installation"
+            if installation.is_dir():
+                dirs.append(str(installation))
+    return tuple(dirs)
+
+
 def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
     _bt = _origin()
     home = get_hermes_home()
     managed = (home / "node" / "bin", home / "node", home / "node_modules" / ".bin")
-    return [*map(str, managed), *_discover_homebrew_node_dirs(), *_bt._SANE_PATH_DIRS]
+    return [*map(str, managed), *_discover_fnm_node_dirs(), *_discover_homebrew_node_dirs(), *_bt._SANE_PATH_DIRS]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:

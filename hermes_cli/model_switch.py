@@ -1615,7 +1615,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 def switch_model(
     raw_input: str, current_provider: str, current_model: str, current_base_url: str = "",
     current_api_key: str = "", is_global: bool = False, explicit_provider: str = "",
-    user_providers: dict = None, custom_providers: list | None = None) -> ModelSwitchResult:
+    user_providers: dict = None, custom_providers: list | None = None,
+    allowed_models: list | None = None) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
     Route (PATH A with ``--provider``, else PATH B) -> credentials -> validation -> result; each
@@ -1632,6 +1633,11 @@ def switch_model(
         fail = step(st)
         if fail is not None:
             return fail
+    from hermes_cli.model_allowlist import model_is_allowed
+    if not model_is_allowed(st.new_model, st.target_provider, allowed_models):
+        return st.fail(
+            f"Model `{st.new_model}` is not in model_catalog.allowed_models for {st.target_provider}.",
+            new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
     return _build_switch_result(st)
 
 

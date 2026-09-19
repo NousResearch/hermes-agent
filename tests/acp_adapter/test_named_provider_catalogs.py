@@ -239,6 +239,34 @@ class TestModelStateIncludesNamedProviders:
         )
         assert "AWS Bedrock Mantle" in (named.description or "")
 
+    def test_named_custom_model_outside_allowlist_is_not_advertised(self):
+        from acp_adapter.model_catalog import build_model_state
+
+        class _Ctx:
+            allowed_models = [
+                {"provider": "nous", "model": "solar-pro-4"},
+            ]
+
+            def with_overrides(self, **_kwargs):
+                return self
+
+        with patch("hermes_cli.inventory.load_picker_context", return_value=_Ctx()), patch(
+            "hermes_cli.inventory.build_models_payload",
+            return_value={"providers": [{
+                "slug": "nous", "name": "Nous",
+                "models": ["solar-pro-4", "other"],
+            }]},
+        ), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:relay", "Relay", [("secret-model", "")])],
+        ):
+            state = build_model_state("other", "nous", "")
+
+        ids = [item.model_id for item in state.available_models]
+        assert ids == ["nous:solar-pro-4"]
+        assert "custom:relay:secret-model" not in ids
+        assert "nous:other" not in ids
+
     @pytest.mark.asyncio
     async def test_configured_provider_inventory_row_uses_custom_choice_id(self):
         """A ``providers:`` row must not expose its raw config key to ACP."""

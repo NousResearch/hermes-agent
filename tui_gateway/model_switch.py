@@ -273,7 +273,8 @@ def _apply_model_switch(
         raw_input=model_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=persist_global,
         explicit_provider=explicit_provider, user_providers=user_provs,
-        custom_providers=custom_provs)
+        custom_providers=custom_provs,
+        allowed_models=((cfg or {}).get("model_catalog", {}) or {}).get("allowed_models"))
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None

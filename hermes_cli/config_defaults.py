@@ -1930,6 +1930,9 @@ DEFAULT_CONFIG = {
         # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
         # providers: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},
+        # Optional provider-qualified picker allowlist. When non-empty, every
+        # model picker and /model selection accepts only these exact pairs.
+        "allowed_models": [],
     },
     # Per-model metadata overrides. Fields: context_window, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over

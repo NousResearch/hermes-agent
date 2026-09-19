@@ -155,14 +155,14 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
 
 
 def _switch_model_from(
-    cli, raw_input, *, is_global, explicit_provider, user_providers, custom_providers):
+    cli, raw_input, *, is_global, explicit_provider, user_providers, custom_providers, allowed_models):
     """``switch_model`` seeded with this CLI's live route."""
     from hermes_cli.model_switch import switch_model
     return switch_model(
         raw_input=raw_input, current_provider=cli.provider or "", current_model=cli.model or "",
         current_base_url=cli.base_url or "", current_api_key=cli.api_key or "", is_global=is_global,
         explicit_provider=explicit_provider, user_providers=user_providers,
-        custom_providers=custom_providers)
+        custom_providers=custom_providers, allowed_models=allowed_models)
 
 
 def _run_confirm_and_apply(cli, target, *args) -> None:
@@ -274,7 +274,8 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
     cli._open_model_picker(
         providers, cli.model or "unknown", get_label(cli.provider) if cli.provider else "unknown",
         user_provs=ctx.user_providers if ctx is not None else None,
-        custom_provs=ctx.custom_providers if ctx is not None else None)
+        custom_provs=ctx.custom_providers if ctx is not None else None,
+        allowed_models=ctx.allowed_models if ctx is not None else None)
 
 
 class CLIModelSwitchMixin:
@@ -492,7 +493,10 @@ class CLIModelSwitchMixin:
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(
+        self, providers: list, current_model: str, current_provider: str, user_provs=None,
+        custom_provs=None, allowed_models=None,
+    ) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         self._model_picker_state = {
@@ -503,6 +507,7 @@ class CLIModelSwitchMixin:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "allowed_models": allowed_models,
             "filter": ""}
         self._invalidate(min_interval=0.0)
 
@@ -731,7 +736,8 @@ class CLIModelSwitchMixin:
                     self, visible_labels[selected], is_global=persist_global,
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
-                    custom_providers=state.get("custom_provs"))
+                    custom_providers=state.get("custom_provs"),
+                    allowed_models=state.get("allowed_models"))
                 if result.success and _picker_offers_reasoning(provider_data, result.new_model):
                     # Third step: effort for the picked model (skipped for routes the catalog
                     # marks reasoning-free). Rows come from the canonical level set.
@@ -821,7 +827,8 @@ class CLIModelSwitchMixin:
         result = _switch_model_from(
             self, request.target, is_global=persist_global,
             explicit_provider=request.explicit_provider,
-            user_providers=user_provs, custom_providers=custom_provs)
+            user_providers=user_provs, custom_providers=custom_provs,
+            allowed_models=ctx.allowed_models if ctx is not None else None)
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return

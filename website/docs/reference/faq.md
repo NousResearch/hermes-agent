@@ -737,7 +737,14 @@ skills:
   disabled: []                    # globally disabled skills
   platform_disabled:
     telegram: [skill-a, skill-b]  # disabled only on telegram
+  platform_enabled:
+    telegram: [skill-c, skill-d]  # ALLOWLIST: on telegram, only these are visible
 ```
+
+`platform_enabled` is the inverse of `platform_disabled`: when a platform has an
+allowlist, every installed skill *not* on it is hidden there — including skills you
+install later, which a denylist would silently let through. Both lists can be set;
+`disabled` and `platform_disabled` still apply on top of the allowlist.
 
 After changing this, **restart the gateway** (`hermes gateway restart` or kill and relaunch). The Telegram bot command menu rebuilds on startup.
 

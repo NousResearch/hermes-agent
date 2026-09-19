@@ -282,12 +282,46 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if skills_cfg is None:
         return set()
     from gateway.session_context import get_session_env
-    resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
     disabled = _normalize_string_set(skills_cfg.get("disabled"))
-    platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
-    if platform_disabled is not None:
-        disabled |= _normalize_string_set(platform_disabled)
+    if resolved_platform:
+        disabled |= platform_allowlist_disabled(skills_cfg, resolved_platform)
+        platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
+            resolved_platform
+        )
+        if platform_disabled is not None:
+            disabled |= _normalize_string_set(platform_disabled)
     return disabled - ESSENTIAL_SKILLS
+
+
+def get_all_skill_names() -> Set[str]:
+    """Directory names of every ``SKILL.md`` root across all skills dirs."""
+    names: Set[str] = set()
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.is_dir():
+            continue
+        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+            names.add(Path(skill_file).parent.name)
+    return names
+
+
+def platform_allowlist_disabled(skills_cfg: Dict[str, Any], platform: str) -> Set[str]:
+    """Skills hidden on *platform* by ``skills.platform_enabled`` (an allowlist).
+
+    When the platform has an allowlist, every installed skill NOT on it is
+    treated as disabled — so skills installed after the list was written stay
+    hidden until deliberately added. A denylist (``platform_disabled``) can't
+    do that. No allowlist for the platform → empty set (behaviour unchanged).
+    Denylists still apply on top of the allowlist.
+    """
+    enabled = (skills_cfg.get("platform_enabled") or {}).get(platform)
+    if enabled is None:
+        return set()
+    return get_all_skill_names() - _normalize_string_set(enabled)
 
 
 def parse_config_string_list(value) -> List[str]:

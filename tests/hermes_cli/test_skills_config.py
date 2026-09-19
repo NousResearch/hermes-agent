@@ -172,3 +172,18 @@ class TestGetCategories:
         from hermes_cli.skills_config import _get_categories
         skills = [{"name": "a", "category": None, "description": ""}]
         assert "uncategorized" in _get_categories(skills)
+
+
+class TestIsSkillDisabledAllowlist:
+    """``_is_skill_disabled`` must honour ``skills.platform_enabled`` too."""
+
+    @patch("agent.skill_utils.get_all_skill_names", return_value={"keep-me", "hide-me"})
+    @patch("hermes_cli.config.load_config")
+    def test_unlisted_skill_is_disabled(self, mock_load, _names):
+        mock_load.return_value = {"skills": {
+            "platform_enabled": {"telegram": ["keep-me"]}
+        }}
+        from tools.skills_tool import _is_skill_disabled
+        assert _is_skill_disabled("hide-me", platform="telegram") is True
+        assert _is_skill_disabled("keep-me", platform="telegram") is False
+        assert _is_skill_disabled("hide-me", platform="discord") is False

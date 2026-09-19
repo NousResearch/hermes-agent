@@ -49,6 +49,51 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_fifo_with_legacy_writer_in_another_process(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    first = mailbox.deliver_to_live_owner(
+        tmp_path, owner, "first", delivery_id="a" * 32)
+    legacy_script = """
+import json
+import sys
+import time
+from tools import bot_live_delivery as mailbox
+
+home, owner_json, message, key = sys.argv[1:]
+owner = json.loads(owner_json)
+pinned = mailbox._owner(home, owner)
+with mailbox._locked(home) as root:
+    path = root / f"{key}.json"
+    sequence = max((record.get("sequence", record["created_at"])
+                    for candidate in root.glob("*.json")
+                    if (record := mailbox._read(candidate)) is not None), default=0) + 1
+    record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
+                  message=message, status="queued", created_at=time.time_ns(),
+                  sequence=sequence)
+    mailbox._write(path, record)
+print(json.dumps(record))
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", legacy_script, str(tmp_path), json.dumps(owner),
+         "second", "f" * 32],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    second = json.loads(child.stdout)
+    third = mailbox.deliver_to_live_owner(
+        tmp_path, owner, "third", delivery_id="1" * 32)
+
+    assert [first["sequence"], second["sequence"], third["sequence"]] == [1, 2, 3]
+    claims = [mailbox.claim_pending_delivery(tmp_path, owner) for _ in range(3)]
+    assert all(claim is not None for claim in claims)
+    assert [claim["message"] for claim in claims if claim is not None] == [
+        "first", "second", "third",
+    ]
+
+
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 

@@ -621,6 +621,67 @@ class TestOSSBackend:
 httpx = pytest.importorskip("httpx")
 
 
+class _FakeQdrantCollection:
+
+    def __init__(self, size):
+        self.config = SimpleNamespace(params=SimpleNamespace(vectors=SimpleNamespace(size=size)))
+
+
+class _FakeQdrantClient:
+    """Minimal QdrantClient stand-in recording which collections get dropped."""
+
+    def __init__(self, dims_by_collection):
+        self._dims = dict(dims_by_collection)
+        self.deleted = []
+        self.closed = False
+
+    def collection_exists(self, name):
+        return name in self._dims
+
+    def get_collection(self, name):
+        return _FakeQdrantCollection(self._dims[name])
+
+    def delete_collection(self, name):
+        self.deleted.append(name)
+        self._dims.pop(name, None)
+
+    def close(self):
+        self.closed = True
+
+
+class TestRecreateCollectionIfDimsChanged:
+    """The dim-change guard must also cover mem0's derived entities collection."""
+
+    def _run(self, monkeypatch, dims_by_collection, expected_dims=1024, provider="qdrant"):
+        client = _FakeQdrantClient(dims_by_collection)
+        module = types.ModuleType("qdrant_client")
+        module.QdrantClient = lambda **kwargs: client
+        monkeypatch.setitem(sys.modules, "qdrant_client", module)
+        OSSBackend._recreate_collection_if_dims_changed(
+            provider, {"collection_name": "mem0", "path": "/tmp/qdrant"}, expected_dims
+        )
+        return client
+
+    def test_entities_collection_name_tracks_mem0_separator(self):
+        # Mirrors _entity_collection_name in mem0/memory/main.py.
+        assert OSSBackend._stale_collection_names("qdrant", "mem0") == ("mem0", "mem0_entities")
+        assert OSSBackend._stale_collection_names("s3_vectors", "mem0") == ("mem0", "mem0-entities")
+
+    def test_stale_entities_collection_is_dropped_with_the_main_one(self, monkeypatch):
+        client = self._run(monkeypatch, {"mem0": 768, "mem0_entities": 768})
+        assert client.deleted == ["mem0", "mem0_entities"]
+        assert client.closed
+
+    def test_entities_collection_dropped_even_when_main_is_absent(self, monkeypatch):
+        # The pre-fix guard returned early here, stranding the entities collection.
+        client = self._run(monkeypatch, {"mem0_entities": 768})
+        assert client.deleted == ["mem0_entities"]
+
+    def test_matching_dims_drops_nothing(self, monkeypatch):
+        client = self._run(monkeypatch, {"mem0": 1024, "mem0_entities": 1024})
+        assert client.deleted == []
+
+
 class _StubServer:
     """Records requests and serves the real self-hosted server's response shapes."""
 

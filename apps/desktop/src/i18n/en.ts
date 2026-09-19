@@ -403,6 +403,8 @@ export const en: Translations = {
       'session.slot.9': 'Switch to recent session 9',
       'session.focusSearch': 'Search sessions',
       'session.togglePin': 'Pin / unpin current session',
+      'session.pinned.next': 'Next pinned session',
+      'session.pinned.previous': 'Previous pinned session',
       'session.archive': 'Archive current session',
       'workspace.newWorktree': 'New worktree',
       'workspace.openFolder': 'Open folder as project',

@@ -325,6 +325,8 @@ export const ru = defineLocale({
       'session.slot.9': 'Переключить на недавний сеанс 9',
       'session.focusSearch': 'Поиск по сеансам',
       'session.togglePin': 'Закрепить / открепить текущий сеанс',
+      'session.pinned.next': 'Следующий закреплённый сеанс',
+      'session.pinned.previous': 'Предыдущий закреплённый сеанс',
       'session.archive': 'В архив текущий сеанс',
       'workspace.newWorktree': 'Новый worktree',
       'workspace.openFolder': 'Открыть папку как проект',

@@ -4,6 +4,28 @@ import { en } from '@/i18n/en'
 
 import { defaultBindings, KEYBIND_ACTIONS, keybindAction } from './actions'
 
+describe('session.pinned keybind actions', () => {
+  it('registers both directions under the session category', () => {
+    for (const id of ['session.pinned.next', 'session.pinned.previous']) {
+      const action = keybindAction(id)
+
+      expect(action).toBeDefined()
+      expect(action?.category).toBe('session')
+      expect(KEYBIND_ACTIONS.filter(entry => entry.id === id)).toHaveLength(1)
+    }
+  })
+
+  it('ships unbound like session.togglePin so no chord is claimed by default', () => {
+    expect(defaultBindings()['session.pinned.next']).toEqual([])
+    expect(defaultBindings()['session.pinned.previous']).toEqual([])
+  })
+
+  it('has English labels so both rows render in the shortcuts panel', () => {
+    expect(en.keybinds.actions['session.pinned.next']).toBe('Next pinned session')
+    expect(en.keybinds.actions['session.pinned.previous']).toBe('Previous pinned session')
+  })
+})
+
 describe('session.archive keybind action', () => {
   it('is registered under the session category', () => {
     const action = keybindAction('session.archive')

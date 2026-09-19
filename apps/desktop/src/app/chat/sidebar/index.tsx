@@ -73,6 +73,7 @@ import {
   unpinSession
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { $pinnedRows } from '@/store/pinned-navigation'
 import {
   $newChatProfile,
   $profiles,
@@ -639,6 +640,12 @@ export function ChatSidebar({
 
     return ids
   }, [pinnedSessionIds, pinnedSessions])
+
+  // Publish the section's visible order for keyboard navigation (the
+  // `session.pinned.next` / `session.pinned.previous` keybinds read it).
+  useEffect(() => {
+    $pinnedRows.set(pinnedSessions)
+  }, [pinnedSessions])
 
   // A pinned session belongs to the Pinned section and nowhere else, so every
   // other list filters it out. Match on either identity the row carries — a

@@ -322,8 +322,8 @@ def check_nous_free_tier(*, force_fresh: bool = False, cached_only: bool = False
 
 NOUS_RECOMMENDED_MODELS_PATH = "/api/nous/recommended-models"
 _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
-# (result_dict, timestamp) keyed by portal_base_url so staging vs prod don't collide.
-_nous_recommended_cache: dict[str, tuple[dict[str, Any], float]] = {}
+# (result_dict, monotonic timestamp), scoped to the profile cache path and portal.
+_nous_recommended_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
 
 
 def _nous_recommended_disk_path() -> "Path":
@@ -331,13 +331,20 @@ def _nous_recommended_disk_path() -> "Path":
     return get_hermes_home() / "cache" / "nous_recommended_cache.json"
 
 
-def _read_nous_recommended_disk(base: str) -> dict[str, Any] | None:
-    """Last-known-good payload for ``base`` from the per-base disk map
-    ``{"<base>": {"data": {...}, "ts": <epoch>}}`` (staging and prod don't collide), or None."""
-    blob = _read_json_cache(_nous_recommended_disk_path(), errors=(OSError, json.JSONDecodeError))
+def _read_nous_recommended_disk(base: str) -> tuple[dict[str, Any], float] | None:
+    """Return the last good payload and its age; invalid timestamps are stale."""
+    blob = _read_json_cache(_nous_recommended_disk_path(), errors=(OSError, json.JSONDecodeError, UnicodeDecodeError))
     entry = (blob or {}).get(base)
     data = entry.get("data") if isinstance(entry, dict) else None
-    return data if isinstance(data, dict) and data else None
+    if not isinstance(data, dict) or not data:
+        return None
+    timestamp = entry.get("ts")
+    try:
+        age = time.time() - timestamp if type(timestamp) in (int, float) else float("inf")
+    except OverflowError:
+        age = float("inf")
+    # Clock rollback/future timestamps must not make a cache entry immortal.
+    return data, age if age >= 0 else float("inf")
 
 
 def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
@@ -347,7 +354,7 @@ def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
         return
     path = _nous_recommended_disk_path()
     try:
-        blob = _read_json_cache(path, errors=(OSError, json.JSONDecodeError)) or {}
+        blob = _read_json_cache(path, errors=(OSError, json.JSONDecodeError, UnicodeDecodeError)) or {}
         blob[base] = {"data": data, "ts": time.time()}
         _write_json_cache(path, blob, indent=2)
     except OSError as exc:
@@ -359,15 +366,21 @@ def fetch_nous_recommended_models(
 ) -> dict[str, Any]:
     """Fetch the Portal's public ``/api/nous/recommended-models`` payload (no auth).
 
-    Cached per portal URL for ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds in process (``force_refresh``
-    bypasses); a successful fetch is also persisted as last-known-good on disk, which serves a live
-    failure so a transient Portal hiccup doesn't drop the recommendations.
+    Reuse successful results for ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds, including across
+    process restarts. ``force_refresh`` bypasses both caches. Stale disk data remains a fallback
+    on live failure; reading it never renews its freshness.
     """
     base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
     now = time.monotonic()
-    cached = _nous_recommended_cache.get(base)
+    cache_key = (str(_nous_recommended_disk_path()), base)
+    cached = _nous_recommended_cache.get(cache_key)
     if not force_refresh and cached is not None and now - cached[1] < _NOUS_RECOMMENDED_CACHE_TTL:
         return cached[0]
+    disk = _read_nous_recommended_disk(base)
+    if not force_refresh and disk is not None and disk[1] < _NOUS_RECOMMENDED_CACHE_TTL:
+        data, age = disk
+        _nous_recommended_cache[cache_key] = (data, now - age)
+        return data
     try:
         data = _get_json(
             f"{base}{NOUS_RECOMMENDED_MODELS_PATH}", timeout=timeout, headers={"Accept": "application/json"}
@@ -379,8 +392,8 @@ def fetch_nous_recommended_models(
     if data:
         _write_nous_recommended_disk(base, data)
     else:
-        data = _read_nous_recommended_disk(base) or data
-    _nous_recommended_cache[base] = (data, now)
+        data = disk[0] if disk is not None else data
+    _nous_recommended_cache[cache_key] = (data, now)
     return data
 
 

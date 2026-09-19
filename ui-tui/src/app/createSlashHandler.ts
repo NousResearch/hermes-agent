@@ -6,7 +6,7 @@ import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
-import { activatePluginCard } from './pluginCardStore.js'
+import { patchOverlayState } from './overlayStore.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
@@ -112,7 +112,8 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
       if (d.type === 'plugin_card') {
         if (sid) {
-          activatePluginCard(sid, d.card)
+          ctx.transcript.panel(`${d.card.plugin_name} · ${d.card.title}`, [{ text: d.card.body }])
+          patchOverlayState({ pluginNotice: { notice: d.card, sessionId: sid } })
         } else {
           sys(`${d.card.title}\n\n${d.card.body}`)
         }

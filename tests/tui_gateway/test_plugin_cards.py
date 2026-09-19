@@ -97,14 +97,27 @@ def test_plugin_command_result_becomes_attributed_card(tmp_path, monkeypatch):
         ctx.register_command(
             "release-review",
             lambda _args: PluginCard(
-                id="candidate",
                 title="Candidate ready",
                 body="Review before opening.",
                 actions=(PluginCardAction("Open", "release-open", "candidate-7"),),
             ),
         )
+        ctx.register_command(
+            "release-open",
+            lambda _args: PluginCard(
+                title="Exact review",
+                body="Full review body.",
+                actions=(PluginCardAction("Confirm", "release-confirm", "candidate-7"),),
+            ),
+        )
         server._sessions["sid-a"] = _session(str(home))
         monkeypatch.setattr(server, "_plugin_cards_supported", lambda _sid: True)
+        emitted = []
+        monkeypatch.setattr(
+            server,
+            "_publish_plugin_card",
+            lambda sid, payload: emitted.append((sid, payload)) or True,
+        )
 
         response = server.handle_request(
             {
@@ -117,13 +130,12 @@ def test_plugin_command_result_becomes_attributed_card(tmp_path, monkeypatch):
         assert response["result"]["type"] == "plugin_card"
         assert response["result"]["output"] == "Candidate ready\n\nReview before opening."
         assert response["result"]["card"] == {
-            "id": "candidate",
             "plugin_id": "release-tools",
             "plugin_name": "release-tools",
             "title": "Candidate ready",
             "body": "Review before opening.",
             "actions": [
-                {"id": "open", "label": "Open", "command": "release-open", "args": "candidate-7"}
+                {"label": "Open", "command": "release-open", "args": "candidate-7"}
             ],
         }
 
@@ -136,6 +148,21 @@ def test_plugin_command_result_becomes_attributed_card(tmp_path, monkeypatch):
         )
         assert slash_response["result"]["type"] == "plugin_card"
         assert slash_response["result"]["card"] == response["result"]["card"]
+
+        action_response = server.handle_request(
+            {
+                "id": "action-1",
+                "method": "plugin.card.action",
+                "params": {
+                    "session_id": "sid-a",
+                    "plugin_id": "release-tools",
+                    "command": "release-open",
+                    "args": "candidate-7",
+                },
+            }
+        )
+        assert action_response["result"]["card"]["title"] == "Exact review"
+        assert emitted == []
 
         monkeypatch.setattr(server, "_plugin_cards_supported", lambda _sid: False)
         fallback = server.handle_request(
@@ -155,7 +182,7 @@ def test_plugin_command_result_becomes_attributed_card(tmp_path, monkeypatch):
         reset_hermes_home_override(token)
 
 
-def test_plugin_command_can_publish_nonblocking_card_to_current_session(tmp_path, monkeypatch):
+def test_plugin_command_can_publish_card_to_current_session(tmp_path, monkeypatch):
     home = tmp_path / "profile-a"
     home.mkdir()
     token = set_hermes_home_override(home)
@@ -165,7 +192,10 @@ def test_plugin_command_can_publish_nonblocking_card_to_current_session(tmp_path
         manager = plugins_mod.get_plugin_manager()
         manager._discovered = True
         ctx = PluginContext(PluginManifest(name="release-tools"), manager)
-        card = PluginCard(title="Build ready", body="Checks passed")
+        card = PluginCard(
+            title="Build ready", body="Checks passed",
+            actions=(PluginCardAction("Share", "release-publish", "details"),),
+        )
         ctx.register_command("release-publish", lambda _args: str(ctx.publish_card(card)))
         server._sessions["sid-a"] = _session(str(home))
         monkeypatch.setattr(
@@ -188,12 +218,13 @@ def test_plugin_command_can_publish_nonblocking_card_to_current_session(tmp_path
                 "plugin.card.show",
                 "sid-a",
                 {
-                    "id": "card",
                     "plugin_id": "release-tools",
                     "plugin_name": "release-tools",
                     "title": "Build ready",
                     "body": "Checks passed",
-                    "actions": [],
+                    "actions": [
+                        {"label": "Share", "command": "release-publish", "args": "details"}
+                    ],
                 },
             )
         ]
@@ -266,7 +297,10 @@ def test_plugin_execution_during_turn_can_publish_to_current_session(tmp_path, m
         manager = plugins_mod.get_plugin_manager()
         manager._discovered = True
         ctx = PluginContext(PluginManifest(name="release-tools"), manager)
-        card = PluginCard(title="Turn update", body="Background check completed")
+        card = PluginCard(
+            title="Turn update", body="Background check completed",
+            actions=(PluginCardAction("Acknowledge", "release-ack", "turn"),),
+        )
 
         class Agent:
             _mute_notification_reply = False
@@ -301,12 +335,13 @@ def test_plugin_execution_during_turn_can_publish_to_current_session(tmp_path, m
                 "plugin.card.show",
                 "sid-a",
                 {
-                    "id": "card",
                     "plugin_id": "release-tools",
                     "plugin_name": "release-tools",
                     "title": "Turn update",
                     "body": "Background check completed",
-                    "actions": [],
+                    "actions": [
+                        {"label": "Acknowledge", "command": "release-ack", "args": "turn"}
+                    ],
                 },
             )
         ]
@@ -330,10 +365,10 @@ def test_plugin_card_publication_requires_capable_attached_transport(monkeypatch
         server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True
     )
     try:
-        assert server._publish_plugin_card("sid-a", {"id": "card"}) is False
+        assert server._publish_plugin_card("sid-a", {"title": "Card"}) is False
         server._advertise_plugin_cards(transport, True)
-        assert server._publish_plugin_card("sid-a", {"id": "card"}) is True
-        assert emitted == [("plugin.card.show", "sid-a", {"id": "card"})]
+        assert server._publish_plugin_card("sid-a", {"title": "Card"}) is True
+        assert emitted == [("plugin.card.show", "sid-a", {"title": "Card"})]
     finally:
         server._advertise_plugin_cards(transport, False)
         server._sessions.pop("sid-a", None)

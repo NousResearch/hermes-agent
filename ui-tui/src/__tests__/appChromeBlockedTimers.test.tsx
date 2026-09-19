@@ -174,6 +174,7 @@ const layoutProps: AppLayoutProps = {
   },
   transcript: {
     historyItems: [],
+    panel: () => {},
     scrollRef: { current: null },
     virtualHistory: {
       bottomSpacer: 0,

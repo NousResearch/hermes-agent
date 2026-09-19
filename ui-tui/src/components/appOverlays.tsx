@@ -4,7 +4,13 @@ import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
-import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
+import {
+  $overlayState,
+  dismissPluginNotice,
+  hasFloatingPanel,
+  patchOverlayState,
+  replacePluginNotice
+} from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -16,7 +22,7 @@ import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
-import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt, PluginNoticePrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -60,6 +66,7 @@ export function PromptZone({
   onApprovalChoice,
   onClarifyAnswer,
   onClarifyQuestionAnswer,
+  onPluginResult,
   onSecretSubmit,
   onSudoSubmit,
   onVaultUnlockSubmit
@@ -69,10 +76,12 @@ export function PromptZone({
   | 'onApprovalChoice'
   | 'onClarifyAnswer'
   | 'onClarifyQuestionAnswer'
+  | 'onPluginResult'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
   | 'onVaultUnlockSubmit'
 >) {
+  const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
 
@@ -180,6 +189,47 @@ export function PromptZone({
           label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
           onSubmit={onVaultUnlockSubmit}
           sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.pluginNotice) {
+    const { notice, sessionId } = overlay.pluginNotice
+
+    return (
+      <PromptCell cols={cols} id="plugin-notice">
+        <PluginNoticePrompt
+          cols={cols}
+          notice={notice}
+          onAction={(command, args) =>
+            gw.request('plugin.card.action', {
+              args,
+              command,
+              plugin_id: notice.plugin_id,
+              session_id: sessionId
+            })
+          }
+          onCancel={() => dismissPluginNotice(notice, sessionId)}
+          onReplace={replacement => {
+            if (!replacePluginNotice(notice, replacement, sessionId)) {
+              return false
+            }
+
+            onPluginResult(`${replacement.plugin_name} · ${replacement.title}`, replacement.body)
+
+            return true
+          }}
+          onResult={text => {
+            if (!dismissPluginNotice(notice, sessionId)) {
+              return false
+            }
+
+            onPluginResult(`${notice.plugin_name} · ${notice.title}`, text)
+
+            return true
+          }}
           t={theme}
         />
       </PromptCell>

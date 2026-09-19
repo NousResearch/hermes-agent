@@ -31,7 +31,6 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
-import { publishPluginCard } from './pluginCardStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
@@ -969,7 +968,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'plugin.card.show':
         if (sid && ev.payload) {
-          publishPluginCard(sid, ev.payload)
+          const notice = ev.payload
+
+          ctx.transcript.panel(`${notice.plugin_name} · ${notice.title}`, [{ text: notice.body }])
+          patchOverlayState({ pluginNotice: { notice, sessionId: sid } })
         }
 
         return

@@ -1,7 +1,7 @@
+import type { PluginCardWire } from '@hermes/shared/gateway-events'
 import { atom, computed } from 'nanostores'
 
 import type { OverlayState } from './interfaces.js'
-import { $pluginCards } from './pluginCardStore.js'
 import { $uiState } from './uiStore.js'
 
 const buildOverlayState = (): OverlayState => ({
@@ -18,6 +18,7 @@ const buildOverlayState = (): OverlayState => ({
   pager: null,
   petPicker: false,
   pluginsHub: false,
+  pluginNotice: null,
   secret: null,
   vaultUnlock: null,
   sessions: false,
@@ -29,7 +30,7 @@ const buildOverlayState = (): OverlayState => ({
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
-  [$overlayState, $pluginCards],
+  [$overlayState],
   ({
     agents,
     approval,
@@ -41,6 +42,7 @@ export const $isBlocked = computed(
     pager,
     petPicker,
     pluginsHub,
+    pluginNotice,
     secret,
     sessions,
     skillsHub,
@@ -48,9 +50,9 @@ export const $isBlocked = computed(
     sudo,
     vaultUnlock,
     widget
-  }, pluginCards) =>
+  }) =>
     Boolean(
-      pluginCards.activeKey ||
+      pluginNotice ||
       agents ||
       approval ||
       billing ||
@@ -141,6 +143,35 @@ export const getOverlayState = () => $overlayState.get()
 export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>
   $overlayState.set(typeof next === 'function' ? next($overlayState.get()) : { ...$overlayState.get(), ...next })
 
+export const dismissPluginNotice = (notice: PluginCardWire, sessionId?: string): boolean => {
+  const state = $overlayState.get()
+
+  if (state.pluginNotice?.notice !== notice || (sessionId !== undefined && state.pluginNotice.sessionId !== sessionId)) {
+    return false
+  }
+
+  $overlayState.set({ ...state, pluginNotice: null })
+
+  return true
+}
+
+export const replacePluginNotice = (notice: PluginCardWire, replacement: PluginCardWire, sessionId?: string): boolean => {
+  const state = $overlayState.get()
+
+  if (state.pluginNotice?.notice !== notice || (sessionId !== undefined && state.pluginNotice.sessionId !== sessionId)) {
+    return false
+  }
+
+  $overlayState.set({ ...state, pluginNotice: { ...state.pluginNotice, notice: replacement } })
+
+  return true
+}
+
+export const clearPluginNoticeForSession = (sessionId: null | string) =>
+  patchOverlayState(state =>
+    state.pluginNotice && state.pluginNotice.sessionId !== sessionId ? { ...state, pluginNotice: null } : state
+  )
+
 /** Full reset — used by session/turn teardown and tests. */
 export const resetOverlayState = () => $overlayState.set(buildOverlayState())
 
@@ -163,6 +194,7 @@ export const resetFlowOverlays = () =>
     modelPicker: $overlayState.get().modelPicker,
     petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
+    pluginNotice: $overlayState.get().pluginNotice,
     sessions: $overlayState.get().sessions,
     skillsHub: $overlayState.get().skillsHub
   })

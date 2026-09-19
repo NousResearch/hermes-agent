@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { getPluginCardState, resetPluginCards } from '../app/pluginCardStore.js'
 import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
@@ -31,7 +30,6 @@ describe('createSlashHandler', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     resetOverlayState()
-    resetPluginCards()
     resetUiState()
     envState.dashboardTuiMode = false
   })
@@ -840,13 +838,12 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('opens a plugin card returned by slash.exec', async () => {
+  it('shows a plugin notice returned by slash.exec without an open step', async () => {
     patchUiState({ sid: 'sid-abc' })
 
     const card = {
-      actions: [],
+      actions: [{ args: 'share', command: 'build-choice', label: 'Share' }],
       body: 'Choose an operation.',
-      id: 'menu',
       plugin_id: 'build-tools',
       plugin_name: 'Build Tools',
       title: 'Build menu'
@@ -864,8 +861,9 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/build-menu')).toBe(true)
     await vi.waitFor(() =>
-      expect(getPluginCardState()).toMatchObject({ activeKey: 'build-tools:menu', sessionId: 'sid-abc' })
+      expect(getOverlayState().pluginNotice).toEqual({ notice: card, sessionId: 'sid-abc' })
     )
+    expect(ctx.transcript.panel).toHaveBeenCalledWith('Build Tools · Build menu', [{ text: 'Choose an operation.' }])
   })
 
   it('resolves unique local aliases through the catalog', () => {

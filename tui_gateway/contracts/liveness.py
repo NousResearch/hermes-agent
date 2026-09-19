@@ -31,7 +31,7 @@ class ClientCapabilitiesParams(Params):
     #: error for methods it has no handler for. A WebSocket client that never says so is treated as a
     #: build older than server→client requests and every such request fails fast for it.
     server_requests: bool = False
-    #: This client renders declarative plugin cards and can route their actions.
+    #: This client renders direct declarative plugin notices and can route their actions.
     plugin_cards: bool = False
 
 

@@ -1407,8 +1407,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appTranscript = useMemo(
-    () => ({ historyItems, scrollRef, virtualHistory, virtualRows }),
-    [historyItems, virtualHistory, virtualRows]
+    () => ({ historyItems, panel, scrollRef, virtualHistory, virtualRows }),
+    [historyItems, panel, virtualHistory, virtualRows]
   )
 
   return { appActions, appComposer, appProgress, appStatus, appTranscript, gateway }

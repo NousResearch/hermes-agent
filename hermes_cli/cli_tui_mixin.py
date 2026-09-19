@@ -1863,6 +1863,10 @@ class CLITuiMixin:
         # composer, not raw input(), so the labels stay visible and Enter can't EOF the app.
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
+        # Published plugin notices are best-effort and never queue behind one another.  The worker
+        # holds this for the complete modal/action lifecycle so two hook publications cannot race
+        # the shared slash-confirm state.
+        self._plugin_notice_lock = threading.Lock()
         self._command_running = False
         self._command_blocks_input = False
         self._command_status = ""

@@ -101,7 +101,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add tools | `ctx.register_tool(name=..., toolset=..., schema=..., handler=...)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
-| Present a TUI card | Return `PluginCard` from a slash command, or call `ctx.publish_card(card)` during current-session plugin execution |
+| Present an actionable terminal notice | Return `PluginCard` from a slash command, or call `ctx.publish_card(card)` during current-session plugin execution |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=...)` - see [Injecting Messages](#injecting-messages) |
@@ -120,7 +120,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](../../developer-guide/model-provider-plugin.md) (uses a separate discovery system) |
 
-### Declarative TUI cards
+### Declarative actionable notices
 
 An enabled plugin can return a small host-rendered menu from one of its registered commands. Actions route back only to commands registered by that same plugin; the plugin remains responsible for authorization, consent, validation, and all domain behavior.
 
@@ -134,7 +134,6 @@ def register(ctx):
 
     def menu(_args):
         return PluginCard(
-            id="build-menu",
             title="Build ready",
             body="Checks passed. Choose what to do next.",
             actions=(
@@ -146,7 +145,7 @@ def register(ctx):
     ctx.register_command("build-menu", menu)
 ```
 
-Running `/build-menu` in the Ink TUI opens the card. An action may return text or another `PluginCard`. To publish an ambient, nonblocking card from plugin code already executing in the current session, call `ctx.publish_card(card)`. It returns `True` only when the attached client advertises card support and accepts the event; otherwise it returns `False`. Ambient cards do not take keyboard focus. Dismissing one changes only the TUI surface unless an action command explicitly implements other behavior.
+Running `/build-menu` in either terminal shows the notice and its choices immediately; there is no preliminary open step or pending-card browser. An action may return text or another `PluginCard`, which replaces the current choices. Registered slash commands retain their normal synchronous result path, so a native terminal may wait for a bounded user choice. To publish a notice from plugin code already executing in the current session, call `ctx.publish_card(card)`. Publication is best-effort and asynchronous: the method returns `True` once the attached client accepts the notice for presentation, without waiting for a later choice or action to complete, and returns `False` when the notice cannot be accepted. Timeout, dismissal, session changes, and competing prompts perform no action. Surface state changes only unless an action command explicitly implements other behavior.
 
 Other surfaces continue to support ordinary textual command results. Returning a card to a text-only command surface produces its title and body as readable fallback text.
 

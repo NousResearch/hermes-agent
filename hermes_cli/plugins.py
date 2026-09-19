@@ -411,10 +411,11 @@ class PluginContext:
             return "default"
 
     def publish_card(self, card: "Any") -> bool:
-        """Present a declarative card on the current capable surface without waiting for a user.
+        """Present a declarative card as a direct notice on the current capable surface.
 
-        Returns ``False`` when this execution has no card-capable surface. The host supplies plugin
-        attribution; action behavior stays in this plugin's registered command handlers.
+        Returns after best-effort dispatch, without waiting for a choice or action. Returns
+        ``False`` when this execution has no available interactive surface. The host supplies
+        plugin attribution; action behavior stays in this plugin's registered command handlers.
         """
         from hermes_cli.plugin_cards import present_plugin_card
         return present_plugin_card(self.plugin_id, self.manifest.name, card)

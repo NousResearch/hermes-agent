@@ -3130,7 +3130,6 @@ export interface PluginCardActionResult {
 }
 export type PluginCardResultKind = 'card' | 'text'
 export interface PluginCardWire {
-  id: string
   plugin_id: string
   plugin_name: string
   title: string
@@ -3138,7 +3137,6 @@ export interface PluginCardWire {
   actions: PluginCardActionWire[]
 }
 export interface PluginCardActionWire {
-  id: string
   label: string
   command: string
   args: string
@@ -4989,7 +4987,7 @@ export interface BackendGatewayEventMap {
   'pet.hatch.progress': PetHatchProgressPayload
   /** gateway_state.json moved; refetch platform status. */
   'platforms.changed': ChangeSignalPayload
-  /** Present a nonblocking, host-rendered card attributed to its originating plugin in this session. */
+  /** Present a direct actionable notice attributed to its originating plugin. */
   'plugin.card.show': PluginCardWire
   /** Close the preview pane or one tab. */
   'preview.close': PreviewClosePayload

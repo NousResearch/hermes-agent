@@ -18125,10 +18125,6 @@
       "PluginCardActionWire": {
         "additionalProperties": false,
         "properties": {
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -18143,7 +18139,6 @@
           }
         },
         "required": [
-          "id",
           "label",
           "command",
           "args"
@@ -18162,10 +18157,6 @@
       "PluginCardWire": {
         "additionalProperties": false,
         "properties": {
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
           "plugin_id": {
             "title": "Plugin Id",
             "type": "string"
@@ -18186,12 +18177,12 @@
             "items": {
               "$ref": "#/components/schemas/PluginCardActionWire"
             },
+            "minItems": 1,
             "title": "Actions",
             "type": "array"
           }
         },
         "required": [
-          "id",
           "plugin_id",
           "plugin_name",
           "title",
@@ -34395,7 +34386,7 @@
     },
     {
       "name": "plugin.card.show",
-      "summary": "Present a nonblocking, host-rendered card attributed to its originating plugin in this session.",
+      "summary": "Present a direct actionable notice attributed to its originating plugin.",
       "params": [
         {
           "name": "payload",

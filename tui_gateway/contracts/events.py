@@ -327,7 +327,7 @@ class NotificationClearPayload(Payload):
 event("notification.show", NotificationShowPayload, doc="Show / replace a keyed out-of-band notice (toast or status bar).")
 event("notification.clear", NotificationClearPayload, doc="Withdraw the notice with this key.")
 event("plugin.card.show", PluginCardWire,  # type: ignore[arg-type]
-      doc="Present a nonblocking, host-rendered card attributed to its originating plugin in this session.")
+      doc="Present a direct actionable notice attributed to its originating plugin.")
 
 
 class TipShowPayload(Payload):

@@ -146,6 +146,38 @@ class RecordingAdapter:
 
 
 @pytest.mark.asyncio
+async def test_final_gateway_send_policy_rewrites_immediately_before_transport(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    hook_calls = []
+
+    def invoke_hook(name, **payload):
+        hook_calls.append((name, payload))
+        return [{"action": "rewrite", "content": "policy checked"}]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:12345")
+
+    await router._deliver_to_platform(target, "original", metadata={"source": "test"})
+
+    assert hook_calls == [(
+        "final_gateway_send_policy",
+        {
+            "platform": "telegram",
+            "chat_id": "12345",
+            "content": "original",
+            "metadata": {"source": "test"},
+        },
+    )]
+    assert adapter.calls == [{
+        "chat_id": "12345",
+        "content": "policy checked",
+        "metadata": {"source": "test"},
+    }]
+
+
+@pytest.mark.asyncio
 async def test_native_adapter_wins_when_relay_also_fronts_platform(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     native = RecordingAdapter()

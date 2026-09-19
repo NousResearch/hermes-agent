@@ -109,6 +109,8 @@ anthropic supports both API keys and OAuth login.
 Type [1/2]:
 ```
 
+Each `hermes auth add openai-codex` login becomes its own pool entry, but only **different** OpenAI accounts rotate independently: two logins of the same account share one token family upstream, so OpenAI revokes the older one and the second entry adds no quota. Hermes warns at add time (`warning: this login is the same OpenAI account as openai-codex credential #N`) — log into a different account, or keep just one.
+
 ## CLI Commands
 
 | Command | Description |

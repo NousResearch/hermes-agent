@@ -1905,3 +1905,195 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+    def test_lf_file_keeps_lf_on_every_platform(self, tmp_path):
+        """Writing one variable must not retype the whole file's line endings.
+
+        Text mode on Windows translates "\\n" to CRLF, so an LF .env came back
+        with every untouched line rewritten.
+        """
+        from plugins.memory.openviking import _write_env_vars
+
+        env = tmp_path / ".env"
+        env.write_bytes(b"A=1\nOPENAI_API_KEY=old\nB=2\n")
+
+        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+
+        assert env.read_bytes() == b"A=1\nOPENAI_API_KEY=new\nB=2\n"
+
+    def test_crlf_file_keeps_crlf(self, tmp_path):
+        """A file the user saved with CRLF stays CRLF — the fix adopts the
+        file's own ending rather than forcing LF in the other direction."""
+        from plugins.memory.openviking import _write_env_vars
+
+        env = tmp_path / ".env"
+        env.write_bytes(b"A=1\r\nOPENAI_API_KEY=old\r\nB=2\r\n")
+
+        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+
+        assert env.read_bytes() == b"A=1\r\nOPENAI_API_KEY=new\r\nB=2\r\n"
+
+
+class TestNamespaceRootRetry:
+    """A query that repeats a namespace name lets that namespace's own root
+    abstract absorb the similarity, so the real leaf document never enters the
+    result set at all. Measured on the local 382-doc corpus: "lenh phat hanh
+    vet-global la gi" returned only `resources/vet-global/.abstract.md` and the
+    repo README overview; stripping the namespace token surfaced
+    `runbook-phat-hanh.md` (17/17 vs 16/17, no case regressed).
+    """
+
+    def test_namespace_root_uri_is_recognised(self):
+        from plugins.memory.openviking import _is_namespace_root_uri
+
+        assert _is_namespace_root_uri("viking://resources/vet-global/.abstract.md")
+        assert _is_namespace_root_uri("viking://resources/vet-global/.overview.md")
+        # A leaf document's own overview is the real content, not a namespace tour.
+        assert not _is_namespace_root_uri(
+            "viking://resources/vet-global/runbook-phat-hanh.md/.overview.md"
+        )
+        assert not _is_namespace_root_uri("viking://resources/vet-global/plan/01-DATABASE.md")
+
+    def test_namespace_summary_nested_below_its_own_root_is_recognised(self):
+        """Regression: the server nests a namespace summary under a sibling doc.
+
+        A live corpus returns ``<ns>/README.md/<ns>/.overview.md`` as the top
+        hit for a namespace-named query. Anchoring the namespace to the first
+        path segment missed it, so the retry never fired against real data
+        while every synthetic test still passed.
+        """
+        from plugins.memory.openviking import _is_namespace_root_uri, _namespace_of
+
+        uri = "viking://resources/vet-global/README.md/vet-global/.overview.md"
+        assert _is_namespace_root_uri(uri)
+        assert _namespace_of(uri) == "vet-global"
+
+        # A directory that is not a document still owns a directory summary.
+        assert _is_namespace_root_uri("viking://resources/vet-global/docs/.abstract.md")
+        # ...but a leaf document's own summary at any depth stays content.
+        assert not _is_namespace_root_uri(
+            "viking://resources/vet-global/docs/runbook-phat-hanh.md/.abstract.md"
+        )
+        assert (
+            _namespace_of("viking://resources/vet-global/runbook-phat-hanh.md/.overview.md")
+            == ""
+        )
+
+    def test_retry_fires_on_real_world_hit_shape(self):
+        """The exact top-3 a live instance returned must trigger the retry."""
+        from plugins.memory.openviking import (
+            _should_retry_without_namespace,
+            _strip_namespace_tokens,
+        )
+
+        hits = [
+            {"uri": "viking://resources/vet-global/README.md/vet-global/.overview.md"},
+            {"uri": "viking://resources/vet-global/.overview.md"},
+            {"uri": "viking://resources/vet-global/README.md/.abstract.md"},
+        ]
+        query = "lenh phat hanh vet-global la gi"
+        assert _should_retry_without_namespace(query, hits)
+        assert _strip_namespace_tokens(query, hits) == "lenh phat hanh la gi"
+
+    def test_namespace_tokens_are_stripped_from_query(self):
+        from plugins.memory.openviking import _strip_namespace_tokens
+
+        stripped = _strip_namespace_tokens(
+            "lenh phat hanh vet-global la gi",
+            ["viking://resources/vet-global/.abstract.md"],
+        )
+        assert "vet-global" not in stripped
+        assert stripped == "lenh phat hanh la gi"
+
+    def test_strip_is_a_noop_without_namespace_hits(self):
+        from plugins.memory.openviking import _strip_namespace_tokens
+
+        query = "production release runbook"
+        assert _strip_namespace_tokens(query, []) == query
+
+    def test_retry_runs_only_when_namespace_root_leads(self):
+        """Top hit is a namespace root -> retry; anything else -> no retry."""
+        from plugins.memory.openviking import _should_retry_without_namespace
+
+        leading_root = [{"uri": "viking://resources/vet-global/.abstract.md", "score": 0.6}]
+        leading_leaf = [{"uri": "viking://resources/vet-global/runbook-phat-hanh.md", "score": 0.6}]
+        assert _should_retry_without_namespace("lenh phat hanh vet-global", leading_root)
+        assert not _should_retry_without_namespace("lenh phat hanh vet-global", leading_leaf)
+        # No namespace token in the query: nothing to strip, so never retry.
+        assert not _should_retry_without_namespace("lenh phat hanh", leading_root)
+        assert not _should_retry_without_namespace("anything", [])
+
+    def test_retry_results_are_merged_behind_originals_without_duplicates(self):
+        from plugins.memory.openviking import _merge_retry_items
+
+        original = [{"uri": "viking://resources/vet-global/.abstract.md", "score": 0.64}]
+        retry = [
+            {"uri": "viking://resources/vet-global/.abstract.md", "score": 0.52},
+            {"uri": "viking://resources/vet-global/runbook-phat-hanh.md", "score": 0.49},
+        ]
+
+        merged = _merge_retry_items(original, retry)
+
+        assert [item["uri"] for item in merged] == [
+            "viking://resources/vet-global/.abstract.md",
+            "viking://resources/vet-global/runbook-phat-hanh.md",
+        ]
+
+    def test_prefetch_retries_once_and_surfaces_the_leaf(self, monkeypatch):
+        """End-to-end: the namespace root leads, so recall retries stripped."""
+        provider = OpenVikingMemoryProvider()
+        queries = []
+
+        def fake_search(client, query, session_id, *, limit, context_type, deadline, request_timeout):
+            queries.append(query)
+            if "vet-global" in query:
+                return {"result": {"resources": [
+                    {"uri": "viking://resources/vet-global/.abstract.md", "score": 0.64, "abstract": "namespace tour"},
+                ]}}
+            return {"result": {"resources": [
+                {"uri": "viking://resources/vet-global/runbook-phat-hanh.md", "score": 0.49, "abstract": "release runbook"},
+            ]}}
+
+        monkeypatch.setattr(OpenVikingMemoryProvider, "_post_prefetch_search", staticmethod(fake_search))
+        monkeypatch.setattr(
+            OpenVikingMemoryProvider, "_recall_config",
+            lambda self: {"limit": 5, "score_threshold": 0.0, "timeout_seconds": 5.0,
+                          "request_timeout_seconds": 5.0, "resources": True, "prefer_abstract": True,
+                          "max_injected_chars": 4000, "full_read_limit": 0},
+        )
+        monkeypatch.setattr(
+            OpenVikingMemoryProvider, "_build_prefetch_entries",
+            lambda self, client, selected, **kwargs: [str(item["uri"]) for item in selected],
+        )
+
+        out = provider._search_prefetch_context("lenh phat hanh vet-global la gi", client=object())
+
+        assert len(queries) == 2, "the stripped retry must fire exactly once"
+        assert "vet-global" not in queries[1]
+        assert "runbook-phat-hanh.md" in out
+
+    def test_prefetch_does_not_retry_when_a_leaf_already_leads(self, monkeypatch):
+        provider = OpenVikingMemoryProvider()
+        queries = []
+
+        def fake_search(client, query, session_id, *, limit, context_type, deadline, request_timeout):
+            queries.append(query)
+            return {"result": {"resources": [
+                {"uri": "viking://resources/vet-global/runbook-phat-hanh.md", "score": 0.7, "abstract": "runbook"},
+            ]}}
+
+        monkeypatch.setattr(OpenVikingMemoryProvider, "_post_prefetch_search", staticmethod(fake_search))
+        monkeypatch.setattr(
+            OpenVikingMemoryProvider, "_recall_config",
+            lambda self: {"limit": 5, "score_threshold": 0.0, "timeout_seconds": 5.0,
+                          "request_timeout_seconds": 5.0, "resources": True, "prefer_abstract": True,
+                          "max_injected_chars": 4000, "full_read_limit": 0},
+        )
+        monkeypatch.setattr(
+            OpenVikingMemoryProvider, "_build_prefetch_entries",
+            lambda self, client, selected, **kwargs: [str(item["uri"]) for item in selected],
+        )
+
+        provider._search_prefetch_context("lenh phat hanh vet-global la gi", client=object())
+
+        assert len(queries) == 1, "no namespace root leading -> no extra request"

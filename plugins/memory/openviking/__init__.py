@@ -72,6 +72,84 @@ _READ_BATCH_FULL_LIMIT = 2500
 _LEVEL_ENDPOINTS = {"abstract": "/api/v1/content/abstract", "overview": "/api/v1/content/overview", "full": "/api/v1/content/read"}
 _LEVEL_MAX_CHARS = {"abstract": 1200, "overview": 4000}
 _RECALL_SUMMARY_KEYS = ("abstract", "overview", "text", "content")
+_NAMESPACE_ROOT_TAILS = (".abstract.md", ".overview.md")
+_NAMESPACE_ROOT_RE = re.compile(
+    r"^viking://resources/(?P<ns>[^/]+)/(?:(?P<mid>.+)/)?(?:"
+    + "|".join(re.escape(t) for t in _NAMESPACE_ROOT_TAILS)
+    + r")$"
+)
+
+
+def _is_namespace_root_uri(uri: Any) -> bool:
+    """True for a directory-level summary such as ``resources/<ns>/.abstract.md``.
+
+    A leaf's own ``<doc>.md/.overview.md`` is real content and must NOT match:
+    demoting those was measured to help nothing. The two are told apart by the
+    segment directly above the summary -- a leaf summary sits under a ``*.md``
+    document, a directory summary does not.
+
+    The server also nests a namespace summary deeper than its own root (e.g.
+    ``<ns>/README.md/<ns>/.overview.md``), so the middle of the path is not
+    anchored; only the parent segment decides.
+    """
+    match = _NAMESPACE_ROOT_RE.match(str(uri or "").strip())
+    if not match:
+        return False
+    mid = match.group("mid")
+    parent = mid.rsplit("/", 1)[-1] if mid else match.group("ns")
+    return not parent.lower().endswith(".md")
+
+
+def _namespace_of(uri: Any) -> str:
+    """Namespace owning ``uri``, but only when it is a directory summary."""
+    if not _is_namespace_root_uri(uri):
+        return ""
+    match = _NAMESPACE_ROOT_RE.match(str(uri or "").strip())
+    return match.group("ns") if match else ""
+
+
+def _strip_namespace_tokens(query: str, items: List[Dict[str, Any]] | List[str]) -> str:
+    """Drop namespace names (taken from the hits themselves) out of ``query``.
+
+    The namespace list is never hardcoded: it comes from whatever namespace
+    roots the server actually returned, so new corpora need no code change.
+    """
+    names = set()
+    for item in items or []:
+        uri = item.get("uri") if isinstance(item, dict) else item
+        name = _namespace_of(uri)
+        if name:
+            names.add(name)
+    stripped = query or ""
+    for name in sorted(names, key=len, reverse=True):
+        stripped = re.sub(re.escape(name), " ", stripped, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _should_retry_without_namespace(query: str, items: List[Dict[str, Any]]) -> bool:
+    """Retry only when a namespace root leads AND its name is in the query.
+
+    That pairing is the measured failure mode: the query repeats the namespace
+    name, the namespace abstract absorbs the similarity, and the leaf document
+    never makes the result set.
+    """
+    if not items:
+        return False
+    top = items[0].get("uri") if isinstance(items[0], dict) else items[0]
+    name = _namespace_of(top)
+    return bool(name) and name.lower() in (query or "").lower()
+
+
+def _merge_retry_items(original: List[Dict[str, Any]], retry: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Append retry hits behind the originals, dropping URIs already present."""
+    seen = {str(item.get("uri")) for item in original if isinstance(item, dict)}
+    merged = list(original)
+    for item in retry or []:
+        uri = str(item.get("uri")) if isinstance(item, dict) else ""
+        if uri and uri not in seen:
+            seen.add(uri)
+            merged.append(item)
+    return merged
 
 
 def _cfg_field(key: str, description: str, **extra) -> dict:
@@ -811,7 +889,17 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
     # utf-8-sig + surrogateescape: a Windows editor may leave a BOM (breaks the
     # first key match) or save cp1252; round-trip undecodable bytes unchanged so
     # updating one credential cannot corrupt an unrelated value.
-    existing_lines = env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines() if env_path.exists() else []
+    # newline="": universal-newline translation on read would turn every CRLF
+    # into LF, so the file's real ending could never be detected below.
+    if env_path.exists():
+        with env_path.open("r", encoding="utf-8-sig", errors="surrogateescape", newline="") as fh:
+            existing = fh.read()
+    else:
+        existing = ""
+    existing_lines = existing.splitlines()
+    # Adopt the file's own line ending instead of the platform default: writing
+    # one variable must not rewrite every untouched line from LF to CRLF.
+    eol = "\r\n" if "\r\n" in existing else "\n"
     updated_keys = set()
     new_lines = []
     for line in existing_lines:
@@ -823,7 +911,10 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
         new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}" if key_match in env_writes else line)
     new_lines += [f"{key}={_env_line_safe(val)}" for key, val in env_writes.items() if key not in updated_keys]
     _secure_secret_file(env_path, create=True)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8", errors="surrogateescape")
+    # newline="": ``eol`` above is the only thing allowed to decide the line
+    # ending, so text mode cannot translate it on the way out.
+    with env_path.open("w", encoding="utf-8", errors="surrogateescape", newline="") as fh:
+        fh.write(eol.join(new_lines) + (eol if new_lines else ""))
     _secure_secret_file(env_path)
 
 
@@ -1603,6 +1694,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if not isinstance(result, dict):
                 return ""
             candidates = [item for ctx_type in ("memories", "resources") for item in (result.get(ctx_type, []) or []) if isinstance(item, dict)]
+            # A query that repeats a namespace name can be swallowed by that
+            # namespace's root abstract, leaving the real leaf out of the
+            # result set entirely. Retry once without the namespace token.
+            if _should_retry_without_namespace(query_text, candidates):
+                retry_query = _strip_namespace_tokens(query_text, candidates)
+                if retry_query and retry_query != query_text:
+                    try:
+                        retry_result = self._unwrap_result(self._post_prefetch_search(
+                            client, retry_query, session_id, limit=max(cfg["limit"] * 4, 20),
+                            context_type=["memory", "resource"] if cfg["resources"] else "memory",
+                            deadline=deadline, request_timeout=cfg["request_timeout_seconds"],
+                        ))
+                        if isinstance(retry_result, dict):
+                            candidates = _merge_retry_items(candidates, [
+                                item for ctx_type in ("memories", "resources")
+                                for item in (retry_result.get(ctx_type, []) or []) if isinstance(item, dict)
+                            ])
+                    except TimeoutError:
+                        pass  # Budget spent; the original candidates still stand.
+                    except Exception as e:
+                        logger.debug("OpenViking namespace-stripped retry failed: %s", e)
             selected = self._select_recall_candidates(candidates, query_text, limit=cfg["limit"], score_threshold=cfg["score_threshold"])
             return "\n".join(self._build_prefetch_entries(
                 client, selected, prefer_abstract=cfg["prefer_abstract"], max_injected_chars=cfg["max_injected_chars"],

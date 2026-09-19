@@ -696,3 +696,11 @@ def test_windows_live_child_offset_matches_os_zone_when_timezone_is_configured(m
     # The test process itself has no TZ override, so its view IS the OS zone.
     assert child_offset == datetime.datetime.now().astimezone().utcoffset().total_seconds()
     assert child_timezone == time.timezone
+
+
+def test_posix_child_receives_configured_timezone(monkeypatch):
+    """POSIX children retain the configured IANA timezone behavior."""
+    monkeypatch.setattr(code_execution_env, "_IS_WINDOWS", False)
+    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
+
+    assert _configured_timezone_child_env()["TZ"] == "America/Los_Angeles"

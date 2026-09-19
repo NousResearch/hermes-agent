@@ -375,8 +375,12 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r")",
     re.IGNORECASE)
 
+# ``401`` as a status token: not glued to a digit or a timestamp/identifier separator on the left
+# (``05:14:15,401``), but trailing punctuation is a real envelope (``HTTP 401: Unauthorized``,
+# ``returned 401.``) and must keep matching (#89401).
 _GATEWAY_AUTH_ERROR_RE = re.compile(
-    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key"
+    r"|(?<![\d:,.])401(?!\d))",
     re.IGNORECASE)
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
@@ -580,14 +584,17 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
         + format_approval_deadline_line(approval_timeout_seconds()))
 
-# Ordered: auth beats policy beats rate-limit beats connection; first match wins. Copy names the
-# slash command the chat user can run; raw provider text stays in the gateway log (`hermes logs`).
+# Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
+# first because a quota/429 envelope often also carries an auth-shaped preamble ("Provider
+# authentication failed: ... quota exhausted (429) ... Credentials are still valid") and re-auth can
+# never fix a quota, so text with both signals must fail safe toward the quota reply (#89401). Copy
+# names the slash command the chat user can run; raw provider text stays in the gateway log.
 _PROVIDER_ERROR_REPLIES = (
+    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
     (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
                              "or ask whoever runs this bot to run `hermes doctor` on the host."),
     (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
                                   "message, or use /model to switch models."),
-    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
     (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
                                    "endpoint is not running or is unreachable. Wait a moment and use /retry; "
                                    "if it persists, run `hermes doctor` on the host."))
@@ -600,11 +607,23 @@ _CONTEXT_OVERFLOW_REPLY = (
     "Use /compress to shorten the history, or /new to start a fresh conversation.")
 
 
+def _rate_limit_reply(text: str) -> str:
+    """Name the reset window a quota 429 carries (``resets_in_seconds`` body field, the credential
+    pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
+    (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
+    from agent.retry_utils import format_reset_window, reset_delay_from_message
+    seconds = reset_delay_from_message(text) or 0
+    if seconds < 120:
+        return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
+    return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
+            "Use /retry after that, or /model to switch models.")
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     for pattern, reply in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
-            return reply
+            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else reply
     return (
         "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
         "models. Details are in the gateway log (`hermes logs`).")

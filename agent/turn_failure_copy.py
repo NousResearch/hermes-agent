@@ -301,11 +301,18 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str) -> str:
-    """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``)."""
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+    """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
     lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    if reset_seconds is not None and reset_seconds >= 120:
+        from agent.retry_utils import format_reset_window
+        situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
+                     "Send /retry after that, or switch models with /model.")
+    else:
+        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
     return (
-        f"{lead} — it looks temporarily unavailable. {_NEXT_STEPS_RETRY} To avoid this in future, "
+        f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
     )
 

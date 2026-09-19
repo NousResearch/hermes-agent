@@ -1802,6 +1802,23 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
+def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
+    """True when every credential the candidate would use sits in an exhaustion cooldown longer
+    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
+    turn the same way the primary just did (#89401). A short throttle still gets its chance."""
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(fb_provider)
+        except Exception:
+            return False
+    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
+        return False
+    until = pool.next_available_at(model=fb_model)
+    return until is None or until - time.time() > 600
+
+
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
@@ -1813,6 +1830,9 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
+        return True
+    if _candidate_pool_exhausted(agent, fb_provider, fb_model):
+        logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
         return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:

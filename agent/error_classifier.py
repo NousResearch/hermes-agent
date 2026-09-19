@@ -891,6 +891,10 @@ def _status_429(c: _Ctx) -> Verdict:
     explicit_rate_limit = any(p in c.msg for p in _RATE_LIMIT_PATTERNS)
     if quota_wall and not explicit_rate_limit and not _has_usage_limit_transient_signal(c.msg, c.body, c.headers):
         return _V_BILLING
+    # Carry the reset window so the terminal copy can name it instead of "wait a minute" (#89401).
+    reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
+    if reset:
+        return _v(_R.rate_limit, **_ROTATE_FALLBACK, error_context={"reset_at": time.time() + reset})
     return _V_RATE_LIMIT
 
 
@@ -1052,6 +1056,24 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
     if response_headers and hasattr(response_headers, "get"):
         return any(response_headers.get(h) not in (None, "") for h in _RESET_HEADERS)
     return False
+
+
+def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:
+    """Seconds until a 429's window reopens, from the body's reset fields, ``Retry-After`` or the
+    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none."""
+    from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+    for payload in (p for p in (body, _error_obj(body)) if isinstance(p, dict)):
+        for name in _RESET_FIELDS:
+            value = payload.get(name)
+            if value in (None, ""):
+                continue
+            if name.endswith("_at") and isinstance(value, (int, float)):
+                return max(0.0, float(value) - time.time())
+            if (seconds := parse_retry_after_seconds(value)) is not None:
+                return seconds
+    if (seconds := parse_retry_after_seconds(response_headers)) is not None:
+        return seconds
+    return reset_delay_from_message(error_msg)
 
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:

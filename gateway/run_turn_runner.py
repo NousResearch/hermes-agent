@@ -1905,6 +1905,12 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from hermes_cli.auth import is_rate_limited_auth_error
+            if is_rate_limited_auth_error(exc.__cause__):
+                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                from gateway.run import _gateway_provider_error_reply
+                return {"final_response": _gateway_provider_error_reply(str(exc)),
+                        "messages": [], "api_calls": 0, "tools": []}
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "

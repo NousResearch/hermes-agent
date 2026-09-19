@@ -263,6 +263,31 @@ class TestSendWithRetryRateLimited:
 
 
 # ---------------------------------------------------------------------------
+# _send_with_retry — timeout surfacing INSIDE the retry loop (not just the
+# first attempt) must skip the plain-text fallback too — same rule, later hop.
+
+class TestSendWithRetryInLoopTimeout:
+    @pytest.mark.asyncio
+    async def test_in_loop_timeout_not_retried_or_fallback(self):
+        """A retryable error on the first attempt enters the retry loop. If the
+        retry itself times out, that must be treated like the first-attempt
+        timeout guard: return the failure as-is, no further retries, and no
+        plain-text fallback (the request may have already been delivered)."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="httpx.ConnectError: connection reset"),
+            SendResult(success=False, error="ReadTimeout: request timed out"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert not result.success
+        # initial + 1 retry only — no plain-text fallback send
+        assert len(adapter._send_calls) == 2
+        for _chat_id, content in adapter._send_calls:
+            assert "plain text" not in content.lower()
+
+
+# ---------------------------------------------------------------------------
 # _send_with_retry — failure-kind transitions between attempts
 # ---------------------------------------------------------------------------
 # is_rate_limited is recomputed from the refreshed error_str on every retry, so

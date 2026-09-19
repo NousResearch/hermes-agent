@@ -142,6 +142,35 @@ class TestCreateSession:
         assert (seen[0]["enabled_toolsets"], seen[0]["disabled_toolsets"]) == (["hermes-acp", "mcp-cfg-server"], None)
         assert (seen[1]["enabled_toolsets"], seen[1]["disabled_toolsets"]) == (["hermes-acp", "mcp-acp-server"], ["browser"])
 
+    def test_make_agent_surfaces_the_provider_resolution_failure(self, monkeypatch):
+        """#91090: when ``resolve_runtime_provider`` fails, the bare-AIAgent fallback dies with the
+        first-run "No LLM provider configured" text; the operator must get the swallowed cause
+        instead. The fallback still stands when the bare build succeeds."""
+        def _no_creds(**_kw):
+            raise RuntimeError("No Codex credentials stored. Run `hermes auth add openai-codex`")
+
+        class BareFails:
+            def __init__(self, **kwargs):
+                raise RuntimeError("No LLM provider configured. Run `hermes setup`")
+
+        class BareWorks:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openai-codex"}})
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _no_creds)
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        manager = SessionManager(db=None)
+
+        monkeypatch.setattr("run_agent.AIAgent", BareFails)
+        with pytest.raises(RuntimeError, match="No Codex credentials stored") as exc:
+            manager._make_agent(session_id="rebuilt", cwd=".", requested_provider="openai-codex")
+        assert "No LLM provider configured" in str(exc.value.__cause__)
+
+        monkeypatch.setattr("run_agent.AIAgent", BareWorks)
+        assert "provider" not in manager._make_agent(session_id="fresh", cwd=".").kwargs
+
 
 
 

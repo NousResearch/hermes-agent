@@ -404,6 +404,7 @@ class SessionManager:
             "model": model or default_model,
             "cwd": cwd,
         }
+        resolve_error: Exception | None = None
         try:
             runtime = resolve_runtime_provider(
                 requested=requested_provider or config_provider, target_model=(model or default_model) or None)
@@ -412,7 +413,8 @@ class SessionManager:
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
-        except Exception:
+        except Exception as exc:
+            resolve_error = exc
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
@@ -430,7 +432,15 @@ class SessionManager:
         except Exception:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
-        agent = AIAgent(**kwargs)
+        try:
+            agent = AIAgent(**kwargs)
+        except Exception as exc:
+            # The bare-AIAgent fallback dies with "No LLM provider configured. Run `hermes setup`" on a
+            # machine that is configured and was working a call earlier; the swallowed resolution
+            # failure (revoked OAuth, disabled provider, ...) is the actionable error (#91090).
+            if resolve_error is not None:
+                raise resolve_error from exc
+            raise
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent

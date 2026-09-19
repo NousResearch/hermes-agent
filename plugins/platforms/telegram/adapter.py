@@ -23,6 +23,7 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env,
 )
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -6080,11 +6081,14 @@ class TelegramAdapter(BasePlatformAdapter):
             and not self._message_mentions_bot(message)
         ):
             return False
-        if not self._telegram_require_mention() or self._is_reply_to_bot(message):
-            return True
-        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
-            return True
-        return self._message_matches_mention_patterns(message)
+        return resolve_inbound_mention_decision(
+            InboundMentionFacts(
+                is_mentioned=not self._telegram_guest_mode() and self._message_mentions_bot(message),
+                matches_custom_pattern=self._message_matches_mention_patterns(message),
+                is_reply_to_bot=self._is_reply_to_bot(message),
+            ),
+            require_mention=self._telegram_require_mention(),
+        )
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;

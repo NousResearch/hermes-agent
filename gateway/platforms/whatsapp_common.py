@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from gateway.platforms._shared import extra_or_secret as _extra_or_wsecret, get_scoped_secret as _get_wsecret
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 
 
 logger = logging.getLogger(__name__)
@@ -251,13 +252,15 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         if not self._is_group_allowed(chat_id):
             return False
         # Group messages: check mention / free-response settings
-        if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
-            return True
-        return (
-            str(data.get("body") or "").strip().startswith("/")
-            or self._message_is_reply_to_bot(data)
-            or self._message_mentions_bot(data)
-            or self._message_matches_mention_patterns(data)
+        return resolve_inbound_mention_decision(
+            InboundMentionFacts(
+                is_mentioned=self._message_mentions_bot(data),
+                matches_custom_pattern=self._message_matches_mention_patterns(data),
+                command_addresses_bot=str(data.get("body") or "").strip().startswith("/"),
+                is_reply_to_bot=self._message_is_reply_to_bot(data),
+                is_free_response_scope=chat_id in self._whatsapp_free_response_chats(),
+            ),
+            require_mention=self._whatsapp_require_mention(),
         )
 
     # ------------------------------------------------------------------ formatting

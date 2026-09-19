@@ -284,6 +284,26 @@ def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
     return value
 
 
+def _coerce_metadata(metadata: Any) -> Any:
+    """Accept ``metadata`` supplied as a JSON object string.
+
+    Some models serialize a nested tool argument as text. Rejecting that lost the worker's
+    entire handoff while the card still completed, i.e. a false success. Only a string that
+    parses to a JSON *object* is converted; anything else is returned untouched so
+    ``_require_dict_metadata`` still reports the original type.
+    """
+    if not isinstance(metadata, str):
+        return metadata
+    text = metadata.strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return metadata
+    return parsed if isinstance(parsed, dict) else metadata
+
+
 def _require_dict_metadata(metadata: Any) -> None:
     _check(metadata is None or isinstance(metadata, dict),
            f"metadata must be an object/dict, got {type(metadata).__name__}")
@@ -605,7 +625,7 @@ def _handle_complete(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_complete", args)
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
-    metadata = args.get("metadata")
+    metadata = _coerce_metadata(args.get("metadata"))
     if isinstance(metadata, dict):
         # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
         metadata = _redact_metadata(metadata) or metadata
@@ -719,7 +739,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     summary = _redact(_require_text(
         args, "summary", "summary is required — describe what was implemented and how it "
         "was verified so the reviewer has context"))
-    metadata = args.get("metadata")
+    metadata = _coerce_metadata(args.get("metadata"))
     _require_dict_metadata(metadata)
     if metadata is not None:
         metadata = _redact_metadata(metadata)

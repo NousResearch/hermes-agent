@@ -206,6 +206,29 @@ class TestCatalog:
         assert classify_items_script_path() not in monitor.job_spec["prompt"]
         assert Path(classify_items_script_path()).name == "classify_items.py"
 
+    def test_loose_threads_entry_creates_the_rendered_morning_report(self, store):
+        from cron.suggestion_catalog import CATALOG
+
+        report = next(e for e in CATALOG if e.key == "catalog:loose-threads-report")
+        rec = store.add_suggestion(
+            dedup_key=report.key,
+            title=report.title,
+            description=report.description,
+            source="catalog",
+            job_spec=report.job_spec,
+        )
+        created = {}
+
+        def fake_create_job(**kwargs):
+            created.update(kwargs)
+            return {"id": "loose-threads", **kwargs}
+
+        with patch("cron.jobs.create_job", fake_create_job):
+            store.accept_suggestion(rec["id"])
+
+        assert created["schedule"] == "15 8 * * *"
+        assert created["name"] == "Loose-threads report"
+
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):

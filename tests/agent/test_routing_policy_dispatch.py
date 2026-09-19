@@ -230,3 +230,31 @@ def test_iteration_summary_denial_blocks_direct_create(monkeypatch):
         attempt(0)
 
     assert create.calls == []
+
+
+def test_denied_auxiliary_main_fallback_is_terminal_and_does_not_resolve_next(monkeypatch):
+    """A denied fallback must not advance the auxiliary main-fallback chain."""
+    import agent.auxiliary_client as auxiliary
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    entries = [
+        {"provider": "denied", "model": "first"},
+        {"provider": "recording", "model": "second"},
+    ]
+    resolved = []
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"fallback_model": entries})
+    monkeypatch.setattr(auxiliary, "_failed_backend_skip", lambda *_a, **_kw: lambda *_a: False)
+    monkeypatch.setattr(auxiliary, "_is_provider_unhealthy", lambda *_a, **_kw: False)
+
+    def resolve(entry):
+        resolved.append(entry["provider"])
+        if entry["provider"] == "denied":
+            raise RoutingPolicyError("denied")
+        return object(), entry["model"]
+
+    monkeypatch.setattr(auxiliary, "_resolve_fallback_entry", resolve)
+
+    with pytest.raises(RoutingPolicyError, match="denied"):
+        auxiliary._try_main_fallback_chain("task")
+
+    assert resolved == ["denied"]

@@ -677,6 +677,7 @@ class SessionSessionsMixin:
             patch["model"] = model
         if provider:
             patch["provider"] = provider
+        self._check_session_model_config_route(session_id, patch)
         self._write_model_config_patch(
             session_id, patch, "UPDATE sessions SET model = ?, model_config = ?, "
             "system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",
@@ -698,6 +699,23 @@ class SessionSessionsMixin:
             if params is not None:
                 self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
+
+    def _check_session_model_config_route(self, session_id: str, patch: Dict[str, Any]) -> None:
+        """Check the effective session route after applying a prospective model-config patch."""
+        from hermes_cli.routing_policy import check_outbound_route
+
+        session = self.get_session(session_id) or {}
+        config = _parse_model_config(session.get("model_config"))
+        for key, value in patch.items():
+            if value is None:
+                config.pop(key, None)
+            else:
+                config[key] = value
+        check_outbound_route(
+            provider=str(config.get("provider") or ""),
+            model=str(config.get("model") or session.get("model") or ""),
+            base_url=str(config.get("base_url") or ""),
+        )
 
     def _merge_model_config_json(
         self, conn, session_id: str, patch: Dict[str, Any], *, on_missing: str = "skip",
@@ -723,6 +741,7 @@ class SessionSessionsMixin:
         no-op when the row or patch is empty."""
         if not session_id or not patch:
             return
+        self._check_session_model_config_route(session_id, patch)
         self._write_model_config_patch(session_id, patch)
 
     def get_session_model_config_value(self, session_id: str, key: str, default: Any = None) -> Any:

@@ -1,6 +1,7 @@
 """Tests for OSS provider definitions and validation."""
 
 import pytest
+from types import SimpleNamespace
 
 from plugins.memory.mem0._oss_providers import (
     LLM_PROVIDERS,
@@ -75,4 +76,31 @@ class TestValidation:
         }
         errors = validate_oss_config(cfg)
         assert any("user" in e.lower() for e in errors)
+
+
+def test_denied_mem0_openai_compatible_route_sends_nothing(monkeypatch):
+    """Mem0's packaged direct client enforces policy immediately before send."""
+    from hermes_cli.routing_policy import RoutingPolicyError
+    pytest.importorskip("mem0", reason="requires the optional mem0 extra")
+    from plugins.memory.mem0._openai_llm import DirectOpenAILLM
+
+    sent = []
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **kwargs: sent.append(kwargs),
+        )),
+    )
+    llm = object.__new__(DirectOpenAILLM)
+    llm.config = SimpleNamespace(model="z-ai/glm-5.2", store=None, response_callback=None)
+    llm.client = client
+    llm._get_supported_params = lambda **_kwargs: {}
+    llm._parse_response = lambda response, tools: response
+    monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+        "enabled": True, "deny": {"models": ["z-ai/*"]},
+    })
+
+    with pytest.raises(RoutingPolicyError):
+        llm.generate_response([])
+    assert sent == []
 

@@ -363,6 +363,33 @@ def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_pat
     assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
+def test_denied_cli_fallback_is_terminal_and_does_not_resolve_next(monkeypatch):
+    """Policy refusal must not turn an auth recovery into a different fallback route."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [
+        {"provider": "denied", "model": "first"},
+        {"provider": "recording", "model": "second"},
+    ]
+    resolved = []
+
+    def resolve(**kwargs):
+        resolved.append(kwargs["requested"])
+        if kwargs["requested"] == "denied":
+            raise RoutingPolicyError("denied")
+        return {"provider": "recording"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+
+    with pytest.raises(RoutingPolicyError, match="denied"):
+        shell._resolve_fallback_runtime(AuthError("no key", provider="primary", code="missing_api_key"))
+
+    assert resolved == ["denied"]
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)

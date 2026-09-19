@@ -279,6 +279,22 @@ model:
 #                             # (approval prompts, clarify) never count against it.
 
 # =============================================================================
+# Route-denial Policy (optional)
+# =============================================================================
+# Enforce a local allow/deny boundary before Hermes persists or sends a model
+# route. `require_explicit` rejects credential-driven provider selection and
+# silent model defaults. A matching deny rule is terminal: it is not retried or
+# advanced through the fallback chain.
+#
+# routing_policy:
+#   enabled: true
+#   require_explicit: true
+#   deny:
+#     providers: ["zai"]
+#     models: ["z-ai/*", "glm-*"]
+#     base_url_hosts: ["api.z.ai", "open.bigmodel.cn"]
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

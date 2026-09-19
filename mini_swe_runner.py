@@ -241,8 +241,18 @@ class MiniSWERunner:
         fixed_temperature = _effective_temperature_for_model(self.model, None, str(getattr(self.client, "base_url", "") or ""))
         if fixed_temperature is not None:
             api_kwargs["temperature"] = fixed_temperature
+        from agent.model_metadata import _infer_provider_from_url
+        from hermes_cli.routing_policy import RoutingPolicyError, check_outbound_route
+        base_url = str(getattr(self.client, "base_url", "") or "")
+        check_outbound_route(
+            provider=_infer_provider_from_url(base_url) or "custom",
+            model=self.model,
+            base_url=base_url,
+        )
         try:
             return self.client.chat.completions.create(**api_kwargs).choices[0].message
+        except RoutingPolicyError:
+            raise
         except Exception as e:
             self.logger.error("API call failed: %s", e)
 

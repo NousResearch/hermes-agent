@@ -56,6 +56,14 @@ class DirectOpenAILLM(OpenAILLM):
             params["response_format"] = response_format
         if tools:
             params["tools"], params["tool_choice"] = tools, tool_choice
+        from agent.model_metadata import _infer_provider_from_url
+        from hermes_cli.routing_policy import check_outbound_route
+        base_url = str(getattr(self.client, "base_url", "") or "")
+        check_outbound_route(
+            provider=_infer_provider_from_url(base_url) or "custom",
+            model=str(params["model"] or ""),
+            base_url=base_url,
+        )
         response = self.client.chat.completions.create(**params)
         parsed_response = self._parse_response(response, tools)
         if self.config.response_callback:

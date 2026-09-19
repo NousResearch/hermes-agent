@@ -4380,6 +4380,9 @@ def _try_main_fallback_chain(
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception as exc:
+            from hermes_cli.routing_policy import RoutingPolicyError
+            if isinstance(exc, RoutingPolicyError):
+                raise
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:

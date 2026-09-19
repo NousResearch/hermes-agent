@@ -2405,10 +2405,15 @@ def _try_resolve_fallback_provider() -> dict | None:
                     entry.get("provider") or runtime.get("provider"), entry.get("model"))
                 return {**_runtime_agent_kwargs(runtime), "model": entry.get("model")}
             except Exception as fb_exc:
+                from hermes_cli.routing_policy import RoutingPolicyError
+                if isinstance(fb_exc, RoutingPolicyError):
+                    raise
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
                 continue
-    except Exception:
-        pass
+    except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
     return None
 
 

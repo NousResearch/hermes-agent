@@ -108,6 +108,31 @@ def test_create_task_with_model_and_provider(conn):
     assert ev.payload["provider_override"] == "openrouter"
 
 
+def test_denied_model_override_is_never_persisted(conn, monkeypatch):
+    """A route-policy rejection happens before either Kanban write seam."""
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+        "enabled": True, "deny": {"models": ["z-ai/*"]},
+    })
+    before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+
+    with pytest.raises(RoutingPolicyError):
+        kb.create_task(
+            conn, title="denied creation", assignee="worker",
+            model_override="z-ai/glm-5.2", provider_override="openrouter",
+        )
+
+    task_id = kb.create_task(conn, title="allowed creation", assignee="worker")
+    with pytest.raises(RoutingPolicyError):
+        kb.set_model_override(conn, task_id, "z-ai/glm-5.2", provider="openrouter")
+
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before + 1
+    task = kb.get_task(conn, task_id)
+    assert task.model_override is None
+    assert task.provider_override is None
+
+
 def test_migration_adds_provider_override_column(conn):
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     assert "model_override" in cols

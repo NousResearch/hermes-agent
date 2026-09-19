@@ -622,6 +622,46 @@ class TestSessionLifecycle:
         assert "browser_model_lock" not in model_config
         assert model_config["_branched_from"] == "parent-session"
 
+    def test_denied_session_model_update_uses_existing_base_url_and_leaves_row_unchanged(self, db, monkeypatch):
+        """A model-only update inherits the stored endpoint for its pre-write policy check."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        db.create_session(
+            session_id="s-policy-update", source="cli", model="old-model",
+            model_config={"provider": "openrouter", "base_url": "https://denied.example/v1"},
+        )
+        before = db.get_session("s-policy-update")
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+            "enabled": True, "deny": {"base_url_hosts": ["denied.example"]},
+        })
+
+        with pytest.raises(RoutingPolicyError):
+            db.update_session_model("s-policy-update", "new-model")
+
+        after = db.get_session("s-policy-update")
+        assert after["model"] == before["model"]
+        assert after["model_config"] == before["model_config"]
+
+    def test_denied_session_model_config_patch_leaves_row_unchanged(self, db, monkeypatch):
+        """Patching a route is guarded before the merged config reaches SQLite."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        db.create_session(
+            session_id="s-policy-patch", source="cli", model="old-model",
+            model_config={"provider": "openrouter", "base_url": "https://allowed.example/v1"},
+        )
+        before = db.get_session("s-policy-patch")
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+            "enabled": True, "deny": {"models": ["denied-*"]},
+        })
+
+        with pytest.raises(RoutingPolicyError):
+            db.patch_session_model_config("s-policy-patch", {"model": "denied-model"})
+
+        after = db.get_session("s-policy-patch")
+        assert after["model"] == before["model"]
+        assert after["model_config"] == before["model_config"]
+
 
 
 

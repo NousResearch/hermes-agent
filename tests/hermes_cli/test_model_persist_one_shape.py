@@ -113,6 +113,27 @@ def test_same_route_repick_keeps_the_context_pin(seeded_home):
     assert block["api_key"] == "sk-stale"  # custom targets keep their inline key
 
 
+def test_denied_global_model_selection_leaves_config_unchanged(seeded_home):
+    """Policy validation happens before the first targeted config.yaml write."""
+    from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    config_path = seeded_home / "config.yaml"
+    before = config_path.read_text(encoding="utf-8")
+    denied = ModelSwitchResult(
+        success=True, new_model="denied-model", target_provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", api_mode="chat_completions", is_global=True)
+
+    # The policy loader reads the same profile config that persistence would mutate.
+    config_path.write_text(before + "routing_policy:\n  enabled: true\n  deny:\n    models: [denied-*]\n", encoding="utf-8")
+    before = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(RoutingPolicyError):
+        persist_model_selection(denied)
+
+    assert config_path.read_text(encoding="utf-8") == before
+
+
 def test_custom_to_other_custom_endpoint_drops_the_inline_key(seeded_home):
     """``custom`` -> ``custom:other-box``: endpoint A's inline ``api_key`` must not become endpoint B's
     credential (the pointer-not-secret rule, #88990). Same provider *string* but a different

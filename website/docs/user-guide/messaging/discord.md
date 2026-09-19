@@ -447,7 +447,9 @@ discord:
   free_response_auto_thread: true  # thread every top-level message there
 ```
 
-Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). Channels listed in [`discord.no_thread_channels`](#discordno_thread_channels) still reply inline, and voice-linked text channels always ignore this flag. Both `no_thread_channels` and replies bypass it.
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages are never auto-threaded.
+
+`DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
 #### `discord.auto_thread`
 

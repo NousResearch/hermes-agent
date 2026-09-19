@@ -4352,29 +4352,25 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
 
 def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
-    """Wait until nothing accepts TCP connections on host:port.
+    """Wait until host:port can actually be bound with the api_server's own socket options.
 
     PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a restart that wins
-    the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
-    listener is gone; a timed-out connect is a live listener with a slow accept queue.
+    the race logs EADDRINUSE and keeps running with no API. A connect probe is not a bindability
+    check — Darwin keeps refusing connect() while the socket a predecessor *accepted* still
+    blocks an exclusive bind (#115347) — so probe the bind itself.
     """
+    from gateway.platforms.api_server import port_bindable
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.2):
-                pass
-        except ConnectionRefusedError:
+    while True:
+        if port_bindable(host, port):
             return True
-        except TimeoutError:
-            pass  # a slow accept queue is still a live listener
-        except OSError:
-            return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.1)
-    return False
 
 
 def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
-    """Wait for the configured api_server listen address to stop accepting.
+    """Wait for the configured api_server listen address to become bindable.
 
     Only when api_server is enabled: with the platform off, a foreign listener on the default
     port is nobody's race and must not delay the restart."""
@@ -4387,8 +4383,8 @@ def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
     freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
     if not freed:
         print(
-            f"⚠ {host}:{port} still accepting connections — "
-            "new api_server may fail to bind"
+            f"⚠ {host}:{port} is still not bindable — "
+            "the new api_server keeps retrying it"
         )
     return freed
 

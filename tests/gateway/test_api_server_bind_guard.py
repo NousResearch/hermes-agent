@@ -5,12 +5,18 @@ that connect() refuses to start without API_SERVER_KEY.
 """
 
 import socket
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    listener_reuse_address,
+    port_bindable,
+)
 from gateway.platforms.base import is_network_accessible
 
 
@@ -191,3 +197,110 @@ class TestBindMechanics:
         finally:
             await first.disconnect()
             await second.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_a_live_foreign_listener_is_not_waited_out(self):
+        """Something answering on the port is a foreign listener holding it for its lifetime.
+
+        The hand-off window exists for a predecessor's *silent* socket; spending it on a port
+        that answers would just delay the conflict error (#115347).
+        """
+        port = self._free_port()
+        first = self._make_adapter(port)
+        assert await first.connect() is True
+        second = self._make_adapter(port)
+        started = time.monotonic()
+        try:
+            assert await second.connect() is False
+            assert time.monotonic() - started < 10.0
+        finally:
+            await first.disconnect()
+            await second.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_a_predecessors_listener_is_ridden_out_until_it_closes(self):
+        """The replacement retries the bind while the predecessor's listener winds down.
+
+        Portable arm of the hand-off: the port answers here, so the retry uses the short budget
+        a foreign conflict keeps — and still binds once the port is genuinely free (the
+        Darwin-specific arm, where the port is already silent, is the macos_only test below).
+        """
+        port = self._free_port()
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", port))
+        holder.listen(8)
+        threading.Timer(0.6, holder.close).start()
+        adapter = self._make_adapter(port)
+        try:
+            assert await adapter.connect() is True
+        finally:
+            await adapter.disconnect()
+            holder.close()
+
+    def test_bindability_probe_uses_the_listeners_own_socket_options(self):
+        """A connect probe is not a bindability check (#115347).
+
+        A socket can hold the port while an *exclusive* bind still fails — the Darwin hand-off —
+        and with SO_REUSEADDR that very bind can win: Linux lets it through only when the holder
+        set the flag too (both sockets reusable, neither listening). The holder below sets it, so
+        the flag on the probe alone decides the outcome. A probe must therefore use the flags the
+        listener itself will bind with, or it reports a busy port that would have bound fine.
+        """
+        holder = socket.socket()
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        try:
+            assert port_bindable("127.0.0.1", port, reuse_address=False) is False
+            if listener_reuse_address():
+                # Only where the listener itself binds with the flag does the probe's own flag
+                # buy the rebind; elsewhere the exclusive bind against the holder is refused
+                # either way, so the pairing is the listener's, not the probe's, business.
+                assert port_bindable("127.0.0.1", port, reuse_address=True) is True
+        finally:
+            holder.close()
+        assert port_bindable("127.0.0.1", port, reuse_address=False) is True
+
+    @pytest.mark.macos_only
+    @pytest.mark.asyncio
+    async def test_a_predecessors_lingering_socket_is_ridden_out(self):
+        """Darwin: the fixed 5-attempt / ~2s budget parked api_server as fatal (#115347).
+
+        The holder is bound but not listening — what a predecessor leaves behind when its
+        process dies while a client keeps the accepted connection. It refuses ``connect()``, so
+        the replacement has to keep retrying until the port is genuinely bindable.
+        """
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        threading.Timer(3.0, holder.close).start()
+        adapter = self._make_adapter(port)
+        try:
+            assert await adapter.connect() is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.macos_only
+    def test_the_restart_wait_is_not_fooled_by_a_refused_connect(self):
+        """Darwin: the socket the predecessor *accepted* outlives its listener (#115347).
+
+        Once that listener closes, ``connect()`` is refused immediately — but the accepted
+        socket still holds the port against the exclusive bind the replacement uses, so a
+        connect probe calls the port free and the restart parks the API off. The CLI wait has to
+        probe the bind itself, with the listener's own socket options.
+        """
+        from hermes_cli.gateway import _wait_for_tcp_port_free
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        accepted, _ = listener.accept()
+        listener.close()
+        try:
+            assert _wait_for_tcp_port_free("127.0.0.1", port, timeout=0.5) is False
+        finally:
+            client.close()
+            accepted.close()
+        assert _wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True

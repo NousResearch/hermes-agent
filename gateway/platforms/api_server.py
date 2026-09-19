@@ -19,6 +19,7 @@ from functools import wraps
 import logging
 import os
 import re
+import socket
 import sqlite3
 import sys
 import threading
@@ -200,7 +201,14 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
-_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+# EADDRINUSE budgets while a restart's predecessor releases the port (#91547). A wall-clock window
+# is what a hand-off needs, not an attempt count: on Darwin the socket a predecessor *accepted*
+# keeps an exclusive bind failing long after connect() is refused (#115347), so the silent case
+# gets a window well under the 30s platform connect timeout (_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT).
+# A port that *answers* is a foreign listener holding it for its lifetime — the old short budget,
+# then the non-retryable conflict error.
+_BIND_RETRY_BUDGET_S = 20.0
+_BIND_BUSY_BUDGET_S = 2.0
 
 
 def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
@@ -214,6 +222,62 @@ def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
     if raw_port is None:
         raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
     return host, _coerce_port(raw_port, DEFAULT_PORT)
+
+
+def listener_reuse_address() -> bool:
+    """Whether the listener binds with SO_REUSEADDR.
+
+    Mirrors the ``reuse_address`` this adapter hands aiohttp: off on Darwin (two sockets with it
+    can silently split traffic, #65482) and on WinSock (aiohttp's own default), on elsewhere —
+    Linux only lets a rebind past TIME_WAIT through with it.
+    """
+    return sys.platform not in ("darwin", "win32")
+
+
+def port_bindable(host: str, port: int, *, reuse_address: Optional[bool] = None) -> bool:
+    """Whether binding ``host:port`` would not lose to address-in-use.
+
+    ``reuse_address`` is the flag the listener will bind with; ``None`` uses
+    :func:`listener_reuse_address`. Probes the bind itself: a connect probe is NOT equivalent
+    (#115347) — Darwin keeps refusing connect() while the socket a predecessor accepted still
+    blocks an exclusive bind. Failures that are not address-in-use (bad host, EACCES, an absent
+    address family) count as bindable; the real bind owns those diagnostics.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        probe = socket.socket(family, socket.SOCK_STREAM)
+    except OSError:
+        return True
+    try:
+        flag = listener_reuse_address() if reuse_address is None else reuse_address
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1 if flag else 0)
+        probe.bind((host, port))
+    except OSError as exc:
+        in_use = exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048
+        return not in_use
+    finally:
+        probe.close()
+    return True
+
+
+def port_answers(host: str, port: int, *, timeout: float = 0.2) -> bool:
+    """Whether something accepts TCP connections on ``host:port`` right now.
+
+    A timed-out connect is a live listener with a busy accept queue; only a refused (or
+    unroutable) connect means the port is silent — a predecessor winding down, whose socket can
+    still hold the bind off (#115347).
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except ConnectionRefusedError:
+        return False
+    except TimeoutError:
+        return True
+    except OSError:
+        return False
+
+
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 # Send a comment before remote API clients' common 20-second idle deadline.
@@ -4025,19 +4089,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
             # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
             try:
-                # aiohttp registers a site with its runner before binding, so a failed start leaves the
-                # site registered: rebuild the runner per attempt rather than reach into its internals.
-                for attempt in range(_BIND_ATTEMPTS):
+                # A restart's predecessor may still hold the port for a moment after its PID is gone.
+                # Ride the hand-off out on a wall-clock budget rather than an attempt count: on Darwin
+                # the socket the predecessor *accepted* keeps an exclusive bind failing with EADDRINUSE
+                # long after connect() is refused (#115347). A port that answers is a foreign listener
+                # holding it for its lifetime — that keeps the old short budget and fails fast into the
+                # conflict error below.
+                started_at = time.monotonic()
+                delay = 0.1
+                while True:
                     try:
                         self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
                         break
                     except OSError as exc:
-                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                        if exc.errno != errno.EADDRINUSE:
+                            raise
+                        budget = (
+                            _BIND_BUSY_BUDGET_S if port_answers(self._host, self._port)
+                            else _BIND_RETRY_BUDGET_S
+                        )
+                        if time.monotonic() - started_at >= budget:
                             raise
                         await self._runner.cleanup()
                         self._runner = web.AppRunner(self._app)
                         await self._runner.setup()
-                        await asyncio.sleep(0.2 * (attempt + 1))
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 1.0)
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

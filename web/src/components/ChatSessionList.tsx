@@ -23,7 +23,7 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
@@ -64,6 +64,8 @@ export function ChatSessionList({
 }: ChatSessionListProps) {
   const { t } = useI18n();
   const [, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,44 +112,33 @@ export function ChatSessionList({
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
-  // the terminal is a no-op (avoids a needless PTY teardown).
+  // Picking a row navigates to `/chat?resume=<id>`. Re-picking the row already
+  // in the terminal while on the chat page is a no-op (avoids a needless PTY
+  // teardown). When picked from another page (e.g. settings/capabilities),
+  // always navigate to `/chat?resume=<id>`.
   const pick = useCallback(
     (id: string) => {
       onPicked?.();
-      if (id === activeSessionId) return;
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.set("resume", id);
-          return next;
-        },
-        { replace: false },
-      );
+      const isOnChat = location.pathname === "/chat";
+      if (isOnChat && id === activeSessionId) return;
+      navigate(`/chat?resume=${encodeURIComponent(id)}`);
     },
-    [activeSessionId, onPicked, setSearchParams],
+    [activeSessionId, location.pathname, navigate, onPicked],
   );
 
   // "New chat" prefers ChatPage's robust handler (clears resume + forces a
-  // PTY respawn even from an already-fresh session). Fallback: clear the
-  // resume param ourselves, which spawns a fresh PTY whenever one was being
-  // resumed. Session management (delete/rename/export) lives on the Sessions
-  // page; this panel only switches and starts conversations.
+  // PTY respawn even from an already-fresh session). Fallback: navigate to
+  // `/chat` without a resume param, which spawns a fresh PTY. Session
+  // management (delete/rename/export) lives on the Sessions page; this panel
+  // only switches and starts conversations.
   const startNew = useCallback(() => {
     onPicked?.();
     if (onNewChat) {
       onNewChat();
       return;
     }
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete("resume");
-        return next;
-      },
-      { replace: false },
-    );
-  }, [onNewChat, onPicked, setSearchParams]);
+    navigate("/chat");
+  }, [navigate, onNewChat, onPicked]);
 
   const content = useMemo(() => {
     if (loading && sessions === null) {

@@ -1,16 +1,18 @@
 name: mermail
 repo: https://github.com/Nudgen-Marketing/mermail-skills
 sha: 269a711bf683845d75009df4984bf25eee83b0bd
-description: 'Privacy-first agent email inboxes and workspace automation through hosted
-  Mermail MCP. Portable Agent Plugins v1 package (mcp.json + skills/, seventeen skills
-  bundled); authenticate with OAuth via `hermes mcp login mermail`. No credentials
-  are stored in mcp.json.'
+description: Privacy-first agent email inboxes and workspace automation through hosted Mermail MCP. Portable
+  Agent Plugins v1 package (mcp.json + skills/, seventeen skills bundled); authenticate with OAuth via
+  `hermes mcp login mermail`. No credentials are stored in mcp.json. Disclosure — the bundled skills also
+  expose Mermail's paybox wallet tools over the hosted MCP (x402 payments, xStocks trading, standing grants);
+  the skills allow the agent to move funds without a same-turn confirmation when your message already
+  states exact terms, so spending controls live on your Mermail account, not in Hermes.
 maintainer: Nudgen-Marketing
 tier: community
 category: platform
-requires_hermes: ">=0.20"
+requires_hermes: '>=0.20'
 docs_url: https://docs.mermail.app/ai/skills
-version: "1.5.5"
+version: 1.5.5
 image: https://raw.githubusercontent.com/Nudgen-Marketing/mermail-skills/269a711bf683845d75009df4984bf25eee83b0bd/assets/logo.png
 platforms: []
 capabilities:

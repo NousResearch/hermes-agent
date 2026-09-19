@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from tools.skills_sync_optional import _skill_file_list, _ss
+from tools.skills_sync_references import local_reference_additions, read_reference_inventory
 
 
 def _bundled_state():
@@ -66,10 +67,12 @@ def list_user_modified_bundled_skills() -> List[dict]:
         return []
     bundled_dir = ss._get_bundled_dir()
     modified: List[dict] = []
+    inventory = read_reference_inventory(ss._manifest_file())
     for skill_name, skill_dir in ss._discover_bundled_skills(bundled_dir):
         origin_hash = manifest.get(skill_name, "")  # empty = untracked/un-baselined v1: next sync handles it
         dest = ss._compute_relative_dest(skill_dir, bundled_dir)
-        if origin_hash and dest.exists() and not ss._matches_origin_hash(dest, origin_hash):
+        if origin_hash and dest.exists() and local_reference_additions(
+                dest, skill_dir, origin_hash, inventory.get(skill_name, {})) is None:
             modified.append({"name": skill_name, "dest": dest, "bundled_src": skill_dir})
     return sorted(modified, key=lambda e: e["name"])
 

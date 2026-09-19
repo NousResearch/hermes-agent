@@ -186,6 +186,18 @@ class TestEstimateCost:
         expected = (1000 * 3.0 + 500 * 15.0 + 2000 * 0.30 + 400 * 3.75) / 1_000_000
         assert cost == pytest.approx(expected, abs=0.0001)
 
+    def test_subscription_included_session_uses_persisted_billing_mode(self):
+        cost, status = _estimate_cost({
+            "model": "anthropic/claude-sonnet-4-20250514",
+            "input_tokens": 1_000_000,
+            "output_tokens": 100_000,
+            "billing_provider": "anthropic",
+            "billing_mode": "subscription_included",
+        })
+
+        assert cost == 0.0
+        assert status == "included"
+
 
 # =========================================================================
 # Format helpers
@@ -725,6 +737,22 @@ class TestEdgeCases:
         assert "included" in text.lower()
         assert "subscription" in text.lower()
 
+    def test_subscription_included_anthropic_oauth_session_has_no_estimated_cost(self, db):
+        db.create_session(session_id="oauth1", source="cli", model="anthropic/claude-sonnet-4-20250514")
+        db.update_token_counts(
+            "oauth1", input_tokens=1_000_000, output_tokens=100_000, model="anthropic/claude-sonnet-4-20250514",
+            billing_provider="anthropic", billing_base_url=None,
+            estimated_cost_usd=0.0, actual_cost_usd=0.0,
+            cost_status="included", cost_source="none", billing_mode="subscription_included", api_call_count=1,
+        )
+
+        report = InsightsEngine(db).generate(days=30)
+
+        assert report["overview"]["estimated_cost"] == pytest.approx(0.0)
+        model = next(m for m in report["models"] if m["model"] == "claude-sonnet-4-20250514")
+        assert model["cost"] == pytest.approx(0.0)
+        assert model["cost_status"] == "included"
+
     def test_sub_cent_aggregate_estimated_cost_not_zero(self, db):
         """A sub-cent aggregate must not render 'Estimated: ~$0.00' (#79220).
 
@@ -789,5 +817,4 @@ class TestEdgeCases:
         # The session has no cost data, so it falls in the "unknown" bucket.
         assert "💰 Cost" in text
         assert "Unknown" in text
-
 

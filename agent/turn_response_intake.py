@@ -61,6 +61,12 @@ def _fire_post_api_request_hook(
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):
+            from agent.usage_pricing import resolve_billing_route
+
+            billing_mode = resolve_billing_route(
+                agent.model, provider=agent.provider, base_url=agent.base_url,
+                api_key=getattr(agent, "api_key", None),
+            ).billing_mode
             _invoke_hook(
                 "post_api_request",
                 task_id=effective_task_id,
@@ -72,6 +78,7 @@ def _fire_post_api_request_hook(
                 provider=agent.provider,
                 base_url=agent.base_url,
                 api_mode=agent.api_mode,
+                billing_mode=billing_mode,
                 api_call_count=api_call_count,
                 api_duration=api_duration,
                 started_at=api_start_time,

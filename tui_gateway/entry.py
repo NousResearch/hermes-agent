@@ -7,6 +7,13 @@ import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 
+# Set process title so tmux/ps shows 'hermes' instead of 'python'
+try:
+    from hermes_cli.main import _set_process_title
+    _set_process_title()
+except Exception:
+    pass
+
 import json
 import logging
 import signal

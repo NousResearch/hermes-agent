@@ -388,9 +388,20 @@ class _CuaDriverSession:
     def _is_closed_session_error(exc: Exception) -> bool:
         """True for MCP/stdio failures that are recoverable by reconnecting."""
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
-        return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
-                or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+        if name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}:
+            return True
+        if module.startswith("anyio") and "Resource" in name:
+            return True
+        if isinstance(exc, (BrokenPipeError, EOFError)):
+            return True
+        # MCP SDK transport failures surface as MCPError with SDK-only codes, not the
+        # anyio resource errors caught above. CONNECTION_CLOSED (-32000) and
+        # REQUEST_TIMEOUT (-32001) both mean the stdio bridge is gone for good and the
+        # correct recovery is a reconnect — the cached connection object never revives.
+        if name == "MCPError" and module.startswith("mcp"):
+            if getattr(exc, "code", None) in (-32000, -32001):
+                return True
+        return False
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:

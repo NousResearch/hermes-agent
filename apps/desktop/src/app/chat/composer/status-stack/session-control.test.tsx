@@ -380,4 +380,45 @@ describe('ComposerStatusStack session-control UI', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByText(/continuation queued/i)).toBeTruthy()
   })
+
+  // 22. a paused goal exposes Resume as a header button, not just in the kebab menu
+  it('shows a prominent Resume goal button on a paused goal and runs goal.resume', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(true)
+
+    mockRunSessionControlAction.mockResolvedValue({
+      display: '/goal resume',
+      message: 'Continue toward goal: verify tests',
+      notice: null,
+      output: null,
+      type: 'send'
+    })
+    $sessionControlBySession.set({
+      [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: sampleGoal({ status: 'paused' }) }) })
+    })
+
+    renderStack(SID, { onSubmit })
+
+    const resumeButton = screen.getByRole('button', { name: /resume goal/i })
+    fireEvent.click(resumeButton)
+
+    await waitFor(() => {
+      expect(mockRunSessionControlAction).toHaveBeenCalledWith(SID, 'goal.resume', undefined)
+    })
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith('Continue toward goal: verify tests', {
+        displayKind: 'hidden',
+        sessionId: SID
+      })
+    })
+  })
+
+  it('keeps the header resume button off an active goal', () => {
+    $sessionControlBySession.set({
+      [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: sampleGoal({ status: 'active' }) }) })
+    })
+
+    renderStack()
+
+    expect(screen.queryByRole('button', { name: /resume goal/i })).toBeNull()
+  })
 })

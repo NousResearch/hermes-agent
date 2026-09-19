@@ -201,6 +201,32 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
 
+### Progress-based auto-continuation
+
+An overnight goal that is still making progress shouldn't wait for you to type `/goal resume` — and that manual step is easy to miss. With `goals.auto_extend` on, budget exhaustion becomes a **progress-review checkpoint** instead of an unconditional stop:
+
+1. **Review.** When the last turn of a window ends, Hermes asks the auxiliary model (same `goal_judge` route) whether the response shows *concrete recent progress* — new artifacts, command/test output, completed sub-steps — and a concrete next step.
+2. **Extend.** Concrete progress earns another full window (`goals.max_turns`) **in the same session**: same goal, contract, subgoal criteria and conversation context. You'll see:
+
+```
+↻ Goal extended — the progress review granted another 20 turns (extension #1, 40/100 turns total): 3 of 4 modules ported; tests for the last one still failing
+```
+
+3. **Done / stuck.** If the review says the goal is satisfied, it's marked done. If the work has **stalled** (the response only restates the same status, repeats earlier work, or reports the same blocker) or the goal is **blocked**, the goal pauses with the review's reason — a stalled loop is never extended.
+
+The review **fails closed** (unlike the per-turn judge, which fails open to `continue`): if the auxiliary model errors, returns non-JSON, or gives an unusable verdict, the goal pauses with that reason rather than extending on no evidence.
+
+`goals.max_total_turns` is the overall ceiling on the turns **one goal** may spend across windows and extensions — the cumulative count is shown in the extension notice and in `/goal status` (e.g. `⊙ Goal (active, 3/20 turns, 43 total, 2 budget extensions): …`). It is never reset by `/goal resume`, so the loop cannot run away.
+
+```yaml
+goals:
+  max_turns: 20          # window size, and the size of each extension
+  auto_extend: false     # opt-in: progress review at the budget boundary instead of a pause
+  max_total_turns: 100   # overall ceiling on one goal's cumulative turns (0 = no ceiling)
+```
+
+This is **opt-in** — with `auto_extend: false` (the default) the budget pauses exactly as before, which is what you want if the budget is your spend guard rather than a fatigue guard. A red quality gate at the boundary still pauses the goal (gates carry their own retry cap and are deterministic evidence that the acceptance criterion isn't met yet).
+
 ### User messages always preempt
 
 Any real message you send while a goal is active takes priority over the continuation loop. On the CLI your message lands in `_pending_input` ahead of the queued continuation; on the gateway it goes through the adapter FIFO the same way. The judge runs again after your turn — so if your message happens to complete the goal, the judge will catch it and stop.

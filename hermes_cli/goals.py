@@ -3,7 +3,9 @@
 A goal is a free-form objective that stays active across turns; after each turn an auxiliary-model
 judge decides whether it is satisfied. The continuation prompt is a normal user message appended via
 ``run_conversation`` (no system-prompt mutation or toolset swap — prompt caching stays intact). Judge
-failures are fail-OPEN (``continue``); the turn budget is the backstop.
+failures are fail-OPEN (``continue``); the turn budget is the backstop. With ``goals.auto_extend``
+(#109804) the budget boundary first runs a CLOSED-failing progress review that can grant another
+window in the same session, bounded by ``goals.max_total_turns``.
 """
 
 from __future__ import annotations
@@ -30,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+# Progress-based budget extension (``goals.auto_extend``, off by default — #109804). When enabled,
+# hitting ``max_turns`` runs a progress review instead of pausing outright; ``max_total_turns`` is
+# the overall ceiling on the cumulative turns ONE goal may spend across windows/extensions
+# (0 = no ceiling). The budget stays the runaway backstop; the ceiling is the user-approved limit.
+DEFAULT_AUTO_EXTEND = False
+DEFAULT_MAX_TOTAL_TURNS = 100
 # Judge output budget. Reasoning models burn hidden-reasoning tokens before the visible one-line
 # JSON verdict; 200 (the original) reliably truncated it and tripped the auto-pause. 4096 covers
 # every model live-tested; override via auxiliary.goal_judge.max_tokens.
@@ -234,6 +242,42 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "Is the goal satisfied per its completion contract — done, blocked, continue, or wait?"
 )
 
+# Progress review at budget exhaustion (``goals.auto_extend``): unlike the per-turn judge, this one
+# decides whether the loop has EARNED another window — and it fails CLOSED, so an unusable review
+# pauses the goal with a reason instead of extending it on no evidence.
+PROGRESS_REVIEW_SYSTEM_PROMPT = (
+    "You review an autonomous agent's progress at the end of its turn budget "
+    "for a standing goal. You receive the goal and the agent's most recent "
+    "response. Decide one of four verdicts.\n\n"
+    "EXTEND — the goal is not done AND the response shows concrete recent "
+    "progress toward it: new artifacts, command/test output, completed "
+    "sub-steps. There must be a concrete next step left to take.\n"
+    "STALLED — the goal is not done and there is no meaningful new progress to "
+    "show: the response only restates the same status, repeats or narrates "
+    "earlier work without new evidence, or reports the same blocker as before. "
+    "Never extend a stalled loop.\n"
+    "DONE — the goal is fully satisfied; the deliverable exists (not merely a "
+    "claim that it does).\n"
+    "BLOCKED — the goal cannot be satisfied as stated, or the next step needs "
+    "the user's input.\n\n"
+    "Be strict about EXTEND: it requires evidence in THIS response, not the "
+    "agent's intentions or a plan for later. When the response gives no "
+    "evidence either way, choose STALLED.\n\n"
+    "Reply ONLY with a single JSON object on one line:\n"
+    '{"verdict": "extend"|"stalled"|"done"|"blocked", "reason": "<one sentence>"}'
+)
+
+PROGRESS_REVIEW_USER_PROMPT_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "{contract_block}"
+    "The agent's most recent response:\n{response}\n\n"
+    "Current time: {current_time}\n\n"
+    "The agent has spent {turns_used}/{max_turns} turns of its current budget "
+    "and the goal is still open. Did the response show concrete progress worth "
+    "another budget window, is the goal done, is it blocked, or has the work "
+    "stalled?"
+)
+
 # /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal").
 DRAFT_CONTRACT_SYSTEM_PROMPT = (
     "You turn a user's plain-language objective into a structured completion "
@@ -427,6 +471,13 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # Progress-based budget extension (#109804): ``extensions`` counts the extra windows granted at
+    # budget exhaustion and ``total_turns_used`` is this goal's lifetime turn count against the
+    # overall ceiling. Neither is reset by /goal resume (which restarts the per-window
+    # ``turns_used``), so cumulative usage stays visible and keeps bounding the loop. Defaults keep
+    # pre-extension state_meta rows loading unchanged.
+    extensions: int = 0
+    total_turns_used: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -435,7 +486,7 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
-        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
+        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations", "extensions", "total_turns_used")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
@@ -748,6 +799,33 @@ def _goal_judge_timeout() -> float:
     return _goal_judge_setting("timeout", DEFAULT_JUDGE_TIMEOUT, float)
 
 
+def _goal_extension_config() -> Tuple[bool, int]:
+    """``(auto_extend, max_total_turns)`` from the ``goals`` config block (#109804).
+
+    Anything unreadable/garbage falls back to the defaults — the turn budget must stay a hard
+    backstop even when config.yaml is broken. ``max_total_turns <= 0`` means no overall ceiling.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        goals_cfg = (load_config() or {}).get("goals") or {}
+    except Exception:
+        return DEFAULT_AUTO_EXTEND, DEFAULT_MAX_TOTAL_TURNS
+    raw = goals_cfg.get("auto_extend", DEFAULT_AUTO_EXTEND)
+    enabled = (raw.strip().lower() in {"1", "true", "yes", "on"}) if isinstance(raw, str) else bool(raw)
+    try:
+        max_total = int(goals_cfg.get("max_total_turns", DEFAULT_MAX_TOTAL_TURNS) or 0)
+    except (TypeError, ValueError):
+        max_total = DEFAULT_MAX_TOTAL_TURNS
+    return enabled, max(0, max_total)
+
+
+def _budget_usage_label(state: "GoalState", max_total: int) -> str:
+    """Cumulative-usage phrase for extension/pause messages; the ceiling shows when one is set."""
+    return (f"{state.total_turns_used}/{max_total} turns total" if max_total > 0
+            else f"{state.total_turns_used} turns total")
+
+
 def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
     """Best-effort: strip code fences, parse the blob, else pull the first ``{...}`` out."""
     if not raw:
@@ -1049,6 +1127,71 @@ def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Option
     return None if contract.is_empty() else contract
 
 
+def review_progress(
+    goal: str,
+    last_response: str,
+    *,
+    contract: Optional[GoalContract] = None,
+    subgoals: Optional[List[str]] = None,
+    turns_used: int = 0,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    timeout: Optional[float] = None,
+) -> Tuple[str, str]:
+    """Progress review run when a goal hits its turn budget (``goals.auto_extend``).
+
+    Returns ``(verdict, reason)`` with verdict ``extend`` | ``stalled`` | ``done`` | ``blocked``.
+    FAIL-CLOSED (unlike the per-turn judge's fail-open ``continue``): an unusable review — no aux
+    client, API error, non-JSON reply, unknown verdict — returns ``stalled`` so the loop pauses
+    with the reason instead of extending on no evidence.
+    """
+    if not (goal or "").strip():
+        return "stalled", "empty goal"
+    if not (last_response or "").strip():
+        return "stalled", "empty response (no progress evidence)"
+    if timeout is None:
+        timeout = _goal_judge_timeout()
+
+    try:
+        from agent.auxiliary_client import call_llm
+    except Exception as exc:
+        logger.debug("progress review: auxiliary client import failed: %s", exc)
+        return "stalled", "auxiliary client unavailable"
+
+    contract_block = ""
+    if contract is not None and not contract.is_empty():
+        rendered = contract.render_block()
+        clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+        if clean_subgoals:
+            rendered = f"{rendered}\n{_render_extra_criteria(clean_subgoals)}"
+        contract_block = (
+            "Completion contract (the authoritative definition of done):\n"
+            f"{_truncate(rendered, 2500)}\n\n"
+        )
+    prompt = PROGRESS_REVIEW_USER_PROMPT_TEMPLATE.format(
+        goal=_truncate(goal, 2000),
+        contract_block=contract_block,
+        response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
+        turns_used=int(turns_used or 0),
+        max_turns=int(max_turns or DEFAULT_MAX_TURNS),
+    )
+    try:
+        raw = _call_goal_judge_llm(call_llm, PROGRESS_REVIEW_SYSTEM_PROMPT, prompt, timeout)
+    except Exception as exc:
+        logger.info("progress review: API call failed (%s)", exc)
+        return "stalled", f"progress review failed: {type(exc).__name__}"
+
+    data = _extract_json_object(raw)
+    if data is None:
+        return "stalled", f"progress review reply was not JSON: {_truncate(raw, 200)!r}"
+    verdict = str(data.get("verdict") or "").strip().lower()
+    reason = str(data.get("reason") or "").strip() or "no reason provided"
+    logger.info("progress review: verdict=%s reason=%s", verdict, _truncate(reason, 120))
+    if verdict not in {"extend", "stalled", "done", "blocked"}:
+        return "stalled", f"progress review returned no usable verdict ({reason})"
+    return verdict, reason
+
+
 # ── GoalManager — the orchestration surface CLI + gateway talk to ──────
 
 def _decision(status, should_continue: bool, prompt: Optional[str], verdict: str, reason: str, message: str) -> Dict[str, Any]:
@@ -1095,10 +1238,13 @@ class GoalManager:
         if s is None or s.status == "cleared":
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
+        if s.total_turns_used and s.total_turns_used != s.turns_used:
+            turns += f", {s.total_turns_used} total"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
         gat = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
-        meta = f"{turns}{sub}{con}{gat}"
+        ext = f", {s.extensions} budget extension{'s' if s.extensions != 1 else ''}" if s.extensions else ""
+        meta = f"{turns}{sub}{con}{gat}{ext}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 return f"⏳ Goal (parked on {s.waiting_reason or f'session {s.waiting_on_session}'}, {meta}): {s.goal}"
@@ -1446,6 +1592,60 @@ class GoalManager:
             "Use /goal resume to keep going, or /goal clear to stop.",
         )
 
+    def _maybe_extend_budget(self, state: GoalState, reason: str, last_response: str) -> Optional[Dict[str, Any]]:
+        """Budget exhaustion as a progress-review checkpoint (opt-in: ``goals.auto_extend``).
+
+        Returns a decision dict when the checkpoint handled the boundary (extended, done, or a
+        pause with the review's reason), or None when the caller should pause with the plain
+        budget message (feature off). The review reuses the judge's auxiliary model, runs once
+        per window, and fails CLOSED — an unusable review pauses rather than extending blind.
+        """
+        auto_extend, max_total = _goal_extension_config()
+        if not auto_extend:
+            return None
+        if max_total > 0 and state.total_turns_used >= max_total:
+            return self._budget_pause(
+                state, "continue", reason,
+                note=(f" (overall limit of {max_total} turns reached — "
+                      f"{state.total_turns_used} spent across {state.extensions} extension(s))"),
+            )
+
+        verdict, review_reason = review_progress(
+            state.goal, last_response,
+            contract=state.contract if state.has_contract() else None,
+            subgoals=state.subgoals or None,
+            turns_used=state.turns_used, max_turns=state.max_turns,
+        )
+        state.last_reason = review_reason
+        if verdict == "done":
+            state.status = "done"
+            state.last_verdict = "done"
+            self._save()
+            return _decision(
+                "done", False, None, "done", review_reason,
+                f"✓ Goal achieved (progress review at the budget boundary): {review_reason}",
+            )
+        if verdict != "extend":
+            return self._pause_decision(
+                f"turn budget exhausted and the progress review says {verdict}: {review_reason}",
+                verdict, review_reason,
+                f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used and the progress "
+                f"review reported no extension ({verdict}): {review_reason} "
+                f"[{_budget_usage_label(state, max_total)}]. "
+                "Use /goal resume to keep going, or /goal clear to stop.",
+            )
+
+        # Earned another window: same session, same goal/contract/criteria — only the per-window
+        # counter restarts; the cumulative one keeps bounding the loop.
+        state.turns_used = 0
+        state.extensions += 1
+        self._save()
+        return _decision(
+            "active", True, self.next_continuation_prompt(), "extended", review_reason,
+            f"↻ Goal extended — the progress review granted another {state.max_turns} turns "
+            f"(extension #{state.extensions}, {_budget_usage_label(state, max_total)}): {review_reason}",
+        )
+
     def evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
@@ -1463,6 +1663,7 @@ class GoalManager:
             return self._waiting_decision(state)
 
         state.turns_used += 1
+        state.total_turns_used += 1
         state.last_turn_at = time.time()
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
@@ -1524,7 +1725,10 @@ class GoalManager:
             )
 
         if state.turns_used >= state.max_turns:
-            return self._budget_pause(state, "continue", reason)
+            # Budget exhaustion is a progress-review checkpoint when goals.auto_extend is on; the
+            # plain pause stays the default and the fallback (feature off, review unusable).
+            extension = self._maybe_extend_budget(state, reason, last_response)
+            return extension if extension is not None else self._budget_pause(state, "continue", reason)
 
         self._save()
         return _decision(
@@ -1707,10 +1911,11 @@ def run_kanban_goal_loop(
 
 __all__ = [
     "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
-    "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "review_progress", "workspace_fingerprint", "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "PROGRESS_REVIEW_SYSTEM_PROMPT", "PROGRESS_REVIEW_USER_PROMPT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
-    "run_kanban_goal_loop",
+    "DEFAULT_MAX_TURNS", "DEFAULT_MAX_TOTAL_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session",
+    "judge_goal", "run_kanban_goal_loop",
 ]

@@ -1327,6 +1327,14 @@ DEFAULT_CONFIG = {
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
+        # Progress-based auto-continuation (#109804). When true, hitting max_turns runs a progress
+        # review instead of pausing outright: concrete recent progress with a concrete next step
+        # grants another max_turns window in the same session (goal, contract and criteria kept),
+        # while stalled/blocked/unusable reviews still pause with a reason.
+        "auto_extend": False,
+        # Overall ceiling on the turns ONE goal may spend across extensions (cumulative, survives
+        # /goal resume). 0 = no ceiling — discouraged: the budget is the runaway backstop.
+        "max_total_turns": 100,
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially

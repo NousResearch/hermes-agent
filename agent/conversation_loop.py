@@ -606,6 +606,20 @@ def _print_billing_or_entitlement_guidance(
     ))
 
 
+def _bot_epoch_home(agent):
+    """The agent's OWN resolved home for capability/roster probes (None when unresolvable).
+
+    Shared by the staleness probe and the rebuild that follows it so both name the same
+    profile — the roster cache is keyed by that home, and a mismatch would refresh one
+    profile's cache while the prompt is rebuilt from another's."""
+    try:
+        from agent.system_prompt import _agent_home
+
+        return _agent_home(agent)
+    except Exception:
+        return None
+
+
 def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
     """Bot Chat capability epoch check for a stored prompt.
 
@@ -620,12 +634,7 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
             stored_bot_chat_prompt_needs_upgrade,
             stored_prompt_capability_stale,
         )
-        home = None
-        try:
-            from agent.system_prompt import _agent_home
-            home = _agent_home(agent)
-        except Exception:
-            pass
+        home = _bot_epoch_home(agent)
         if stored_prompt_capability_stale(stored_prompt, home):
             return True
         if not getattr(agent, "_bot_mode_protocol", True):
@@ -692,6 +701,16 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             try:
                 from agent.prompt_builder import clear_skills_system_prompt_cache
                 clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+            # The roster section is cached separately (one filesystem pass per
+            # process+home) so ordinary turns stay byte-stable. This epoch mismatch is
+            # the one authorized rebuild boundary: refresh it now, or the rebuild below
+            # embeds the OLD roster — a teammate added, removed, or re-roled mid-session
+            # stays invisible — and then persists that as the new epoch.
+            try:
+                from tools.bot_mode_probe import get_bot_mode_protocol_section
+                get_bot_mode_protocol_section(_bot_epoch_home(agent), force_refresh=True)
             except Exception:
                 pass
             agent._cached_system_prompt = agent._build_system_prompt(system_message)

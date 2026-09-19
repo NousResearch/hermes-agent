@@ -282,6 +282,40 @@ class TestStoredPromptReuse:
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
+    def test_bot_capability_rebuild_refreshes_the_cached_roster_section(self):
+        """A changed capability epoch must not rebuild from the probe's stale section.
+
+        The section is cached per process+home, so a teammate added, removed, or
+        re-roled while the session is live would otherwise be rebuilt from the OLD
+        roster and then persisted as the new epoch — invisible until a restart.
+        """
+        from unittest.mock import patch as _patch
+
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Conversation started: Tuesday, June 16, 2026\n"
+            "Session ID: test-session-id\n"
+            "Model: test-model\n"
+            "Provider: openrouter\n\n"
+            "Capability epoch: 000000000000"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt="REFRESHED BOT PROMPT")
+        agent._bot_mode_protocol = True
+        agent._session_title_hint = "Bot Chat"
+
+        with (
+            _patch("agent.system_prompt._agent_home", return_value="/tmp/bot-home"),
+            _patch("tools.bot_mode_probe.stored_prompt_capability_stale", return_value=True),
+            _patch("tools.bot_mode_probe.get_bot_mode_protocol_section") as refresh_protocol,
+        ):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        refresh_protocol.assert_called_once_with("/tmp/bot-home", force_refresh=True)
+        assert agent._cached_system_prompt == "REFRESHED BOT PROMPT"
+        db.update_system_prompt.assert_called_once_with(agent.session_id, "REFRESHED BOT PROMPT")
+
 
 # ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)

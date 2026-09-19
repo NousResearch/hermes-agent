@@ -137,6 +137,57 @@ def test_deterministic_across_calls(tmp_path):
     assert first == second
 
 
+def test_force_refresh_rebuilds_the_live_teammate_roster(tmp_path):
+    """The capability-epoch rebuild must not re-use the cached roster text.
+
+    Ordinary reads stay byte-stable (prompt-cache invariant); the ONE authorized
+    rebuild boundary passes force_refresh so a teammate added while the process is
+    live actually reaches the rebuilt prompt instead of being stamped over.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    first = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in first
+    assert "`@coder`" not in first
+
+    _make_bot_profile(home, "coder", managed=True)
+    # Ordinary reads remain byte-stable for the prompt cache.
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) == first
+
+    refreshed = bot_mode_probe.get_bot_mode_protocol_section(home, force_refresh=True)
+    assert "`@researcher`" in refreshed
+    assert "`@coder`" in refreshed
+
+
+def test_protocol_section_defers_the_send_contract_to_the_tool_schema(tmp_path):
+    """The section must not recite what the model already reads in the tool schema.
+
+    Both ship on every Bot Chat turn, so the send/delivery/privacy wording would be
+    paid for twice — but dropping it from the section is only safe while the tool
+    schema carries it, which is what this pins.
+    """
+    from tools.bot_mode_dm import message_agent_tool_schema
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    tool_description = message_agent_tool_schema()["function"]["description"]
+
+    # The section keeps what only it can say: the roster and the receive side.
+    assert "`@researcher`" in section
+    assert 'When YOU receive a "Message from' in section
+    # The send contract lives in the tool schema the model reads on every turn.
+    assert "FIRE-AND-FORGET" in tool_description
+    assert "COMPOSE the message yourself" in tool_description
+    assert "Never paste the user's words verbatim" in tool_description
+    assert "FIRE-AND-FORGET" not in section
+    assert "Never paste the user's words verbatim" not in section
+
+
 def test_never_raises_on_garbage(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

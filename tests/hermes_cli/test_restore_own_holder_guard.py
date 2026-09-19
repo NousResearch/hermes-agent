@@ -106,13 +106,15 @@ def test_update_autorestore_refuses_under_own_live_connection(
     assert _own_deleted_fds(str(dst.name)) == []
 
 
-def test_safe_restore_fallback_still_works_without_holder(tmp_path):
+def test_safe_restore_fallback_still_works_without_holder(tmp_path, monkeypatch):
     dst = tmp_path / "state.db"
     src = tmp_path / "snap.db"
     _make_db(src, "snapshot-good")
     _make_db(dst, "live-old")
     with open(dst, "r+b") as fh:
         fh.write(b"\x00" * 100)
+    # Exercise the known-clear branch independent of host /proc visibility.
+    monkeypatch.setattr(backup_mod, "_foreign_db_holder_pids", lambda _path: [])
 
     assert backup_mod._safe_restore_db(src, dst) is True
     assert _read_marker(dst) == "snapshot-good"

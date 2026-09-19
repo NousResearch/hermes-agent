@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Hermes Agent docs are optimized for both humans and agents.
+# The llms.txt entry points are mirrored at the site root and under /docs/.
+Sitemap: https://hermes-agent.nousresearch.com/sitemap.xml
+Sitemap: https://hermes-agent.nousresearch.com/docs/sitemap.xml

@@ -1,0 +1,24 @@
+name: lancedb-suite
+repo: https://github.com/3L0935/hermes-lancedb-memory-suite
+sha: 7dda89a80706b392d4b0127562de7d9342e44683
+subdir: "plugin"
+description: Local-first LanceDB vector memory with a strict write contract, calibrated abstention, typed relations, conflict tracking and a retrieval-quality gate.
+maintainer: 3L0935
+tier: community
+category: memory
+version: "1.5.2"
+docs_url: https://github.com/3L0935/hermes-lancedb-memory-suite#readme
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - lancedb_search
+    - lancedb_add
+    - lancedb_update
+    - lancedb_delete
+    - lancedb_get
+    - lancedb_list
+    - lancedb_graph
+    - lancedb_conflicts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

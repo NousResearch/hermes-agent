@@ -2589,11 +2589,14 @@ def run_one_job(
                     _running_fire_owners.pop(job["id"], None)
 
 
-_OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
+_OWNERSHIP_LOST_INTERRUPTED = "Fire claim ownership lost before terminal completion."
 
 
 def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
-    """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
+    """Bookkeeping for a run whose work stopped at a fire-claim ownership loss — no side effect of
+    its own ran, or the side-effect fence refused. The message names the fire claim: an ownership
+    loss is its own failure shape, while the gateway-shutdown wording belongs to
+    ``_finish_interrupted_run`` alone. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
     terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):

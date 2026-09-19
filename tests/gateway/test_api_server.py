@@ -3237,3 +3237,53 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestBareBucketSessionModelResume:
+    def test_session_model_under_bare_custom_keeps_global_credentials(self, monkeypatch):
+        """#102384: a session that persisted its model under billing provider "custom"
+        must not re-resolve the bare bucket on later turns. Doing so bypasses the named
+        endpoint selected by ``model.provider: custom:<name>`` and can land on the
+        OpenRouter fallback rung with an empty api_key, so turn 2+ dies at agent init
+        with "No LLM provider configured" while turn 1 worked."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        # Global resolution picked a named custom endpoint (e.g. llama-swap on the LAN).
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "api_key": "sk-local",
+                "base_url": "http://10.0.0.2:11500/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        # Re-resolving bare "custom" reaches the OpenRouter fallback rung: wrong host,
+        # empty key. The fix skips the re-resolve, so this must never be applied.
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            lambda provider, target_model=None: {
+                "provider": "custom",
+                "api_key": "",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+                "max_tokens": None,
+            },
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", session_model="gemma4-26b-a4b")
+
+        assert captured["model"] == "gemma4-26b-a4b"
+        assert captured["api_key"] == "sk-local"
+        assert captured["base_url"] == "http://10.0.0.2:11500/v1"

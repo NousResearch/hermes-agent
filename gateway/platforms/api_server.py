@@ -2022,6 +2022,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         provider_name = _clean_request_string(provider)
         if not provider_name:
             return None
+        # Bare billing buckets are not routable endpoint identities. Re-resolving them
+        # bypasses the named-endpoint selection the global resolution already applied
+        # (model.provider: "custom:<endpoint>") and can land on the OpenRouter fallback
+        # rung with an empty api_key, clobbering working credentials — a session that
+        # persisted its model under billing provider "custom" then fails every turn
+        # after the first with "No LLM provider configured". Keep the global runtime
+        # instead; mirrors the tui_gateway resume guard (_BARE_BILLING_PROVIDERS, #57588).
+        from hermes_state import _BARE_BILLING_PROVIDERS
+        if provider_name.lower() in _BARE_BILLING_PROVIDERS:
+            return None
         try:
             return _resolve_request_runtime_agent_kwargs(provider_name, target_model=target_model or None)
         except Exception as exc:

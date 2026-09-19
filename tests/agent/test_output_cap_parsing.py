@@ -208,3 +208,11 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+
+def test_limited_to_phrasing_is_an_output_cap():
+    """#67453: Scaleway rejects an oversized budget with "max_completion_tokens is limited to N for
+    <model>" — an output cap (step the budget down), not a context overflow (do not compress)."""
+    assert is_output_cap_error("max_completion_tokens is limited to 16384 for glm-5.2")
+    assert parse_available_output_tokens_from_error("max_completion_tokens is limited to 16384 for glm-5.2") == 16384
+    assert not is_output_cap_error("prompt is too long: max_tokens limited to 100 given the input")

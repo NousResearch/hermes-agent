@@ -38,6 +38,34 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _key_env_secret(entry: Dict[str, Any], label: str) -> str:
+    """The credential named by ``key_env`` / ``api_key_env`` on a config block, or "".
+
+    A declared variable that resolves to nothing is logged: every custom rung substitutes
+    ``no-key-required`` for an empty key (keyless local servers), so a misnamed or unexported
+    variable otherwise surfaces only as the provider's 401/403 (#67453). A block with no key_env at
+    all stays silent — that IS the keyless-server configuration.
+    """
+    key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+    if not key_env:
+        return ""
+    value = get_secret_str(key_env, "").strip()
+    if not value:
+        logger.warning("%s: key_env %s is set but the variable is empty/unset — the request will carry the "
+                       "placeholder no-key-required and the endpoint will reject it", label, key_env)
+    return value
+
+
+def _model_cfg_key_env_for(model_cfg: Dict[str, Any], base_url: str) -> str:
+    """``model.key_env`` for a bare ``provider: custom`` runtime, only when ``base_url`` IS the
+    configured ``model.base_url`` — the key was declared for that endpoint, never for a direct alias
+    or CUSTOM_BASE_URL pointing elsewhere."""
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
+        return ""
+    return _key_env_secret(model_cfg, "model")
+
+
 def _entry_url(entry: Dict[str, Any]) -> str:
     return entry.get("api") or entry.get("url") or entry.get("base_url") or ""
 
@@ -427,7 +455,9 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
         return pool_result
     # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
     # Ollama Cloud resolved no key at all.
-    candidates = [(explicit_api_key or "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True)]
+    # ``model.key_env`` only when this alias endpoint IS the configured model.base_url (#67453).
+    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+                  *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
 
@@ -488,7 +518,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
-        get_secret_str(_clean(custom_provider.get("key_env", "")), "").strip(),
+        _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")

@@ -176,11 +176,11 @@ hermes gateway install
 
 What happens under the hood:
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN Hermes_Gateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
-2. If schtasks is blocked by group policy, falls back to writing a small `Hermes_Gateway.vbs` launcher (run hidden via `wscript.exe`) into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder. A VBScript is used rather than a `cmd.exe` shortcut because a console allocated at logon can receive a close event that kills the gateway before it finishes starting.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
+1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN Hermes_Gateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt. (Named profiles register `Hermes_Gateway_<profile>`.)
+2. If schtasks is blocked by group policy, falls back to persisting the **same** console-less `<task-name>.vbs` launcher — chained through `wscript.exe` exactly as in step 3 — as a Startup-folder entry under `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same hidden-console mechanism, just triggered on login by the Startup folder instead of a Scheduled Task (the old `cmd.exe` shortcut is gone).
+3. Spawns the gateway by running a hidden-console `.vbs` launcher through **`wscript.exe`** — not `cmd.exe`, and not `pythonw.exe`. `wscript.exe` is a GUI-subsystem executable with no console, so it receives no console control events; it launches the console `python.exe` with a hidden window (style 0) that the gateway and all its console-subsystem descendants inherit, so nothing ever flashes. Immunity to `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` broadcasts from sibling processes then comes from the gateway process itself, independent of which interpreter binary is used: the launcher sets `HERMES_GATEWAY_DETACHED=1`, and the gateway responds by calling the native `SetConsoleCtrlHandler(NULL, TRUE)` to ignore console control signals.
 
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+Flags used when the CLI spawns the gateway process **directly** — an immediate `hermes gateway start`, not the Scheduled Task / Startup-folder path, which route through `wscript.exe` as described above: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
 
 ### Manage
 

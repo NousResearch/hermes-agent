@@ -19,7 +19,7 @@ _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DO
 _SKILL_LINE_PREFIX = "    - "
 
 # Posture-demoted categories render all visible skill names on one shared line.
-_NAMES_ONLY_LINE_RE = re.compile(r"^  .+ \[names only\]: (?P<names>.+)$")
+_NAMES_ONLY_LINE_RE = re.compile(r"^  (?P<category>.+) \[names only\]: (?P<names>.+)$")
 
 # Cap the human-readable "Skills by size" table; ``--json`` always has them all.
 _SKILLS_TABLE_LIMIT = 20
@@ -66,27 +66,58 @@ def _build_inspection_agent(platform: str) -> Any:
     )
 
 
-def _skill_md_paths_by_name() -> Dict[str, Path]:
-    """Map each installed skill's frontmatter ``name`` AND directory name to its ``SKILL.md``.
-    Local skills win over external dirs (``get_all_skills_dirs`` yields local first), matching
-    the index's own precedence.
-    """
-    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files, parse_frontmatter
+def _skill_md_paths() -> Tuple[Dict[Tuple[str, str], Path], Dict[str, Path]]:
+    """Map each installed skill's ``SKILL.md`` by ``(category, name)`` and by bare ``name``.
 
-    mapping: Dict[str, Path] = {}
+    Categories mirror the index build (path relative to each discovery root, org mirrors
+    collapsed to ``org:<id>``), so skills sharing a frontmatter ``name`` across categories
+    stay distinct instead of collapsing onto one first-wins path. Local skills win over
+    external dirs (``get_all_skills_dirs`` yields local first), matching the index's own
+    precedence.
+    """
+    from agent.skill_utils import (
+        ORG_MIRROR_DIR_NAME,
+        get_all_skills_dirs,
+        iter_skill_index_files,
+        parse_frontmatter,
+    )
+
+    def category_of(skill_file: Path, skills_dir: Path) -> str:
+        parts = skill_file.relative_to(skills_dir).parts
+        org_id = (
+            parts[1] if len(parts) >= 3 and parts[0] == ORG_MIRROR_DIR_NAME else None
+        )
+        if org_id is not None:
+            parts = parts[2:]
+        category = (
+            "general"
+            if len(parts) < 2
+            else "/".join(parts[:-2])
+            if len(parts) > 2
+            else parts[0]
+        )
+        return f"org:{org_id}" if org_id is not None else category
+
+    by_category_name: Dict[Tuple[str, str], Path] = {}
+    by_name: Dict[str, Path] = {}
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             dir_name = skill_file.parent.name
             try:
-                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+                frontmatter, _ = parse_frontmatter(
+                    skill_file.read_text(encoding="utf-8")
+                )
                 frontmatter_name = str(frontmatter.get("name") or dir_name)
             except Exception:
                 frontmatter_name = dir_name
-            mapping.setdefault(frontmatter_name, skill_file)  # first (local) occurrence wins
-            mapping.setdefault(dir_name, skill_file)
-    return mapping
+            by_category_name.setdefault(
+                (category_of(skill_file, skills_dir), frontmatter_name), skill_file
+            )
+            by_name.setdefault(frontmatter_name, skill_file)  # local wins
+            by_name.setdefault(dir_name, skill_file)
+    return by_category_name, by_name
 
 
 def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
@@ -94,13 +125,15 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
 
     ``index_line_bytes`` is the skill's attributed always-on index cost. For a compact
     ``[names only]`` line each name keeps its own bytes plus an even share of the shared prefix
-    and separators.
+    and separators. Each row's ``path`` resolves through its own category first, so same-named
+    skills in different categories report their own files instead of one first-wins duplicate.
     """
-    name_to_path = _skill_md_paths_by_name()
+    path_by_category_name, path_by_name = _skill_md_paths()
     entries: List[Dict[str, Any]] = []
+    category = ""
 
     def append_entry(name: str, **index_fields: int) -> None:  # kwarg order == output key order
-        path = name_to_path.get(name)
+        path = path_by_category_name.get((category, name)) or path_by_name.get(name)
         md_bytes: Optional[int] = None
         try:
             md_bytes = path.stat().st_size if path is not None else None
@@ -111,6 +144,7 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
     for line in skills_block.splitlines():
         line_bytes = _bytes(line)
         if (compact_match := _NAMES_ONLY_LINE_RE.match(line)) is not None:
+            category = compact_match.group("category")
             names = [n.strip() for n in compact_match.group("names").split(",") if n.strip()]
             name_bytes = [_bytes(name) for name in names]
             shared_base, shared_remainder = divmod(line_bytes - sum(name_bytes), len(names)) if names else (0, 0)
@@ -124,6 +158,12 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
             if name:
                 append_entry(name, index_line_bytes=line_bytes, index_line_total_bytes=line_bytes,
                              index_line_shared_bytes=0, index_line_skill_count=1)
+        elif line.startswith("  ") and ":" in line:
+            header = line.strip()
+            # ``org:<id>`` categories embed colons, so only a trailing colon means a bare header.
+            category = (
+                header[:-1] if header.endswith(":") else header.partition(": ")[0]
+            )
     entries.sort(key=lambda e: (-(e["skill_md_bytes"] or 0), e["name"]))
     return entries
 

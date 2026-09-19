@@ -418,6 +418,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [titleScope],
   );
 
+  const sendSkillToTerminal = useCallback((cmd: string) => {
+    sendPtyShortcutSequence(
+      wsRef.current,
+      ptyStateRef.current,
+      cmd.endsWith("\r") ? cmd : `${cmd}\r`,
+    );
+  }, []);
+
   useEffect(() => {
     if (!isActive) {
       setTitle(null);
@@ -1879,6 +1887,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onSendToTerminal={sendSkillToTerminal}
               />
             </div>
             <ChatSessionList
@@ -2086,6 +2095,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onSendToTerminal={sendSkillToTerminal}
               />
             </div>
 

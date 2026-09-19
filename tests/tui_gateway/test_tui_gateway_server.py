@@ -11473,29 +11473,23 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     assert captured["prompt"] == "expanded prompt"
 
 
-def test_image_attach_appends_local_image(monkeypatch):
-    fake_cli = types.ModuleType("cli")
-    fake_cli._IMAGE_EXTENSIONS = {".png"}
-    fake_cli._detect_file_drop = lambda raw: {
-        "path": Path("/tmp/cat.png"),
-        "is_image": True,
-        "remainder": "",
-    }
-    fake_cli._split_path_input = lambda raw: (raw, "")
-    fake_cli._resolve_attachment_path = lambda raw: Path("/tmp/cat.png")
-
-    server._sessions["sid"] = _session()
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+def test_image_attach_appends_local_image(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image = workspace / "cat.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    server._sessions["sid"] = _session(cwd=str(workspace))
 
     resp = server.handle_request(
         {
             "id": "1",
             "method": "image.attach",
-            "params": {"session_id": "sid", "path": "/tmp/cat.png"},
+            "params": {"session_id": "sid", "path": "./cat.png"},
         }
     )
 
     assert resp["result"]["attached"] is True
+    assert resp["result"]["path"] == str(image)
     assert resp["result"]["name"] == "cat.png"
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
@@ -11504,7 +11498,7 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     screenshot = Path("/tmp/Screenshot 2026-04-21 at 1.04.43 PM.png")
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}
-    fake_cli._detect_file_drop = lambda raw: {
+    fake_cli._detect_file_drop = lambda raw, **_kwargs: {
         "path": screenshot,
         "is_image": True,
         "remainder": "",
@@ -11513,7 +11507,7 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
         "/tmp/Screenshot",
         "2026-04-21 at 1.04.43 PM.png",
     )
-    fake_cli._resolve_attachment_path = lambda raw: None
+    fake_cli._resolve_attachment_path = lambda raw, **_kwargs: None
 
     server._sessions["sid"] = _session()
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
@@ -11542,9 +11536,9 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
     workspace.mkdir()
     home = tmp_path / "home"
     fake_cli = types.ModuleType("cli")
-    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._detect_file_drop = lambda raw, **_kwargs: None
     fake_cli._split_path_input = lambda raw: (raw, "")
-    fake_cli._resolve_attachment_path = lambda raw: None
+    fake_cli._resolve_attachment_path = lambda raw, **_kwargs: None
 
     server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
@@ -11581,9 +11575,9 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     source = tmp_path / "outside.txt"
     source.write_text("outside workspace", encoding="utf-8")
     fake_cli = types.ModuleType("cli")
-    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._detect_file_drop = lambda raw, **_kwargs: None
     fake_cli._split_path_input = lambda raw: (raw, "")
-    fake_cli._resolve_attachment_path = lambda raw: source
+    fake_cli._resolve_attachment_path = lambda raw, **_kwargs: source
 
     server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
@@ -11606,26 +11600,20 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
         server._sessions.pop("sid", None)
 
 
-def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_path):
+def test_file_attach_uses_in_workspace_file_without_copying(tmp_path):
     """Local case: file already inside the workspace → ref it directly, no copy."""
     workspace = tmp_path / "workspace"
     (workspace / "data").mkdir(parents=True)
     source = workspace / "data" / "exam.csv"
     source.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
-    fake_cli = types.ModuleType("cli")
-    fake_cli._detect_file_drop = lambda raw: None
-    fake_cli._split_path_input = lambda raw: (raw, "")
-    fake_cli._resolve_attachment_path = lambda raw: source
-
     server._sessions["sid"] = _session(cwd=str(workspace))
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
         resp = server.handle_request(
             {
                 "id": "1",
                 "method": "file.attach",
-                "params": {"session_id": "sid", "path": str(source)},
+                "params": {"session_id": "sid", "path": "./data/exam.csv"},
             }
         )
 
@@ -11645,9 +11633,9 @@ def test_file_attach_errors_when_unresolvable_and_no_bytes(monkeypatch, tmp_path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     fake_cli = types.ModuleType("cli")
-    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._detect_file_drop = lambda raw, **_kwargs: None
     fake_cli._split_path_input = lambda raw: (raw, "")
-    fake_cli._resolve_attachment_path = lambda raw: None
+    fake_cli._resolve_attachment_path = lambda raw, **_kwargs: None
 
     server._sessions["sid"] = _session(cwd=str(workspace))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
@@ -11672,9 +11660,9 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     fake_cli = types.ModuleType("cli")
-    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._detect_file_drop = lambda raw, **_kwargs: None
     fake_cli._split_path_input = lambda raw: (raw, "")
-    fake_cli._resolve_attachment_path = lambda raw: None
+    fake_cli._resolve_attachment_path = lambda raw, **_kwargs: None
 
     server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(tmp_path / "home"))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
@@ -12082,7 +12070,7 @@ def test_complete_slash_surfaces_completer_error(monkeypatch):
 
 def test_input_detect_drop_attaches_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
-    fake_cli._detect_file_drop = lambda raw: {
+    fake_cli._detect_file_drop = lambda raw, **_kwargs: {
         "path": Path("/tmp/cat.png"),
         "is_image": True,
         "remainder": "",
@@ -12106,17 +12094,17 @@ def test_input_detect_drop_attaches_image(monkeypatch):
 
 def test_input_detect_drop_path_with_spaces(tmp_path):
     """input.detect_drop correctly handles image paths containing spaces."""
-    # Create a minimal PNG file with a space in its name
-    img = tmp_path / "screenshot with spaces.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\n")  # valid PNG header
-
-    server._sessions["sid"] = _session()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    img = workspace / "screenshot with spaces.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    server._sessions["sid"] = _session(cwd=str(workspace))
 
     resp = server.handle_request(
         {
             "id": "2",
             "method": "input.detect_drop",
-            "params": {"session_id": "sid", "text": str(img)},
+            "params": {"session_id": "sid", "text": "./screenshot with spaces.png"},
         }
     )
 
@@ -12124,7 +12112,6 @@ def test_input_detect_drop_path_with_spaces(tmp_path):
     assert resp["result"]["is_image"] is True
     assert resp["result"]["path"] == str(img)
     assert resp["result"]["text"] == f"[User attached image: {img.name}]"
-    # Verify attachment was recorded in the session
     assert len(server._sessions["sid"]["attached_images"]) == 1
     assert server._sessions["sid"]["attached_images"][0] == str(img)
 

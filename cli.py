@@ -1759,10 +1759,13 @@ def _split_path_input(raw: str) -> tuple[str, str]:
     return raw[:pos].replace('\\ ', ' '), raw[pos:].strip()
 
 
-def _resolve_attachment_path(raw_path: str) -> Path | None:
-    """Resolve a user-supplied attachment path (quotes, ``~``, env vars, ``file://``; relative to TERMINAL_CWD).
+def _resolve_attachment_path(
+    raw_path: str, *, base_dir: str | os.PathLike[str] | None = None,
+) -> Path | None:
+    """Resolve a user-supplied attachment path (quotes, ``~``, env vars, ``file://``).
 
-    Returns ``None`` unless it resolves to an existing file.
+    Relative paths use *base_dir*, or the terminal cwd when it is omitted.
+    Returns ``None`` unless the result is an existing file.
     """
     token = str(raw_path or "").strip()
     if not token:
@@ -1795,8 +1798,12 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
             expanded = f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
     path = Path(expanded)
     if not path.is_absolute():
-        base_dir = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
-        path = base_dir / path
+        root = (
+            Path(base_dir).expanduser()
+            if base_dir is not None
+            else Path(os.getenv("TERMINAL_CWD", os.getcwd()))
+        )
+        path = root / path
 
     try:
         resolved = path.resolve()
@@ -1817,7 +1824,9 @@ def _file_drop_result(path: Path, remainder: str) -> dict:
     return {"path": path, "is_image": path.suffix.lower() in _IMAGE_EXTENSIONS, "remainder": remainder}
 
 
-def _detect_file_drop(user_input: str) -> "dict | None":
+def _detect_file_drop(
+    user_input: str, *, base_dir: str | os.PathLike[str] | None = None,
+) -> "dict | None":
     """Detect a dragged/pasted file path at the start of *user_input* -> ``{path, is_image, remainder}`` or None."""
     if not isinstance(user_input, str):
         return None
@@ -1837,15 +1846,15 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     if not starts_like_path:
         return None
 
-    direct_path = _resolve_attachment_path(stripped)
+    direct_path = _resolve_attachment_path(stripped, base_dir=base_dir)
     if direct_path is not None:
         return _file_drop_result(direct_path, "")
 
     first_token, remainder = _split_path_input(stripped)
-    drop_path = _resolve_attachment_path(first_token)
+    drop_path = _resolve_attachment_path(first_token, base_dir=base_dir)
     if drop_path is None and " " in stripped and not quoted:
         for pos in reversed([idx for idx, ch in enumerate(stripped) if ch == " "]):
-            drop_path = _resolve_attachment_path(stripped[:pos].rstrip())
+            drop_path = _resolve_attachment_path(stripped[:pos].rstrip(), base_dir=base_dir)
             if drop_path is not None:
                 remainder = stripped[pos + 1 :].strip()
                 break

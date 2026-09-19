@@ -740,11 +740,12 @@ def _(rid, params: dict) -> dict:
     try:
         from cli import (
             _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input)
-        if dropped := _detect_file_drop(raw):
+        base_dir = _session_cwd(session)
+        if dropped := _detect_file_drop(raw, base_dir=base_dir):
             image_path, remainder = dropped["path"], dropped["remainder"]
         else:
             path_token, remainder = _split_path_input(raw)
-            image_path = _resolve_attachment_path(path_token)
+            image_path = _resolve_attachment_path(path_token, base_dir=base_dir)
             if image_path is None:
                 return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
@@ -788,7 +789,7 @@ def _(rid, params: dict) -> dict:
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
 
 
-def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
+def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64, *, base_dir=None):
     """Materialize the PDF to render: ``(pdf_path, display_name, err)``."""
     if raw_b64:
         pdf_bytes, err = _decode_attach_payload(
@@ -803,7 +804,7 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
     try:
         from cli import _resolve_attachment_path
-        resolved = _resolve_attachment_path(raw_path)
+        resolved = _resolve_attachment_path(raw_path, base_dir=base_dir)
     except Exception:
         resolved = None
     if resolved is None or not (pdf := Path(resolved)).is_file():
@@ -853,7 +854,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4015, "path or content_base64 required")
     with tempfile.TemporaryDirectory(prefix="pdf_attach_") as td:
         td_path = Path(td)
-        pdf_path, display_name, err = _pdf_attach_source(rid, params, td_path, raw_path, raw_b64)
+        pdf_path, display_name, err = _pdf_attach_source(
+            rid, params, td_path, raw_path, raw_b64, base_dir=_session_cwd(session))
         if err is not None:
             return err
         first_page, last_page, err = _pdf_page_range(rid, params)
@@ -938,7 +940,8 @@ def _(rid, params: dict) -> dict:
         return err
     try:
         from cli import _detect_file_drop
-        dropped = _detect_file_drop(str(params.get("text", "") or ""))
+        dropped = _detect_file_drop(
+            str(params.get("text", "") or ""), base_dir=_session_cwd(session))
         if not dropped:
             return _ok(rid, {"matched": False})
         drop_path, remainder = dropped["path"], dropped["remainder"]

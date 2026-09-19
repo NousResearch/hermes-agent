@@ -116,6 +116,16 @@ class TestNonImageFileDrop:
         assert result["is_image"] is False
         assert result["remainder"] == ""
 
+    def test_explicit_base_dir_overrides_terminal_cwd(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        notes = project / "notes.txt"
+        notes.write_text("project notes", encoding="utf-8")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        result = _detect_file_drop("./notes.txt", base_dir=project)
+
+        assert result["path"] == notes
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +206,7 @@ class TestEdgeCases:
         assert result is not None
         assert result["is_image"] is False
 
+
     def test_path_that_looks_like_command_but_is_file(self, tmp_path):
         """A file literally named 'help' inside a directory starting with /."""
         f = tmp_path / "help"
@@ -203,4 +214,3 @@ class TestEdgeCases:
         result = _detect_file_drop(str(f))
         assert result is not None
         assert result["is_image"] is False
-

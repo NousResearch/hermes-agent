@@ -3148,6 +3148,22 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
+    # An ExecStart drop-in owns the runtime selection. Regenerating its base
+    # from this process would discard the operator's service contract (and
+    # invalidate exact rollback snapshots), even when the effective launch is
+    # coherent. Leave that stack to its deployment owner; stock units still
+    # receive automatic restart-contract updates.
+    for dropin in unit_path.with_name(unit_path.name + ".d").glob("*.conf"):
+        section = ""
+        for line in dropin.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                section = line
+            elif section == "[Service]" and line.partition("=")[0].strip() == "ExecStart" and "=" in line:
+                _sync_hermes_home_from_systemd_unit(system=system)
+                print("Gateway runtime is managed by an ExecStart drop-in; preserving the installed base unit")
+                return False
+
     # systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
     if systemd_unit_is_current(system=system):
         return False

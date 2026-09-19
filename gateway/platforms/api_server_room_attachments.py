@@ -1107,7 +1107,10 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
         # alive for the same interval and inspect THESE connections, not readers.
         with ExitStack() as locks:
             from gateway.session_peer_target import root_target
-            owner, _ = root_target(adapter)
+            try:
+                owner, _ = root_target(adapter)
+            except RuntimeStoreError as exc:
+                raise RoomGrantReauthorizationRequired(exc.reason) from exc
             profile_conn = locks.enter_context(owner.db.live_read_connection())
             if profile_conn is None:
                 raise RoomGrantReauthorizationRequired('owner_unavailable')

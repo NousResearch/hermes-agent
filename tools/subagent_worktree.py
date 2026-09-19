@@ -34,13 +34,43 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
                           stdin=subprocess.DEVNULL, env=noninteractive_git_env())
 
 
+def _is_local_backend_name(value: object) -> bool:
+    return str(value or "").strip().lower() in ("", "local")
+
+
 def local_backend_active() -> bool:
-    """True when the terminal backend is local (worktrees visible to tools)."""
+    """True when the terminal backend is local (worktrees visible to tools).
+
+    Resolution mirrors the live terminal stack: an installed multiplex scope
+    is the profile's complete effective policy; otherwise an explicit
+    ``terminal.backend`` in config wins (the bridge installs it over env);
+    otherwise the live ``TERMINAL_ENV``; otherwise local. Reading raw config
+    alone misses env overrides, and reading env alone misses both the scope
+    (another profile under multiplexing) and unbridged config.
+    """
+    try:
+        from tools.terminal_scope import get_terminal_scope
+        from tools.terminal_tool_config import _tenv
+
+        if get_terminal_scope() is not None:
+            return _is_local_backend_name(_tenv("TERMINAL_ENV", "local"))
+    except Exception:
+        # Refusal scope (policy unreadable) or broken scope read: fail
+        # closed — never create a host worktree tools may not see.
+        return False
     try:
         from hermes_cli.config import load_config_readonly
 
-        backend = (load_config_readonly().get("terminal") or {}).get("backend") or "local"
-        return str(backend).strip().lower() in ("", "local")
+        terminal_cfg = load_config_readonly().get("terminal") or {}
+        configured = terminal_cfg.get("backend") if isinstance(terminal_cfg, dict) else None
+        if str(configured or "").strip():
+            return _is_local_backend_name(configured)
+    except Exception:
+        pass
+    try:
+        from tools.terminal_tool_config import _tenv
+
+        return _is_local_backend_name(_tenv("TERMINAL_ENV", "local"))
     except Exception:
         # Legacy entry points without the shared loader default to local.
         return True

@@ -629,6 +629,41 @@ host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
+### Desktop appearance settings
+
+`host.settings` is the supported door for the small set of Desktop-local
+appearance preferences plugins may share with the native Settings page. Writes
+take effect immediately and persist through the preference's existing storage
+schema; `subscribe` immediately emits the current value, follows later native
+or plugin writes, and returns a disposer.
+
+```ts
+host.settings.get('sessionListDensity')
+host.settings.set('sessionListDensity', 'detailed')
+
+const dispose = host.settings.subscribe('backdrop.v1', enabled => {
+  // Runs now with the current boolean, then after each change.
+})
+```
+
+The allowlist and value types are:
+
+| Key | Value |
+|-----|-------|
+| `sessionListDensity` | `'compact' \| 'comfortable' \| 'detailed'` |
+| `tabStripDefault` | `'auto' \| 'always' \| 'never'` |
+| `backdrop.v1` | `boolean` |
+| `intro-splash.v1` | `boolean` |
+| `reasoning.collapsedByDefault` | `boolean` |
+| `composerPopout.gesturesEnabled` | `boolean` |
+
+Unsupported keys and values throw synchronously instead of writing arbitrary
+app storage. Keybinds are contributed through `KEYBINDS_AREA`; theme definitions
+use `THEMES_AREA`. Their maps and the active theme/mode record are intentionally
+not settings-gateway keys because they have separate late-contribution and
+profile/window ownership semantics. Feature-detect `host.settings` when
+supporting older Desktop builds.
+
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from
 `host.profileRoutes()` and routes that RPC through its exact registry source and
@@ -1051,7 +1086,7 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

@@ -639,6 +639,8 @@ hermes kanban create "audit auth flow" \
 
 The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
+**Review/verifier tasks auto-isolate.** If a task's `--skill` list includes `kanban-independent-verification` or `requesting-code-review`, the dispatcher additionally spawns that worker with `--ignore-rules`. Those two skills mark a task as judging someone else's work, and a verifier dispatched on the same profile as the worker it's checking would otherwise inherit that profile's `MEMORY.md`/`USER.md` and profile-preloaded skills — which can already contain the worker's own self-report or framing from earlier in the same profile's history, undermining the independence a verifier exists to provide. `--ignore-rules` only skips that ambient injection; the task's own forced `--skills` (including the review skill itself) still load normally, and kanban lifecycle tools stay available. This is isolation, not evidence verification — it does not by itself force the verifier to check anything real; see the `kanban-independent-verification` skill for that discipline.
+
 ### Per-task model override
 
 Pin a task's worker to a specific model (and optionally provider), independent of the assignee profile's default:

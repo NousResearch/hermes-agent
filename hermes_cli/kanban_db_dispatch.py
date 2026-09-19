@@ -2598,6 +2598,22 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+# Skills that mark a task as a review/verifier role. A worker dispatched for
+# one of these must not inherit the profile's own MEMORY.md/USER.md/preloaded
+# skills — those can carry the very worker's self-report or bias forward from
+# earlier same-profile work, collapsing the independence a verifier exists to
+# provide (see the kanban-independent-verification skill). This tag list is
+# intentionally not a DB column: both names are already-real, already-used
+# skill identifiers, so `task.skills` doubles as the mechanism with no schema
+# change.
+REVIEW_TAG_SKILLS = frozenset({"kanban-independent-verification", "requesting-code-review"})
+
+
+def _is_review_tagged(task: Task) -> bool:
+    """True if this task's forced skills mark it as a review/verifier role."""
+    return any(sk in REVIEW_TAG_SKILLS for sk in (task.skills or ()))
+
+
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
@@ -2611,6 +2627,12 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         # configured hooks still register.
         "--accept-hooks",
     ]
+    if _is_review_tagged(task):
+        # Isolation, not evidence-forcing: skip MEMORY.md/USER.md/profile
+        # preloaded-skill injection so a same-profile verifier judges the
+        # artifact fresh instead of inheriting the worker's own framing.
+        # --skills below still force-loads this task's own review skill.
+        cmd.append("--ignore-rules")
     # One `--skills X` pair per name: easier to read in `ps` and avoids quoting
     # ambiguity if a skill name contains unusual chars.
     for sk in task.skills or ():

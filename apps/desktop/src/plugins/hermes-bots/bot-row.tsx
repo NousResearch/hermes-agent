@@ -391,11 +391,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
               message: b.bot.duplicating(displayName(bot, meta))
             })
             duplicateBot(bot, $lastRoster.get())
-              .then(({ name, clone_needs_auth, appearanceSaved }) => {
+              .then(({ name, appearanceSaved }) => {
                 host.notify({ kind: 'success', message: b.bot.duplicated(name) })
-                if (clone_needs_auth.length) {
-                  host.notify({ kind: 'info', message: b.bot.cloneNeedsAuth(name, clone_needs_auth.join(', ')) })
-                }
                 if (!appearanceSaved) {
                   host.notify({ kind: 'warning', message: b.bot.cloneAppearanceFailed(name) })
                 }

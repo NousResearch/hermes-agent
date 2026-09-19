@@ -448,17 +448,13 @@ export default function ProfilesPage() {
         provider: picked?.provider,
         model: picked?.model,
       });
-      const authNotice = res.clone_needs_auth?.length
-        ? t.profiles.cloneNeedsAuth.replace("{providers}", res.clone_needs_auth.join(", "))
-        : "";
-      const modelNotice = picked && res.model_set === false
-        ? "Profile created, but the model could not be saved — set it from the profile editor."
-        : "";
-      // The toast slot is singular: a second notice would hide reauthentication.
-      showToast(
-        [`${t.profiles.created}: ${res.name}`, authNotice, modelNotice].filter(Boolean).join(". "),
-        modelNotice ? "error" : "success",
-      );
+      showToast(`${t.profiles.created}: ${name}`, "success");
+      if (picked && res.model_set === false) {
+        showToast(
+          `Profile created, but the model could not be saved — set it from the profile editor.`,
+          "error",
+        );
+      }
       setNewName("");
       setNewDescription("");
       setNoSkills(false);

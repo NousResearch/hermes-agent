@@ -751,7 +751,18 @@ def _install_plugin_core(
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
-        # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
+        from hermes_cli.plugin_inventory import capture_install_inventory, PluginInventoryError
+        prior_catalog = None
+        if catalog_entry is None and old_metadata.get(plugin_name, {}).get("source") == source:
+            from hermes_cli.plugins_cmd_catalog import read_catalog_sidecar
+            prior_catalog = read_catalog_sidecar(target)
+        inventory = None
+        if catalog_entry is not None or prior_catalog is not None or "files" in old_metadata.get(plugin_name, {}):
+            try:
+                inventory = capture_install_inventory(tmp_clone, tmp_target)
+            except (PluginInventoryError, OSError, subprocess.SubprocessError) as exc:
+                raise PluginOperationError(f"Could not capture pristine plugin inventory: {exc}") from exc
+        # Capture before scanner side effects; still scan before publication.
         _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
                           reviewed_pin=bool(reviewed_pin) and installed_revision == reviewed_pin)
         if python_deps:
@@ -771,6 +782,12 @@ def _install_plugin_core(
             **old_metadata,
             plugin_name: {"pinned": requested_revision is not None, "revision": installed_revision, "source": source},
         }
+        if inventory is not None:
+            new_metadata[plugin_name]["files"] = inventory
+        if prior_catalog is not None and catalog_entry is None:
+            # Explicit repair of the saved selector/pin retains its catalog identity.
+            prior_catalog["sha"] = installed_revision
+            atomic_write_text(tmp_target / ".hermes-catalog.json", json.dumps(prior_catalog, indent=2) + "\n")
         if catalog_entry is not None:
             from dataclasses import replace
             from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar
@@ -905,7 +922,23 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     with tempfile.TemporaryDirectory(prefix=".update-", dir=target.parent) as tmp:
         staged = Path(tmp) / target.name
         shutil.copytree(target, staged, symlinks=True)
-        ok, output = _git_pull_plugin_dir(staged)
+        if "files" in install_record:
+            from hermes_cli.plugin_inventory import validate_install_modes, PluginInventoryError
+            try:
+                validate_install_modes(staged, install_record["files"])
+            except (PluginInventoryError, OSError) as exc:
+                raise PluginOperationError(f"Could not refresh pristine plugin inventory: {exc}") from exc
+        inventory = None
+        def capture_pristine():
+            nonlocal inventory
+            from hermes_cli.plugin_inventory import capture_install_inventory, PluginInventoryError
+            try:
+                inventory = capture_install_inventory(staged, staged)
+            except (PluginInventoryError, OSError, subprocess.SubprocessError) as exc:
+                raise PluginOperationError(f"Could not refresh pristine plugin inventory: {exc}") from exc
+
+        ok, output = _git_pull_plugin_dir(
+            staged, before_restore=capture_pristine if "files" in install_record else None)
         if not ok:
             raise PluginOperationError(output.replace(str(staged), str(target)))
         new_metadata = dict(metadata)
@@ -914,6 +947,8 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
                 **install_record,
                 "revision": _git_head_revision(staged, git_exe),
             }
+            if "files" in install_record:
+                new_metadata[target.name]["files"] = inventory
         _swap_in_plugin(staged, target, Path(tmp) / "previous-plugin", metadata, new_metadata)
         return output.replace(str(staged), str(target))
 
@@ -2106,7 +2141,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
 
 
 @installation_transaction
-def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+def _git_pull_plugin_dir(target: Path, *, before_restore=None) -> tuple[bool, str]:
     """``git pull --ff-only`` a plugin checkout, autostashing local edits (users patch installed
     plugins in place, and a plain ff-only pull would then refuse forever).
 
@@ -2115,6 +2150,10 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     un-updatable until they hand-run git. Same UX class Factory Droid fixed in v0.188 ("Updating a plugin
     marketplace now succeeds when its checkout has local changes"), and the same autostash approach ``hermes
     update`` already uses for the main checkout (PR #70161).
+
+    ``before_restore`` captures inventory after a successful pull, before local
+    edits (including .gitattributes) return. Only the staged updater supplies it;
+    a capture failure discards staging and leaves the original tree untouched.
     """
     git_exe = _resolve_git_executable()
     if not git_exe:
@@ -2136,6 +2175,8 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
                 note = "Local changes are preserved in git stash (restore with: git stash pop)."
             return False, f"{err}\n{note}"
 
+        if before_restore is not None:
+            before_restore()
         pulled = result.stdout.strip()
         if not stash_created:
             return True, pulled

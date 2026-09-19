@@ -394,7 +394,6 @@ export interface Translations {
 
   // ── Profiles page ──
   profiles: {
-    cloneNeedsAuth: string;
     newProfile: string;
     name: string;
     namePlaceholder: string;

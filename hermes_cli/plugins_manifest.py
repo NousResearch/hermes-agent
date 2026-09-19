@@ -456,19 +456,15 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
 
 
 def parse_manifest_file(
-    manifest_file: Path, plugin_dir: Path, source: str, prefix: str, *, strict: bool = False
+    manifest_file: Path, plugin_dir: Path, source: str, prefix: str
 ) -> Optional[PluginManifest]:
-    """Parse metadata; runtime skips failures, offline ownership inventories must refuse."""
+    """Parse one ``plugin.yaml`` into a :class:`PluginManifest`; ``None`` (warned) on failure."""
     try:
         if yaml is None:
-            if strict:
-                raise ValueError("manifest parser unavailable")
             logger.warning("PyYAML not installed – cannot load %s", manifest_file)
             return None
         data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
         name = data.get("name", plugin_dir.name)
-        if strict and (not isinstance(name, str) or not name.strip()):
-            raise ValueError("invalid plugin name")
         key = f"{prefix}/{plugin_dir.name}" if prefix else name
         kind = _manifest_kind(data, key, plugin_dir)
         logger.debug(
@@ -485,10 +481,5 @@ def parse_manifest_file(
             listens=data.get("listens") or [],
         )
     except Exception as exc:
-        if strict:
-            raise ValueError(
-                f"Cannot safely inventory installed plugin at {str(plugin_dir)!r}. "
-                "Please repair its readable, valid plugin manifest and retry cloning."
-            ) from None
         logger.warning("Failed to parse %s: %s", manifest_file, exc, exc_info=_plugins_debug())
         return None

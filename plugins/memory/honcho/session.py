@@ -10,12 +10,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from .client import spawn_context_thread
-from .client import get_honcho_client
-from .session_auth import HonchoAuthError, SessionAuthMixin
-from .session_context import SessionContextMixin
-from .session_migration import SessionMigrationMixin
-from .session_peers import SessionPeersMixin
+from plugins.memory.honcho.client import spawn_context_thread
+from plugins.memory.honcho.client import get_honcho_client
+from plugins.memory.honcho.session_auth import HonchoAuthError, SessionAuthMixin
+from plugins.memory.honcho.session_context import SessionContextMixin
+from plugins.memory.honcho.session_migration import SessionMigrationMixin
+from plugins.memory.honcho.session_peers import SessionPeersMixin
 
 if TYPE_CHECKING:
     from honcho import Honcho

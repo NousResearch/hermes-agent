@@ -34,38 +34,6 @@ echo "HONCHO_API_KEY=***" >> ~/.hermes/.env
 > memory provider — the `honcho` subcommand is registered for the active
 > provider only. On a fresh install, use `hermes memory setup honcho`.
 
-## Profile cloning
-
-The `clone.py` companion prepares Honcho settings in the host's unpublished
-staging directory; it does not provision remote peers or refresh credentials.
-Both clone modes use the source's explicit `.env` and resolve native configuration
-from source-local `honcho.json`, then the default profile's file, then
-`~/.honcho/config.json`. Process credentials are not clone inputs. A source with
-no native config file and no relevant source `.env` settings is a strict no-op,
-even when the provider is installed. Existing inactive configuration still receives
-credential and session hygiene.
-
-The destination gets one canonical host with its own bare profile-name AI peer.
-Root and selected-host tuning layers retain their precedence, including false,
-zero, empty routing maps and legacy aliases. Unknown fields, other hosts,
-`defaultHost`, session mappings and OAuth grants are discarded. Root/environment
-static API keys may be copied; host-only keys may not. If effective credentials
-are removed, the destination is disabled and the report marks `needs_auth`,
-rather than falling through to another account's lower-priority key.
-
-Two intentional materializations preserve the intended connection while isolating
-sessions: the source's effective workspace (including its host-derived default)
-and observation mode are recorded explicitly. Otherwise creating the destination
-host would select a different workspace or flip directional observation to the
-legacy unified default. `sessionAiPeerPrefix` is always enabled for clones;
-other session strategy settings remain unchanged. The explicit `hermes honcho
-sync` command retains its separate existing semantics.
-
-Verification uses `scripts/run_tests.sh tests/plugins/memory/honcho/test_clone.py`:
-temporary homes, source → destination → source native resolution, grant stripping,
-atomic private writes, refusal of unsafe staging links, and relocated provider
-activation with bundled imports blocked. Provider network calls are prohibited.
-
 ## Architecture Overview
 
 ### Two-Layer Context Injection

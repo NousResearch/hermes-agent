@@ -61,7 +61,7 @@ beforeEach(() => {
 
 describe('duplicating a bot', () => {
   it.each(['local', 'remote', 'alias', 'appearance-failure'])(
-    'keeps a delayed %s clone on its destination owner and reports reauthentication',
+    'keeps a delayed %s clone on its destination owner and refreshes its appearance',
     async kind => {
       const connectionId = kind === 'local' ? 'local' : 'studio'
       const sourceRoute = { connectionId, mode: kind === 'local' ? 'local' : 'remote', profile: 'source', targetProfile: kind === 'alias' ? 'actual-source' : 'source' } as const
@@ -83,10 +83,10 @@ describe('duplicating a bot', () => {
       hostMock.state.connectionId.get = () => 'other'
       hostMock.state.profile.get = () => 'elsewhere'
       $botMeta.set({ [sourceKey]: sourceMeta, 'other::canonical-copy': otherMeta })
-      resolveCreate({ name: 'canonical-copy', clone_needs_auth: ['honcho', 'openviking'] })
+      resolveCreate({ name: 'canonical-copy' })
       const result = await pending
       expect($botMeta.get()[sourceKey]).toEqual(sourceMeta)
-      expect(result).toMatchObject({ name: 'canonical-copy', clone_needs_auth: ['honcho', 'openviking'], appearanceSaved: kind !== 'appearance-failure' })
+      expect(result).toEqual({ name: 'canonical-copy', appearanceSaved: kind !== 'appearance-failure' })
       expect(hostMock.requestProfile).toHaveBeenCalledWith(sourceRoute, 'profiles.create', expect.objectContaining({ clone_from: sourceRoute.targetProfile }))
       for (const [route, method, params] of hostMock.requestProfile.mock.calls) {
         if (method === 'profiles.create') continue

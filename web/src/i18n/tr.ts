@@ -287,7 +287,6 @@ export const tr: Translations = {
   },
 
   profiles: {
-    cloneNeedsAuth: "{providers} için yeniden oturum açın.",
     newProfile: "Yeni Profil",
     name: "Ad",
     namePlaceholder: "örn. coder, writer, vb.",

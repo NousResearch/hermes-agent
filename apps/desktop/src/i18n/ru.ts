@@ -2232,7 +2232,6 @@ export const ru = defineLocale({
     }
   },
   profiles: {
-    cloneNeedsAuth: providers => `Войдите снова в ${providers}.`,
     close: 'Закрыть профили',
     nameHint: 'Строчные буквы, цифры, дефисы и подчёркивания. Должно начинаться с буквы или цифры.',
     title: 'Профили',

@@ -10,6 +10,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 # ext -> mime; iteration order is the on-disk lookup order for assets.
 _ASSET_EXTS = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
@@ -340,8 +341,7 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
     ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
     profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
     mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
-    # Clones were prepared against their explicit source before publication. Missing
-    # credentials/sections can be intentional (needs-auth), never a launch fallback.
+    # A clone inherits its source's files, not missing values from the launch profile.
     if (str(params.get("clone_from") or "").strip() or is_truthy_value(params.get("clone_all", False))
             or not is_truthy_value(params.get("mirror_credentials", True))):
         return mirrored
@@ -364,6 +364,7 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
 
 
 @method("profiles.create")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
@@ -404,10 +405,8 @@ def _(rid, params: dict) -> dict:
         model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))
     elif not cloning and is_truthy_value(params.get("mirror_credentials", True)):
         mirrored["model_inherited"] = _try(lambda: _inherit_launch_model(path), False)
-    from hermes_cli.profile_clone import clone_needs_auth
     return _ok(rid, {"ok": True, "name": name, "path": str(path), "soul_written": soul_written,
-                     "model_set": model_set, "mirrored": mirrored,
-                     "clone_needs_auth": clone_needs_auth(path)})
+                     "model_set": model_set, "mirrored": mirrored})
 
 
 def _describe_toolsets(cfg):

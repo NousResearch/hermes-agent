@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from .client import _first_parsed, _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
-from .session_peers import sanitize_peer_id
+from plugins.memory.honcho.client import _first_parsed, _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.session_peers import sanitize_peer_id
 from hermes_cli.config import cfg_get
 from utils import read_json_or_empty
 
@@ -88,7 +88,7 @@ class ConfigWriteRefused(Exception):
 def _refuse_unparseable(path: Path) -> dict:
     """Return ``path``'s parsed content ({} when absent); raise ConfigWriteRefused when it exists but cannot
     be parsed, since writing back ``{}`` would drop every host."""
-    from .oauth import _read_config_strict
+    from plugins.memory.honcho.oauth import _read_config_strict
     try:
         return _read_config_strict(path)
     except (OSError, ValueError) as e:
@@ -137,7 +137,7 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
     """Persist ``cfg`` under the token refresh's cross-process lock. The object _read_config() returned
     has only its edits applied onto a fresh read of disk; a plain dict is written whole. A read that
     resolved to a seed file (~/.honcho or a profile) is written whole only while ``path`` does not exist."""
-    from .oauth import _config_refresh_lock, _refresh_lock
+    from plugins.memory.honcho.oauth import _config_refresh_lock, _refresh_lock
     from utils import atomic_json_write
     path = path or _local_config_path()
     # The file lock is best-effort; _refresh_lock is what keeps an in-process refresh thread out.
@@ -234,7 +234,7 @@ def _yes(answer: str) -> bool:
 
 def _connect(host: str | None, *, reset: bool = False):
     """(hcfg, client) for ``host``; lazy imports so tests can patch client.*."""
-    from .client import HonchoClientConfig, get_honcho_client, reset_honcho_client
+    from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
     if reset:
         reset_honcho_client()
     hcfg = HonchoClientConfig.from_global_config(host=host)
@@ -243,7 +243,7 @@ def _connect(host: str | None, *, reset: bool = False):
 
 def _session_manager(hcfg, client):
     """(manager, session_key) with the session ensured (get_or_create is idempotent)."""
-    from .session import HonchoSessionManager
+    from plugins.memory.honcho.session import HonchoSessionManager
     mgr = HonchoSessionManager(honcho=client, config=hcfg)
     session_key = hcfg.resolve_session_name()
     mgr.get_or_create(session_key)
@@ -253,7 +253,7 @@ def _session_manager(hcfg, client):
 def _ensure_peer_exists(host_key: str | None = None) -> bool:
     """Create the AI (and user) peer in Honcho if missing. Idempotent; False on failure."""
     try:
-        from .client import HonchoClientConfig, get_honcho_client
+        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
         hcfg = HonchoClientConfig.from_global_config(host=host_key)
         if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
             return False
@@ -596,7 +596,7 @@ def _ensure_sdk_installed() -> bool:
 def _device_login_available() -> bool:
     """Whether the resolved host offers the RFC 8628 device grant. Fails closed."""
     try:
-        from .oauth_flow import resolve_endpoints, supports_device_login
+        from plugins.memory.honcho.oauth_flow import resolve_endpoints, supports_device_login
         return supports_device_login(resolve_endpoints())
     except Exception:
         return False
@@ -647,7 +647,7 @@ def _setup_local_auth(cfg: dict, hermes_host: dict) -> None:
 
 def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_browser: bool) -> bool:
     """RFC 8628 device-code sign-in. Returns False if setup must abort."""
-    from .oauth_flow import (
+    from plugins.memory.honcho.oauth_flow import (
         AccessDenied, AuthorizationTimeout, DeviceCode, DeviceCodeExpired, DeviceFlowError, authorize_via_device_code,
     )
 
@@ -683,7 +683,7 @@ def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_
 def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Loopback OAuth sign-in. Tokens merge into the in-memory cfg so the wizard's final save
     keeps them; settings stay wizard-owned (apply_config=False). Returns False on abort."""
-    from .oauth_flow import authorize_via_loopback
+    from plugins.memory.honcho.oauth_flow import authorize_via_loopback
     import webbrowser
 
     def _open(url: str) -> None:
@@ -703,7 +703,7 @@ def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool
 def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Cloud auth: OAuth (browser), device code, or API key. Returns False on abort."""
     cfg.pop("baseUrl", None)  # cloud uses SDK default
-    from .oauth import OAuthCredential, is_oauth_access_token
+    from plugins.memory.honcho.oauth import OAuthCredential, is_oauth_access_token
     existing_oauth = OAuthCredential.from_host_block(hermes_host)
     device_available = _device_login_available()
     is_remote, can_browse = _headless()
@@ -957,7 +957,7 @@ def cmd_status(args) -> None:
     cfg = _read_config()
     active_path = _config_path()
     write_path = _local_config_path()
-    from .client import HonchoClientConfig, get_honcho_client
+    from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
     not_found = f"  No Honcho config found at {active_path}\n  Run 'hermes honcho setup' to configure.\n"
     try:
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
@@ -968,7 +968,7 @@ def cmd_status(args) -> None:
 
     # The OAuth access token is also stored under apiKey, so the auth line
     # distinguishes a refreshable grant from a static key explicitly.
-    from .oauth import OAuthCredential
+    from plugins.memory.honcho.oauth import OAuthCredential
     raw = getattr(hcfg, "raw", None) or {}
     cred = OAuthCredential.from_host_block(raw.get("hosts", {}).get(hcfg.host) or {})
     profile = _active_profile_name()
@@ -1116,8 +1116,8 @@ def _preview_peer_resolution(
 ) -> str:
     """Resolve through the runtime resolver and label the rung that decided: pin, alias, prefix, raw.
     Only the runtime knows when a prefixed id gets a hash suffix, so the CLI must not recompute it."""
-    from .client import HonchoClientConfig
-    from .session import HonchoSessionManager
+    from plugins.memory.honcho.client import HonchoClientConfig
+    from plugins.memory.honcho.session import HonchoSessionManager
 
     config = HonchoClientConfig(peer_name=peer_name or None, pin_peer_name=bool(pin),
                                 user_peer_aliases=aliases, runtime_peer_prefix=prefix)
@@ -1146,7 +1146,7 @@ def _peers_map_client(workspace: str | None = None):
     """(client, config) for the active host, or (None, None) offline. ``workspace`` overrides the configured one."""
     try:
         from dataclasses import replace
-        from .client import HonchoClientConfig, get_honcho_client
+        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
         if not (hcfg.api_key or hcfg.base_url):
             return None, None
@@ -1631,7 +1631,7 @@ def cmd_identity(args) -> None:
         return print(f"  Honcho connection failed: {e}\n")
 
     if getattr(args, "show", False):
-        from .session import HonchoAuthError
+        from plugins.memory.honcho.session import HonchoAuthError
         try:
             user_card = mgr.get_peer_card(session_key)
             ai_rep = mgr.get_ai_representation(session_key)

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any, Callable
 
-from .session_auth import HonchoAuthError
+from plugins.memory.honcho.session_auth import HonchoAuthError
 
 logger = logging.getLogger("plugins.memory.honcho.session")
 

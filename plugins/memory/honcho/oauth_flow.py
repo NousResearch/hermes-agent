@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from . import oauth
-from .client import HonchoClientConfig, resolve_active_host, resolve_config_path
+from plugins.memory.honcho import oauth
+from plugins.memory.honcho.client import HonchoClientConfig, resolve_active_host, resolve_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def _install(
         path or resolve_config_path(), target_host, grant,
         client_id=endpoints.client_id, token_endpoint=endpoints.token_url, apply_config=apply_config, now=now,
     )
-    from .client import reset_honcho_client
+    from plugins.memory.honcho.client import reset_honcho_client
     reset_honcho_client()
     logger.info("Honcho OAuth %sgrant installed for host %s", kind, target_host)
     return cred

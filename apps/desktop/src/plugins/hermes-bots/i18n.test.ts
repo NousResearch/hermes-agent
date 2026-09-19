@@ -32,18 +32,16 @@ describe('BOTS_LOCALES', () => {
     const dispose = registerPluginLocales('hermes-bots-clone-test', BOTS_LOCALES)
     try {
       const name = 'DESTINATION_SENTINEL'
-      const providers = 'honcho, openviking'
+
       for (const [key, args] of [
         ['bot.duplicating', [name]],
         ['bot.duplicated', [name]],
-        ['bot.cloneNeedsAuth', [name, providers]],
         ['bot.cloneAppearanceFailed', [name]]
       ] as const) {
         const message = translatePlugin('hermes-bots-clone-test', locale, key, [...args])
         expect(message).not.toBe(translatePlugin('hermes-bots-clone-test', 'en', key, [...args]))
         expect(message).toContain(name)
         expect(message).toMatch(locale === 'ar' ? /[\u0600-\u06ff]/ : /[\u0400-\u04ff]/)
-        if (key === 'bot.cloneNeedsAuth') expect(message).toContain(providers)
       }
       expect(translatePlugin('hermes-bots-clone-test', locale, 'roster.emptyTitle', []))
         .toBe(translatePlugin('hermes-bots-clone-test', 'en', 'roster.emptyTitle', []))

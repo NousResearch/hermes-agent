@@ -132,7 +132,6 @@ type BotsMessages = {
     duplicateFailed: string
     duplicating: (name: string) => string
     duplicated: (name: string) => string
-    cloneNeedsAuth: (name: string, providers: string) => string
     cloneAppearanceFailed: (name: string) => string
     deleteTitle: string
     removeFromAllGroups: string
@@ -399,7 +398,6 @@ const en: BotsMessages = {
     duplicateFailed: 'Duplicate failed',
     duplicating: name => `Duplicating ${name}…`,
     duplicated: name => `Created ${name}`,
-    cloneNeedsAuth: (name, providers) => `${name}: sign in again for ${providers}.`,
     cloneAppearanceFailed: name => `${name} was created, but its appearance could not be saved.`,
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
@@ -651,7 +649,6 @@ const ja: BotsMessages = {
     duplicateFailed: '複製に失敗しました',
     duplicating: name => `${name} を複製中…`,
     duplicated: name => `${name} を作成しました`,
-    cloneNeedsAuth: (name, providers) => `${name}: ${providers} に再度ログインしてください。`,
     cloneAppearanceFailed: name => `${name} を作成しましたが、外観を保存できませんでした。`,
     deleteTitle: 'ボットとプロファイルを削除しますか？',
     removeFromAllGroups: 'すべてのグループから外す',
@@ -899,7 +896,6 @@ const zh: BotsMessages = {
     duplicateFailed: '复制失败',
     duplicating: name => `正在复制 ${name}…`,
     duplicated: name => `已创建 ${name}`,
-    cloneNeedsAuth: (name, providers) => `${name}：请重新登录 ${providers}。`,
     cloneAppearanceFailed: name => `已创建 ${name}，但无法保存外观。`,
     deleteTitle: '删除机器人和配置档案？',
     removeFromAllGroups: '从所有群组中移除',
@@ -1146,7 +1142,6 @@ const zhHant: BotsMessages = {
     duplicateFailed: '複製失敗',
     duplicating: name => `正在複製 ${name}…`,
     duplicated: name => `已建立 ${name}`,
-    cloneNeedsAuth: (name, providers) => `${name}：請重新登入 ${providers}。`,
     cloneAppearanceFailed: name => `已建立 ${name}，但無法儲存外觀。`,
     deleteTitle: '刪除機器人和設定檔？',
     removeFromAllGroups: '從所有群組中移除',
@@ -1312,7 +1307,6 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
     bot: {
       duplicating: (name: string) => `جارٍ نسخ ${name}…`,
       duplicated: (name: string) => `تم إنشاء ${name}`,
-      cloneNeedsAuth: (name: string, providers: string) => `${name}: سجّل الدخول مجددًا إلى ${providers}.`,
       cloneAppearanceFailed: (name: string) => `تم إنشاء ${name}، لكن تعذّر حفظ مظهره.`
     }
   },
@@ -1320,7 +1314,6 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
     bot: {
       duplicating: (name: string) => `Копирование ${name}…`,
       duplicated: (name: string) => `Создан ${name}`,
-      cloneNeedsAuth: (name: string, providers: string) => `${name}: войдите снова в ${providers}.`,
       cloneAppearanceFailed: (name: string) => `${name} создан, но сохранить его оформление не удалось.`
     }
   }

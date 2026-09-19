@@ -1738,7 +1738,6 @@ export const ar = defineLocale({
     cloneFrom: 'استنساخ من',
     cloneFromNone: 'لا شيء (فارغ)',
     cloneFromDesc: 'ينسخ الإعدادات والمهارات وSOUL.md من الملف الشخصي المصدر المحدد.',
-    cloneNeedsAuth: providers => `سجّل الدخول مجددًا إلى ${providers}.`,
     cloneFromDefault: 'نسخ إعداد الافتراضي',
     cloneFromDefaultDesc: 'ابدأ من إعدادات الملف الافتراضي.',
     invalidName: hint => `اسم غير صالح: ${hint}`,

@@ -19,7 +19,6 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
-import { notify } from '@/store/notifications'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -78,10 +77,7 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      const result = await createProfile({ name: trimmed, clone_from: cloneFrom })
-      if (result.clone_needs_auth?.length) {
-        notify({ kind: 'info', message: `${result.name}: ${p.cloneNeedsAuth(result.clone_needs_auth.join(', '))}` })
-      }
+      await createProfile({ name: trimmed, clone_from: cloneFrom })
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)

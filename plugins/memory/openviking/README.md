@@ -113,45 +113,6 @@ Set `agent: hermes` to restore peer-scoped writes. Memories written at user
 scope before this change stay there and remain searchable. This setting
 changes future writes, not the location of existing memories.
 
-## Profile clones and intentional sharing
-
-Both `hermes profile create <name> --clone` and `--clone-all` run this provider's
-optional `clone.py::prepare_clone` before publishing the new profile, including
-when OpenViking is installed but inactive.
-
-Cloning preserves the configured endpoint, account/user and optional peer.
-**No peer is invented when one is absent.** The new profile continues to use the
-same remote user memory by default, or the same explicitly configured peer. A
-separate local Hermes home is not a separate OpenViking tenant or memory store.
-If you want remote separation, configure the destination's OpenViking identity
-explicitly before using it; cloning does not provision remote users or peers.
-
-Local state is treated separately:
-
-- `openviking/pending_sessions/` and `openviking/runs/` belong to source runs and
-  are excluded, so the destination does not inherit that recovery work.
-- With `memory.openviking.use_ovcli_config` enabled, an explicit link to a CLI
-  config inside the source profile is copied into a private destination file.
-  Its authoritative pointer (`OPENVIKING_CLI_CONFIG_FILE` from the source `.env`,
-  otherwise YAML `ovcli_config_path`) is rewritten to the final destination path,
-  not the temporary staging path. This happens in both clone modes.
-- An external/global link, such as `~/.openviking/ovcli.conf`, remains shared
-  intentionally. Later changes to that external config can affect both profiles.
-  To make it independent, use a profile-private CLI config before cloning.
-- Ambiguous relative paths, unsafe private links, config paths overlapping the
-  root `config.yaml` or `.env` or the recovery paths above, and unsafe staging
-  path components are refused rather than followed. Source files are not rewritten.
-
-Preparation does not import/initialize the runtime provider, probe or start the
-OpenViking server, refresh credentials, copy the server database, or make network
-requests. It does not verify that the preserved connection is currently usable.
-The host's installation lock coordinates Hermes plugin writers, not arbitrary
-edits to a linked config or concurrent runtime activity.
-
-For installed plugin package snapshots, dependency exclusions and fail-closed
-repair guidance, see [Profiles](../../../website/docs/user-guide/profiles.md#installed-plugins-in-both-clone-modes).
-Provider authors can use the [clone companion contract](../../../website/docs/developer-guide/memory-provider-plugin.md#offline-clone-companions).
-
 ## Tools
 
 | Tool | Description |

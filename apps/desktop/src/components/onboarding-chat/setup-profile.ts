@@ -16,11 +16,9 @@ import type { ProfileScope } from '@/api/client'
 import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
-import { translateNow } from '@/i18n'
 import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
-import { notify } from '@/store/notifications'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { FIRST_USE_GUIDANCE, PLAIN_SPEECH } from '@/store/onboarding-script'
@@ -270,23 +268,14 @@ export function buildHandoffCompleteNote(task: string): string {
 /** Creates the guide profile. The catch treats an already-existing profile as success, so kickoff can call this on
  *  every run. */
 export async function ensureSetupProfile(request: GatewayRequest): Promise<void> {
-  const connectionId = activeGatewayConnectionId()
-
   try {
-    const result = await request<{ name?: string; clone_needs_auth?: string[] }>('profiles.create', {
+    await request('profiles.create', {
       description: 'Where Hermes met you — walks your first run, then checks in as you find your feet.',
       name: SETUP_PROFILE,
       clone_from: 'default',
       no_alias: true,
       soul: composeSetupSoul()
     })
-    if (result?.clone_needs_auth?.length) {
-      notify({
-        kind: 'info',
-        message: `${result.name || SETUP_PROFILE}: ${translateNow('profiles.cloneNeedsAuth', result.clone_needs_auth.join(', '))}`,
-        meta: connectionId || undefined
-      })
-    }
   } catch (error) {
     if (!(error instanceof Error && /exist/i.test(error.message))) {
       throw error

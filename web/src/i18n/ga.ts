@@ -295,7 +295,6 @@ export const ga: Translations = {
   },
 
   profiles: {
-    cloneNeedsAuth: "Sínigh isteach arís le {providers}.",
     newProfile: "Próifíl Nua",
     name: "Ainm",
     namePlaceholder: "m.sh. coder, writer, srl.",

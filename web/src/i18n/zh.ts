@@ -283,7 +283,6 @@ export const zh: Translations = {
   },
 
   profiles: {
-    cloneNeedsAuth: "请重新登录 {providers}。",
     newProfile: "新建多Agent配置",
     name: "名称",
     namePlaceholder: "例如：coder, writer 等",

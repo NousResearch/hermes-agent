@@ -697,7 +697,6 @@ export const api = {
       name: string;
       path: string;
       model_set?: boolean;
-      clone_needs_auth?: string[];
       mcp_written?: number;
       skills_disabled?: number;
       hub_installs?: Array<{ identifier: string; pid: number | null }>;

@@ -1071,17 +1071,12 @@ def create_profile(
     # below has not removed yet.
     staging = _clone_staging_dir(profile_dir)
     from hermes_cli.plugin_installation import plugin_installation_lock
-    from hermes_cli.profile_clone import clone_source_scope, prepare_memory_clone, write_clone_report
-
-    source_name = normalize_profile_name(clone_from or get_active_profile_name() or "default")
-    plugin_report = {"copied": [], "warnings": []}
     try:
-        # The same transaction covers config/metadata, packages, native preparation,
-        # and publication. A concurrent installer cannot produce a mixed snapshot.
+        # Keep config, package metadata and publication in the same installation
+        # transaction. Native provider state retains the existing clone semantics.
         with contextlib.ExitStack() as transaction:
             if source_dir is not None:
                 transaction.enter_context(plugin_installation_lock(source_dir))
-                transaction.enter_context(clone_source_scope(source_dir))
             if clone_all and source_dir:
                 _clone_all_into(source_dir, staging, canon)
             else:
@@ -1089,18 +1084,12 @@ def create_profile(
             if source_dir is not None:
                 from hermes_cli.profile_plugins import copy_profile_plugins
                 plugin_report = copy_profile_plugins(source_dir, staging)
+                _write_package_clone_report(staging, plugin_report)
             if source_dir is not None and not clone_channels:
                 from hermes_cli.profile_channels import strip_channel_settings
                 stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
                 if stripped:
                     logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-            if source_dir is not None:
-                report = prepare_memory_clone(
-                    source_home=source_dir, source_name=source_name, staging_home=staging,
-                    destination_home=profile_dir, destination_name=canon, clone_all=clone_all,
-                )
-                report["plugins"] = plugin_report
-                write_clone_report(staging, report)
             _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
             os.rename(staging, profile_dir)
     except BaseException:
@@ -1115,6 +1104,17 @@ def create_profile(
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
+
+
+def _write_package_clone_report(staging: Path, report: dict[str, list[str]]) -> None:
+    """Retain package warnings without changing create_profile's Path return API."""
+    import json
+
+    path = staging / ".clone-report.json"
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump({"plugins": report}, stream, indent=2)
+        stream.write("\n")
+    path.chmod(0o600)
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:

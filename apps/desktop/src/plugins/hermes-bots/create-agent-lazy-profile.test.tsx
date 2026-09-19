@@ -187,10 +187,6 @@ describe('materializing the draft profile', () => {
   })
 
   it('creates it once when the Capabilities tab opens, pinned to the new slug', async () => {
-    const request = mocks.request.getMockImplementation()!
-    mocks.request.mockImplementation(async (method: string) => method === 'profiles.create'
-      ? { name: 'inbox-triage', clone_needs_auth: ['honcho', 'openviking'] }
-      : request(method))
     await renderDialog(true)
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
@@ -205,9 +201,6 @@ describe('materializing the draft profile', () => {
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
     expect(createCalls()).toHaveLength(1)
-    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'info', message: expect.stringMatching(/inbox-triage.*honcho, openviking/)
-    }))
   })
 
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {

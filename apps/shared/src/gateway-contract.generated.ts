@@ -1512,7 +1512,6 @@ export interface ProfilesCreateResult {
   soul_written?: boolean
   model_set?: boolean
   mirrored: ProfileMirrored
-  clone_needs_auth?: string[]
 }
 /** What was copied from the launch profile. */
 export interface ProfileMirrored {

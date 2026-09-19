@@ -334,7 +334,7 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
     throw new Error('No free name for the duplicate.')
   }
 
-  const result = await requestForBot<{ name?: string; clone_needs_auth?: string[] }>(bot, 'profiles.create', {
+  const result = await requestForBot<{ name?: string }>(bot, 'profiles.create', {
     name,
     clone_from: ownerRoute?.targetProfile || ownerRoute?.profile || base,
     description: bot.description || ''
@@ -368,7 +368,7 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
     void queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
   }
 
-  return { name: destinationName, clone_needs_auth: result?.clone_needs_auth ?? [], appearanceSaved }
+  return { name: destinationName, appearanceSaved }
 }
 
 /** `cli.exec` reply, as the legacy delete path reads it. */

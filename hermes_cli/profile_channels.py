@@ -81,17 +81,21 @@ def platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
 
 
 def _registry_entries() -> list:
-    from hermes_cli.profile_channel_inventory import channel_declarations
-    return channel_declarations()
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent per profile scope
+        from gateway.platform_registry import platform_registry
+        return list(platform_registry.all_entries())
+    return []
 
 
-def platform_ids(source_dir: Optional[Path] = None, *, entries=None) -> List[str]:
+def platform_ids(source_dir: Optional[Path] = None) -> List[str]:
     """Every messaging platform id: built-in ``Platform`` members plus the plugin adapters registered
     in ``source_dir``'s scope (ambient scope when ``None``)."""
     from gateway.config import Platform
     ids = {m.value for m in Platform.__members__.values() if m.value != "local"}
     with _plugin_scope(source_dir):
-        ids.update(entry.name for entry in (_registry_entries() if entries is None else entries))
+        ids.update(entry.name for entry in _registry_entries())
     return sorted(ids)
 
 
@@ -118,13 +122,13 @@ def _cred_row_envs(row) -> Set[str]:
     return names
 
 
-def declared_channel_env_keys(source_dir: Optional[Path] = None, *, entries=None) -> Dict[str, str]:
+def declared_channel_env_keys(source_dir: Optional[Path] = None) -> Dict[str, str]:
     """``{ENV_KEY: platform_id}`` for every env name an adapter declares outright (registry entry
     fields, the gateway env-override table) plus gateway-wide channel policy. Prefix matching covers
     the rest."""
     keys: Dict[str, str] = dict.fromkeys(_GATEWAY_POLICY_KEYS, GATEWAY_POLICY_ID)
     with _plugin_scope(source_dir):
-        for entry in (_registry_entries() if entries is None else entries):
+        for entry in _registry_entries():
             for name in (*entry.required_env, entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var):
                 if name:
                     keys[name] = entry.name
@@ -143,11 +147,11 @@ def declared_channel_env_keys(source_dir: Optional[Path] = None, *, entries=None
     return keys
 
 
-def _policy_env_keys(source_dir: Optional[Path] = None, *, entries=None) -> Set[str]:
+def _policy_env_keys(source_dir: Optional[Path] = None) -> Set[str]:
     """Allowlist / allow-all / home-channel names adapters declare — channel-only by nature."""
     names: Set[str] = set(_GATEWAY_POLICY_KEYS)
     with _plugin_scope(source_dir):
-        for entry in (_registry_entries() if entries is None else entries):
+        for entry in _registry_entries():
             names.update(n for n in (entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var) if n)
     with contextlib.suppress(Exception):
         from gateway import config_env
@@ -212,7 +216,7 @@ def _explicit_enabled(raw: dict, pid: str) -> Optional[bool]:
     return None
 
 
-def _shared_adapters_active(source_dir: Optional[Path], *, entries=None) -> Set[str]:
+def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
     gate ``gateway.config_env._Cred`` applies at gateway start."""
@@ -224,20 +228,13 @@ def _shared_adapters_active(source_dir: Optional[Path], *, entries=None) -> Set[
         with contextlib.suppress(Exception):
             raw = read_user_config_raw(source_dir / "config.yaml") or {}
     env = _env_values(source_dir / ".env")
-    # Mapped external credentials can auto-enable a shared adapter just like
-    # dotenv credentials. Values remain opaque; only declared names are needed.
-    secrets = raw.get("secrets")
-    op = secrets.get("onepassword") if isinstance(secrets, dict) else None
-    if isinstance(op, dict) and op.get("enabled") and isinstance(op.get("env"), dict):
-        env.update({key: ref for key, ref in op["env"].items()
-                    if isinstance(key, str) and isinstance(ref, str) and ref.strip().startswith("op://")})
     creds_by_platform: Dict[str, Set[str]] = {}
     with contextlib.suppress(Exception):
         from gateway import config_env
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             creds_by_platform[platform.value] = set(names)
     with _plugin_scope(source_dir):
-        for entry in (_registry_entries() if entries is None else entries):
+        for entry in _registry_entries():
             creds_by_platform.setdefault(entry.name, set(entry.required_env))
     active: Set[str] = set()
     for pid in _SHARED_WITH_TOOLS:
@@ -258,12 +255,10 @@ class ChannelKeyIndex:
 
     def __init__(self, source_dir: Optional[Path] = None) -> None:
         self.source_dir = source_dir
-        with _plugin_scope(source_dir):
-            entries = _registry_entries()
-        self.platforms = platform_ids(source_dir, entries=entries)
-        self.declared = declared_channel_env_keys(source_dir, entries=entries)
-        self.policy = _policy_env_keys(source_dir, entries=entries)
-        self.shared_active = _shared_adapters_active(source_dir, entries=entries)
+        self.platforms = platform_ids(source_dir)
+        self.declared = declared_channel_env_keys(source_dir)
+        self.policy = _policy_env_keys(source_dir)
+        self.shared_active = _shared_adapters_active(source_dir)
         self._prefixes: List[Tuple[str, str]] = sorted(
             ((prefix, pid) for pid in self.platforms for prefix in platform_env_prefixes(pid)),
             key=lambda item: -len(item[0]),  # longest prefix wins: WECOM_CALLBACK_ before WECOM_
@@ -331,42 +326,6 @@ def _channel_config_paths(raw: dict, platforms: Iterable[str]) -> List[Tuple[str
     return paths
 
 
-def _external_secret_channel_paths(raw: dict, index: ChannelKeyIndex) -> Tuple[List[Tuple[str, ...]], bool]:
-    """Inspect copied source declarations, never instantiate or fetch a source.
-
-    ``secrets.sources`` orders sources; it is NOT an allowlist. Only 1Password's
-    built-in env map bounds output names. A plugin's ``shape=mapped`` is precedence
-    metadata, not a promise that its fetch is restricted to an ``env`` mapping.
-    Neither preserve_existing nor an empty cache prevents future rehydration.
-    """
-    secrets = raw.get("secrets")
-    if not isinstance(secrets, dict):
-        return [], False
-    paths = []
-    unresolved = False
-    for name, cfg in secrets.items():
-        if not isinstance(cfg, dict) or not cfg.get("enabled"):
-            continue
-        if name != "onepassword":
-            unresolved = True
-            continue
-        refs = cfg.get("env")
-        if isinstance(refs, dict):
-            paths.extend(("secrets", name, "env", key) for key in refs
-                         if isinstance(key, str) and index.platform_for(key))
-    return paths, unresolved
-
-
-def _refuse_unresolved_secret_sources(raw: dict, index: ChannelKeyIndex) -> None:
-    if _external_secret_channel_paths(raw, index)[1]:
-        raise ValueError(
-            "Cannot safely clone without channels: an enabled external secret source can restore "
-            "channel credentials and its output names cannot be inspected offline. Retry with that "
-            "source disabled in the source profile's secrets configuration, or create a fresh profile "
-            "and configure its credentials independently. No external secret source was run."
-        )
-
-
 def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = None) -> List[str]:
     """Remove platform sections from a raw ``config.yaml`` in place. Returns the dotted paths removed."""
     if not config_path.is_file():
@@ -375,9 +334,7 @@ def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = N
     from utils import atomic_yaml_write
     index = index or ChannelKeyIndex()
     raw = read_user_config_raw(config_path)
-    _refuse_unresolved_secret_sources(raw, index)
     paths = _channel_config_paths(raw, index.platforms)
-    paths.extend(_external_secret_channel_paths(raw, index)[0])
     if not paths:
         return []
     for path in paths:
@@ -419,10 +376,6 @@ def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir
     plugin scope. ``include_state`` also drops the runtime state ``--clone-all`` copied. Returns
     ``{platform|"config"|"state": [what]}``."""
     index = ChannelKeyIndex(source_dir)
-    config_path = profile_dir / "config.yaml"
-    if config_path.is_file():
-        from hermes_cli.config import read_user_config_raw
-        _refuse_unresolved_secret_sources(read_user_config_raw(config_path), index)
     stripped: Dict[str, List[str]] = dict(strip_channel_env_file(profile_dir / ".env", index))
     config_paths = strip_channel_config(profile_dir / "config.yaml", index)
     if config_paths:
@@ -453,10 +406,6 @@ def channel_platforms_configured(profile_dir: Path) -> List[str]:
     if config_path.is_file():
         from hermes_cli.config import read_user_config_raw
         raw = read_user_config_raw(config_path)
-        for path in _external_secret_channel_paths(raw, index)[0]:
-            platform = index.platform_for(path[-1])
-            if platform:
-                found.add(platform)
         for path in _channel_config_paths(raw, index.platforms):
             node = raw
             for seg in path:
@@ -476,23 +425,10 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
     from hermes_cli.profiles import normalize_profile_name
     served = recorded_served_profiles()
-    # Standalone records []; a live multiplexer records its active profile even
-    # before its first secondary exists. Cardinality does not identify the mode.
-    if not served or normalize_profile_name(source_label) not in {
+    if not served or len(served) < 2 or normalize_profile_name(source_label) not in {
         normalize_profile_name(p) for p in served
     }:
         return None
-    config_path = source_dir / "config.yaml"
-    if config_path.is_file():
-        from hermes_cli.config import read_user_config_raw
-        raw = read_user_config_raw(config_path)
-        if _external_secret_channel_paths(raw, ChannelKeyIndex(source_dir))[1]:
-            return (
-                "--clone-channels cannot safely copy an enabled external secret source from a profile "
-                "the running multiplexed gateway already serves: unknown channel credentials may be "
-                "duplicated. Retry with the source disabled, or create a fresh profile and configure "
-                "its own credentials. No external secret source was run."
-            )
     platforms = channel_platforms_configured(source_dir)
     if not platforms:
         return None

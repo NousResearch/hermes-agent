@@ -219,9 +219,19 @@ def _profile_create(args):
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
-        from hermes_cli.profile_clone import clone_needs_auth
-        for provider in clone_needs_auth(profile_dir):
-            print(f"Memory provider '{provider}' needs authentication in the new profile.")
+        # Auto-clone Honcho config for the new profile (only with clone operations)
+        try:
+            from plugins.memory.honcho.cli import ConfigWriteRefused, clone_honcho_for_profile
+        except Exception:
+            clone_honcho_for_profile = None  # Honcho plugin not installed
+        if clone_honcho_for_profile is not None:
+            try:
+                if clone_honcho_for_profile(name):
+                    print(f"Honcho config cloned (peer: {name})")
+            except ConfigWriteRefused as e:
+                print(f"Honcho config not cloned: {e}")
+            except Exception:
+                pass  # Honcho not configured
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
         result = seed_profile_skills(profile_dir)

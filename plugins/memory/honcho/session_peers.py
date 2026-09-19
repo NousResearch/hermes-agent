@@ -8,7 +8,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .session import HonchoSession
+    from plugins.memory.honcho.session import HonchoSession
 
 logger = logging.getLogger("plugins.memory.honcho.session")
 

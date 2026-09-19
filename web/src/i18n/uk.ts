@@ -287,7 +287,6 @@ export const uk: Translations = {
   },
 
   profiles: {
-    cloneNeedsAuth: "Увійдіть знову до {providers}.",
     newProfile: "Новий профіль",
     name: "Назва",
     namePlaceholder: "напр. coder, writer тощо.",

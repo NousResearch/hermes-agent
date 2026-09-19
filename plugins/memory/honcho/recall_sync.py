@@ -7,7 +7,7 @@ import math
 import threading
 import time
 
-from .client import spawn_context_thread
+from plugins.memory.honcho.client import spawn_context_thread
 
 logger = logging.getLogger("plugins.memory.honcho")
 

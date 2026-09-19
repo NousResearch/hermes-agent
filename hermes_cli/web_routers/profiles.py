@@ -690,7 +690,6 @@ async def list_profiles_endpoint():
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
-    from hermes_cli.profile_clone import clone_needs_auth
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
         # Clone config/skills/SOUL (or full state when clone_all) from the named source.
@@ -758,7 +757,7 @@ async def create_profile_endpoint(body: ProfileCreate):
 
     return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set, "model_error": model_error,
             "mcp_written": mcp_written, "skills_disabled": skills_disabled,
-            "hub_installs": hub_installs, "clone_needs_auth": clone_needs_auth(path)}
+            "hub_installs": hub_installs}
 
 
 @router.get("/api/profiles/active")

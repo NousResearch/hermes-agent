@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from .client import spawn_context_thread
+from plugins.memory.honcho.client import spawn_context_thread
 
 logger = logging.getLogger("plugins.memory.honcho")
 
@@ -56,7 +56,7 @@ class DialecticMixin:
     def _note_dialectic_failure(self, exc: BaseException) -> None:
         """Widen the empty-streak backoff after a failed cycle; auth failures are exempt
         because waiting cannot fix a dead token."""
-        from .session import HonchoAuthError
+        from plugins.memory.honcho.session import HonchoAuthError
         if isinstance(exc, HonchoAuthError):
             logger.warning("Honcho dialectic auth failure (not counted toward cadence backoff): %s", exc)
             return

@@ -2023,7 +2023,6 @@ export const zhHant = defineLocale({
     cloneFrom: '複製來源',
     cloneFromNone: '無（空白）',
     cloneFromDesc: '從選取的來源設定檔複製設定、技能和 SOUL.md。',
-    cloneNeedsAuth: providers => `請重新登入 ${providers}。`,
     cloneFromDefault: '從預設設定檔複製設定',
     cloneFromDefaultDesc: '從您的預設設定檔複製設定、技能和 SOUL.md。',
     invalidName: hint => `設定檔名稱無效。${hint}`,

@@ -11,6 +11,7 @@ All run zero LLM calls.
 import inspect
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -98,7 +99,13 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [
+            *historical_prefix,
+            "detail",
+            "after",
+            "before",
+            "exclude_session_ids",
+        ]
 
 
 class TestFormatTimestamp:
@@ -1159,3 +1166,149 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
+
+def _unix(year, month, day):
+    return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+
+
+class TestDiscoveryTemporalNarrowing:
+    def test_schema_exposes_after_before_and_exclude(self):
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        assert "after" in params
+        assert "before" in params
+        assert "exclude_session_ids" in params
+        assert params["exclude_session_ids"]["type"] == "array"
+
+    def test_after_before_keep_only_sessions_inside_the_interval(self, db):
+        _seed_modpack_sessions(db)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (_unix(2026, 6, 15), "s_oldest"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (_unix(2026, 7, 15), "s_middle"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (_unix(2026, 8, 10), "s_newest"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="modpack",
+            limit=5,
+            after="2026-06-01",
+            before="2026-07-01",
+            db=db,
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_oldest" in sids
+        assert "s_middle" not in sids
+        assert "s_newest" not in sids
+
+    def test_window_finds_in_range_session_buried_by_fts_limit(self, db, monkeypatch):
+        """A June hit must survive even if FTS rank would fill the scan with August.
+
+        Teknium's ticket wants the bound in the search query (WHERE), not a
+        post-filter of the already-truncated FTS top-N.
+        """
+        monkeypatch.setattr(
+            "tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2
+        )
+        august = _unix(2026, 8, 10)
+        for i in range(4):
+            sid = f"s_aug_{i}"
+            db.create_session(sid, source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (august, f"August {i}", sid),
+            )
+            db.append_message(
+                sid, role="user", content="modpack modpack modpack modpack"
+            )
+            db.append_message(
+                sid, role="assistant", content=("modpack details " * 20)
+            )
+        db.create_session("s_june", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (_unix(2026, 6, 15), "June quiet", "s_june"),
+        )
+        db.append_message("s_june", role="user", content="modpack")
+        db.append_message("s_june", role="assistant", content="ok")
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="modpack",
+            limit=5,
+            after="2026-06-01",
+            before="2026-07-01",
+            db=db,
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_june" in sids
+        assert all(not sid.startswith("s_aug_") for sid in sids)
+
+    def test_missing_bounds_leave_existing_discovery_unchanged(self, db):
+        _seed_modpack_sessions(db)
+        unbounded = json.loads(session_search(query="modpack", limit=5, db=db))
+        bounded = json.loads(session_search(
+            query="modpack", limit=5, after=None, before=None, db=db,
+        ))
+        assert unbounded["success"] is True
+        assert {r["session_id"] for r in unbounded["results"]} == {
+            r["session_id"] for r in bounded["results"]
+        }
+
+    def test_invalid_after_returns_error(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(
+            query="modpack", after="not-a-date", db=db,
+        ))
+        assert result["success"] is False
+
+
+class TestDiscoverySessionExclusion:
+    def test_exclude_session_ids_drops_named_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(
+            query="modpack",
+            limit=5,
+            exclude_session_ids=["s_newest"],
+            db=db,
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_newest" not in sids
+        assert "s_middle" in sids or "s_oldest" in sids
+
+    def test_exclude_session_ids_drops_whole_lineage(self, db):
+        db.create_session("s_root", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (_unix(2026, 6, 1), "Lineage Root", "s_root"),
+        )
+        db.append_message("s_root", role="user", content="unique lineage token alpha")
+        db.append_message("s_root", role="assistant", content="noted unique lineage token alpha")
+
+        db.create_session("s_child", source="cli", parent_session_id="s_root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (_unix(2026, 6, 2), "Lineage Child", "s_child"),
+        )
+        db.append_message("s_child", role="user", content="follow-up unique lineage token alpha")
+        db.append_message("s_child", role="assistant", content="child unique lineage token alpha")
+        db._conn.commit()
+
+        excluded = json.loads(session_search(
+            query="unique lineage token alpha",
+            limit=5,
+            exclude_session_ids=["s_child"],
+            db=db,
+        ))
+        sids = [r["session_id"] for r in excluded["results"]]
+        assert "s_child" not in sids
+        assert "s_root" not in sids

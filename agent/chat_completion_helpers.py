@@ -683,6 +683,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
         is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
         recover_from_cache_point_rejection)
+    from agent.bedrock_adapter_reasoning_replay import recover_from_sealed_reasoning_rejection
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
     client = _get_bedrock_runtime_client(region)
@@ -694,6 +695,12 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
         retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
         if retry_kwargs is not None:
             return finish(method(**retry_kwargs))
+        # Encrypted reasoning is sealed to the model/region that minted it; an in-place model
+        # switch or a global.* profile routing elsewhere makes the replay unusable (#115865).
+        # The blob cannot be re-derived, so drop those blocks and resend once.
+        sealed_retry_kwargs = recover_from_sealed_reasoning_rejection(exc, api_kwargs)
+        if sealed_retry_kwargs is not None:
+            return finish(method(**sealed_retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):
             return on_stream_denied(client, api_kwargs, exc)
         if is_stale_connection_error(exc):

@@ -619,6 +619,13 @@ def _decode_redacted(encoded) -> Optional[bytes]:
         return None
 
 
+def _replay_reasoning_blocks(reasoning) -> List[Dict]:
+    """One captured reasoning sidecar -> Converse blocks (tagged union: one member per block)."""
+    from agent.bedrock_adapter_reasoning_replay import replay_reasoning_blocks
+
+    return replay_reasoning_blocks(reasoning, decode_redacted=_decode_redacted)
+
+
 def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
     """Rebuild the exact Bedrock block sequence captured at normalization time; redacted reasoning is
     stored base64 (JSON-safe sidecar) and undecodable entries are skipped."""
@@ -629,18 +636,7 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
         if "text" in block and isinstance(block["text"], str):
             content_blocks.append({"text": block["text"]})
         elif "reasoningContent" in block:
-            reasoning = block["reasoningContent"]
-            if not isinstance(reasoning, dict):
-                continue
-            replay = {"text": reasoning["text"]} if isinstance(reasoning.get("text"), str) else {}
-            encoded = reasoning.get("redactedContentBase64")
-            if isinstance(encoded, str) and encoded:
-                redacted = _decode_redacted(encoded)
-                if redacted is None:
-                    continue
-                replay["redactedContent"] = redacted
-            if replay:
-                content_blocks.append({"reasoningContent": replay})
+            content_blocks.extend(_replay_reasoning_blocks(block["reasoningContent"]))
         elif "toolUse" in block and isinstance(block["toolUse"], dict):
             tu = block["toolUse"]
             content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
@@ -955,6 +951,11 @@ def call_converse(
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
             return normalize_converse_response(client.converse(**retry_kwargs))
+        # Reasoning sealed to another model/region cannot be replayed or re-derived (#115865).
+        from agent.bedrock_adapter_reasoning_replay import recover_from_sealed_reasoning_rejection
+        sealed_retry_kwargs = recover_from_sealed_reasoning_rejection(exc, kwargs)
+        if sealed_retry_kwargs is not None:
+            return normalize_converse_response(client.converse(**sealed_retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "

@@ -2,7 +2,9 @@
 
 ## Verdict
 
-**Do not adopt Jev, and do not adopt its retention rule either.** The recall gain is real but
+**Do not adopt Jev, and do not adopt its retention rule either.** Against what we actually ship
+(summary + one session_search round-trip) Jev loses: 75.5% @ 115K vs 78.9% @ 55K. Its
+closed-book recall gain over the bare summary is real but
 it is bought with 2.1× the retained context re-billed on every turn and with compactions that
 arrive ever more often (each one a prompt-cache break); our summary frees ~90% per event and
 then stays cache-warm for a long stretch. Programmatic tool-result removal as the primary
@@ -46,7 +48,8 @@ summary; recorded as `jev_fallback`, not scored.
 
 | policy | prreview | sysprompt | sigsegv | AVG | compaction $ | compaction s |
 |---|---|---|---|---|---|---|
-| current (main) | 36.7 @ 40K | 50.0 @ 64K | 43.3 @ 61K | **43.3 @ 55K** | $0.061 | 36.9 |
+| current (main), closed-book | 36.7 @ 40K | 50.0 @ 64K | 43.3 @ 61K | 43.3 @ 55K | $0.061 | 36.9 |
+| **current + session_search recovery** (what we ship) | 76.7 @ 40K | 90.0 @ 63K | 70.0 @ 62K | **78.9 @ 55K** | $0.061 | 36.9 |
 | lean | 33.3 @ 40K | 53.3 @ 65K | 36.7 @ 61K | 41.1 @ 55K | $0.062 | 33.4 |
 | jev (plugin defaults) | 70.0 @ 50K | 63.3 @ 112K | 93.3 @ 181K | **75.5 @ 115K** | $0.007 | 1.4 |
 | jev_tail40 (40 pinned rows) | 73.3 @ 71K | 63.3 @ 179K | 93.3 @ 213K | 76.6 @ 154K | $0.006 | 1.4 |
@@ -60,7 +63,11 @@ Per-question paired comparison, jev vs current across 45 questions: 17 wins, 1 l
 
 ## Findings
 
-1. **Jev's default arm is +32 pts recall (75.5 vs 43.3) at 2.1× the retained tokens
+0. **Against the shipping mechanism (`current+recovery`, 78.9% @ 55K) Jev's default arm
+   loses on recall AND retains 2.1× the tokens.** The closed-book `current` row below is the
+   summary with its recovery pointer unused; findings 1–3 compare against that weaker arm.
+
+1. **Jev's default arm is +32 pts closed-book recall (75.5 vs 43.3) at 2.1× the retained tokens
    (115K vs 55K), for 1/9 the compaction cost ($0.007 vs $0.061) in 1/25 the time
    (1.4 s vs 37 s).** On the one transcript where the sizes are comparable (prreview,
    50K vs 40K) it still wins 70.0 vs 36.7.

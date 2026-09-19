@@ -36,6 +36,27 @@ describe('video playback speed preference', () => {
     const next = render(<fresh.TranscriptVideo src="file:///tmp/other.mp4" />)
 
     expect(next.container.querySelector('video')!.playbackRate).toBe(2)
+
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(function (this: HTMLMediaElement) {
+      this.playbackRate = 1
+    })
+
+    try {
+      next.rerender(<fresh.TranscriptVideo src="hermes-media://remote/first.mp4" />)
+      next.rerender(<fresh.TranscriptVideo src="hermes-media://remote/second.mp4" />)
+      const replaced = next.container.querySelector('video')!
+      expect(replaced.getAttribute('src')).toBe('hermes-media://remote/second.mp4')
+      expect(replaced.playbackRate).toBe(2)
+      expect(load).toHaveBeenCalledOnce()
+      next.unmount()
+      expect(replaced.hasAttribute('src')).toBe(false)
+      expect(pause).toHaveBeenCalledTimes(2)
+    } finally {
+      pause.mockRestore()
+      load.mockRestore()
+    }
   })
 
   it('falls back to 1x for out-of-range or malformed stored values and drops the default key', async () => {

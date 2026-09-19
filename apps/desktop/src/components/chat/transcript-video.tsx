@@ -1,14 +1,16 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useCallback, useEffect, useRef } from 'react'
+import { type ComponentProps, useCallback, useEffect } from 'react'
 
 import { $videoPlaybackSpeed, setVideoPlaybackSpeed } from '@/store/video-playback-speed'
+
+import { useMediaElementRef } from './use-media-element-ref'
 
 // A transcript <video> that remembers the playback rate. The native controls'
 // rate menu is the only speed UI; picking a rate there persists it as the
 // device-level preference every later player (and other open windows) starts
 // from. Ported from block/buzz#7336.
 export function TranscriptVideo(props: ComponentProps<'video'>) {
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useMediaElementRef<HTMLVideoElement>(props.src)
   const speed = useStore($videoPlaybackSpeed)
 
   useEffect(() => {
@@ -17,7 +19,7 @@ export function TranscriptVideo(props: ComponentProps<'video'>) {
     if (video) {
       video.playbackRate = speed
     }
-  }, [speed])
+  }, [speed, videoRef])
 
   // ratechange also fires when WE set the rate (mount, cross-window sync), so
   // only a rate that differs from the preference — i.e. one the user picked in
@@ -28,7 +30,7 @@ export function TranscriptVideo(props: ComponentProps<'video'>) {
     if (video && video.playbackRate !== $videoPlaybackSpeed.get()) {
       setVideoPlaybackSpeed(video.playbackRate)
     }
-  }, [])
+  }, [videoRef])
 
   return <video onRateChange={onRateChange} ref={videoRef} {...props} />
 }

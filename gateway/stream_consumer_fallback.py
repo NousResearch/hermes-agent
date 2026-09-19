@@ -23,6 +23,8 @@ class StreamFallbackMixin:
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
+        # A chunk send draws on the shared send/edit budget: wait, don't burst (#116312).
+        await self._await_egress_slot()
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
@@ -30,6 +32,7 @@ class StreamFallbackMixin:
             if not (result.success and result.message_id):
                 self._edit_supported = False
                 return reply_to_id
+            self._note_egress()
             self._message_id = str(result.message_id)
             self._track_preview_ids_from_result(result)
             self._already_sent = True
@@ -48,10 +51,26 @@ class StreamFallbackMixin:
         return self._clean_for_display(prefix)
 
     def _continuation_text(self, final_text: str) -> str:
-        """Return only the part of final_text the user has not already seen."""
+        """Return only the part of final_text the user has not already seen.
+
+        Edits fire on a throttle tick, not at a word boundary, so the visible
+        prefix can end mid-word; back the cut up to the last space/newline so the
+        continuation re-sends the broken word's head instead of its tail (#116312).
+        With no boundary to back up to (one very long token) the original cut stands.
+        """
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
-            return final_text[len(prefix):].lstrip()
+            cut = len(prefix)
+            tail = final_text[cut:]
+            if tail and not tail[0].isspace():
+                # The cut lands mid-word (unseen tail starts inside a token): back up
+                # to the last space/newline so the continuation re-sends the broken
+                # word's head instead of its tail.  A clean break (empty tail or
+                # whitespace next) and a boundary-less long token keep the cut.
+                boundary = max(final_text.rfind(" ", 0, cut), final_text.rfind("\n", 0, cut))
+                if boundary >= 0 and final_text[boundary + 1:cut].strip():
+                    cut = boundary + 1
+            return final_text[cut:].lstrip()
         return final_text
 
     @staticmethod
@@ -208,10 +227,14 @@ class StreamFallbackMixin:
                       metadata=self._metadata_for_send(final=True))
         if reply_to is not None:
             kwargs["reply_to"] = reply_to
+        # First attempt waits for a slot in the shared send/edit budget (#116312);
+        # the flood retry below keeps its own delay.
+        await self._await_egress_slot()
         result = None
         for attempt in range(2):
             result = await self.adapter.send(**kwargs)
             if getattr(result, "success", False):
+                self._note_egress()
                 break
             retry_delay = self._fallback_flood_retry_delay(result)
             if attempt or retry_delay is None:
@@ -304,8 +327,10 @@ class StreamFallbackMixin:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
             _md["_interim_send"] = True
+            await self._await_egress_slot()
             result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:
+                self._note_egress()
                 self._already_sent = True
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
@@ -336,12 +361,14 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
+            await self._await_egress_slot()
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text,
                 reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:
+                self._note_egress()
                 self._notify_new_message()
                 # Lets run.py confirm whether an interim send carried the final.
                 # Record the exact delivered text so run.py can confirm whether an interim "preview"

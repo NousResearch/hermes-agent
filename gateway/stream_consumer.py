@@ -714,8 +714,39 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # Degrade to a single buffered send(), like the approval path.
             self._degrade_native_to_buffered_send()
 
+    def _egress_budget_remaining(self) -> float:
+        """Seconds until the shared per-chat send/edit budget frees a slot (#116312).
+
+        Telegram counts ``editMessageText`` against the same per-chat allowance
+        as ``sendMessage``; ``_last_edit_time`` is the shared last-egress clock
+        both draw on (updated by every send AND edit, despite the name).
+
+        Fail-open: a consumer without pacing state (e.g. ``__new__`` unit-test
+        doubles) proceeds unpaced instead of raising.
+        """
+        interval = getattr(self, "_current_edit_interval", 0.0)
+        last_egress = getattr(self, "_last_edit_time", 0.0)
+        return interval - (time.monotonic() - last_egress)
+
+    async def _await_egress_slot(self) -> None:
+        """Wait for a free slot in the shared send/edit budget.  Sends wait — a
+        send is never redundant — while interim edits instead skip this tick via
+        ``_should_edit``.  Bounded by one interval; the final edit is never gated."""
+        remaining = self._egress_budget_remaining()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+    def _note_egress(self) -> None:
+        """Record one API call (send or edit) against the shared budget."""
+        self._last_edit_time = time.monotonic()
+
     def _should_edit(self, tick: "_Tick") -> bool:
-        """Decide whether this tick flushes an edit/frame."""
+        """Decide whether this tick flushes an edit/frame.
+
+        Non-interim (finalizing) ticks are never gated — the answer itself is
+        never withheld.  Interim ticks draw on the shared send/edit budget, so a
+        recent send already consumed this slot and the edit is skipped (#116312).
+        """
         if not tick.is_interim:
             return True
         if self.cfg.buffer_only:

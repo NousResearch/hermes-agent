@@ -35,7 +35,10 @@ class StreamTransportMixin:
                     kwargs["metadata"] = self.metadata
             except (TypeError, ValueError):
                 pass
-        return await self.adapter.edit_message(**kwargs)
+        result = await self.adapter.edit_message(**kwargs)
+        if getattr(result, "success", False):
+            self._note_egress()
+        return result
 
     async def _try_seed_frame(self, fail_log: str, *, exc_info: bool = False) -> bool:
         """Open a native stream with an empty seed frame (typing indicator before any token) as a
@@ -274,6 +277,8 @@ class StreamTransportMixin:
         if self._turn_split_delivery:
             return False
         stale_ids = self._stale_preview_ids()
+        # A fresh-final is a send: wait for a slot in the shared budget (#116312).
+        await self._await_egress_slot()
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
@@ -282,6 +287,7 @@ class StreamTransportMixin:
             return False
         if not getattr(result, "success", False):
             return False
+        self._note_egress()
         new_message_id = getattr(result, "message_id", None)
         # Best-effort preview cleanup; never delete the message just sent.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
@@ -439,12 +445,15 @@ class StreamTransportMixin:
                 "declined this destination for this run"
             )
             return False
+        # Sends wait for a slot in the shared send/edit budget (#116312).
+        await self._await_egress_slot()
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
             self._edit_supported = False
             return False
+        self._note_egress()
         self._already_sent = True
         self._last_sent_text = text
         if result.message_id:

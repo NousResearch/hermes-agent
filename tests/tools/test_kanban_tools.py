@@ -435,27 +435,21 @@ def test_comment_happy_path(worker_env):
         conn.close()
 
 
-def test_comment_ignores_caller_supplied_author(worker_env):
-    """``args["author"]`` is no longer honored — the author is always
-    derived from ``HERMES_PROFILE`` so a worker can't forge a comment
-    under an authoritative-looking name like ``hermes-system`` and
-    poison the next worker's prompt context. Cross-task commenting
-    itself remains unrestricted (see #19713); only the author override
-    is removed.
-    """
+def test_comment_rejects_caller_supplied_author(worker_env):
+    """Reject an undeclared author override before a worker can forge a comment."""
     from tools import kanban_tools as kt
     out = kt._handle_comment({
         "task_id": worker_env, "body": "hi", "author": "hermes-system",
     })
-    assert json.loads(out)["ok"]
+    assert "author" in json.loads(out)["error"]
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
-        comments = kb.list_comments(conn, worker_env)
-        # Author comes from HERMES_PROFILE in the fixture, not the
-        # caller-supplied "hermes-system" override.
-        assert comments[0].author == "test-worker"
+        assert kb.list_comments(conn, worker_env) == []
+        out = kt._handle_comment({"task_id": worker_env, "body": "hi"})
+        assert json.loads(out)["ok"]
+        assert kb.list_comments(conn, worker_env)[0].author == "test-worker"
     finally:
         conn.close()
 

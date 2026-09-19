@@ -125,6 +125,16 @@ def _kanban_handler(tool_name: str) -> Callable:
         @functools.wraps(fn)
         def wrapper(args: dict, **kw) -> str:
             try:
+                # Reject typos before a handoff can succeed without its artifacts.
+                properties = registry.get_schema(tool_name)["parameters"]["properties"]
+                allowed = set(properties)
+                # Creation also accepts a durable-session override from internal callers.
+                if tool_name == "kanban_create":
+                    allowed.add("session_id")
+                unknown = sorted(set(args) - allowed)
+                _check(not unknown,
+                       f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
+                       f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
                 return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]

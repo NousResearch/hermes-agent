@@ -1,0 +1,15 @@
+name: hermes-armor
+repo: https://github.com/Enchanted0911/hermes-armor
+sha: f9b0294a207b49a195c8f2824bc825e615a3183f
+description: "Hermes Agent armor-piercing kernel plugin (ported from dsh-infinite-gen-4): dual-layer same-source system-prompt injection, request-layer system rebuild (replace scaffold), and opencode x-opencode-session rotation against gateway-pinned refusal state. Ships /armor status command and 54-item offline self-test."
+maintainer: Enchanted0911
+tier: community
+category: general
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Enchanted0911/hermes-armor#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

@@ -1527,7 +1527,9 @@ class TestWindowsAutostartRepair:
 
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs))
-            return SimpleNamespace(returncode=0)
+            # The existence probe succeeds; the action-XML probe reads an empty definition, so the
+            # normalization pass no-ops without registering or resolving any binary.
+            return SimpleNamespace(returncode=0, stdout=b"")
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch.object(tools_config.shutil, "which") as which:
@@ -1537,7 +1539,8 @@ class TestWindowsAutostartRepair:
 
         assert ok is True
         assert [cmd for cmd, _kwargs in calls] == [
-            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve"]
+            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve"],
+            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"],
         ]
         which.assert_not_called()
 
@@ -1627,6 +1630,120 @@ class TestWindowsAutostartRepair:
         assert "-ArgumentList @('autostart','enable')" in ps_command
         assert f"$exe = '{driver}'" in ps_command
         assert f"& {driver}" not in ps_command
+
+
+class TestCuaServeTaskActionNormalization:
+    """The upstream autostart registration launches the daemon through
+    ``powershell.exe -WindowStyle Hidden -Command "Start-Process …"``; the console host
+    powershell allocates can stay frozen on the desktop for the daemon's whole lifetime
+    (#115017). The repair pass rewrites only the registered task's Exec action to a
+    console-less wscript launcher — trigger/principal settings and every failure path
+    keep the working task untouched.
+    """
+
+    DRIVER = r"C:\Users\Ha Trung\AppData\Local\Programs\Cua\cua-driver\bin\cua-driver.exe"
+
+    @staticmethod
+    def _task_xml(command: str, arguments: str) -> bytes:
+        body = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+            "<Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>"
+            '<Actions Context="Author"><Exec>'
+            f"<Command>{command}</Command>"
+            f"<Arguments>{arguments}</Arguments>"
+            "</Exec></Actions></Task>"
+        )
+        return body.encode("utf-16")
+
+    def _run_repair(self, tmp_path, monkeypatch, task_xml, *, create_returncode=0):
+        from hermes_cli import tools_config_cua as tools_config
+        import hermes_cli.config as config_mod
+
+        calls = {}
+        created = []
+
+        def fake_run(cmd, **kwargs):
+            key = cmd[1] if len(cmd) > 1 else cmd[0]
+            calls[key] = calls.get(key, 0) + 1
+            if key == "/Query":
+                return SimpleNamespace(returncode=0, stdout=task_xml)
+            if key == "/Create":
+                with open(cmd[-1], encoding="utf-16") as handle:
+                    created.append(handle.read())
+                return SimpleNamespace(returncode=create_returncode,
+                                       stdout=b"", stderr=b"access denied")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(tools_config.subprocess, "run", fake_run)
+        monkeypatch.setattr(config_mod, "get_hermes_home", lambda: str(tmp_path))
+        ok = tools_config._repair_cua_driver_autostart_windows("cua-driver", verbose=False)
+        return ok, calls, created
+
+    def test_powershell_wrapper_action_is_normalized(self, tmp_path, monkeypatch):
+        arguments = (
+            "-NoProfile -WindowStyle Hidden -NonInteractive -Command \"Start-Process "
+            f"-FilePath '{self.DRIVER}' -ArgumentList 'serve' -WindowStyle Hidden\""
+        )
+        ok, calls, created = self._run_repair(
+            tmp_path, monkeypatch, self._task_xml("powershell.exe", arguments))
+
+        assert ok is True
+        assert calls.get("/Create") == 1
+        assert "<Command>wscript.exe</Command>" in created[0]
+        assert "//B //Nologo" in created[0]
+        launcher = tmp_path / "cua-driver-service" / "cua-driver-serve-launcher.vbs"
+        assert launcher.exists()
+        run_line = launcher.read_text(encoding="utf-8").strip().splitlines()[-1]
+        assert run_line.startswith("CreateObject(\"WScript.Shell\").Run ")
+        assert f'""{self.DRIVER}"" serve' in run_line
+        assert run_line.endswith(", 0, False")
+
+    def test_argument_list_array_form_preserved(self, tmp_path, monkeypatch):
+        arguments = (
+            "-NoProfile -Command \"Start-Process "
+            f"-FilePath '{self.DRIVER}' -ArgumentList @('serve', '--pipeline', 'main')"
+            "\""
+        )
+        ok, _calls, created = self._run_repair(
+            tmp_path, monkeypatch, self._task_xml("powershell.exe", arguments))
+
+        assert ok is True
+        launcher = tmp_path / "cua-driver-service" / "cua-driver-serve-launcher.vbs"
+        run_line = launcher.read_text(encoding="utf-8").strip().splitlines()[-1]
+        assert f'""{self.DRIVER}"" serve --pipeline main' in run_line
+
+    def test_non_wrapper_action_left_alone(self, tmp_path, monkeypatch):
+        ok, calls, created = self._run_repair(
+            tmp_path, monkeypatch,
+            self._task_xml("wscript.exe", '//B //Nologo "C:\\launch.vbs"'))
+
+        assert ok is True
+        assert "/Create" not in calls
+        assert created == []
+
+    def test_registration_failure_leaves_task_untouched(self, tmp_path, monkeypatch):
+        arguments = (
+            "-NoProfile -Command \"Start-Process "
+            f"-FilePath '{self.DRIVER}' -ArgumentList 'serve'\""
+        )
+        ok, calls, created = self._run_repair(
+            tmp_path, monkeypatch, self._task_xml("powershell.exe", arguments),
+            create_returncode=1)
+
+        assert ok is True
+        assert calls.get("/Create") == 1
+        assert "/Delete" not in calls
+        assert created  # the proposed definition was still produced for the debug path
+
+    def test_start_process_argument_list_parsing(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        parse = tools_config._start_process_argument_list
+        assert parse("-ArgumentList 'serve' -WindowStyle Hidden") == ["serve"]
+        assert parse("-ArgumentList @('serve', '--pipe a')") == ["serve", "--pipe a"]
+        assert parse("-FilePath 'x' -ArgumentList 'it''s' -NoNewWindow") == ["it's"]
+        assert parse("-FilePath 'x' -NoNewWindow") == []
 
 
 class TestCuaVersionSummary:

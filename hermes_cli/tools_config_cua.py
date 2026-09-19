@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional
 
@@ -508,35 +509,189 @@ def _cua_driver_autostart_registered_windows() -> bool:
         return False
 
 
+def _query_scheduled_task_xml_windows(task_name: str) -> Optional[str]:
+    """Return the scheduled task's definition XML, or None when it cannot be read.
+
+    schtasks /Query /XML emits UTF-16 with a BOM on the Windows builds we support; try UTF-8 and
+    lossy decoding as fallbacks so a locale oddity can never crash the install path."""
+    if sys.platform != "win32":
+        return None
+    try:
+        proc = subprocess.run(["schtasks.exe", "/Query", "/TN", task_name, "/XML"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+    except Exception:
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    raw = proc.stdout
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("utf-16", errors="replace")
+
+
+def _parse_task_exec_action(task_xml: str):
+    """Return ``(root, exec_element, command_element, arguments_element)`` for the task XML's first
+    Exec action, with ``arguments_element`` None when the action carries no Arguments child."""
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    try:
+        root = ET.fromstring(task_xml)
+    except ET.ParseError:
+        return None
+    for exec_el in root.iter():
+        if _local(exec_el.tag) != "Exec":
+            continue
+        command_el = arguments_el = None
+        for child in exec_el:
+            if _local(child.tag) == "Command":
+                command_el = child
+            elif _local(child.tag) == "Arguments":
+                arguments_el = child
+        if command_el is not None:
+            return root, exec_el, command_el, arguments_el
+    return None
+
+
+def _start_process_argument_list(arguments: str) -> List[str]:
+    """Extract the daemon argv from a ``Start-Process`` command string's -ArgumentList.
+
+    Upstream emits single-quoted entries (``-ArgumentList 'serve'`` or ``@('serve', …)``); bare
+    Start-Process parameters that may follow the list are not part of the daemon argv."""
+    array_match = re.search(r"-ArgumentList\s+@\((.*?)\)", arguments, re.S)
+    if array_match:
+        segment = array_match.group(1)
+    else:
+        plain_match = re.search(r"-ArgumentList\s+(.*)", arguments, re.S)
+        if not plain_match:
+            return []
+        segment = plain_match.group(1)
+        boundary = re.search(r"\s+-(?=[A-Za-z])", segment)
+        if boundary:
+            segment = segment[:boundary.start()]
+    return [entry.replace("''", "'") for entry in re.findall(r"'((?:[^']|'')*)'", segment)]
+
+
+def _normalize_cua_driver_serve_task_action_windows(*, verbose: bool) -> bool:
+    """Swap the registered cua-driver-serve task's powershell wrapper for a console-less launcher.
+
+    Upstream's autostart registration launches the daemon through
+    ``powershell.exe -WindowStyle Hidden -Command "Start-Process …"``. On Windows 10/11 the console
+    host allocated for that powershell can stay visible on the desktop for the daemon's whole
+    lifetime — the blank frozen terminal reported in #115017. The gateway scheduled task already
+    avoids this class by launching a ``wscript.exe``-hosted VBS (gateway_windows.py), so rewrite
+    only the task's Exec action the same way, preserving its trigger/principal settings.
+
+    Best-effort and idempotent: any read, write or registration failure — or an action that is not
+    the upstream powershell wrapper — leaves the working task untouched."""
+    task_xml = _query_scheduled_task_xml_windows("cua-driver-serve")
+    if not task_xml:
+        return False
+    parsed = _parse_task_exec_action(task_xml)
+    if parsed is None:
+        return False
+    root, exec_el, command_el, arguments_el = parsed
+    command = (command_el.text or "").strip().strip('"')
+    arguments = (arguments_el.text or "") if arguments_el is not None else ""
+    wrapper = os.path.basename(command).lower()
+    if not (wrapper in ("powershell.exe", "pwsh.exe")
+            and "start-process" in arguments.lower()):
+        return False
+    path_match = re.search(r"-FilePath\s+'((?:[^']|'')*)'", arguments)
+    binary = path_match.group(1).replace("''", "'") if path_match else _resolved_cua_driver_cmd()
+    if not binary:
+        logger.debug("cua-driver-serve action normalization skipped: daemon path not resolvable")
+        return False
+    daemon_args = _start_process_argument_list(arguments) or ["serve"]
+
+    def _vbs_quote(value: str) -> str:
+        return '"' + value.replace('"', '""') + '"'
+
+    run_command = " ".join(
+        [_vbs_quote(binary)]
+        + [arg if re.fullmatch(r"[^\s\"]+", arg) else _vbs_quote(arg) for arg in daemon_args])
+    try:
+        from hermes_cli.config import get_hermes_home
+        launcher_dir = Path(get_hermes_home()) / "cua-driver-service"
+        launcher_dir.mkdir(parents=True, exist_ok=True)
+        launcher_path = launcher_dir / "cua-driver-serve-launcher.vbs"
+        launcher_path.write_text(
+            "' cua-driver-serve logon launcher (#115017): wscript hosts the daemon console-less,\n"
+            "' instead of the powershell wrapper whose console window can stay frozen on the\n"
+            "' desktop for the daemon's whole lifetime.\n"
+            f"CreateObject(\"WScript.Shell\").Run {_vbs_quote(run_command)}, 0, False\n",
+            encoding="utf-8")
+    except OSError as e:
+        logger.debug("cua-driver-serve launcher write failed: %s", e)
+        return False
+
+    command_el.text = "wscript.exe"
+    if arguments_el is None:
+        arguments_el = ET.Element(command_el.tag.replace("Command", "Arguments"))
+        exec_el.insert(list(exec_el).index(command_el) + 1, arguments_el)
+    arguments_el.text = f'//B //Nologo "{launcher_path}"'
+    if root.tag.startswith("{"):
+        ET.register_namespace("", root.tag[1:root.tag.index("}")])
+    ET.indent(root)
+    import tempfile as _tempfile
+    fd, xml_tmp = _tempfile.mkstemp(prefix="cua-task-", suffix=".xml")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-16", newline="") as handle:
+            handle.write(ET.tostring(root, encoding="unicode"))
+        try:
+            result = subprocess.run(["schtasks.exe", "/Create", "/F", "/TN", "cua-driver-serve",
+                                     "/XML", xml_tmp],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=15)
+        except Exception as e:
+            logger.debug("cua-driver-serve action normalization registration failed: %s", e)
+            return False
+    finally:
+        _remove_quietly(xml_tmp)
+    if result.returncode != 0:
+        logger.debug("cua-driver-serve action normalization failed: %s",
+                     (result.stderr or b"").decode(errors="replace").strip()[:200])
+        return False
+    if verbose:
+        _print_info("    Normalized cua-driver-serve auto-start to a console-less launcher.")
+    return True
+
+
 def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:
     """Best-effort repair for Windows installer autostart quoting failures.
     Older install.ps1 builds interpolated the binary path into a PowerShell command string, which
     split at the first space. If the scheduled task is missing, retry via Start-Process's
-    structured ``-FilePath`` / ``-ArgumentList`` parameters instead."""
-    if sys.platform != "win32" or _cua_driver_autostart_registered_windows():
+    structured ``-FilePath`` / ``-ArgumentList`` parameters instead. When the task exists, its
+    action is normalized to a console-less launcher so the daemon never parks a blank console
+    window on the desktop (see ``_normalize_cua_driver_serve_task_action_windows``)."""
+    if sys.platform != "win32":
         return True
-    binary = shutil.which(driver_cmd)
-    if not binary:
-        return False
-    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
-    ps_cmd = (f"$exe = {_ps_single_quote(binary)}; "
-              "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
-              "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
-    _print_info("    Registering cua-driver auto-start..." if verbose
-                else "    Repairing cua-driver auto-start registration...")
-    try:
-        result = _run_text([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                           timeout=300, env=_cua_driver_env())
-    except subprocess.TimeoutExpired:
-        return _fail("    cua-driver autostart registration timed out.")
-    except Exception as exc:
-        return _fail(f"    cua-driver autostart registration failed: {exc}")
-    if result.returncode == 0:
-        return True
-    _print_warning("    cua-driver autostart registration failed.")
-    _print_output_tail(result)
-    _print_info("    From an elevated shell, run: cua-driver autostart enable")
-    return False
+    if not _cua_driver_autostart_registered_windows():
+        binary = shutil.which(driver_cmd)
+        if not binary:
+            return False
+        ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
+        ps_cmd = (f"$exe = {_ps_single_quote(binary)}; "
+                  "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
+                  "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
+        _print_info("    Registering cua-driver auto-start..." if verbose
+                    else "    Repairing cua-driver auto-start registration...")
+        try:
+            result = _run_text([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+                               timeout=300, env=_cua_driver_env())
+        except subprocess.TimeoutExpired:
+            return _fail("    cua-driver autostart registration timed out.")
+        except Exception as exc:
+            return _fail(f"    cua-driver autostart registration failed: {exc}")
+        if result.returncode != 0:
+            _print_warning("    cua-driver autostart registration failed.")
+            _print_output_tail(result)
+            _print_info("    From an elevated shell, run: cua-driver autostart enable")
+            return False
+    _normalize_cua_driver_serve_task_action_windows(verbose=verbose)
+    return True
 
 
 def _remove_quietly(path: str) -> None:

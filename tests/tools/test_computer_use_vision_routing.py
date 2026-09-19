@@ -167,6 +167,134 @@ class TestRouteDecision:
 
 
 # ---------------------------------------------------------------------------
+# Gate agreement with the vision_analyze fast path (#115248)
+# ---------------------------------------------------------------------------
+
+class TestGateAgreement:
+    """The capture gate must derive its route from the same source of truth as
+    the vision_analyze native fast path — the route must not depend on which
+    tool asked (#115248: two vision gates disagreed for deepseek/flash)."""
+
+    @staticmethod
+    def _caps(supports_vision):
+        import types
+        return types.SimpleNamespace(supports_vision=supports_vision)
+
+    def test_deepseek_flash_capture_routes_native(self):
+        """Issue #115248 repro: the model catalog attests deepseek-flash as
+        vision-capable, so the capture must stay on the native lane exactly
+        like vision_analyze — not pay a same-model aux round trip."""
+        from tools.computer_use import vision_routing
+
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "deepseek", "deepseek-flash", {}
+            ) is False
+
+    def test_capture_aux_for_gemini_legacy_gate(self):
+        """gemini-2.x: the model gate (no multimodal functionResponse) must
+        keep the capture on aux even when the catalog attests vision."""
+        from tools.computer_use import vision_routing
+
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "google", "gemini-2.5-flash", {}
+            ) is True
+
+    def test_capture_aux_for_vetoed_profile_catalog_vision(self):
+        """xiaomi/mimo: supports_vision_tool_messages=False stays a hard veto
+        even with a catalog vision hit."""
+        from tools.computer_use import vision_routing
+
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "xiaomi", "mimo-v2.5", {}
+            ) is True
+
+    def test_explicit_aux_override_still_wins_for_catalog_vision(self):
+        """An explicitly configured auxiliary.vision backend still wins even
+        when the catalog would open the native lane."""
+        from tools.computer_use import vision_routing
+
+        cfg = {
+            "auxiliary": {
+                "vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}
+            }
+        }
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "deepseek", "deepseek-flash", cfg
+            ) is True
+
+    def test_capture_and_vision_analyze_agree_deepseek_flash(self):
+        """Both gates derive the route from the same facts: fast path native,
+        capture native, for the issue's exact provider/model pair."""
+        from agent import image_routing
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from tools.computer_use import vision_routing
+
+        set_runtime_main("deepseek", "deepseek-flash")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch(
+                "agent.models_dev.get_model_capabilities",
+                return_value=self._caps(True),
+            ), patch("hermes_cli.config.load_config", return_value={}):
+                fast_path_native = _should_use_native_vision_fast_path()
+                capture_aux = vision_routing.should_route_capture_to_aux_vision(
+                    "deepseek", "deepseek-flash", {}
+                )
+        finally:
+            clear_runtime_main()
+
+        assert fast_path_native is True
+        assert capture_aux is False, (
+            "capture must agree with the vision_analyze fast path "
+            "(native) for deepseek/flash"
+        )
+
+    def test_capture_and_vision_analyze_agree_vetoed_profile(self):
+        """Both gates agree on aux for a vetoed profile even with a catalog
+        vision hit."""
+        from agent import image_routing
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from tools.computer_use import vision_routing
+
+        set_runtime_main("xiaomi", "mimo-v2.5")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch(
+                "agent.models_dev.get_model_capabilities",
+                return_value=self._caps(True),
+            ), patch("hermes_cli.config.load_config", return_value={}):
+                fast_path_native = _should_use_native_vision_fast_path()
+                capture_aux = vision_routing.should_route_capture_to_aux_vision(
+                    "xiaomi", "mimo-v2.5", {}
+                )
+        finally:
+            clear_runtime_main()
+
+        assert fast_path_native is False
+        assert capture_aux is True
+
+
+# ---------------------------------------------------------------------------
 # Internal lookups — defensive paths
 # ---------------------------------------------------------------------------
 

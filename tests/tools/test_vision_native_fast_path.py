@@ -131,6 +131,142 @@ class TestSupportsMediaInToolResults:
         finally:
             clear_runtime_main()
 
+    # ─── model-catalog fallback (#115248) ───────────────────────────────────
+
+    @staticmethod
+    def _caps(supports_vision):
+        import types
+        return types.SimpleNamespace(supports_vision=supports_vision)
+
+    def test_model_catalog_vision_opens_tool_media_support(self):
+        """A model the catalog attests as vision-capable may carry tool-result
+        images even when its provider is absent from the static whitelist and
+        declares no profile-level vision flag (deepseek/deepseek-flash,
+        #115248)."""
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert _supports_media_in_tool_results("deepseek", "deepseek-flash") is True
+
+    def test_profile_veto_beats_catalog_vision(self):
+        """supports_vision_tool_messages=False stays a hard veto even when the
+        model catalog attests vision capability."""
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert _supports_media_in_tool_results("xiaomi", "mimo-v2.5") is False
+
+    def test_gemini_model_gate_beats_catalog_vision(self):
+        """The gemini model gate (only 3.x accepts multimodal functionResponse)
+        stays authoritative over a generic catalog vision hit."""
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            return_value=self._caps(True),
+        ):
+            assert _supports_media_in_tool_results("google", "gemini-2.5-flash") is False
+            assert _supports_media_in_tool_results("google", "gemini-3-pro") is True
+
+    def test_catalog_lookup_failure_falls_back_closed(self):
+        """A raising catalog lookup must not break the helper; fail closed."""
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            side_effect=RuntimeError("catalog unavailable"),
+        ):
+            assert _supports_media_in_tool_results("deepseek", "deepseek-flash") is False
+
+
+# ─── fast-path / capture gate agreement (#115248) ────────────────────────────
+
+
+class TestFastPathGateAgreement:
+    """The vision_analyze fast path must derive its route from the same
+    source of truth as the computer_use capture gate."""
+
+    @staticmethod
+    def _caps(supports_vision):
+        import types
+        return types.SimpleNamespace(supports_vision=supports_vision)
+
+    def test_fast_path_native_for_catalog_vision_provider(self):
+        """deepseek-flash: model-catalog vision opens the native lane (agrees
+        with capture routing after the #115248 fix)."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("deepseek", "deepseek-flash")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch(
+                "agent.models_dev.get_model_capabilities",
+                return_value=self._caps(True),
+            ), patch("hermes_cli.config.load_config", return_value={}):
+                assert _should_use_native_vision_fast_path() is True
+        finally:
+            clear_runtime_main()
+
+    def test_fast_path_aux_for_gemini_legacy_gate(self):
+        """gemini-2.x: the model gate (no multimodal functionResponse) must
+        beat a generic catalog vision hit — the fast path must not open the
+        native lane the capture gate already closes."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("google", "gemini-2.5-flash")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch(
+                "agent.models_dev.get_model_capabilities",
+                return_value=self._caps(True),
+            ), patch("hermes_cli.config.load_config", return_value={}):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
+    def test_fast_path_native_for_whitelisted_provider(self):
+        """Whitelisted provider (anthropic) stays native even when the catalog
+        is unresolvable."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("anthropic", "claude-opus-4-6")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch(
+                "agent.models_dev.get_model_capabilities", return_value=None
+            ), patch("hermes_cli.config.load_config", return_value={}):
+                assert _should_use_native_vision_fast_path() is True
+        finally:
+            clear_runtime_main()
+
+    def test_fast_path_override_escape_hatch_still_works(self):
+        """model.supports_vision=true opens the native lane on an unlisted
+        provider (existing escape hatch must survive the refactor)."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("brand-new-provider", "local-vlm-1")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch(
+                "agent.models_dev.get_model_capabilities", return_value=None
+            ), patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"supports_vision": True}},
+            ):
+                assert _should_use_native_vision_fast_path() is True
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

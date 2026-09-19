@@ -88,6 +88,12 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
 
     from hermes_cli.local_runtime.detect import detect_server
 
+    # config=None means "the active one" (same policy as _boot_in_flight/_kick_managed_boot
+    # below): callers that resolve a provider hold no config, and reading detect_ports from
+    # an empty dict silently dropped the user's configured ports — a llama-server on e.g.
+    # 8081 was never probed and the llamacpp provider read as unavailable.
+    with suppress(Exception):
+        config = _load_config_if_none(config)
     ports = ((config or {}).get("local_runtime") or {}).get("detect_ports") or []
     hit = detect_server(extra_ports=tuple(int(p) for p in ports))
     if hit and not hit.auth_required:

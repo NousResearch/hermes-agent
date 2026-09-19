@@ -320,6 +320,11 @@ class SessionSessionsMixin:
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
         def _do(conn):
+            nonlocal parent_session_id
+            if parent_session_id:
+                row = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (parent_session_id,)).fetchone()
+                if not row:
+                    parent_session_id = None
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (

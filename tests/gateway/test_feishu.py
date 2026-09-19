@@ -108,8 +108,9 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
     def test_websocket_sdk_accepts_channel_ua_tag(self):
         """The shipped SDK must support the Channel signaling argument.
 
-        Guarded on the pinned version: the repo pins lark-oapi==1.6.8 (the
-        first release with ``extra_ua_tags``). Dev machines can carry an
+        Guarded on the ``extra_ua_tags`` floor: 1.6.8 was the first release
+        with the argument (the repo now pins 1.7.3 — 1.6.8 connects but
+        receives no websocket event pushes, #103979). Dev machines can carry an
         older lazy-installed lark-oapi that predates the argument — that is
         an environment artifact, not a product regression, so skip rather
         than fail there. Environments installing the pin (the feishu extra)
@@ -123,7 +124,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         if installed < (1, 6, 8):
             self.skipTest(
                 f"lark-oapi {_pkg_version('lark-oapi')} predates extra_ua_tags; "
-                "repo pin is 1.6.8 — stale local install"
+                "repo pin is 1.7.3 — stale local install"
             )
 
         from lark_oapi.ws import Client as FeishuWSClient

@@ -180,6 +180,15 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
+    # Custom-provider per-route headers (e.g. zero-data-retention, WAF/gateway auth) must reach
+    # auxiliary clients too. The main agent client merges providers.<name>.extra_headers in
+    # agent_init/client_lifecycle; without the mirror here, auxiliary calls (title generation,
+    # context compression, vision, approvals) to the same endpoint silently drop the route's
+    # configured headers. Provider headers win over the endpoint defaults merged above,
+    # matching the main client's precedence. SECURITY: values may carry credentials; never log.
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+        apply_custom_provider_extra_headers_to_client_kwargs(kwargs, base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
     # Hermes owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in
@@ -4585,6 +4594,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
+    # Async conversion rebuilds headers; apply the same destination-scoped merge as sync.
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+        apply_custom_provider_extra_headers_to_client_kwargs(async_kwargs, sync_base_url)
     async_kwargs = {**_openai_http_client_kwargs(sync_base_url, async_mode=True), **async_kwargs}
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.

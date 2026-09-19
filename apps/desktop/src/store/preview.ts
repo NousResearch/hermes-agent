@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
 import { persistentAtom } from '@/lib/persisted'
 import { readKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
@@ -404,6 +405,25 @@ export function openBrowserTab() {
   const current = tabs.find(tab => tab.id === browserTabId(tabs))
 
   openPreview(current?.target ?? blankPage())
+}
+
+/** ⌘⇧L is a TOGGLE: show the Browser when it's away, fold it away when it's
+ *  the thing on screen. "Away" includes dismissed (Close/⌘W), hidden, or
+ *  parked behind a sibling tab — each re-opens through openBrowserTab's
+ *  reveal path with the page it was last showing. "On screen" means the
+ *  preview tile pane the mirror keeps in the layout tree is visible, i.e.
+ *  not dismissed/hidden/minimized AND the zone's active tab. */
+export function toggleBrowserTab() {
+  const tabs = $previewTabs.get()
+  const id = browserTabId(tabs)
+
+  if (isPaneVisible(`preview-tile:${id}`)) {
+    dismissTreePane(`preview-tile:${id}`)
+
+    return
+  }
+
+  openBrowserTab()
 }
 
 /** Another Browser, always — the strip's "+". */

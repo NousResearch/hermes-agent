@@ -417,7 +417,7 @@ export const en: Translations = {
       'view.toggleTabStrip': 'Toggle tabs',
       'view.toggleProfileRail': 'Toggle profile rail',
       'view.showFiles': 'Show file browser',
-      'view.showBrowser': 'Open browser',
+      'view.showBrowser': 'Toggle browser',
       'view.toggleHud': 'Toggle HUD mode',
       'hud.snapToPointer': 'Move HUD to pointer (global, while HUD is open)',
       'view.showTerminal': 'Toggle terminal',

@@ -25,9 +25,8 @@ logger = logging.getLogger(__name__)
 
 USAGE_ANCHOR_MODEL_CONFIG_KEY = "_usage_anchor"
 
-# Identity of a priced message = the provider-visible fields that round-trip the session DB
-# byte-for-byte. Display/persistence metadata (timestamps, row ids, display kinds) is rewritten
-# on reload and would only ever fail the match closed.
+# Identity follows replayed content: persistence may move the same API bytes from
+# content into api_content while replacing the display text.
 _FINGERPRINT_KEYS = ("role", "content", "api_content", "tool_call_id", "tool_calls")
 
 
@@ -35,7 +34,10 @@ def message_fingerprint(msg: Any) -> Optional[str]:
     """Stable digest of one transcript message over its provider-visible, persisted fields."""
     if not isinstance(msg, dict):
         return None
+    from agent.turn_context import substitute_api_content
+
     payload = {k: msg.get(k) for k in _FINGERPRINT_KEYS if msg.get(k) is not None}
+    substitute_api_content(payload)
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):

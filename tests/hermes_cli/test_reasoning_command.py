@@ -91,6 +91,25 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
 
 
+    def test_large_cached_context_change_waits_for_confirm(self):
+        """/reasoning <level> on a prefix-bound model with a large measured context asks first;
+        cancel keeps the effort, accept applies it."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+        NS = SimpleNamespace
+        agent = NS(model="claude-fable-5-1", context_compressor=NS(last_prompt_tokens=150_000))
+        cli = NS(reasoning_config={"enabled": True, "effort": "medium"}, show_reasoning=False, agent=agent,
+                 _prompt_text_input_modal=lambda **kw: "cancel",
+                 _normalize_slash_confirm_choice=lambda raw, choices: raw)
+        with patch("hermes_cli.config.load_config", side_effect=FileNotFoundError), \
+                patch("cli.save_config_value"), patch("cli._cprint"):
+            CLICommandsMixin._handle_reasoning_command(cli, "/reasoning high")
+            self.assertEqual(cli.reasoning_config, {"enabled": True, "effort": "medium"})
+            self.assertIs(cli.agent, agent)
+            cli._prompt_text_input_modal = lambda **kw: "once"
+            CLICommandsMixin._handle_reasoning_command(cli, "/reasoning high")
+        self.assertEqual(cli.reasoning_config["effort"], "high")
+        self.assertIsNone(cli.agent)
+
     def test_effort_defaults_to_session_only(self):
         """Plain /reasoning <level> is session-scoped — no config write."""
         from hermes_cli.cli_commands_mixin import CLICommandsMixin

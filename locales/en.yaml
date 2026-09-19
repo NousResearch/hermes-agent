@@ -238,6 +238,7 @@ gateway:
     set_global:                "🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
     set_global_save_failed:    "🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)\n_(takes effect on next message)_"
     set_session:               "🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)\n_(takes effect on next message)_"
+    change_cancelled:          "🟡 Reasoning effort change cancelled. Current effort unchanged."
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelled. MCP tools unchanged."

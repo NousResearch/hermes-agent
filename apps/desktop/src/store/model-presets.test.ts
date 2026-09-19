@@ -37,7 +37,14 @@ describe('model presets', () => {
     await applyModelPreset({ effort: 'high' }, { failMessage: 'x', request, sessionId: 's1' })
     await applyModelPreset({}, { failMessage: 'x', request, sessionId: 's1' })
 
-    expect(calls).toEqual([{ method: 'config.set', params: { key: 'reasoning', session_id: 's1', value: 'high' } }])
+    // The effort write rides a model-row pick the model guard already confirmed,
+    // so it carries the confirmation instead of stranding a second prompt.
+    expect(calls).toEqual([
+      {
+        method: 'config.set',
+        params: { confirm_expensive_model: true, key: 'reasoning', session_id: 's1', value: 'high' }
+      }
+    ])
   })
 
   it('applies a fresh-draft preset locally without mutating gateway config', async () => {

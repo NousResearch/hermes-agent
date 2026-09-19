@@ -75,6 +75,28 @@ class TestConfigSetReasoningSessionScope:
         write_key.assert_not_called()
 
 
+    def test_large_cached_context_defers_until_confirmed(self) -> None:
+        """A prefix-bound model with a large measured context answers confirm_required and applies
+        nothing; the resend carrying confirm_expensive_model applies."""
+        agent = _agent({"enabled": True, "effort": "medium"})
+        agent.model = "claude-fable-5-1"
+        agent.context_compressor = SimpleNamespace(last_prompt_tokens=150_000)
+        session = {"session_key": "k1", "agent": agent}
+        with patch.dict(server._sessions, {"s1": session}, clear=False), \
+                patch.object(server, "_write_config_key"), \
+                patch.object(server, "_persist_live_session_runtime"), \
+                patch.object(server, "_emit"), \
+                patch("hermes_cli.config.load_config", side_effect=FileNotFoundError):
+            first = self._dispatch({"key": "reasoning", "session_id": "s1", "value": "high"})
+            assert first["result"]["confirm_required"] is True
+            assert "150,000" in first["result"]["confirm_message"]
+            assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+            assert "create_reasoning_override" not in session
+            second = self._dispatch(
+                {"key": "reasoning", "session_id": "s1", "value": "high", "confirm_expensive_model": True})
+        assert second["result"]["value"] == "high"
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
     def test_no_session_persists_globally(self) -> None:
         with patch.object(server, "_write_config_key") as write_key:
             resp = self._dispatch({"key": "reasoning", "value": "low"})

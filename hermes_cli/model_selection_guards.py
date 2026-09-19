@@ -135,6 +135,63 @@ def _context_cache_guard(
 _GUARDS = (_cost_guard, _data_policy_guard, _context_cache_guard)
 
 
+# Model families whose vendors render the reasoning-effort setting into the cached prompt prefix, so
+# changing it mid-session re-reads the whole context uncached: Anthropic ("changing the effort value
+# ... invalidate[s] message cache breakpoints", thinking-troubleshooting) and OpenAI ("reasoning.effort
+# can change model-side reasoning instructions", prompt-caching guide). Other families stay silent —
+# no documented effort-to-cache link, and a warning on a false premise trains users to click through.
+_EFFORT_IN_CACHED_PREFIX_PREFIXES = ("gpt-", "codex", "o1", "o3", "o4")
+
+
+def _effort_shapes_cached_prefix(model: str) -> bool:
+    name = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if "claude" in name:
+        return True
+    return name.startswith(_EFFORT_IN_CACHED_PREFIX_PREFIXES) and not name.startswith("gpt-oss")
+
+
+def effort_label(reasoning_config: Optional[dict]) -> str:
+    """Canonical effort label for a parsed ``reasoning_config`` (``None`` = provider default)."""
+    if not isinstance(reasoning_config, dict):
+        return "default"
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    return str(reasoning_config.get("effort") or "default")
+
+
+def reasoning_effort_cache_warning(
+    new_effort: str, *, model: str, current_reasoning_config: Optional[dict],
+    selection_context: Optional[SelectionContext],
+) -> Optional[SelectionWarning]:
+    """Confirm a mid-session reasoning-effort change that abandons a large cached context. Same
+    threshold as the model-switch guard (``model.switch_context_confirm_tokens``); silent when the
+    effort is unchanged, the session size is unknown or small, or the model family does not bake
+    effort into its cached prefix."""
+    if selection_context is None or not selection_context.context_tokens:
+        return None
+    target = (new_effort or "").strip().lower()
+    current = effort_label(current_reasoning_config)
+    if not target or target == current or not _effort_shapes_cached_prefix(model):
+        return None
+    threshold = _context_cache_threshold()
+    tokens = int(selection_context.context_tokens)
+    if threshold <= 0 or tokens < threshold:
+        return None
+    message = "\n".join([
+        "!!! LARGE CONTEXT REASONING CHANGE !!!",
+        "",
+        f"This session holds ~{tokens:,} tokens of context.",
+        f"Changing reasoning effort {current} → {target} on {model} rewrites the cached prompt prefix "
+        "(the vendor renders the effort setting into it), so the next reply re-reads all of it "
+        "uncached — a one-time full-price input cost.",
+        "",
+        f"Threshold: model.switch_context_confirm_tokens (currently {threshold:,}; 0 disables this check).",
+        "Confirm only if you intend to change it now."])
+    return SelectionWarning(
+        kind="context_cache", title="Large Context Reasoning Change Warning", model=model or "",
+        provider="", message=message)
+
+
 def selection_warnings(
     model_name: str, *, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None, model_info: Optional[ModelInfo] = None,

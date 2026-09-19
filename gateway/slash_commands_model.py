@@ -579,6 +579,42 @@ class GatewayModelCommandsMixin:
         self._set_session_reasoning_override(session_key, value)
         self._evict_cached_agent(session_key)
 
+    async def _reasoning_effort_guard_reply(
+        self, event: MessageEvent, session_key: str, value: str, persist_global: bool, platform_key: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Selection-guard confirmation for a typed ``/reasoning <level>`` that would re-read a large
+        cached context (same guard family and ``(fired, reply)`` contract as
+        ``_model_selection_guard_reply``; the reply is None when the platform rendered buttons)."""
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(value) is None:
+            return False, None  # display toggles / reset / unknown args never touch the request shape
+        try:
+            from hermes_cli.model_selection_guards import (
+                reasoning_effort_cache_warning, selection_context_for_agent)
+            agent = self._cached_agent_for(session_key)
+            warning = reasoning_effort_cache_warning(
+                value, model=getattr(agent, "model", "") or "",
+                current_reasoning_config=self._reasoning_config,
+                selection_context=selection_context_for_agent(agent))
+        except Exception:
+            warning = None
+        if warning is None:
+            return False, None
+
+        async def _on_confirm(choice: str) -> str:
+            if choice == "cancel":
+                return t("gateway.reasoning.change_cancelled")
+            return self._apply_reasoning_selection(session_key, platform_key, value, persist_global=persist_global)
+
+        _p = self._typed_command_prefix_for(event.source.platform)
+        message = (
+            f"⚠️ **{warning.title}**\n\n{warning.message}\n\n"
+            f"_Text fallback: reply `{_p}approve` to change or `{_p}cancel` to keep the current effort._"
+        )
+        return True, await self._request_slash_confirm(
+            event=event, command="reasoning", title=warning.title, message=message, handler=_on_confirm,
+        )
+
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
     ) -> str:
@@ -652,6 +688,9 @@ class GatewayModelCommandsMixin:
         )
         platform_key = _platform_config_key(event.source.platform)
         if raw_args:  # typed path — same applier the picker uses
+            fired, reply = await self._reasoning_effort_guard_reply(event, session_key, args, persist_global, platform_key)
+            if fired:
+                return reply
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
         if rc is None:

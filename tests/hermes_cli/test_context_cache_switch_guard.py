@@ -11,6 +11,7 @@ from hermes_cli.model_selection_guards import (
     DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD,
     SelectionContext,
     _context_cache_guard,
+    reasoning_effort_cache_warning,
     selection_context_for_agent,
     selection_warnings,
 )
@@ -55,6 +56,35 @@ class TestContextCacheGuard:
             without = selection_warnings("new/model", provider="openrouter")
         assert any(w.kind == "context_cache" for w in with_ctx)
         assert not any(w.kind == "context_cache" for w in without)
+
+
+class TestReasoningEffortCacheWarning:
+    """Anthropic and OpenAI render the effort setting into the cached prefix, so a mid-session effort
+    change on a large context is the same one-time full-price re-read as a model switch."""
+
+    def _warn(self, effort, model, current, tokens=DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD + 1):
+        ctx = SelectionContext(context_tokens=tokens, current_model=model) if tokens else None
+        with patch("hermes_cli.config.load_config", _no_config):
+            return reasoning_effort_cache_warning(
+                effort, model=model, current_reasoning_config=current, selection_context=ctx)
+
+    def test_fires_on_effort_change_for_prefix_bound_families_only(self):
+        current = {"enabled": True, "effort": "medium"}
+        for model in ("claude-fable-5-1", "anthropic/claude-opus-5", "gpt-5.6-sol", "openai/o3", "codex-mini"):
+            warning = self._warn("high", model, current)
+            assert warning is not None and warning.kind == "context_cache", model
+            assert "medium → high" in warning.message and "uncached" in warning.message
+        # Disabled → enabled counts as a change; unknown families stay silent (no documented link).
+        assert self._warn("low", "claude-fable-5-1", {"enabled": False}) is not None
+        assert self._warn("high", "deepseek/deepseek-v4", current) is None
+        assert self._warn("high", "gpt-oss-120b", current) is None
+
+    def test_silent_when_unchanged_small_or_unmeasured(self):
+        current = {"enabled": True, "effort": "high"}
+        assert self._warn("high", "claude-fable-5-1", current) is None
+        assert self._warn("low", "claude-fable-5-1", current, tokens=5_000) is None
+        assert self._warn("low", "claude-fable-5-1", current, tokens=None) is None
+        assert self._warn("none", "gpt-5.6-sol", {"enabled": False}) is None
 
 
 class TestSelectionContextForAgent:

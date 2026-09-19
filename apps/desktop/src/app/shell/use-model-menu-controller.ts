@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
@@ -94,9 +95,7 @@ export function useModelMenuController({
       return
     }
 
-    try {
-      await requestGateway('config.set', { key: 'reasoning', session_id: activeSessionId, value: next })
-    } catch (err) {
+    const rollback = () => {
       if (touchesPrimary) {
         setCurrentReasoningEffort(previous)
       } else {
@@ -104,6 +103,44 @@ export function useModelMenuController({
       }
 
       setModelPreset(provider, model, { effort: previous })
+    }
+
+    const requestEffort = (confirmed = false) =>
+      requestGateway<GuardedModelSwitchResult | undefined>('config.set', {
+        key: 'reasoning',
+        session_id: activeSessionId,
+        value: next,
+        ...(confirmed ? { confirm_expensive_model: true } : {})
+      })
+
+    try {
+      const result = await requestEffort()
+
+      // The gateway withholds an effort change that would re-read a large
+      // cached context (same guard family as the model switch); route it
+      // through THE shared confirm applier rather than a per-surface dialog.
+      if (result?.confirm_required) {
+        rollback()
+        surfaceModelSwitchConfirm({
+          confirmLabel: t.common.confirm,
+          confirmMessage: result.confirm_message,
+          failureMessage: t.shell.modelOptions.updateFailed,
+          isStale: () => view.$runtimeId.get() !== activeSessionId,
+          repaint: () => {
+            if (touchesPrimary) {
+              setCurrentReasoningEffort(next)
+            } else {
+              sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: next }))
+            }
+
+            setModelPreset(provider, model, { effort: next })
+          },
+          requestConfirmed: () => requestEffort(true),
+          rollback
+        })
+      }
+    } catch (err) {
+      rollback()
       notifyError(err, t.shell.modelOptions.updateFailed)
     }
   }

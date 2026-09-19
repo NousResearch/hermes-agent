@@ -86,7 +86,15 @@ export async function applyModelPreset(
 
   try {
     if (effort !== undefined) {
-      await ctx.request('config.set', { key: 'reasoning', session_id: ctx.sessionId, value: effort })
+      // A preset rides a model-row pick whose switch the model guard already
+      // confirmed (the new prefix is cold either way), so the effort write
+      // carries the confirmation instead of stranding a second prompt.
+      await ctx.request('config.set', {
+        confirm_expensive_model: true,
+        key: 'reasoning',
+        session_id: ctx.sessionId,
+        value: effort
+      })
     }
 
     if (fast !== undefined) {

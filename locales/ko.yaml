@@ -223,6 +223,7 @@ gateway:
     set_global:                "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (설정에 저장됨)\n_(다음 메시지부터 적용됩니다)_"
     set_global_save_failed:    "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 설정 저장 실패)\n_(다음 메시지부터 적용됩니다)_"
     set_session:               "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 영구 저장하려면 `--global` 추가)\n_(다음 메시지부터 적용됩니다)_"
+    change_cancelled:          "🟡 추론 강도 변경이 취소되었습니다. 현재 강도는 변경되지 않았습니다."
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp가 취소되었습니다. MCP 도구는 변경되지 않았습니다."

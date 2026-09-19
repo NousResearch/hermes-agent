@@ -181,6 +181,30 @@ _FAST_TIERS = {
     "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
     "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
 
+def _confirm_reasoning_effort_change(cli, new_effort: str) -> bool:
+    """Confirm a mid-session effort change that would re-read a large cached context (same guard
+    family, threshold and modal as the /model switch). True when no warning applies or the user
+    accepts; guards never block on their own failure."""
+    try:
+        from hermes_cli.model_selection_guards import (
+            reasoning_effort_cache_warning, selection_context_for_agent)
+        agent = getattr(cli, "agent", None)
+        warning = reasoning_effort_cache_warning(
+            new_effort, model=getattr(agent, "model", None) or getattr(cli, "model", "") or "",
+            current_reasoning_config=getattr(cli, "reasoning_config", None),
+            selection_context=selection_context_for_agent(agent))
+    except Exception:
+        warning = None
+    if warning is None:
+        return True
+    choices = [
+        ("once", "Change anyway", "Apply the new reasoning effort now."),
+        ("cancel", "Cancel", "Keep the current reasoning effort.")]
+    raw = cli._prompt_text_input_modal(
+        title=f"!!! {warning.title} !!!", detail=warning.message, choices=choices, timeout=120)
+    return cli._normalize_slash_confirm_choice(raw, choices) == "once"
+
+
 # /reasoning display toggles: arg -> (attr, value, headline, follow-up note)
 _REASONING_TOGGLES = {
     **dict.fromkeys(("show", "on"), ("show_reasoning", True, "ON",
@@ -2594,6 +2618,8 @@ class CLICommandsMixin:
                        _dim_line('Valid levels: none, minimal, low, medium, high, xhigh, max, ultra'),
                        _dim_line('Display:      show, hide'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
+        if not _confirm_reasoning_effort_change(self, arg):
+            return _cp(_dim_line("  Reasoning effort unchanged."))
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)

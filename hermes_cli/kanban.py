@@ -1025,6 +1025,15 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
             expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
         if not ok:
+            if reason == "parent dependencies are not satisfied":
+                # request_review reports this refusal as one generic string too;
+                # name the open parents instead, same as _cmd_complete does.
+                blockers = kb.unsatisfied_parents(conn, tid)
+                if blockers:
+                    detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                    return _err(f"cannot request review for {tid}: unsatisfied parent "
+                                f"dependencies: {detail}; complete the parents first, or "
+                                f"`hermes kanban unlink <parent> {tid}`.")
             return _err(f"cannot request review for {tid}: {reason or 'not running/ready?'}")
         persisted_run = kb.latest_run(conn, tid)
         display_summary = persisted_run.summary if persisted_run else None

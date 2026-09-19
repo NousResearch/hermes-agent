@@ -137,12 +137,28 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
+_HERMES_SCOPE_SLICE = "app-hermes"
+# Dedicated child slice for every Hermes-spawned scope, nested under app.slice by systemd's
+# dash-prefix naming convention (systemd.slice(5): the unit name up to its last dash names the
+# parent slice, so "app-hermes.slice" is created under the existing "app.slice" — no new
+# top-level slice, no change to app.slice itself). This isolates the Hermes subtree from the
+# user's own non-Hermes app.slice members (flatpak apps, browsers, etc.): a per-scope MemoryMax
+# still bounds each worker individually, but everything Hermes spawns now shares one
+# identifiable cgroup subtree that a future aggregate cap or `systemctl --user show
+# app-hermes.slice` can target without touching sibling apps. Confirmed empirically (see #104953):
+# `systemd-run --user --slice=app-hermes --scope ...` lands at
+# .../app.slice/app-hermes.slice/<unit>.scope, and app.slice's own MemoryMax/TasksMax are
+# untouched before and after.
+
+
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl;
+    ``--slice`` places it under the dedicated Hermes child-slice (see ``_HERMES_SCOPE_SLICE``).
     No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486)."""
     return [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
+        "--slice", _HERMES_SCOPE_SLICE,
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
         "--", *argv,

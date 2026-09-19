@@ -163,9 +163,32 @@ def _resolve_explicit_xai_api_key() -> str:
 
     Both the preferred-key and the no-OAuth fallback paths go through here so scope policy
     (incl. failing closed in a multiplexed gateway turn) is never re-implemented per caller.
+
+    When the user removed the ``xai`` credential with ``hermes auth remove xai``, the
+    ``env:XAI_API_KEY`` source is recorded in ``suppressed_sources`` and the resolver is
+    documented as never re-seeding it. A stale value can still live in the process
+    environment of a long-running gateway (it is inherited across ``hermes update``
+    restarts), so this read honors the suppression list: the env var is masked for a
+    re-resolution, dropping the env contribution while pool/config credentials and the
+    ``.env`` file still resolve. Without this, a creditless API key silently overrides
+    the working ``xai-oauth`` credential (see issue #116155).
     """
     from tools.tool_backend_helpers import resolve_provider_secret
-    return resolve_provider_secret("XAI_API_KEY", "xai")
+    key = resolve_provider_secret("XAI_API_KEY", "xai")
+    if key:
+        try:
+            from hermes_cli.auth import is_source_suppressed
+            if is_source_suppressed("xai", "env:XAI_API_KEY"):
+                masked = os.environ.pop("XAI_API_KEY", None)
+                try:
+                    return resolve_provider_secret("XAI_API_KEY", "xai")
+                finally:
+                    if masked is not None:
+                        os.environ["XAI_API_KEY"] = masked
+                return ""
+        except Exception:  # pragma: no cover - auth store unreadable: keep prior behavior
+            pass
+    return key
 
 
 def _xai_base_url_override() -> str:

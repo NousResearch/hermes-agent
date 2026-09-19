@@ -249,8 +249,11 @@ def _print_recovery_verdict(report, output, allow_partial) -> int:
 
 def _cmd_import(args):
     from hermes_cli.foreign_sessions import run_sessions_import
-    # Explicit path but nothing imported -> non-zero for scripts. Picker cancel (no path) -> exit 0.
-    if run_sessions_import(args) is None and getattr(args, "path", None):
+    # Explicit path / diverted apply but nothing imported -> non-zero for scripts.
+    # Picker cancel (no path) -> exit 0.
+    if run_sessions_import(args) is None and (
+        getattr(args, "path", None) or getattr(args, "from_source", None) == "diverted"
+    ):
         return 1
 
 

@@ -610,6 +610,9 @@ class TestImport:
     @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
     def test_restores_secret_files_with_0600_perms(self, tmp_path, monkeypatch):
         """Secret files must end up at 0600 after restore (zipfile drops mode bits)."""
+        # Publication permissions are independent of host process-inspection privileges.
+        monkeypatch.setattr("hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders",
+                            lambda _p, **_kw: [])
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -1446,6 +1449,34 @@ class TestQuickSnapshot:
         summary = [line for line in restored_log if line.startswith("Restored ")]
         assert summary, restored_log
         assert summary[-1].startswith(f"Restored {len(non_db)} files"), summary[-1]
+
+    def test_import_db_member_refuses_missing_target_with_deleted_holders(
+        self, tmp_path, monkeypatch
+    ):
+        """A missing pathname can still have deleted WAL/SHM holders; do not os.replace."""
+        import hermes_cli.backup as backup_mod
+
+        staged = tmp_path / "backup-state.db"
+        _write_session_db(staged, 1, 1)
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(staged, "state.db")
+        target = tmp_path / "fresh" / "state.db"
+        target.parent.mkdir()
+        assert not target.exists()
+
+        monkeypatch.setattr("hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders",
+                            lambda _p, **_kw: [(99999, "deleted state.db-wal")])
+        with zipfile.ZipFile(zip_path) as zf:
+            with pytest.raises(OSError):
+                backup_mod._import_db_member(zf, "state.db", target)
+        assert not target.exists()
+
+        monkeypatch.setattr("hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders",
+                            lambda _p, **_kw: [])
+        with zipfile.ZipFile(zip_path) as zf:
+            backup_mod._import_db_member(zf, "state.db", target)
+        assert target.is_file()
 
     def test_restore_state_db_live_connection(self, hermes_home):
         """Restoring state.db must update data visible through a live connection.
@@ -2485,6 +2516,8 @@ class TestImportLiveSessionDatabase:
         """A fresh install has no inode to preserve; the member still lands."""
         from hermes_cli.backup import run_import
 
+        monkeypatch.setattr("hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders",
+                            lambda _p, **_kw: [])
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
@@ -2530,3 +2563,95 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
     assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
     assert (tmp_path / "my-archive.zip").exists()
+
+
+@pytest.mark.macos_only
+@pytest.mark.parametrize("journal_mode", ["delete", "wal"])
+def test_missing_database_import_refuses_live_deleted_generation(tmp_path, monkeypatch, journal_mode):
+    """libproc must find an unlinked main file even when no WAL ever existed."""
+    import subprocess
+    import sys
+    import hermes_cli.backup as backup_mod
+
+    target = tmp_path / "state.db"
+    staged = tmp_path / "backup.db"
+    _write_session_db(staged, 1, 1)
+    archive = tmp_path / "backup.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.write(staged, "state.db")
+    child = subprocess.Popen(
+        [sys.executable, "-u", "-c", """
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute('PRAGMA journal_mode=' + sys.argv[2])
+conn.execute('CREATE TABLE generation (value TEXT)')
+conn.execute("INSERT INTO generation VALUES ('old-generation')")
+conn.commit()
+print('ready', flush=True)
+sys.stdin.readline()
+print(conn.execute('SELECT value FROM generation').fetchone()[0], flush=True)
+conn.close()
+""", str(target), journal_mode],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(target) + suffix).unlink(missing_ok=True)
+        import hermes_state_dbfile as dbfile
+        # Restrict the process inventory to the real child: protected unrelated macOS
+        # daemons can deny fd inspection even to their own user. FD discovery stays real.
+        monkeypatch.setattr(dbfile, "_darwin_all_pids", lambda _lib: [child.pid])
+        holders = dbfile.iter_deleted_sqlite_sidecar_holders(target, include_main=True, strict=True)
+        assert any(pid == child.pid for pid, _path in holders)
+        with zipfile.ZipFile(archive) as zf:
+            with pytest.raises(OSError, match="holders"):
+                backup_mod._import_db_member(zf, "state.db", target)
+        assert not target.exists()
+    finally:
+        out, err = child.communicate("done\n", timeout=10)
+        assert child.returncode == 0, err
+        assert out.strip() == "old-generation"
+
+
+@pytest.mark.macos_only
+@pytest.mark.parametrize("failure", ["processes", "descriptors", "vnode"])
+def test_missing_database_import_refuses_unknown_scan(tmp_path, monkeypatch, failure):
+    import hermes_cli.backup as backup_mod
+    import hermes_state_dbfile as dbfile
+
+    import ctypes
+    import errno
+
+    real_lib = dbfile._darwin_libproc()
+
+    class FailedLibproc:
+        def __getattr__(self, name):
+            return getattr(real_lib, name)
+
+        def proc_listpids(self, *args):
+            return -1 if failure == "processes" else real_lib.proc_listpids(*args)
+
+        def proc_pidinfo(self, pid, *args):
+            if failure == "descriptors" and pid == os.getpid():
+                ctypes.set_errno(errno.EIO)
+                return -1
+            return real_lib.proc_pidinfo(pid, *args)
+
+        def proc_pidfdinfo(self, pid, *args):
+            if failure == "vnode" and pid == os.getpid():
+                ctypes.set_errno(errno.EIO)
+                return -1
+            return real_lib.proc_pidfdinfo(pid, *args)
+
+    monkeypatch.setattr(dbfile, "_darwin_libproc", lambda: FailedLibproc())
+    if failure != "processes":
+        monkeypatch.setattr(dbfile, "_darwin_all_pids", lambda _lib: [os.getpid()])
+    target = tmp_path / "state.db"
+    archive = tmp_path / "backup.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("state.db", b"must not publish")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(OSError, match="scan"):
+            backup_mod._import_db_member(zf, "state.db", target)
+    assert not target.exists()

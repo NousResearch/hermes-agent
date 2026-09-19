@@ -4,7 +4,9 @@ imported history must satisfy the provider role-alternation invariant (see ``_me
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -298,10 +300,200 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     return None
 
 
+# Durable sidecars emitted by _db_flush_row and accepted by append_message.
+_DIVERTED_DURABLE_FIELDS = (
+    "finish_reason", "reasoning", "reasoning_content", "reasoning_details",
+    "codex_reasoning_items", "codex_message_items", "_compressed_summary",
+    "api_content", "display_kind", "display_metadata", "platform_message_id",
+)
+
+
+def _diverted_has_tool_graph(obj: Dict[str, Any]) -> bool:
+    calls = obj.get("tool_calls")
+    return bool((isinstance(calls, list) and calls) or obj.get("tool_call_id") or obj.get("tool_name"))
+
+
+def _diverted_jsonl_record(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One diverted JSON object → appendable row, including null-content tool-call turns."""
+    role = obj.get("role")
+    if not isinstance(role, str) or not role.strip():
+        return None
+    content = obj.get("content")
+    if content is not None and not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, default=str)
+    has_tools = _diverted_has_tool_graph(obj)
+    if content is None:
+        if not has_tools:
+            return None
+    elif not str(content).strip() and not has_tools:
+        return None
+    record: Dict[str, Any] = {"role": role, "content": content}
+    if isinstance(obj.get("tool_calls"), list):
+        record["tool_calls"] = obj["tool_calls"]
+    for key in ("tool_name", "tool_call_id"):
+        if obj.get(key):
+            record[key] = obj[key]
+    if obj.get("timestamp") is not None:
+        record["timestamp"] = obj["timestamp"]
+    record.update((key, obj[key]) for key in _DIVERTED_DURABLE_FIELDS if key in obj)
+    return record
+
+
+def _diverted_content_identity(record: Dict[str, Any]) -> Tuple[Any, ...]:
+    calls = record.get("tool_calls")
+    calls_key = json.dumps(calls, sort_keys=True, default=str) if isinstance(calls, list) else None
+    return (
+        record.get("role"),
+        record.get("content"),
+        record.get("tool_call_id"),
+        record.get("tool_name"),
+        calls_key,
+    )
+
+
+def _diverted_timestamp(record: Dict[str, Any]) -> Optional[float]:
+    value = record.get("timestamp")
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _same_diverted_row(dest: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    """Recovery identity is proof; legacy rows require a usable timestamp as well as content."""
+    identity = (dest.get("display_metadata") or {}).get("diverted_recovery_id")
+    incoming_identity = (incoming.get("display_metadata") or {}).get("diverted_recovery_id")
+    if identity is not None:
+        return identity == incoming_identity
+    incoming_ts = _diverted_timestamp(incoming)
+    return (incoming_ts is not None
+            and _diverted_timestamp(dest) == incoming_ts
+            and _diverted_content_identity(dest) == _diverted_content_identity(incoming))
+
+
+def _longest_already_persisted(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> int:
+    """How many leading source rows already exist in destination order (gaps allowed)."""
+    destination = iter(existing)
+    for index, record in enumerate(incoming):
+        if not any(_same_diverted_row(dest, record) for dest in destination):
+            return index
+    return len(incoming)
+
+
+def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None:
+    db.append_message(
+        session_id,
+        record["role"],
+        record.get("content"),
+        tool_name=record.get("tool_name"),
+        tool_calls=record.get("tool_calls"),
+        tool_call_id=record.get("tool_call_id"),
+        timestamp=_diverted_timestamp(record),
+        **{key: record[key] for key in _DIVERTED_DURABLE_FIELDS if key in record},
+    )
+
+
+def _diverted_jsonl_path(session_id: Optional[str], path) -> Optional[Path]:
+    if path:
+        return Path(path).expanduser()
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "sessions" / f"{sid}.jsonl"
+
+
+def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: bool = False) -> Optional[str]:
+    """Replay diverted JSONL into an existing (or newly created) Hermes session.
+
+    Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
+    prints the path and non-empty line count. Skip is bound to the destination
+    transcript: recovered rows carry an identity committed with the message.
+    Legacy destination rows match only with the same content and finite timestamp.
+    Ordinary turns may sit between recovered runs. A rebuilt database
+    or another session can still restore the file. Native tool_calls /
+    tool_call_id / timestamp rows are preserved. Empty unusable lines are skipped.
+    """
+    sid = (session_id or "").strip()
+    jsonl = Path(path).expanduser()
+    if not sid:
+        print("Error: --from diverted requires --session-id or a JSONL path whose stem is the session id.")
+        return None
+    if not jsonl.is_file():
+        print(f"Error: diverted transcript not found: {jsonl}")
+        return None
+    line_count = sum(1 for line in jsonl.read_text(encoding="utf-8").splitlines() if line.strip())
+    if inspect_only:
+        print(f"Diverted transcript: {jsonl}")
+        print(f"Lines: {line_count}")
+        return sid
+    owns_db = db is None
+    try:
+        if owns_db:
+            from hermes_state import SessionDB
+            db = SessionDB()
+    except Exception as e:
+        print(f"Error: could not open session database: {e}")
+        print(f"Diverted transcript remains at: {jsonl}")
+        return None
+    try:
+        if db.get_session(sid) is None:
+            db.create_session(sid, "cli")
+        incoming = [rec for obj in _read_json_lines(jsonl) if (rec := _diverted_jsonl_record(obj))]
+        # Prefix hashing keeps earlier identities stable as the source grows, while
+        # distinguishing repeated identical records. Progress lives only in this DB/session.
+        digest = hashlib.sha256(str(jsonl.resolve()).encode("utf-8"))
+        for record in incoming:
+            digest.update(b"\0")
+            # Keep the pre-sidecar hash projection so previously recovered rows
+            # without timestamps remain recognizable after upgrading.
+            identity = {key: value for key, value in record.items() if key not in _DIVERTED_DURABLE_FIELDS}
+            digest.update(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+            metadata = record.get("display_metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except ValueError:
+                    metadata = None
+            record["display_metadata"] = {
+                **(metadata if isinstance(metadata, dict) else {}),
+                "diverted_recovery_id": digest.hexdigest(),
+            }
+        skip = _longest_already_persisted(db.get_messages(sid), incoming)
+        for record in incoming[skip:]:
+            _append_diverted_record(db, sid, record)
+        print(f"✓ Replayed diverted transcript into {sid}")
+        print(f"  Source: {jsonl}")
+        print(f"  Continue it with:  hermes --resume {sid}")
+        return sid
+    except Exception as e:
+        print(f"Error: could not replay diverted transcript {jsonl}: {e}")
+        print(f"Diverted transcript remains at: {jsonl}")
+        return None
+    finally:
+        if owns_db and db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
 def run_sessions_import(args, db=None) -> Optional[str]:
     """`hermes sessions import` entry point. Returns new session id or None."""
     source = getattr(args, "from_source", None)
     path = getattr(args, "path", None)
+    if source == "diverted":
+        session_id = getattr(args, "session_id", None)
+        jsonl = _diverted_jsonl_path(session_id, path)
+        if jsonl is None:
+            print("Error: --from diverted requires --session-id or a JSONL path.")
+            return None
+        if not session_id:
+            session_id = jsonl.stem
+        return import_diverted_transcript(
+            session_id, jsonl, db=db, inspect_only=bool(getattr(args, "inspect_only", False)),
+        )
     if path:
         # A missing file is reported as such, not as the misleading "cannot infer source".
         if not Path(path).exists():

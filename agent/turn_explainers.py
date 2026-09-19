@@ -113,21 +113,20 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "database). Your message should already be saved — "
         "please send it again in a moment."
     ),
-    # The forensic runbook for both (WAL generations, manifest.json, sidecars) lives in the
-    # logger.error at hermes_state.py::_raise_if_db_replaced — never in the chat reply.
     "replaced": (
         "the session database file was replaced while Hermes was running, so this "
-        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
+        "message was not saved (a copy is kept at {diverted_path}). Stop Hermes "
         "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
         "`hermes {profile_arg}doctor --fix`, which would repair the wrong file in place — "
         "then start it again and send your message once more. Advanced recovery steps are "
-        "in the log."
+        "in the log. Replay the saved copy with `hermes {profile_arg}sessions import --from diverted`."
     ),
     "deleted_wal": (
         "the session database was changed or replaced while Hermes was running, so this "
-        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
+        "message was not saved (a copy is kept at {diverted_path}). Stop Hermes "
         "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start "
-        "it again and send your message once more. Advanced recovery steps are in the log."
+        "it again and send your message once more. Advanced recovery steps are in the log. "
+        "Replay the saved copy with `hermes {profile_arg}sessions import --from diverted`."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -349,7 +348,8 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None,
+        model: str = "", diverted_path=None,
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -389,5 +389,10 @@ class TurnExplainersMixin:
                 body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")
+                )
+            if persistence_cause in ("replaced", "deleted_wal"):
+                body = body.replace(
+                    "{diverted_path}",
+                    str(diverted_path) if diverted_path else "sessions/<session_id>.jsonl",
                 )
         return _NO_REPLY + body if body else ""

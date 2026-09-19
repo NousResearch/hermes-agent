@@ -238,6 +238,20 @@ def test_persistence_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp
     assert "`hermes doctor" not in out and "`hermes gateway" not in out
 
 
+def test_deleted_wal_explanation_names_diverted_path_and_import():
+    diverted = "/tmp/custom-hermes/sessions/sess-diverted.jsonl"
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "deleted_wal", diverted_path=diverted
+    )
+    assert diverted in out
+    assert "import --from diverted" in out
+    replaced = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "replaced", diverted_path=diverted
+    )
+    assert diverted in replaced
+    assert "import --from diverted" in replaced
+
+
 def test_explanation_persistence_unknown_cause_is_neutral():
     """None/'unknown' cause must not claim disk-full — point at diagnostics."""
     for cause in (None, "unknown"):

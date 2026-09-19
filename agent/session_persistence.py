@@ -264,8 +264,10 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
-            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
+            agent._last_diverted_transcript_path = divert_session_transcript_jsonl(
+                getattr(agent, "session_id", "") or "", batch_rows)
         except Exception:
+            agent._last_diverted_transcript_path = None
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)
     if isinstance(e, CompressionSessionClosedError):

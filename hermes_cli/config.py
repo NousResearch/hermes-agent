@@ -1281,6 +1281,158 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+def _expected_shape(expected: Any) -> Optional[str]:
+    """Human name of the YAML shape a schema default declares (None = no shape info)."""
+    if isinstance(expected, bool):  # before int: bool is an int subclass
+        return "a boolean (true/false)"
+    if isinstance(expected, dict):
+        return "a YAML mapping"
+    if isinstance(expected, list):
+        return "a YAML list"
+    if isinstance(expected, (int, float)):
+        return "a number"
+    if isinstance(expected, str):
+        return "a string"
+    return None
+
+
+def _value_matches_shape(expected: Any, value: Any) -> bool:
+    """True when *value* is usable by readers gating on ``isinstance`` for *expected*'s shape.
+
+    Scalars are compared leniently (a bool/int where the default is a string is a formatting
+    choice, not a bug) because the point is catching shape-class mistakes: a quoted list literal
+    where the schema declares a list, a scalar where it declares a mapping, and so on.
+    """
+    if isinstance(expected, bool):
+        return isinstance(value, bool)
+    if isinstance(expected, dict):
+        return isinstance(value, dict)
+    if isinstance(expected, list):
+        return isinstance(value, list)
+    if isinstance(expected, (int, float)):
+        return not isinstance(value, bool) and isinstance(value, (int, float))
+    if isinstance(expected, str):
+        return not isinstance(value, (dict, list))
+    return True
+
+
+def _schema_shape_error(path: str, expected: Any, value: Any) -> Optional[str]:
+    """Report a *path* whose value contradicts the shape ``DEFAULT_CONFIG`` declares for it.
+
+    Names the key and the expected shape, never the value: the gate's output reaches stderr and
+    logs, so it applies the same discipline as ``set_config_value``'s ``mask_secret`` on echoes.
+    ``None`` means "explicitly cleared" and is accepted for every leaf.
+    """
+    shape = _expected_shape(expected)
+    if shape is None or value is None:
+        return None
+    if path in _STR_OR_MAPPING_LEAF_PATHS or _value_matches_shape(expected, value):
+        return None
+    detail = ""
+    if isinstance(expected, list) and isinstance(value, str):
+        detail = " — a quoted JSON/YAML literal is stored as plain text; use '- item' lines"
+    return f"'{path}' should be {shape}, got {type(value).__name__}{detail}"
+
+
+# Dotted paths whose CHILDREN are user-supplied names (preset/task/model ids), not schema keys:
+# the walk stops at these subtrees instead of reporting the user's own names as unknown.
+_OPEN_SUBTREE_PATHS = frozenset({
+    "moa.presets",  # preset names chosen by the user
+})
+
+# Leaf paths whose declared default is the SHORT form of a richer shape. Root ``model`` is either a
+# bare model id (str) or the canonical ``model: {provider: ..., default: ...}`` mapping —
+# ``_normalize_root_model_keys`` flattens the str form into the dict at the load chokepoint — so
+# both shapes are valid on disk and neither is a violation.
+_STR_OR_MAPPING_LEAF_PATHS = frozenset({
+    "model",
+})
+
+# Sub-keys the runtime READS although DEFAULT_CONFIG omits them — the same idea as
+# ``_EXTRA_KNOWN_ROOT_KEYS``, one level down. Each names its reader so a shape change has an audit
+# trail. Deriving this set from reader call sites instead of maintaining it by hand is the real fix
+# (the #109791/#95529 false-positive class); until then a name the runtime does not read is a
+# genuine finding, and one it does read belongs here.
+_RUNTIME_ONLY_SUBKEYS = frozenset({
+    "agent.prefill_messages_file",     # gateway/config_loaders, cli.py, cron/scheduler.py
+    "agent.reasoning_effort",          # hermes_constants.py
+    "agent.personalities",             # hermes_cli/personality.py
+    "terminal.lifetime_seconds",       # tools/terminal_tool.py (TERMINAL_LIFETIME_SECONDS)
+    "skills.creation_nudge_interval",  # agent/agent_init.py
+    "code_execution.timeout",          # tools/code_execution_tool.py
+    "code_execution.max_tool_calls",   # tools/code_execution_tool.py
+})
+
+
+def _display_setting_keys() -> set:
+    """Per-platform display settings the gateway resolves (its own source of truth).
+
+    The validator asks ``gateway.display_config`` instead of carrying a second copy of the list —
+    a ``display.<setting>`` the gateway knows is not an unknown key. Guarded so the CLI works
+    where the gateway package is unavailable.
+    """
+    try:
+        from gateway.display_config import OVERRIDEABLE_KEYS
+        return set(OVERRIDEABLE_KEYS)
+    except Exception:
+        return set()
+
+
+def _walk_schema(
+    issues: List[ConfigIssue], user: Dict[str, Any], schema: Dict[str, Any], path: str, depth: int = 0,
+) -> None:
+    """Compare one user mapping against the schema mapping declared for the same path."""
+    display_keys = _display_setting_keys() if path == "display" else set()
+    for key, value in user.items():
+        if not isinstance(key, str) or key in _PLATFORM_CONTAINER_KEYS:
+            continue
+        child = f"{path}.{key}" if path else key
+        if child in _OPEN_SUBTREE_PATHS:
+            continue
+        if key not in schema:
+            if child in _RUNTIME_ONLY_SUBKEYS or key in display_keys:
+                continue
+            suggestion = _suggest_closest_key(key, set(schema))
+            _issue(issues, "warning", f"unknown config key '{child}'",
+                   f"Did you mean '{suggestion}'? Move '{child}' under a bare-name top-level key "
+                   f"if it belongs to a skill or external app, not inside '{path}'."
+                   if suggestion else
+                   f"'{path}' has no '{key}' key — remove it or check the spelling")
+            continue
+        expected = schema[key]
+        mismatch = _schema_shape_error(child, expected, value)
+        if mismatch:
+            _issue(issues, "error", mismatch, f"Fix the value at '{child}' in config.yaml")
+            continue
+        # Recurse only into mappings the schema enumerates: an EMPTY schema dict is an open
+        # container (model_thresholds, extra_body, channel_prompts, status_phrases, ...) whose
+        # keys are the user's own names.
+        if isinstance(expected, dict) and expected and isinstance(value, dict) and depth < 8:
+            _walk_schema(issues, value, expected, child, depth + 1)
+
+
+def _validate_known_sections(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """Check sub-keys and value shapes inside the sections ``DEFAULT_CONFIG`` enumerates.
+
+    Only *under* a known section: arbitrary top-level keys stay allowed (see the open-world note
+    in ``validate_config_structure``), so a closed-world allowlist never rejects the env-style
+    keys users feed skills and external apps. Unknown sub-keys are warnings rather than errors
+    because the validator cannot see keys contributed by plugins (#109791/#95529) — a false
+    positive there costs more trust than the typo it would catch.
+    """
+    for key, value in config.items():
+        if not isinstance(key, str) or key.startswith("_") or key not in DEFAULT_CONFIG:
+            continue
+        if key in _OPEN_SUBKEY_TOP_LEVEL_KEYS or key in _PLATFORM_CONTAINER_KEYS:
+            continue
+        expected = DEFAULT_CONFIG[key]
+        mismatch = _schema_shape_error(key, expected, value)
+        if mismatch:
+            _issue(issues, "error", mismatch, f"Fix the value at '{key}' in config.yaml")
+        elif isinstance(expected, dict) and expected and isinstance(value, dict):
+            _walk_schema(issues, value, expected, key)
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1294,6 +1446,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
+    _validate_known_sections(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
@@ -1323,21 +1476,119 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     return issues
 
 
-def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
-    """Print config structure warnings to stderr at startup; nothing if config is healthy."""
+_STRICT_VALIDATION_ENV = "HERMES_STRICT_CONFIG_VALIDATION"
+
+# Config-file signatures (path, mtime_ns, size) whose issues this process already reported, so a
+# warn-only report prints once per file version instead of on every load_config() call.
+_CONFIG_VALIDATION_REPORTED: set = set()
+
+
+def _redact_issue_text(text: str) -> str:
+    """Scrub secret-shaped content before an issue reaches stderr/logs.
+
+    The gate's output is a display surface, so it applies the same discipline as
+    ``set_config_value``'s ``mask_secret`` echo: name the key and the expected shape, never the
+    value. A pre-existing validator message may quote an enum-shaped value, so scrub it anyway.
+    """
     try:
-        issues = validate_config_structure(config)
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
     except Exception:
-        issues = []
+        return text
+
+
+def _config_validation_signature() -> Optional[Tuple[str, int, int]]:
+    """``(path, mtime_ns, size)`` of config.yaml, or None when there is no file to validate."""
+    path = get_config_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+def strict_validation_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the load-time gate must fail fast instead of reporting.
+
+    The env var wins over the config key so an operator can harden an existing install (or one
+    CI/gateway run) without editing ``config.yaml``.
+    """
+    raw = os.environ.get(_STRICT_VALIDATION_ENV)
+    if raw is not None and raw.strip():
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool((DEFAULT_CONFIG if config is None else config).get("strict_validation"))
+
+
+def _emit_config_issues(issues: List["ConfigIssue"]) -> None:
+    """Print the validation report to stderr; nothing if config is healthy."""
     if not issues:
         return
 
     lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
     for ci in issues:
         marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
-        lines.append(f"  {marker} {ci.message}")
+        lines.append(f"  {marker} {_redact_issue_text(ci.message)}")
+    if any(ci.severity == "error" for ci in issues):
+        lines.append("  \033[2mSet strict_validation: true (or "
+                     f"{_STRICT_VALIDATION_ENV}=1) to fail fast instead of warning.\033[0m")
     lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
     sys.stderr.write("\n".join(lines) + "\n\n")
+
+
+def _config_validation_gate(config: Dict[str, Any]) -> None:
+    """Load-time gate: validate the merged config once per file version, then warn or fail fast.
+
+    Warn-only is the default. Flipping a config gate to fatal on day one breaks installs whose
+    slightly-off config "worked" until now, and some error-severity issues (a fallback chain
+    missing a model, a stale web backend) still leave a usable runtime — the operator decides
+    when a warning becomes a stop. Strict mode is opt-in per install/env, so the harder rollout
+    exists without a migration or a flag day. Severity stays explicit: shape violations are
+    ``error`` (something *will* misbehave), unknown sub-keys are ``warning`` (the validator
+    cannot see plugin-contributed keys), and only errors are fatal in strict mode.
+    """
+    signature = _config_validation_signature()
+    if signature is not None and signature in _CONFIG_VALIDATION_REPORTED:
+        return
+    try:
+        issues = validate_config_structure(config)
+    except Exception:
+        return  # the gate must never be the thing that breaks a load
+    if strict_validation_enabled(config):
+        fatal = [ci for ci in issues if ci.severity == "error"]
+        if fatal:
+            detail = "\n".join(f"  ✗ {_redact_issue_text(ci.message)}" for ci in fatal)
+            raise InvalidUserConfigError(
+                "Invalid configuration (strict validation):\n" + detail +
+                "\nFix config.yaml, or drop " + _STRICT_VALIDATION_ENV +
+                " / strict_validation to load with warnings instead.")
+    if signature is not None:
+        _CONFIG_VALIDATION_REPORTED.add(signature)
+    _emit_config_issues(issues)
+
+
+def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
+    """Print config structure warnings to stderr at startup; nothing if config is healthy.
+
+    With no explicit *config*, a file version the load-time gate already reported is skipped, so
+    the user gets one report per config version however many startup surfaces ask for it.
+    """
+    if config is not None:
+        try:
+            _emit_config_issues(validate_config_structure(config))
+        except Exception:
+            pass
+        return
+
+    signature = _config_validation_signature()
+    if signature is not None and signature in _CONFIG_VALIDATION_REPORTED:
+        return
+    try:
+        issues = validate_config_structure()
+    except Exception:
+        issues = []
+    if signature is not None and signature in _CONFIG_VALIDATION_REPORTED:
+        return  # the load inside validate_config_structure() already reported this version
+    _emit_config_issues(issues)
 
 
 def warn_deprecated_cwd_env_vars() -> None:
@@ -2335,6 +2586,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        # Load-time gate: report (once per file version) or fail fast in strict mode, before the
+        # result is cached and handed to callers that would otherwise fail late at first use.
+        _config_validation_gate(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
             # load_config_readonly() callers all see the same stable object. The env snapshot
@@ -3518,6 +3772,41 @@ def _refuse_container_type_mismatch(key: str, value: Any, user_config: Dict[str,
         "  or edit config.yaml directly.")
 
 
+def _schema_value_error(key: str, value: Any) -> Optional[str]:
+    """Refuse a ``config set`` value whose shape contradicts the key's declared type.
+
+    The write path manufactured the next bug report (#76457/#78103 class): ``_coerce_config_set_value``
+    keeps any string-typed key verbatim, so a JSON literal handed to a scalar key lands as quoted
+    text every reader sees as a string, and a scalar handed to a list/mapping key lands as a
+    wrong-typed leaf that ``isinstance``-gated readers silently ignore. Validating before the
+    write kills the class at the source instead of catching it at first use.
+
+    Unknown keys (no ``DEFAULT_CONFIG`` entry) stay writable — arbitrary user keys under open
+    sections and platform subtrees are supported. ``--force`` stores the value anyway.
+    """
+    expected = cfg_get(DEFAULT_CONFIG, *_split_key_path(key))
+    if expected is None or key in _STR_OR_MAPPING_LEAF_PATHS:
+        return None
+    if key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:
+        # A bare name for a ``parse_config_string_list`` slot is one entry, not a shape violation:
+        # ``_refuse_container_type_mismatch`` wraps it into a one-item list at the same call site.
+        return None
+    if isinstance(expected, str) and isinstance(value, str) and value.lstrip()[:1] in "[{":
+        try:
+            parsed = json.loads(value.strip())
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            kind = "mapping" if isinstance(parsed, dict) else "list"
+            return (f"'{key}' expects a string, but the value is a {kind} literal — it would be "
+                    f"stored verbatim as text and every reader would see a string. "
+                    f"Use --force to store it anyway.")
+    if value is None or _value_matches_shape(expected, value):
+        return None
+    return (f"'{key}' expects {_expected_shape(expected)}, but the value resolves to "
+            f"{type(value).__name__}. Use --force to store it anyway.")
+
+
 def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     """Canonicalize ``platforms.<name>.<display_setting>`` -> ``display.platforms.<name>.<setting>``.
     The gateway resolves per-platform display settings (streaming, show_reasoning, ...) from
@@ -3694,6 +3983,12 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
+    # Pre-write validation: refuse a value whose shape contradicts the key's declared type, so the
+    # write path stops manufacturing invalid config for the loader to find later (#76457/#78103).
+    if not force:
+        value_error = _schema_value_error(key, value)
+        if value_error:
+            _exit_invalid(f"✗ {value_error}")
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

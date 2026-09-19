@@ -84,7 +84,7 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     source = primary.handled[0].source
     assert (source.profile, source.guild_id, source.scope_id, source.parent_chat_id) == (
         "yuki", "guild", "guild", "parent")
-    assert runner._adapter_for_source(source) is primary
+    assert runner._delivery_adapter_for(source) is primary
     assert not collect(runner)
 
     # A connected secondary owns its credential even where the primary route matches.
@@ -96,7 +96,7 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     assert len(primary.sent) == 1
     assert len(secondary.sent) == len(secondary.handled) == 1
     assert secondary.handled[0].source.scope_id == "guild"
-    assert runner._adapter_for_source(secondary.handled[0].source) is secondary
+    assert runner._delivery_adapter_for(secondary.handled[0].source) is secondary
     assert not unseen(task)
 
 

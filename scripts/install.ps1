@@ -771,6 +771,66 @@ function Get-ManagedUvPath {
     return Join-Path $HermesHome "uv\uv.exe"
 }
 
+function Test-ManagedUvBinary {
+    # `& exe` never throws on a nonzero exit, so Test-Path plus a bare
+    # `--version` accepted the dead Chocolatey launcher a previous run had
+    # copied into bin\ (issue #110350).  Accept only exit 0 AND a line that
+    # looks like `uv <version>`; stderr is merged and the error preference
+    # relaxed so a launcher's error text cannot turn into an exception under
+    # a caller's Stop preference.  Returns the version line or $null.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $global:LASTEXITCODE = 0
+        $output = @(& $Path --version 2>&1 | ForEach-Object { "$_" })
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($exitCode -ne 0) { return $null }
+    $line = $output | Where-Object { $_ -match '^uv\s+\d+\.\d+' } | Select-Object -First 1
+    if ($line) { return $line.Trim() }
+    return $null
+}
+
+function Resolve-UvShimTarget {
+    # Package-manager launchers locate the real uv RELATIVE to their own
+    # location, so a copied launcher is dead on arrival (issue #110350).
+    # Map the well-known ones to the standalone binary: a `<name>.shim`
+    # sidecar (`path = ...`; Scoop, and Chocolatey shims that carry one) and
+    # the Chocolatey ShimGen layout bin\uv.exe -> lib\uv\tools\uv.exe.  A
+    # symlink (winget Links\) resolves to its target; any other reparse point
+    # (WindowsApps app-execution alias) has no copyable file, so return $null
+    # and let the caller skip the salvage.  Anything else is returned as-is.
+    param([Parameter(Mandatory = $true)][string]$ExePath)
+    $item = Get-Item -LiteralPath $ExePath -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return $null }
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($item.LinkType -eq "SymbolicLink" -and $item.Target) {
+            $linkTarget = @($item.Target)[0]
+            if (Test-Path -LiteralPath $linkTarget -PathType Leaf) { return $linkTarget }
+        }
+        return $null
+    }
+    $dir = Split-Path $ExePath -Parent
+    $stem = [IO.Path]::GetFileNameWithoutExtension($ExePath)
+    $targets = @()
+    $sidecar = Join-Path $dir "$stem.shim"
+    if (Test-Path -LiteralPath $sidecar -PathType Leaf) {
+        $pathLine = @(Get-Content -LiteralPath $sidecar -ErrorAction SilentlyContinue) |
+            Where-Object { $_ -match '^\s*path\s*=\s*"?([^"]+?)"?\s*$' } | Select-Object -First 1
+        if ($pathLine -and ($pathLine -match '^\s*path\s*=\s*"?([^"]+?)"?\s*$')) { $targets += $Matches[1] }
+    }
+    $targets += Join-Path (Split-Path $dir -Parent) "lib\$stem\tools\$stem.exe"
+    foreach ($target in $targets) {
+        if (Test-Path -LiteralPath $target -PathType Leaf) { return $target }
+    }
+    return $ExePath
+}
+
 function Move-LegacyManagedUv {
     # One-time migration from the pre-isolation layout.  Installers before the
     # uv isolation change placed the managed binaries at $HermesHome\bin\uv.exe
@@ -815,10 +875,14 @@ function Install-Uv {
     # PATH.  The runtime update path (hermes_cli/managed_uv.py) looks in the
     # same place, so install.ps1 and `hermes update` stay in sync.
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        $version = & $managedUv --version
-        Write-Success "Managed uv found ($version)"
-        return $true
+        $existingVersion = Test-ManagedUvBinary $managedUv
+        if ($existingVersion) {
+            $script:UvCmd = $managedUv
+            Write-Success "Managed uv found ($existingVersion)"
+            return $true
+        }
+        Write-Info "Existing managed uv at $managedUv failed validation; removing and reinstalling"
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     Write-Info "Installing managed uv into $(Split-Path $managedUv -Parent) ..."
@@ -896,15 +960,27 @@ function Install-Uv {
                 if (Test-Path $defaultUv) { $existingUv = $defaultUv }
             }
             if ($existingUv) {
-                Write-Info "Salvaging existing uv from $existingUv"
-                try {
-                    Copy-Item $existingUv $managedUv -Force
-                    # Verify the salvaged binary actually runs before
-                    # trusting it as the managed uv.
-                    $null = & $managedUv --version
-                } catch {
-                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
-                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                # Validate the candidate where it lives (a shim runs fine in
+                # place), resolve launchers to the real binary, and validate
+                # the COPY at its new location -- that last check is the one
+                # that catches a relocated launcher.
+                $salvageSource = Resolve-UvShimTarget $existingUv
+                if (-not $salvageSource) {
+                    Write-Info "Existing uv at $existingUv is an app-execution alias; cannot be copied"
+                } elseif (-not (Test-ManagedUvBinary $salvageSource)) {
+                    Write-Info "Existing uv at $salvageSource does not run; not salvaging it"
+                } else {
+                    Write-Info "Salvaging existing uv from $salvageSource"
+                    try {
+                        Copy-Item $salvageSource $managedUv -Force
+                        if (-not (Test-ManagedUvBinary $managedUv)) {
+                            Write-Info "Copied uv at $managedUv failed validation; continuing fallback"
+                            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {
+                        Write-Info "Existing uv at $salvageSource could not be salvaged: $_"
+                        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                    }
                 }
             }
         }
@@ -912,10 +988,14 @@ function Install-Uv {
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
-            $script:UvCmd = $managedUv
-            $version = & $managedUv --version
-            Write-Success "Managed uv installed ($version)"
-            return $true
+            $version = Test-ManagedUvBinary $managedUv
+            if ($version) {
+                $script:UvCmd = $managedUv
+                Write-Success "Managed uv installed ($version)"
+                return $true
+            }
+            Write-Info "Installer output at $managedUv failed validation; removing"
+            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
         }
 
         Write-Err "uv installed but not found at $managedUv"
@@ -4400,12 +4480,13 @@ function Install-Desktop {
     }
 
     # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
-    #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.mjs)
+    #     electron-builder `afterExtract` hook (apps/desktop/scripts/after-extract.mjs)
     #     during `npm run pack` above -- for every build, so the installer's
     #     --update rebuild stays branded too. No separate stamp step needed here.
-    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
-    #     =false) because enabling it drags in signtool -> winCodeSign -> the
-    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
+    #     It runs BEFORE the ASAR-integrity PE rewrite (rcedit cannot commit to
+    #     the rewritten exe, #105629). electron-builder's own rcedit step stays
+    #     disabled (signAndEditExecutable=false) because enabling it drags in
+    #     signtool -> winCodeSign -> the unfixable symlink crash.
 
     # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
     #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with

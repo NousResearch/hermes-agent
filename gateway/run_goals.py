@@ -139,7 +139,7 @@ class GatewayGoalsMixin:
                 return
             session_id = current
             watch[quick_key] = (source, session_id)
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter is None or not adapter._message_handler:
             return
         if (
@@ -205,7 +205,7 @@ class GatewayGoalsMixin:
             logger.debug("Failed to start heartbeat poller", exc_info=True)
 
     def _goal_notice_adapter(self, source: Any):
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
         return adapter
@@ -308,7 +308,7 @@ class GatewayGoalsMixin:
             return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)

@@ -2638,7 +2638,7 @@ class TestFormatMessage:
 
         args = {"target": target, "pattern": pattern}
         ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
-        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter)
         message = TurnRunner(runner, ctx)._progress_build_message("search_files", pattern, args)
         client = adapter._app.client
         client.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}

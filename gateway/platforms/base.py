@@ -2247,7 +2247,8 @@ class BasePlatformAdapter(ABC):
             logger.debug("topic recovery hook failed", exc_info=True)
             return
         try:
-            event.source = dataclasses.replace(source, thread_id=str(recovered))
+            from gateway.session_identity import replace_source
+            event.source = replace_source(source, thread_id=str(recovered))  # keeps the pinned identity
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)
 
@@ -2304,6 +2305,50 @@ class BasePlatformAdapter(ABC):
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
         self._owner_profile = None if (name := (profile_name or "").strip() or None) == "default" else name
 
+    def _owner_transport_profile(self) -> Optional[str]:
+        """Transport profile for :func:`resolve_identity`: the owner name, or ``None`` = derive it
+        from the registry (the primary's identity then spells ``"default"`` out itself)."""
+        owner = getattr(self, "_owner_profile", None)
+        return owner if isinstance(owner, str) and owner.strip() else None
+
+    def _canonicalize(self, source: Optional["SessionSource"]):
+        """Pin the source's :class:`RoutingIdentity` before anything derives a key from it. Every
+        ingress path (fresh event, batch merge, busy path, control command, callback) calls this
+        FIRST. Returns the identity, or ``None`` when it cannot be resolved (a rejected route under
+        multiplexing marks ``source.profile_route_rejected``; ``_drop_unresolved`` reads it) or when
+        no runner seam exists (hand-built adapters, restored sources: the legacy readers stay)."""
+        if source is None:
+            return None
+        from gateway.session_identity import canonical_identity, identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None or not callable(getattr(runner, "_transport_owner", None)):
+            return None
+        try:
+            return canonical_identity(
+                source, runner=runner, adapter=self, transport_profile=self._owner_transport_profile())
+        except Exception:
+            # Duck-typed runners (SimpleNamespace / MagicMock rigs) have no registry to resolve
+            # against; the key then falls back to the pre-identity readers instead of failing ingress.
+            logger.debug("[%s] identity resolution failed; using legacy key readers", self.name, exc_info=True)
+            return None
+
+    def _drop_unresolved(self, event: "MessageEvent") -> bool:
+        """True when *event* must be dropped: its identity could not be resolved because the route
+        targets an unserved profile. Same disposition as the runner's ingress gate — one WARNING,
+        never a fall-through to ``agent:main``."""
+        source = getattr(event, "source", None)
+        if self._canonicalize(source) is not None:
+            return False
+        if getattr(source, "profile_route_rejected", False) is not True:
+            return False
+        logger.warning(
+            "[%s] Dropping inbound event for %s: explicit profile route targets an unserved profile",
+            self.name, getattr(source, "chat_id", "?"))
+        return True
+
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
@@ -2344,6 +2389,7 @@ class BasePlatformAdapter(ABC):
         return self._source_session_key(event.source)
 
     def _source_session_key(self, source: "SessionSource") -> str:
+        self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra = self.config.extra
         return build_session_key(
             source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
@@ -2356,6 +2402,8 @@ class BasePlatformAdapter(ABC):
 
     def _enqueue_text_event(self, event: "MessageEvent") -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
+        if self._drop_unresolved(event):
+            return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         if existing is None:
@@ -3396,7 +3444,7 @@ class BasePlatformAdapter(ABC):
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
         registry adapter mid-task; an unsent final response belongs on the replacement transport,
         while message IDs, edits and deletes stay owned by the old one (nothing is migrated)."""
-        resolve = getattr(self.gateway_runner, "_adapter_for_source", None)
+        resolve = getattr(self.gateway_runner, "_delivery_adapter_for", None)
         if not callable(resolve):
             return self
         try:
@@ -3816,6 +3864,9 @@ class BasePlatformAdapter(ABC):
 
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
+        # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
+        if self._drop_unresolved(event):
+            return
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         # Explicitly routed events already name their destination; recovering a
         # different topic would redirect them and yield before the session claim.
@@ -3846,6 +3897,7 @@ class BasePlatformAdapter(ABC):
         # races with the running task (split-brain, see PR #4926).
         # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
         # runner. Without this, they are queued as pending messages and either: See #4926.
+        self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):

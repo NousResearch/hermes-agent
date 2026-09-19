@@ -870,6 +870,14 @@ _CODEX_ACK_CONTINUATION_NUDGE = (
     "after completing the task.]"
 )
 
+# Re-prompt after a collapsed fragment ended a turn that had done real tool work (#103483). Asks
+# for the same answer again when it WAS complete, so a false positive costs one call, never the answer.
+_DEGENERATE_FINAL_NUDGE = (
+    "[System: Your previous message ended the turn with a fragment that is not a usable answer. "
+    "If the task is unfinished, continue it and then give the complete answer. If that fragment "
+    "WAS your complete answer, send it again exactly as before.]"
+)
+
 # Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
 _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was included. Do not narrate a plan or "

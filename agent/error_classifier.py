@@ -475,6 +475,26 @@ _REASONING_FIELD_TOKEN = re.compile(
 )
 
 
+_REASONING_REQUIRED_MARKERS = (
+    "mandatory", "cannot be disabled", "can't be disabled", "must be enabled", "is required",
+    "always enabled", "cannot be turned off",
+)
+
+
+def is_reasoning_required_rejection(error_msg: str) -> bool:
+    """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
+    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
+    ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
+    reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
+    also works, but tells the caller nothing about the next call)."""
+    msg = (error_msg or "").lower()
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    if token is None:
+        return False
+    near = msg[max(0, token.start() - 48):token.end() + 96]
+    return any(m in near for m in _REASONING_REQUIRED_MARKERS)
+
+
 def is_reasoning_field_rejection(error_msg: str) -> bool:
     """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
     ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized

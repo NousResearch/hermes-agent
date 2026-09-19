@@ -1,45 +1,6 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
-  catalog: {
-    listView: 'عرض القائمة',
-    cardView: 'عرض البطاقات',
-    installTitle: (name: string) => `تثبيت «${name}»؟`,
-    installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
-    installTo: 'التثبيت في',
-    thisComputer: 'هذا الكمبيوتر',
-    installing: 'جارٍ التثبيت…',
-    installComplete: (name: string) => `تم تثبيت «${name}»`,
-    destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
-    browse: 'تصفح',
-    installed: 'المثبتة',
-    searchSkills: 'البحث في المهارات',
-    searchPlugins: 'البحث في الإضافات',
-    allSources: 'كل المصادر',
-    allCategories: 'كل الفئات',
-    about: 'نبذة',
-    author: 'المؤلف',
-    source: 'المصدر',
-    category: 'الفئة',
-    version: 'الإصدار',
-    platforms: 'المنصات',
-    requires: 'المتطلبات',
-    tools: 'الأدوات',
-    hooks: 'الخطافات',
-    repository: 'المستودع',
-    documentation: 'التوثيق',
-    noResults: 'لا توجد نتائج مطابقة',
-    tryAnother: 'جرّب بحثًا آخر أو امسح عوامل التصفية.',
-    clearFilters: 'مسح عوامل التصفية',
-    loadFailed: 'تعذر تحميل الكتالوج',
-    retry: 'حاول مرة أخرى',
-    more: 'عرض المزيد',
-    pinned: 'التزام تمت مراجعته',
-    snapshotHint: 'من كتالوج Hermes. لا يتصل التصفح بمستودعات المصدر مطلقًا.',
-    installHint: 'راجع المصدر قبل التثبيت. تسري التغييرات على الجلسات الجديدة.',
-    results: (count: number) => `النتائج: ${count.toLocaleString('ar')}`,
-    back: 'العودة إلى النتائج'
-  },
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
@@ -322,7 +283,7 @@ export const ar = defineLocale({
       'nav.commandCenter': 'فتح مركز الأوامر',
       'nav.settings': 'فتح الإعدادات',
       'nav.profiles': 'فتح الملفات الشخصية',
-      'nav.skills': 'فتح المهارات',
+      'nav.capabilities': 'فتح المهارات',
       'nav.messaging': 'فتح المراسلة',
       'nav.artifacts': 'فتح العناصر',
       'nav.cron': 'فتح المهام المجدولة',
@@ -1357,7 +1318,7 @@ export const ar = defineLocale({
         title: 'الإعدادات',
         detail: 'تكوين Hermes desktop'
       },
-      skills: {
+      capabilities: {
         title: 'المهارات والأدوات',
         detail: 'تفعيل المهارات ومجموعات الأدوات والمزوّدين'
       },
@@ -1950,7 +1911,7 @@ export const ar = defineLocale({
     },
     nav: {
       'new-session': 'جلسة جديدة',
-      skills: 'المهارات',
+      capabilities: 'المهارات',
       messaging: 'المراسلة',
       artifacts: 'العناصر',
       chat: 'المحادثة',

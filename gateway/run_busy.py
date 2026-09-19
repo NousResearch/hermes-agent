@@ -357,7 +357,7 @@ class GatewayBusySessionMixin:
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         from gateway.platforms.base import merge_pending_message_event
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
@@ -418,7 +418,7 @@ class GatewayBusySessionMixin:
         if not self._pending_event_audio_paths(event):
             return text
         enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
-            event, self._adapter_for_source(event.source), event.source, text, log_context="Busy-steer"
+            event, self._delivery_adapter_for(event.source), event.source, text, log_context="Busy-steer"
         )
         return (enriched_text or text).strip() if successful_transcripts else text
 
@@ -486,7 +486,7 @@ class GatewayBusySessionMixin:
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
         """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
         if self._queue_during_drain_enabled(effective_mode):
@@ -543,7 +543,7 @@ class GatewayBusySessionMixin:
                         "Approval response via plain text: session=%s verb=%s args=%r",
                         session_key, _verb, _normalized_args,
                     )
-                    _adapter = self._adapter_for_source(event.source)
+                    _adapter = self._delivery_adapter_for(event.source)
                     if _adapter and _reply:
                         _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
                         if _text:
@@ -745,7 +745,7 @@ class GatewayBusySessionMixin:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
         if event.internal and event.allow_gateway_control:
-            adapter = self._adapter_for_source(event.source)
+            adapter = self._delivery_adapter_for(event.source)
             if adapter and session_key in getattr(adapter, "_pending_messages", {}):
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
@@ -774,7 +774,7 @@ class GatewayBusySessionMixin:
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
         # Internal synthetic events (delegation / background completions) must never interrupt or
@@ -873,7 +873,7 @@ class GatewayBusySessionMixin:
     async def _send_command_ack(self, source, text: str, label: str) -> None:
         """Best-effort acknowledgment for a slash command that falls through to agent processing."""
         try:
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter:
                 await adapter.send(
                     str(source.chat_id), text, metadata=self._thread_metadata_for_source(source)
@@ -984,7 +984,7 @@ class GatewayBusySessionMixin:
         has_media = bool(getattr(event, "media_urls", None))
         if not queued_text and not has_media:
             return "Usage: /queue <prompt>"
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter:
             self._enqueue_fifo(quick_key, MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
@@ -1014,7 +1014,7 @@ class GatewayBusySessionMixin:
 
         def _queue_fallback(reply: str) -> str:
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter:
                 self._enqueue_fifo(quick_key, MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
@@ -1332,7 +1332,7 @@ class GatewayBusySessionMixin:
         # Register FIRST so a fast button click cannot race the send_slash_confirm return.
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
         if adapter is not None:

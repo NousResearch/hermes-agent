@@ -200,6 +200,154 @@ class TestCuteToolMessagePreviewLength:
         assert text in line
 
 
+class TestCuteSkillManage:
+    """skill_manage completion lines must name the skill that was created/changed (#52085)."""
+
+    def test_create_success_names_the_skill_and_verb(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": "deploy-runbook"},
+            0.1,
+            result='{"success": true, "message": "Skill \'deploy-runbook\' created."}',
+        )
+        assert "created" in line
+        assert "deploy-runbook" in line
+
+    def test_patch_success_reports_updated(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "patch", "name": "x"},
+            0.1,
+            result='{"success": true, "message": "Skill \'x\' patched."}',
+        )
+        assert "updated" in line
+        assert " x" in line
+
+    def test_failed_create_does_not_claim_created(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": "deploy-runbook"},
+            0.1,
+            result='{"success": false, "error": "A skill named deploy-runbook already exists"}',
+        )
+        assert "created" not in line
+
+    def test_missing_name_still_returns_well_formed_line(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create"},
+            0.1,
+            result='{"success": true}',
+        )
+        assert line.startswith("┊")
+        assert "created" in line
+        assert line.endswith("0.1s")
+
+    def test_blank_name_still_returns_well_formed_line(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "delete", "name": "   "},
+            0.1,
+            result='{"success": true}',
+        )
+        assert line.startswith("┊")
+        assert "deleted" in line
+        assert line.endswith("0.1s")
+
+    def test_long_name_respects_configured_preview_cap(self):
+        set_tool_preview_max_len(20)
+        name = "a-very-long-skill-name-that-exceeds-the-cap"
+
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": name},
+            0.1,
+            result='{"success": true}',
+        )
+
+        assert name not in line
+        assert "..." in line
+
+    # ---- advertised call shape: {"operations": [...]} (SKILL_MANAGE_SCHEMA requires it) ----
+
+    def test_operations_array_success_names_the_skill(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "create", "name": "deploy-runbook", "content": "..."}]},
+            0.1,
+            result='{"success": true, "message": "Skill \'deploy-runbook\' created."}',
+        )
+        assert "created" in line
+        assert "deploy-runbook" in line
+
+    def test_multi_op_batch_names_first_skill_and_marks_the_rest(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [
+                {"action": "create", "name": "first-skill", "content": "..."},
+                {"action": "patch", "name": "second-skill"},
+            ]},
+            0.1,
+            result='{"success": true}',
+        )
+        assert "first-skill" in line
+        assert "+1" in line
+
+    def test_sole_delete_batch_reports_deleted(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "delete", "name": "gone"}]},
+            0.1,
+            result='{"success": true}',
+        )
+        assert "deleted" in line
+        assert "gone" in line
+        assert "updated" not in line
+
+    def test_failed_batch_names_intent_without_claiming_success(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "create", "name": "dupe"}]},
+            0.1,
+            result='{"success": false, "error": "A skill named dupe already exists"}',
+        )
+        assert "created" not in line
+        assert "skill skill" not in line
+        assert "already exists" in line  # failure suffix proves it went through the real path
+
+    def test_staged_write_reports_staged_not_created(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": "staged-one"},
+            0.1,
+            result='{"success": true, "staged": true, "pending_id": "p1", "message": "Queued for approval; not yet saved."}',
+        )
+        assert "staged" in line
+        assert "created" not in line
+        assert "staged-one" in line
+
+    def test_unknown_action_verb_passes_through(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "move", "name": "renamed-skill"}]},
+            0.1,
+            result='{"success": true}',
+        )
+        assert "move" in line
+        assert "renamed-skill" in line
+
+    def test_failed_op_without_action_falls_back_to_updated_not_skill_skill(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"name": "x"}]},
+            0.1,
+            result='{"success": false, "error": "boom"}',
+        )
+        assert "skill skill" not in line  # the round-1 bug: verb and name fallbacks collided
+        assert "updated x" in line        # neutral fallback verb + the op's name
+        assert "boom" in line             # failure marker survives
+
+
 class TestEditDiffPreview:
 
 

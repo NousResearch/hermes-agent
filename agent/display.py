@@ -1012,6 +1012,31 @@ def _cute_skill_view(a: dict, _r) -> str:
     return f"┊ 📚 skill     {_cute_trunc(label)}"
 
 
+_SKILL_MANAGE_VERBS = {
+    "create": "created", "patch": "updated", "edit": "updated",
+    "write_file": "wrote", "remove_file": "removed", "delete": "deleted",
+}
+
+
+def _cute_skill_manage(a: dict, r) -> str:
+    """Completion line naming the skill a ``skill_manage`` call created or changed. The tool
+    advertises ONE call shape — an ``operations`` array — whose first op names the line; the
+    legacy flat top-level fields still take precedence when present (old transcripts, staged replay)."""
+    ops = a.get("operations")
+    head = ops[0] if isinstance(ops, list) and ops and isinstance(ops[0], dict) else {}
+    action = str(a.get("action") or head.get("action") or "").lower()
+    name = _cute_trunc(str(a.get("name") or head.get("name") or "").strip() or "skill")
+    more = f" +{len(ops) - 1}" if isinstance(ops, list) and len(ops) > 1 else ""
+    data = safe_json_loads(r) if r else None
+    if isinstance(data, dict) and data.get("staged"):
+        verb = "staged"                 # write_approval staged it; nothing was saved yet
+    elif not _result_succeeded(r):
+        verb = action or "updated"      # failed/unknown: report the intent; the failure suffix marks the outcome
+    else:
+        verb = _SKILL_MANAGE_VERBS.get(action, action or "updated")
+    return f"┊ 📚 skill     {verb} {name}{more}"
+
+
 def _cute_cronjob(a: dict, _r) -> str:
     action = a.get("action", "?")
     if action == "create":
@@ -1074,6 +1099,7 @@ _CUTE_LINES = {
     "memory": _cute_memory,
     "skills_list": lambda a, r: f"┊ 📚 skills    list {a.get('category', 'all')}",
     "skill_view": _cute_skill_view,
+    "skill_manage": _cute_skill_manage,
     "image_generate": lambda a, r: f"┊ 🎨 create    {_cute_trunc(a.get('prompt', ''))}",
     "text_to_speech": lambda a, r: f"┊ 🔊 speak     {_cute_trunc(a.get('text', ''))}",
     "vision_analyze": lambda a, r: f"┊ 👁️  vision    {_cute_trunc(a.get('question', ''))}",

@@ -625,18 +625,51 @@ def _cmd_queue(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": arg}) if arg else _err(rid, 4004, "usage: /queue <prompt>")
 
 
-def _prompt_builtin(module: str, fn: str, kw: str = ""):
-    """/learn, /plan, /init: submit ``module.fn(arg)`` as a normal turn (the live agent does the work)."""
+def _learn_ack(arg: str, _message: str) -> str:
+    """Gateway/CLI ack wording (gateway/run_inbound.py:813); client renders a plain system line.
+
+    ``arg`` arrives already stripped from ``cmd``, so emptiness is the whole test.
+    """
+    return f"Learning a skill from {'what you described' if arg else 'this conversation'}…"
+
+
+def _plan_ack(arg: str, _message: str) -> str:
+    # Collapse whitespace before slicing: clients render the notice as one system
+    # line, and the 80-char cut must land on the text the user actually sees.
+    task = " ".join(arg.split())
+    return f"Planning: {task[:80]}{'…' if len(task) > 80 else ''}" if task else "Planning from this conversation's context…"
+
+
+def _init_ack(_arg: str, message: str) -> str:
+    # The ack wording depends on whether AGENTS.md exists, which the builder encodes (#52085).
+    return ("Updating AGENTS.md from a project scan…"
+            if "UPDATE the existing AGENTS.md" in message
+            else "Generating AGENTS.md from a project scan…")
+
+
+def _prompt_builtin(module: str, fn: str, ack, kw: str = ""):
+    """/learn, /plan, /init: submit ``module.fn(arg)`` as a normal turn (the live agent does the
+    work), with the same ack line the CLI/gateway print and a ``display`` label so the GUIs echo
+    the slash command, not the model-facing builder prompt (#52085)."""
 
     def cmd(rid, params, session, name, arg):
+        # The wire contract allows null (`CommandDispatchParams.arg: str | None`); the builders
+        # and every other surface treat it as an empty request.
+        arg = (arg or "").strip()
         build = getattr(_tools_mod(module), fn)
-        return _ok(rid, {"type": "send", "message": build(**{kw: arg}) if kw else build(arg)})
+        message = build(**{kw: arg}) if kw else build(arg)
+        return _ok(rid, {
+            "type": "send",
+            "message": message,
+            "notice": ack(arg, message),
+            "display": f"/{name}{f' {arg}' if arg else ''}",
+        })
     return cmd
 
 
-_cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
-_cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
-_cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
+_cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt", _learn_ack)
+_cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt", _plan_ack)
+_cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", _init_ack, kw="extra")
 
 
 def _cmd_moa(rid, params, session, name, arg):

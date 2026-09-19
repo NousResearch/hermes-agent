@@ -2849,6 +2849,7 @@ export const ar = defineLocale({
       thinking: 'يفكر...',
       thought: 'فكّر',
       thoughtBriefly: 'فكّر قليلاً',
+      working: 'يعمل',
       thoughtFor: duration => `فكّر لمدة ${duration}`,
       turnDuration: duration => `استغرقت هذه الجولة ${duration}`,
       today: time => `اليوم ${time}`,

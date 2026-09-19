@@ -285,6 +285,32 @@ def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
     assert time.monotonic() - started < 8
 
 
+@pytest.mark.linux_only
+def test_bot_chat_turn_decodes_stray_stderr_bytes_lossily(tmp_path):
+    """A stray non-UTF-8 byte on the delivery child's stderr (e.g. a grandchild
+    sharing the pipe interleaving a partial multi-byte write) must not raise
+    UnicodeDecodeError in the drain thread — the turn is booked and the stream
+    tail survives with U+FFFD (#105582)."""
+    child = "import os, sys; os.write(2, b'noise before \\x80 after\\n'); sys.exit(0)"
+    result = sched_delivery._run_bot_chat_turn(
+        [sys.executable, "-c", child], _child_env(), str(tmp_path / "turn.json"), timeout=15)
+
+    assert result.returncode == 0
+    assert result.stderr == "noise before \ufffd after\n"
+
+
+@pytest.mark.linux_only
+def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
+    """The exit-1 tail is still surfaced (with U+FFFD for the bad byte) instead of
+    vanishing when the drain thread dies at the first undecodable byte (#105582)."""
+    child = "import os, sys; os.write(2, b'boom before \\x80 after\\n'); sys.exit(1)"
+    result = sched_delivery._run_bot_chat_turn(
+        [sys.executable, "-c", child], _child_env(), str(tmp_path / "turn.json"), timeout=15)
+
+    assert result.returncode == 1
+    assert result.stderr == "boom before \ufffd after\n"
+
+
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────
 
 def test_delivery_targets_include_local_profiles():

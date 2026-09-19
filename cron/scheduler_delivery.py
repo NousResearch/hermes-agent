@@ -714,8 +714,14 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
     """
     from hermes_cli.quiet_single_query import read_turn_report
 
+    # Lossy decode: this child's stdout/stderr only feed the reply capture and the
+    # failure tail, so one stray non-UTF-8 byte (e.g. a grandchild sharing the pipe
+    # interleaving a partial multi-byte write) must not raise UnicodeDecodeError in
+    # the drain thread and take both stream tails with it (#105582; same errors=
+    # hardening as _run_job_script).
     proc = subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        errors="replace",
         env=env, creationflags=windows_hide_flags())
     streams: dict = {}
 

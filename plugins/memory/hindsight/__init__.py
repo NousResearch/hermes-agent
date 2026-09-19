@@ -736,7 +736,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_id_template = cfg.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(
             self._bank_id_template,
-            fallback=cfg.get("bank_id") or banks.get("bankId", "hermes"),
+            fallback=get_secret("HINDSIGHT_BANK_ID", "") or cfg.get("bank_id") or banks.get("bankId", "hermes"),
             profile=self._agent_identity, workspace=self._agent_workspace,
             platform=self._platform, user=self._user_id, session=self._session_id,
         )

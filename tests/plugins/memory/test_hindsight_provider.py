@@ -362,6 +362,46 @@ class TestConfig:
         assert p._retain_source == "cogoport"
         assert p._build_metadata(message_count=2, turn_index=1)["source"] == "cogoport"
 
+    @pytest.mark.parametrize(("scope", "multiplex", "expected"), [
+        (None, False, "env-bank"),
+        ({"HINDSIGHT_BANK_ID": "profile-bank"}, True, "profile-bank"),
+        ({}, True, "hermes"),
+        ({}, False, "env-bank"),
+    ])
+    def test_env_bank_id_overrides_persisted_config_bank_id(self, tmp_path, monkeypatch, scope, multiplex, expected):
+        """Profile .env bank override wins over setup's persisted default."""
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+            "bank_id": "hermes",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path,
+        )
+        monkeypatch.setenv("HINDSIGHT_BANK_ID", "env-bank")
+
+        from agent.secret_scope import (
+            is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+        was_multiplex = is_multiplex_active()
+        set_multiplex_active(multiplex)
+        token = set_secret_scope(scope)
+        try:
+            p = HindsightMemoryProvider()
+            p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+            assert p._bank_id == expected
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(was_multiplex)
+
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
             "llm_provider": "openai",

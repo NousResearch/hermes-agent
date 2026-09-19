@@ -1241,6 +1241,47 @@ _OS_MARKS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Third-party import hooks (sitecustomize-level monkeypatching)
+# ---------------------------------------------------------------------------
+# Operator-installed venv hooks (e.g. hermes-claude-auth's billing bypass)
+# wrap ``agent.anthropic_adapter`` via a sys.meta_path finder installed by
+# ``sitecustomize`` at interpreter startup — before pytest runs. Those patches
+# rewrite outgoing tool names (mcp__hermes__* namespacing), which silently
+# breaks every test asserting on the adapter's own wire-name aliasing. The
+# suite must measure the repo's code, not whatever the host venv injected.
+#
+# We do NOT touch sys.meta_path: pytest's finders, the stdlib defaults, and
+# this venv's editable-install finder are all load-bearing. Instead we remove
+# the hook's patch directory from sys.path (it was prepended by the hook
+# itself) so the finder's ``import anthropic_billing_bypass`` fails; the hook
+# catches the ImportError, logs to stderr, and leaves the adapter unpatched.
+
+_HOOK_PATCH_MODULES = ("anthropic_billing_bypass",)
+
+
+def _starve_third_party_patch_hooks() -> None:
+    removed = []
+    for entry in list(sys.path):
+        try:
+            if Path(entry).resolve() == (Path.home() / ".hermes" / "patches").resolve():
+                sys.path.remove(entry)
+                removed.append(entry)
+        except OSError:
+            continue
+    for name in _HOOK_PATCH_MODULES:
+        sys.modules.pop(name, None)
+    if removed:
+        sys.stderr.write(
+            "[conftest] removed third-party patch dir(s) from sys.path: "
+            + ", ".join(removed)
+            + "\n"
+        )
+
+
+_starve_third_party_patch_hooks()
+
+
 def _relocate_basetemp_outside_operator_home(config) -> None:
     """Move pytest's basetemp out of the operator's platform-native Hermes home.
 

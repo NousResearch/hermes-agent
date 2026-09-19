@@ -31,13 +31,16 @@ def _fmt_pending_list(subsystem: str) -> str:
 
 
 def handle_pending_subcommand(
-    subsystem: str, args: List[str], *, memory_store=None, set_mode_fn=None) -> Optional[str]:
+    subsystem: str, args: List[str], *, memory_store=None, set_mode_fn=None,
+    expected_payload_sha256: Optional[str] = None) -> Optional[str]:
     """Dispatch a /memory or /skills write-approval subcommand.
 
     ``memory_store`` applies approved memory writes (CLI passes its live store; gateway a freshly
     loaded one); ``set_mode_fn`` persists the write_approval boolean. Returns text for the user,
     or None when the args are not a write-approval subcommand so the caller falls through to its
-    other handling (e.g. /skills search).
+    other handling (e.g. /skills search). An optional ``expected_payload_sha256``
+    binds approve/reject to ``wa.payload_sha256(reviewed_record["payload"])``; it
+    applies to one exact ID, never ``all``. Omit it for ordinary slash commands.
     """
     if not args:
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
@@ -45,9 +48,9 @@ def handle_pending_subcommand(
     if sub == "pending":
         return _fmt_pending_list(subsystem)
     if sub in {"approve", "apply"}:
-        return _approve(subsystem, rest, memory_store)
+        return _approve(subsystem, rest, memory_store, expected_payload_sha256)
     if sub in {"reject", "deny", "drop"}:
-        return _reject(subsystem, rest)
+        return _reject(subsystem, rest, expected_payload_sha256)
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
@@ -59,10 +62,12 @@ def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
 
 
-def _approve(subsystem: str, rest: List[str], memory_store) -> str:
+def _approve(subsystem: str, rest: List[str], memory_store, expected_payload_sha256=None) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
+    if target.lower() == "all" and expected_payload_sha256 is not None:
+        return "A payload digest binds one pending ID; it cannot be used with 'all'."
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
@@ -76,9 +81,12 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
     applied, failed = 0, []
     for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+        expected = (expected_payload_sha256 if expected_payload_sha256 is not None
+                    else wa.payload_sha256(rec.get("payload", {})))
+        ok, msg = wa.apply_pending_record(
+            subsystem, rec["id"], lambda current: _apply_one(subsystem, current, memory_store),
+            expected_payload_sha256=expected)
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
         else:
             failed.append(f"{rec['id']}: {msg}")
@@ -106,16 +114,24 @@ def _apply_one(subsystem: str, rec, memory_store):
         return False, str(e)
 
 
-def _reject(subsystem: str, rest: List[str]) -> str:
+def _reject(subsystem: str, rest: List[str], expected_payload_sha256=None) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
     if target.lower() == "all":
-        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
+        if expected_payload_sha256 is not None:
+            return "A payload digest binds one pending ID; it cannot be used with 'all'."
+        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(
+            subsystem, rec["id"], expected_payload_sha256=wa.payload_sha256(rec.get("payload", {}))))
         return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
+    record = wa.get_pending(subsystem, target)
+    if record is None:
+        return f"No pending {subsystem} write with id '{target}'."
+    expected = (expected_payload_sha256 if expected_payload_sha256 is not None
+                else wa.payload_sha256(record.get("payload", {})))
+    if wa.discard_pending(subsystem, target, expected_payload_sha256=expected):
         return f"Rejected pending {subsystem} write '{target}'."
-    return f"No pending {subsystem} write with id '{target}'."
+    return f"Pending {subsystem} write '{target}' changed, disappeared, or is busy; rejected nothing."
 
 
 def _diff(rest: List[str]) -> str:

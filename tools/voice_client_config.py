@@ -153,6 +153,10 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
     provider = tts._get_provider(tts_config)
     if provider not in tts.BUILTIN_TTS_PROVIDERS:
         return _relay("command/plugin provider")
+    # The desktop's client-direct sentence cutter honours the same tts.streaming.min_len as
+    # the gateway/CLI chunkers, so a short CJK opener is spoken alone on every surface.
+    from tools.tts_streaming import SentenceChunker
+    min_len = SentenceChunker.from_config(tts_config).min_len
 
     if provider == "openai":
         # Covers the direct-key, custom-base_url, and Nous-managed selections.
@@ -174,7 +178,8 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         except (TypeError, ValueError):
             speed = 1.0
         return _direct(TTS_WIRE_OPENAI, "openai", base_url, api_key, model,
-                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed)
+                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed,
+                       min_len=min_len)
     if provider == "elevenlabs":
         api_key = tts._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:
@@ -183,7 +188,8 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         return _direct(TTS_WIRE_ELEVENLABS, "elevenlabs",
                        str(el.get("base_url") or "https://api.elevenlabs.io/v1").rstrip("/"),
                        api_key, el.get("model_id") or tts_tool_providers.DEFAULT_ELEVENLABS_MODEL_ID,
-                       voice=el.get("voice_id") or tts_tool_providers.DEFAULT_ELEVENLABS_VOICE_ID, speed=None)
+                       voice=el.get("voice_id") or tts_tool_providers.DEFAULT_ELEVENLABS_VOICE_ID, speed=None,
+                       min_len=min_len)
     if provider == "deepinfra":
         api_key = tts._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:
@@ -194,7 +200,7 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         if not model:
             return _relay("no deepinfra tts model")
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
-                       voice=di.get("voice") or "af_bella", speed=None)
+                       voice=di.get("voice") or "af_bella", speed=None, min_len=min_len)
     # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper: server-host-only
     # engines or wire shapes the desktop doesn't speak yet; the relay path serves them.
     return _relay(f"provider {provider!r} has no client wire")

@@ -38,6 +38,8 @@ export interface DirectTtsConfig {
   model: null | string
   voice: null | string
   speed: null | number
+  /** tts.streaming.min_len — shortest first sentence (chars) cut on its own; absent on older backends. */
+  min_len?: null | number
 }
 
 interface RelayConfig {
@@ -341,7 +343,14 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
 const SENTENCE_BOUNDARY_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
 const MIN_SENTENCE_CHARS = 24
 
-export function cutSentences(buffer: string, flush: boolean): { sentences: string[]; rest: string } {
+export function cutSentences(
+  buffer: string,
+  flush: boolean,
+  minSentenceChars?: null | number
+): { sentences: string[]; rest: string } {
+  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
+  // whole clause); the historical 24 for older backends without the key.
+  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
   const sentences: string[] = []
   let rest = buffer
   let start = 0
@@ -356,7 +365,7 @@ export function cutSentences(buffer: string, flush: boolean): { sentences: strin
 
     // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
     // provider call per abbreviation — unless a later boundary extends them.
-    if (candidate.length >= MIN_SENTENCE_CHARS) {
+    if (candidate.length >= minChars) {
       sentences.push(candidate)
       start = end
     }

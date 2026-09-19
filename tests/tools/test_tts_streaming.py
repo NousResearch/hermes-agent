@@ -533,6 +533,43 @@ def test_hybrid_first_sentence_streamed_individually(monkeypatch):
     sys.platform == "darwin",
     reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
 )
+def test_speaker_honours_tts_streaming_min_len_for_short_cjk_opener(monkeypatch):
+    """The CLI/TUI speaker cuts with the profile's tts.streaming.min_len (#96927): a 7-char CJK
+    opener is streamed on its own instead of riding behind the second sentence."""
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    stream_calls: list[str] = []
+
+    class _Tracking(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            stream_calls.append(text)
+            yield b"\x00\x00" * 10
+
+    sd, _out = _sd_mock()
+    q = _drain_queue(["记得，叫团团. ", "然后我们再说第二句话，这一句要长一些才行. "])
+    stop, done = threading.Event(), threading.Event()
+
+    with patch("tools.tts_streaming.resolve_streaming_provider",
+               return_value=_Tracking({}, {})), \
+         patch.object(tts_tool, "_load_tts_config", return_value={"streaming": {"min_len": 6}}), \
+         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
+        stream_tts_to_speaker(q, stop, done)
+
+    assert stream_calls[0] == "记得，叫团团.", stream_calls
+    assert done.is_set()
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     """Every sentence should get its own stream() call — per-sentence
     prefetch fires the HTTP request the moment each sentence completes,
@@ -1006,3 +1043,115 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert created, "expected temp files to be created via mkstemp"
     leftovers = [p for p in created if os.path.exists(p)]
     assert not leftovers, f"temp files not cleaned: {leftovers}"
+
+
+# ── #76466: honor the endpoint-reported PCM sample rate ────────────────────
+
+class _FakeSpeechResponse:
+    """Stand-in for the OpenAI SDK streaming response context manager."""
+
+    def __init__(self, headers, chunks):
+        self.headers, self._chunks = headers, chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+
+def _patch_openai_speech(monkeypatch, headers):
+    calls = []
+
+    class _Speech:
+        class with_streaming_response:
+            @staticmethod
+            def create(**kw):
+                calls.append(kw)
+                return _FakeSpeechResponse(headers, [b"\x01\x00" * 100])
+
+    class _Client:
+        def __init__(self, **kw):
+            self.audio = MagicMock(speech=_Speech())
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", _Client)
+    return calls
+
+
+def test_openai_streamer_honors_endpoint_reported_rate_in_wav_playback(monkeypatch):
+    """Issue #76466: an OpenAI-compatible endpoint answering 44.1 kHz PCM (X-Audio-Sample-Rate)
+    must drive the WAV header written for playback, not the construction-time expectation."""
+    import wave
+    from tools import tts_tool_speaker as sp
+
+    _patch_openai_speech(monkeypatch, {"content-type": "audio/pcm", "x-audio-sample-rate": "44100"})
+    streamer = ts.OpenAIStreamer({}, {"api_key": "sk-x", "pcm_sample_rate": "22050"})
+
+    wav_rates = []
+
+    def _fake_play(path):
+        with wave.open(path, "rb") as wf:
+            wav_rates.append(wf.getframerate())
+
+    monkeypatch.setattr(sp._StreamerPlayback, "_device_usable", lambda self: False)
+    with patch("tools.voice_mode.play_audio_file", side_effect=_fake_play):
+        playback = sp._StreamerPlayback(streamer, threading.Event())
+        playback.speak("One sentence.")
+        playback.finish()
+    assert streamer.sample_rate == 44100
+    assert wav_rates == [44100]
+
+
+@pytest.mark.parametrize(
+    ("config", "headers", "expected"),
+    [
+        ({"pcm_sample_rate": "22050"}, {}, 22050),  # validated static expectation (PR #74021)
+        ({"pcm_sample_rate": "bogus"}, {}, 24000),  # unparseable config falls back to the default
+        ({}, {"content-type": "audio/pcm", "x-audio-sample-rate": "44100"}, 44100),
+        ({}, {"content-type": "audio/L16; rate=16000"}, 16000),
+        ({}, {"content-type": "audio/pcm"}, None),
+    ],
+)
+def test_openai_pcm_sample_rate_resolution(config, headers, expected):
+    """Issue #76466: static ``pcm_sample_rate`` is the pre-request expectation; the endpoint's
+    response headers (explicit header or ``audio/L16; rate=``) are the post-request truth."""
+    if headers:
+        assert ts._sample_rate_from_headers(headers) == expected
+    else:
+        assert ts.OpenAIStreamer({}, {"api_key": "sk-x", **config}).sample_rate == expected
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
+def test_speaker_output_stream_opens_at_rate_learned_from_first_chunk(monkeypatch):
+    """Issue #76466: the PortAudio device is opened after the first chunk arrived, at the rate
+    the provider learned from the response, not at the construction-time default."""
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    class _Learns(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            self.sample_rate = 44100  # what OpenAIStreamer does on the response headers
+            yield b"\x01\x00" * 50
+
+    sd, out = _sd_mock()
+    q = _drain_queue(["The first sentence is long enough. ", "The second sentence is long enough too. "])
+    stop, done = threading.Event(), threading.Event()
+    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=_Learns({}, {})), \
+         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
+        stream_tts_to_speaker(q, stop, done)
+    assert done.is_set()
+    assert [c.kwargs["samplerate"] for c in sd.OutputStream.call_args_list] == [44100]
+    assert out.write.call_count == 2

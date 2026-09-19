@@ -1019,6 +1019,11 @@ DEFAULT_CONFIG = {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        "streaming": {
+            # Shortest first sentence (chars) spoken on its own by streaming TTS; shorter openers
+            # ride with the next sentence. 20 suits English; CJK voice setups use ~6.
+            "min_len": 20,
+        },
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
             "voice": "en-US-AriaNeural",
@@ -1032,6 +1037,9 @@ DEFAULT_CONFIG = {
             # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
             # onyx, sage, shimmer, verse
             "voice": "alloy",
+            # Raw PCM rate for streaming playback. OpenAI emits 24 kHz; a compatible endpoint that
+            # reports its rate (X-Audio-Sample-Rate header) overrides this automatically.
+            "pcm_sample_rate": 24000,
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

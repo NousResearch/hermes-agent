@@ -76,7 +76,8 @@ const {
   ensureGatewayForProfile,
   pruneSecondaryGateways,
   retireLocalProfileGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 const { requestForSessionProfile, sessionRpcNeedsProfileRoute } = await import('./session-request-router')
@@ -509,7 +510,7 @@ describe('requestForSessionProfile', () => {
 
     // Age the socket past the min-lifetime grace (#94769) so this prune
     // asserts the turn-lease release, not the freshly-opened spare.
-    vi.useFakeTimers({ now: Date.now() + 31_000 })
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(new Set())
     vi.useRealTimers()
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()

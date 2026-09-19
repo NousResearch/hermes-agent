@@ -41,7 +41,8 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   requestGatewayForAgent,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 const { $sessionTiles, foregroundSessionScopes, liveSessionScopes } = await import('./session-states')
@@ -101,7 +102,7 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
   // one prune tick, so reclamation assertions age the socket past the grace
   // window first; spare assertions are unaffected by aging.
   const pruneAged = () => {
-    vi.useFakeTimers({ now: Date.now() + 31_000 })
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(idleKeepSet())
     vi.useRealTimers()
   }

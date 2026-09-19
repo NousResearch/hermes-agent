@@ -14,7 +14,11 @@ import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
-import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
+import {
+  decideLivenessForceClose,
+  LIVENESS_PROBE_TIMEOUT_MS,
+  LIVENESS_REPROBE_DELAY_MS
+} from '@/lib/gateway-liveness-policy'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -119,7 +123,6 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // TIMEOUT alone no longer tears the socket down mid-turn (#95327): while a
 // turn is in flight the first timeout defers behind one bounded re-probe, so
 // only a STREAK of unanswered pings rebuilds the transport.
-const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
 // Renderer twin of the main process's POWER_RESUME_REVALIDATION_HOLDOFF_MS:
 // forced wake reconnects (online / power resume) are coalesced into one per
@@ -571,7 +574,7 @@ export function useGatewayBoot({
       // one inconclusive probe DEFERS the teardown behind a bounded re-probe;
       // only an exhausted streak (or no in-flight work) closes.
       try {
-        await gateway.request('ping', {}, GATEWAY_LIVENESS_PROBE_TIMEOUT_MS)
+        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
         livenessProbeFailures = 0
       } catch (probeErr) {
         // A version-skewed backend that predates the ping method answers
@@ -905,6 +908,7 @@ export function useGatewayBoot({
       // primary thread or a just-created session's owner hold is bound to
       // (#93892).
       foregroundScopes: foregroundSessionScopes,
+      liveScopes: liveSessionScopes,
       onLocalProfileRetired: forgetProfileOnlyRuntimeOwners,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
@@ -1028,14 +1032,18 @@ export function useGatewayBoot({
         return
       }
 
+      // Only the destructive half is coalesced: a second wake inside the
+      // holdoff (macOS fires resume then 'online' seconds apart) still runs
+      // the cheap, idempotent nudge — primary ping probe, redial of already
+      // closed secondaries — without touching open sockets.
       const now = Date.now()
+      const forced = now - lastForcedWakeReconnectAt >= WAKE_RECONNECT_HOLDOFF_MS
 
-      if (now - lastForcedWakeReconnectAt < WAKE_RECONNECT_HOLDOFF_MS) {
-        return
+      if (forced) {
+        lastForcedWakeReconnectAt = now
       }
 
-      lastForcedWakeReconnectAt = now
-      void reconnectNow({ forceOpenSocket: true })
+      void reconnectNow({ forceOpenSocket: forced })
     }
 
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
@@ -1136,6 +1144,10 @@ export function useGatewayBoot({
     const keepaliveTimer = setInterval(() => {
       touchActiveGatewayBackend()
       touchSecondaryGateways()
+      // The pruner is otherwise event-driven: a socket spared by the
+      // min-lifetime grace with no store change afterwards would hold its
+      // pool slot forever.
+      recomputeKeptGateways()
     }, 60_000)
 
     // Bound concurrency cost to consumers: keep a background socket while its

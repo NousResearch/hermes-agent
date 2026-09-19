@@ -83,7 +83,8 @@ const {
   retainGatewayForAgent,
   retainGatewayForSessionTurn,
   retireLocalProfileGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 function installDesktop(stub: Record<string, unknown>): void {
@@ -330,7 +331,7 @@ describe('secondary reconnect runtime scope', () => {
 
     // Age the socket past the min-lifetime grace so this prune exercises the
     // stale-binding invalidation path, not the freshly-opened spare (#94769).
-    vi.useFakeTimers({ now: Date.now() + 31_000 })
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(new Set())
     vi.useRealTimers()
     expect(firstSocket.close).toHaveBeenCalledOnce()
@@ -485,9 +486,14 @@ describe('reconnectSecondaryGateways', () => {
     // prompt.submit). The wake path probes instead: a dead transport is
     // closed; a healthy one — including a version-skewed backend answering
     // -32601 — keeps its socket (#94769 review).
+    // The foreground turn is in flight on this scope. prompt.submit has long
+    // since returned (turn completion arrives as stream events), so the entry
+    // shows no counted request — the registry's live-scope hook is what tells
+    // the probe there is work to protect.
     configureGatewayRegistry({
       onEvent: vi.fn(),
-      foregroundScopes: () => new Set(['conn:homelab::default'])
+      foregroundScopes: () => new Set(['conn:homelab::default']),
+      liveScopes: () => new Set(['conn:homelab::default'])
     } as never)
 
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
@@ -514,17 +520,11 @@ describe('reconnectSecondaryGateways', () => {
     expect(socket.close).not.toHaveBeenCalled()
     expect(socket.connectionState).toBe('open')
 
-    // Mid-turn: an in-flight request holds the entry's lease, and the backend
-    // — alive, but starved past the probe budget by a long tool call — cannot
-    // answer the ping. ONE unanswered probe must NOT close it: force-closing
-    // feeds the backend's ws_orphan_reap and interrupts the valid turn
-    // (#94769 review). The first failure defers behind a bounded re-probe.
-    socket.request = vi.fn(() => new Promise(() => {}))
-    void requestGatewayForAgent('homelab', 'default', 'prompt.submit', {})
-    await vi.waitFor(() => {
-      expect(socket.request).toHaveBeenCalled()
-    })
-
+    // Mid-turn, the backend — alive, but starved past the probe budget by a
+    // long tool call — cannot answer the ping. ONE unanswered probe must NOT
+    // close it: force-closing feeds the backend's ws_orphan_reap and
+    // interrupts the valid turn (#94769 review). The first failure defers
+    // behind a bounded re-probe.
     vi.useFakeTimers()
     socket.request = vi.fn(async () => {
       throw new Error('probe timeout')
@@ -974,12 +974,12 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
   })
 })
 
-
 describe('rejected secondary authentication', () => {
   it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
     vi.useFakeTimers()
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+      ...descriptorFor(connectionId, profile),
+      authMode: 'oauth'
     }))
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
@@ -1008,7 +1008,8 @@ describe('rejected secondary authentication', () => {
     vi.useFakeTimers()
 
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+      ...descriptorFor(connectionId, profile),
+      authMode: 'oauth'
     }))
 
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
@@ -1030,11 +1031,11 @@ describe('rejected secondary authentication', () => {
   })
 })
 
-
 it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    ...descriptorFor(connectionId, profile),
+    authMode: 'oauth'
   }))
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
@@ -1054,14 +1055,16 @@ it('keeps background auth rejection after socket disposal until recovery or conn
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(3)
 })
 
-
 it('does not let a removed connection repopulate the auth rejection', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    ...descriptorFor(connectionId, profile),
+    authMode: 'oauth'
   }))
   let rejectTicket!: (error: Error) => void
-  const ticket = new Promise<never>((_resolve, reject) => { rejectTicket = reject })
+  const ticket = new Promise<never>((_resolve, reject) => {
+    rejectTicket = reject
+  })
   const getGatewayWsUrlFor = vi.fn(() => ticket)
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   const pending = requestGatewayForAgent('cloud', 'default', 'session.list')

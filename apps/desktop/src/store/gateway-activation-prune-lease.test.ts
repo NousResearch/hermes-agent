@@ -53,7 +53,8 @@ const {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   pruneSecondaryGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 function installDesktop(): void {
@@ -154,7 +155,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     // Age the socket past the min-lifetime grace so this prune asserts the
     // lease release, not the freshly-opened spare (#94769).
-    vi.useFakeTimers({ now: Date.now() + 31_000 })
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(new Set())
     vi.useRealTimers()
 
@@ -180,7 +181,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     // Past the lease window: reclaimed. (Lease is wall-clock bounded so a
     // leaked lease cannot pin a dead entry forever.)
-    vi.setSystemTime(Date.now() + 31_000)
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).toHaveBeenCalled()
 
@@ -207,7 +208,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
     // Past the grace window: reclaimed as idle, as before.
-    vi.setSystemTime(Date.now() + 31_000)
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).toHaveBeenCalled()
   })

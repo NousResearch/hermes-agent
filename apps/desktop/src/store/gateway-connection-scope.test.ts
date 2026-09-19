@@ -49,7 +49,8 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway,
-  setPrimaryGatewayConnectionId
+  setPrimaryGatewayConnectionId,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 const { setApiRequestConnection } = await import('@/hermes')
@@ -133,7 +134,7 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
   // one prune tick, so reclamation assertions age the socket past the grace
   // window first; spare assertions are unaffected by aging.
   const pruneAged = (keep?: Set<string>) => {
-    vi.useFakeTimers({ now: Date.now() + 31_000 })
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(keep ?? new Set())
     vi.useRealTimers()
   }

@@ -67,6 +67,17 @@ import {
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
+  ACCESSORY_BAR_HEIGHT_PX,
+  PTY_ARROW_DOWN,
+  PTY_ARROW_LEFT,
+  PTY_ARROW_RIGHT,
+  PTY_ARROW_UP,
+  PTY_ETX,
+  mountPtyMobileAccessory,
+  shouldShowMobileAccessory,
+  terminalBottomReservePx,
+} from "@/lib/pty-mobile-accessory";
+import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
 } from "@/lib/pty-keyboard-shortcuts";
@@ -930,6 +941,40 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       };
     }
 
+    // Terminus-style keys above the software keyboard. iOS gives a web page no
+    // input accessory view of its own, so the transcript would otherwise be the
+    // only way to reach Ctrl+C, paste, or the arrows while the keyboard is up.
+    const coarsePointer =
+      typeof window !== "undefined" &&
+      window.matchMedia("(pointer: coarse)").matches;
+    const accessory = mountPtyMobileAccessory(termWrap ?? host, {
+      paste: () => {
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) term.paste(text);
+          })
+          .catch(() => {
+            /* Safari may deny clipboard without a user gesture */
+          });
+      },
+      interrupt: () => {
+        term.input(PTY_ETX);
+      },
+      caretLeft: () => {
+        term.input(PTY_ARROW_LEFT, true);
+      },
+      caretRight: () => {
+        term.input(PTY_ARROW_RIGHT, true);
+      },
+      historyUp: () => {
+        term.input(PTY_ARROW_UP, true);
+      },
+      historyDown: () => {
+        term.input(PTY_ARROW_DOWN, true);
+      },
+    });
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
@@ -1045,11 +1090,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
         window.innerHeight,
       );
-      if (inset !== appliedKeyboardInset) {
-        appliedKeyboardInset = inset;
-        wrap.style.paddingBottom = inset > 0 ? `${inset}px` : "";
+      const phoneChrome = coarsePointer || navigator.maxTouchPoints > 0;
+      const focused = term.textarea === document.activeElement;
+      const showBar = shouldShowMobileAccessory(inset, phoneChrome, focused);
+      const barPx = showBar ? ACCESSORY_BAR_HEIGHT_PX : 0;
+      const reserve = terminalBottomReservePx(inset, showBar);
+      if (reserve !== appliedKeyboardInset) {
+        appliedKeyboardInset = reserve;
+        wrap.style.paddingBottom = reserve > 0 ? `${reserve}px` : "";
         scheduleHostSync();
       }
+      accessory.setInset(inset, phoneChrome, focused);
       const revealComposer = () => {
         if (inset <= 0 || !vv) return;
         try {
@@ -1057,10 +1108,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         } catch {
           /* ignore */
         }
-        const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
-          height: vv.height,
-          offsetTop: vv.offsetTop,
-        });
+        const delta = keyboardRevealScrollDelta(
+          host.getBoundingClientRect().bottom,
+          { height: vv.height, offsetTop: vv.offsetTop },
+          barPx,
+        );
         if (delta) window.scrollBy(0, delta);
       };
       if (inset > 0) {
@@ -1093,7 +1145,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       window.clearTimeout(keyboardRevealTimer);
       keyboardRevealTimer = window.setTimeout(onViewportChange, 350);
     };
+    const onTerminalBlur = () => {
+      window.setTimeout(onViewportChange, 0);
+    };
     term.textarea?.addEventListener("focus", onTerminalFocus);
+    term.textarea?.addEventListener("blur", onTerminalBlur);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1591,6 +1647,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.clearTimeout(keyboardRevealTimer);
       term.textarea?.removeEventListener("focus", onTerminalFocus);
+      term.textarea?.removeEventListener("blur", onTerminalBlur);
+      accessory.dispose();
       keyboardInsetSyncRef.current = null;
       keyboardInsetResetRef.current = null;
       const wrap = termWrap;

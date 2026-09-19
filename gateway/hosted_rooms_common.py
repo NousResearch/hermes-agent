@@ -98,6 +98,10 @@ def open_sqlite(path: DbPath, *, timeout: float = 10) -> sqlite3.Connection:
     """Row-factory connection with foreign keys on; no journal or schema work (steady-state readers)."""
     from hermes_cli.sqlite_util import open_db
 
+    from gateway.hosted_rooms_postgres import open_database
+    postgres = open_database(path)
+    if postgres is not None:
+        return postgres
     return open_db(path, db_label="shared-state.db", busy_timeout_ms=int(timeout * 1000), wal=False,
                    foreign_keys=True)
 
@@ -111,6 +115,10 @@ def connect(
     is serialized in SQLite itself: a crash rolls back the whole DDL/data migration and
     another process can safely retry it.
     """
+    from gateway.hosted_rooms_postgres import open_database
+    postgres = open_database(db_path)
+    if postgres is not None:
+        return postgres
     def _initialize(conn: sqlite3.Connection) -> None:
         if not ready(conn):
             try:
@@ -134,11 +142,16 @@ def fenced_update(conn: sqlite3.Connection, sql: str, params: tuple, error: Exce
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        return conn.execute("SELECT to_regclass(?)", (table,)).fetchone()[0] is not None
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
     return row is not None
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> frozenset[str]:
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        from hermes_cli.postgres_util import table_columns as postgres_columns
+        return frozenset(postgres_columns(conn, table))
     return frozenset(row[1] for row in conn.execute(f"PRAGMA table_info({table})"))
 
 

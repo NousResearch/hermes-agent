@@ -120,7 +120,7 @@ _SCHEMA_DDL = (
             member_id TEXT NOT NULL,
             target_url TEXT NOT NULL,
             target_profile TEXT NOT NULL,
-            grant TEXT NOT NULL,
+            "grant" TEXT NOT NULL,
             catalog_json TEXT NOT NULL,
             cancellation_scope_id TEXT NOT NULL,
             trace_id TEXT NOT NULL,
@@ -165,10 +165,10 @@ _ROOM_COLUMNS_WITH_BYTES = (
 _SELECT_ROOM = f"SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=?"
 _SELECT_ROOM_WITH_BYTES = f"SELECT {_ROOM_COLUMNS_WITH_BYTES} FROM hosted_rooms WHERE room_id=?"
 _SUM_EVENT_BYTES = "SELECT COALESCE(SUM(event_bytes), 0) FROM hosted_rooms"
-_INSERT_RETIRED = ("INSERT OR IGNORE INTO hosted_room_retired_ids (room_id, retired_at) VALUES (?, ?)")
+_INSERT_RETIRED = ("INSERT INTO hosted_room_retired_ids (room_id, retired_at) VALUES (?, ?) ON CONFLICT DO NOTHING")
 _RETIRE_FROM_ROOMS = (
-    "INSERT OR IGNORE INTO hosted_room_retired_ids (room_id, retired_at)"
-    " SELECT room_id, disbanded_at FROM hosted_rooms WHERE {where}")
+    "INSERT INTO hosted_room_retired_ids (room_id, retired_at)"
+    " SELECT room_id, disbanded_at FROM hosted_rooms WHERE {where} ON CONFLICT DO NOTHING")
 _LINK_COLUMNS = (
     "room_id", "member_id", "target_url", "target_profile", "grant", "catalog_json", "cancellation_scope_id",
     "trace_id", "transport_security", "status", "updated_at")
@@ -609,7 +609,7 @@ def prune_disbanded_rooms(db_path: DbPath, *, now: float | None = None) -> int:
 def list_room_link_records(db_path: DbPath) -> list[dict[str, Any]]:
     """Return private RoomLink records without logging or formatting grants."""
     with _transaction(db_path) as conn:
-        rows = conn.execute("""SELECT room_id, member_id, target_url, target_profile, grant,
+        rows = conn.execute("""SELECT room_id, member_id, target_url, target_profile, "grant",
                       catalog_json, cancellation_scope_id, trace_id,
                       transport_security, status, updated_at
                  FROM hosted_room_links
@@ -626,14 +626,14 @@ def upsert_room_link_record(db_path: DbPath, *, record: Mapping[str, Any], max_l
         if existing is None and int(conn.execute("SELECT COUNT(*) FROM hosted_room_links").fetchone()[0]) >= max_links:
             raise HostedRoomError("too many stored room links")
         conn.execute("""INSERT INTO hosted_room_links(
-                   room_id, member_id, target_url, target_profile, grant,
+                   room_id, member_id, target_url, target_profile, "grant",
                    catalog_json, cancellation_scope_id, trace_id,
                    transport_security, status, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(room_id, member_id) DO UPDATE SET
                    target_url=excluded.target_url,
                    target_profile=excluded.target_profile,
-                   grant=excluded.grant,
+                   "grant"=excluded."grant",
                    catalog_json=excluded.catalog_json,
                    cancellation_scope_id=excluded.cancellation_scope_id,
                    trace_id=excluded.trace_id,
@@ -686,10 +686,8 @@ def revoke_room_grant_scope(
                    scope_key, expires_at, revoked_before
                ) VALUES (?, ?, ?)
                ON CONFLICT(scope_key) DO UPDATE SET
-                   expires_at=MAX(hosted_room_revoked_grants.expires_at,
-                                  excluded.expires_at),
-                   revoked_before=MAX(hosted_room_revoked_grants.revoked_before,
-                                      excluded.revoked_before)""", (scope_key, expiry, timestamp))
+                   expires_at=CASE WHEN hosted_room_revoked_grants.expires_at > excluded.expires_at THEN hosted_room_revoked_grants.expires_at ELSE excluded.expires_at END,
+                   revoked_before=CASE WHEN hosted_room_revoked_grants.revoked_before > excluded.revoked_before THEN hosted_room_revoked_grants.revoked_before ELSE excluded.revoked_before END""", (scope_key, expiry, timestamp))
         conn.execute("""UPDATE hosted_room_peer_reservations SET revoked_at=?, updated_at=? WHERE room_id=?
                 AND member_id=? AND target_profile=? AND authority_gateway_id=?
                 AND authority_epoch=?""",
@@ -747,8 +745,7 @@ def reserve_peer_room(
                ON CONFLICT(room_id, member_id, target_profile) DO UPDATE SET
                    authority_gateway_id=excluded.authority_gateway_id,
                    authority_epoch=excluded.authority_epoch,
-                   expires_at=MAX(hosted_room_peer_reservations.expires_at,
-                                  excluded.expires_at),
+                   expires_at=CASE WHEN hosted_room_peer_reservations.expires_at > excluded.expires_at THEN hosted_room_peer_reservations.expires_at ELSE excluded.expires_at END,
                    revoked_at=NULL,
                    updated_at=excluded.updated_at""", (*values, expiry, timestamp, timestamp))
 
@@ -982,6 +979,21 @@ def append_event(
 
 def _probe(path: Path, table: str, query: str, params: tuple[Any, ...], unavailable: str) -> bool:
     """Non-blocking existence probe: short timeout, no schema creation or migration."""
+    from hermes_state_backend import resolve_database_settings
+    settings = resolve_database_settings(path)
+    if settings.backend == "postgres":
+        import psycopg
+        from psycopg import sql
+        from hermes_cli.postgres_util import store_schema
+        from hermes_state_postgres import _bind_parameters
+        try:
+            with psycopg.connect(settings.database_url, autocommit=True, connect_timeout=2) as conn:
+                conn.execute(sql.SQL("SET search_path TO {}, pg_catalog").format(
+                    sql.Identifier(store_schema(settings.schema, "hosted_rooms"))))
+                conn.execute("SET statement_timeout = '50ms'")
+                return conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0] is not None and conn.execute(_bind_parameters(query), params).fetchone() is not None
+        except psycopg.Error as exc:
+            raise RoomProbeUnavailableError(unavailable) from exc
     if not path.is_file():
         return False
     try:
@@ -1147,19 +1159,20 @@ def read_events(
     with _transaction(db_path) as conn:
         room = _room_row(
             conn, """SELECT next_seq, authority_gateway_id, authority_epoch FROM hosted_rooms
-                WHERE room_id=? AND (disbanded_at IS NULL OR ?)""", (room_id, int(include_disbanded)), room_id)
+                WHERE room_id=? AND (disbanded_at IS NULL OR ? = 1)""", (room_id, int(include_disbanded)), room_id)
         latest_seq = int(room["next_seq"]) - 1
         authority = {"gateway_id": str(room["authority_gateway_id"]), "epoch": int(room["authority_epoch"])}
         if since_seq > latest_seq:
             raise HostedRoomError("since_seq is ahead of the hosted room log")
+        byte_lengths = " + ".join(
+            f"octet_length({column})" if getattr(conn, "backend", "sqlite") == "postgres"
+            else f"LENGTH(CAST({column} AS BLOB))"
+            for column in ("event_id", "kind", "actor_json", "payload_json"))
         rows = conn.execute(
             f"""WITH candidates AS (
                    SELECT {_EVENT_COLUMNS},
                           SUM(
-                              LENGTH(CAST(event_id AS BLOB)) +
-                              LENGTH(CAST(kind AS BLOB)) +
-                              LENGTH(CAST(actor_json AS BLOB)) +
-                              LENGTH(CAST(payload_json AS BLOB))
+                              {byte_lengths}
                           ) OVER (ORDER BY seq ASC) AS cumulative_bytes
                      FROM hosted_room_events
                     WHERE room_id=? AND seq>?

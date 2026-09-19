@@ -1198,6 +1198,28 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         conn.close()
 
 
+def test_completion_after_blocked_claim_does_not_synthesize_second_run(kanban_home):
+    """Administrative completion after a blocked execution is not a second run."""
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(conn, title="blocked completion", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+        assert kb.block_task(
+            conn, task_id, reason="handoff needs correction", expected_run_id=run_id,
+        )
+
+        assert kb.complete_task(conn, task_id, result="done", summary="validated")
+        runs = kb.list_runs(conn, task_id)
+        assert [run.id for run in runs] == [run_id]
+        assert runs[0].outcome == "blocked"
+        completed = [event for event in kb.list_events(conn, task_id) if event.kind == "completed"]
+        assert len(completed) == 1
+        assert completed[0].run_id is None
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

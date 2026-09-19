@@ -207,6 +207,66 @@ class TestStdioPidTracking:
 
 
 # ---------------------------------------------------------------------------
+# Fix 2b: Windows stdio descendant reaping via task tree (issue #108084)
+# ---------------------------------------------------------------------------
+
+class TestWindowsStdioTreeReaping:
+    """Windows cleanup reaps cmd.exe/npx descendants through their root PID."""
+
+    def _seed_orphan(self, pid):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids
+        from tools.mcp_tool import _lock
+
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _orphan_stdio_pids.add(pid)
+            _orphan_stdio_pid_servers[pid] = "windows-mcp"
+
+    def test_windows_reaps_process_tree_without_posix_signals(self):
+        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children
+
+        fake_pid = 535353
+        self._seed_orphan(fake_pid)
+        windows_os = MagicMock(wraps=os)
+        windows_os.name = "nt"
+        windows_os.kill = MagicMock()
+        windows_os.killpg = MagicMock()
+
+        with patch.object(_mcp_lifecycle, "os", windows_os), \
+             patch("agent.deadline.kill_process_tree", return_value=True) as mock_tree_kill, \
+             patch("gateway.status._pid_exists") as mock_pid_exists, \
+             patch("time.sleep") as mock_sleep:
+            _kill_orphaned_mcp_children()
+
+        mock_tree_kill.assert_called_once_with(fake_pid)
+        windows_os.killpg.assert_not_called()
+        windows_os.kill.assert_not_called()
+        mock_pid_exists.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    def test_windows_tree_reap_failure_preserves_per_pid_fallback(self):
+        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children
+
+        fake_pid = 545454
+        self._seed_orphan(fake_pid)
+        windows_os = MagicMock(wraps=os)
+        windows_os.name = "nt"
+        windows_os.kill = MagicMock()
+        windows_os.killpg = MagicMock()
+
+        with patch.object(_mcp_lifecycle, "os", windows_os), \
+             patch("agent.deadline.kill_process_tree", side_effect=RuntimeError("taskkill unavailable")) as mock_tree_kill, \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("time.sleep") as mock_sleep:
+            _kill_orphaned_mcp_children()
+
+        mock_tree_kill.assert_called_once_with(fake_pid)
+        windows_os.kill.assert_called_once_with(fake_pid, signal.SIGTERM)
+        mock_sleep.assert_called_once_with(2)
+
+
+# ---------------------------------------------------------------------------
 # Fix 2b: stdio descendant reaping via process group (issue #23799)
 # ---------------------------------------------------------------------------
 #

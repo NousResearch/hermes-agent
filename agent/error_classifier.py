@@ -456,13 +456,16 @@ _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 # rejects sampling params for reasoning-first models with the contraction ("This model doesn't
 # support the temperature field", xAI Grok) and inference-profile Claude with "`temperature` is
 # deprecated for this model" (#111043); strict pydantic gateways (Fireworks) name the unknown
-# field as "extra inputs are not permitted" (#109774). Shared with the auxiliary retry ladder
+# field as "extra inputs are not permitted" (#109774). Enum-rejecting aggregators (commandcode.ai)
+# say "Invalid option: expected one of ..." with no "unsupported" anywhere, naming the field only
+# in the structured 'param' tail (#115277). Shared with the auxiliary retry ladder
 # (``agent.auxiliary_client._is_unsupported_parameter_error``).
 UNSUPPORTED_PARAM_MARKERS = (
     "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
     "doesn't support", "is deprecated for this model",
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",
+    "invalid option: expected one of",
 )
 
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.

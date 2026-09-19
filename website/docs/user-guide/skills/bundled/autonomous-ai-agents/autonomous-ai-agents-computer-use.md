@@ -110,6 +110,7 @@ key               keys="<save shortcut>" | "return" | "escape" | "<modifier>+t"
 wait              seconds=0.5
 list_apps
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
+sequence          steps=[{action=…, …}, …]   capture_after=true   verify_mode=ax_first|som|vision
 ```
 
 All actions accept optional `capture_after=True` to get a follow-up
@@ -120,6 +121,29 @@ The input actions (`click`, `double_click`, `right_click`, `middle_click`,
 `drag`, `scroll`, `type`, `key`) also accept `delivery_mode`. The optional
 `bring_to_front=True` request invokes a separately approved standalone focus
 tool before foreground input; it is never an input-action property.
+
+## Sequences (one decision, one tool call)
+
+When the next few actions are already determined — click a field you just
+grounded, then type, then submit — send them as one `sequence` instead of
+one call per action:
+
+```
+computer_use(action="sequence", capture_after=True, steps=[
+  {"action": "click", "element": 7},
+  {"action": "type", "text": "hello"},
+  {"action": "key", "keys": "return"},
+])
+```
+
+V1 rules: at most one step may target an element/coordinate from the last
+capture; later steps must be focus/keyboard/text/wait operations. The slice
+aborts at the first failure, suspected no-op, approval denial, lost target,
+or timeout — never cascades. Every step re-runs the normal safety and
+approval path; `sequence` is orchestration, not an authorization bypass.
+With `capture_after=true` the slice ends in a single AX-first verification
+capture (`verify_mode="ax_first"` default; falls back to a screenshot only
+when the AX tree is empty).
 
 ## The verify → escalate ladder (background-first)
 

@@ -22,6 +22,16 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from tools.computer_use.execution_revision import (
+    CAPTURE_DEPS, INPUT_DEPS, ExecutionRevision, ExecutionState, target_mismatch,
+)
+from tools.computer_use.phase_spans import note_invalidation, phase, record_call, set_dimension
+from tools.computer_use.sequence import run_sequence  # no cycle: sequence.py only imports tool lazily
+from tools.computer_use.token_estimates import (
+    METHOD as TOKEN_ESTIMATE_METHOD,
+    estimate_image_tokens,
+    estimate_text_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +79,9 @@ def _reject_unsafe(action: str, args: Dict[str, Any]) -> Optional[str]:
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
-    """Current sticky-target app when it provably differs from *requested_app*: both known and neither a substring
-    of the other ('Google-chrome' vs 'chrome'). Unknown target -> None (fail open; the verify ladder catches it)."""
-    last_app = getattr(backend, "_last_app", None)
-    current, wanted = (last_app or "").strip().lower(), requested_app.strip().lower()
-    return None if not current or not wanted or wanted in current or current in wanted else last_app
+    """Current sticky-target app when it provably differs from *requested_app* — the ``target_mismatch`` rule
+    read live off the backend (kept for direct callers/tests)."""
+    return target_mismatch(getattr(backend, "_last_app", None), requested_app)
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
@@ -82,6 +90,12 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
+# Per-session backend generation: bumped on every _install_backend, so a revision admitted before a rebind
+# (e.g. a /yolo permission-mode toggle swapping the daemon) no longer validates. Keyed by scoped sid.
+_backend_generations: Dict[str, int] = {}
+# Per-profile ExecutionState registry (Phase 0B of #112734); ground truth comes from _current_revision_facts.
+_revision_lock = threading.Lock()
+_execution_states: Dict[str, ExecutionState] = {}
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -170,6 +184,7 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     Caller holds ``_backend_lock``."""
     global _backend
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
+    _backend_generations[sid] = _backend_generations.get(sid, 0) + 1  # a rebind invalidates admitted revisions
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
@@ -203,6 +218,35 @@ def _scoped_sid(session_id: str) -> str:
     sid = str(session_id or "")
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
 
+def _current_revision_facts(sid: str) -> Dict[str, object]:
+    """Ground truth for the provable revision fields. control_epoch is the Bot Screen lease epoch,
+    vendored from #108914 (tools/bot_desktop/lease.py) instead of waiting for it to merge: it bumps
+    on every control transition, so admit/validate catches a human takeover under an in-flight
+    action. Display identity is only provable where the OS names the display (X11 DISPLAY)."""
+    from tools.bot_desktop import lease as _lease  # vendored #108914; the real module replaces this
+    return {
+        "display_identity": os.environ.get("DISPLAY") if sys.platform == "linux" else None,
+        "backend_generation": _backend_generations.get(sid),
+        "control_epoch": _lease.get().epoch,  # lease reads fail closed upstream (human holds)
+    }
+
+def _execution_state(session_id: Optional[str]) -> ExecutionState:
+    """This profile's revision bookkeeper, keyed by scoped sid so multiplexed profiles never share one."""
+    sid = _scoped_sid(session_id or "")
+    with _revision_lock:
+        if (state := _execution_states.get(sid)) is None:
+            state = _execution_states[sid] = ExecutionState(sid, lambda: _current_revision_facts(sid))
+        return state
+
+def _admit_revision(session_id: Optional[str], backend) -> ExecutionRevision:
+    """Snapshot the facts this operation relies on: structural facts from the runtime, target facts from the
+    backend's sticky target (whatever capture()/focus_app() last selected)."""
+    target = getattr(backend, "_last_target", None) or {}
+    return _execution_state(session_id).admit(
+        app=getattr(backend, "_last_app", None) or None,
+        pid=target.get("pid"), window_id=target.get("window_id"),
+    )
+
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
@@ -212,12 +256,16 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
+                set_dimension("backend_cache_hit", False)
                 backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
+                with phase("backend_start"):
+                    backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
                 return _install_backend(sid, backend, permission_mode)
             if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                set_dimension("backend_cache_hit", True)
                 return cached
             # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
+            set_dimension("backend_rebound", True)
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
@@ -252,6 +300,9 @@ def _shutdown_backend_atexit() -> None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _backend_generations.clear()  # generations die with the backends they counted
+    with _revision_lock:
+        _execution_states.clear()  # admitted revisions cannot outlive the runtime facts they snapshotted
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -293,24 +344,39 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     if not action:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    # Phase 0A spans (#112734 §C): the ambient recorder is a no-op unless relay
+    # instrumentation is enabled, so the timed path below is behavior-neutral when off.
+    with record_call(action, session_id=session_id, task_id=str(kwargs.get("task_id") or "")) as rec:
+        with rec.phase("total"):
+            return _handle_computer_use(args, kwargs, action, session_id)
+
+
+def _handle_computer_use(args: Dict[str, Any], kwargs: Dict[str, Any], action: str, session_id: str) -> Any:
     if (err := _reject_unsafe(action, args)) is not None:
         return err
-    scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
-        ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
-    for scope in scopes:
-        if (err := _request_approval(scope, args)) is not None:
-            return err
-    try:
-        backend = _get_backend(session_id=session_id)
-    except Exception as e:
-        return json.dumps({"error": f"computer_use backend unavailable: {e}",
-                           "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
-                                   "If a Python dependency is missing, the error above shows the exact install command."})
+    with phase("approval_wait"):
+        scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
+            ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
+        for scope in scopes:
+            if (err := _request_approval(scope, args)) is not None:
+                return err
+    with phase("backend_resolve"):
+        try:
+            backend = _get_backend(session_id=session_id)
+        except Exception as e:
+            return json.dumps({"error": f"computer_use backend unavailable: {e}",
+                               "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+                                       "If a Python dependency is missing, the error above shows the exact install command."})
     try:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
-        with call_lock:
+        # Time only the lock wait, not the dispatch under it: acquire first, then run.
+        with phase("dispatch_lock_wait"):
+            call_lock.acquire()
+        try:
             return _dispatch(backend, action, args, session_id=session_id or None)
+        finally:
+            call_lock.release()
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -372,16 +438,177 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
+def _guarded_capture(backend, session_id: Optional[str], **capture_kwargs) -> Any:
+    """Capture fence (#112734 §B: publication is a commit boundary): admit the revision the operation relies on,
+    capture, then validate BEFORE the result reaches any sink (persist/spill/aux-vision/model). A stale revision
+    fails closed instead of publishing a frame its assumptions no longer authorize."""
+    state, rev = None, None
+    with phase("admission"):
+        state, rev = _execution_state(session_id), _admit_revision(session_id, backend)
+    with phase("capture"):
+        set_dimension("capture_mode", capture_kwargs.get("mode", "som"))
+        cap = backend.capture(**capture_kwargs)
+    with phase("validate"):
+        verdict = state.validate(rev, CAPTURE_DEPS)
+        if not verdict.ok:
+            note_invalidation(verdict.reason)
+            return json.dumps({"ok": False, "action": "capture", "code": "revision_invalidated",
+                               "invalidation_reason": verdict.reason,
+                               "error": f"capture discarded: {verdict.describe()} — re-capture and retry."})
+    return _capture_response(cap, session_id=session_id)
+
 def _do_capture(backend, action, args, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
-    return _capture_response(backend.capture(mode=mode, app=args.get("app"),
-                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
-                             session_id=session_id)
+    return _guarded_capture(backend, session_id, mode=mode, app=args.get("app"),
+                            **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
+def _elements_to_candidates(elements: List[UIElement]):
+    from tools.computer_use.decision_lane import ElementCandidate
+    return tuple(
+        ElementCandidate(ref=str(e.index), label=e.label or "", role=e.role or "", enabled=True)
+        for e in elements
+    )
+
+def _persist_decision_packet(packet) -> Optional[str]:
+    return _write_cache_file(
+        "decision packet", "cache/computer_use", "computer_use_cache",
+        f"decision_{uuid.uuid4().hex}.json", "decision_*.json", 50,
+        lambda p: p.write_text(json.dumps(packet.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8"),
+    )
+
+def _decide_hint(decision) -> str:
+    if decision.done:
+        return "Goal appears complete on the current screen."
+    if decision.action == "escalate":
+        return "Hand back to main planner for a broader strategy."
+    if decision.needs_vision:
+        return "Use capture(mode='som') for pixel evidence before acting."
+    if decision.needs_generation:
+        return "Compose text yourself, then type via computer_use."
+    elem = f" element #{decision.target_ref}" if decision.target_ref else ""
+    return (f"Suggested next step: {decision.action}{elem} "
+            f"(backend={decision.backend}, conf={decision.confidence:.2f}).")
+
+def _do_decide(backend, action, args, session_id=None, **_):
+    goal = (args.get("goal") or args.get("goal_hint") or "").strip()
+    if not goal:
+        return json.dumps({"error": "decide requires `goal` (or `goal_hint`)"})
+    from tools.computer_use.decision_lane import (
+        SemanticState,
+        jev_available,
+        resolve_ladder_mode,
+        run_decision_lane,
+    )
+    from tools.computer_use.decision_stages import aux_stage, jev_stage, reranker_stage
+    cap = backend.capture(mode="ax", app=args.get("app"),
+                          **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+    candidates = _elements_to_candidates(cap.elements)
+    state = SemanticState(elements=candidates, busy=bool(args.get("busy")), goal_hint=goal)
+    ladder = resolve_ladder_mode()
+    decision, packet = run_decision_lane(
+        state,
+        candidates,
+        reranker=reranker_stage,
+        aux=aux_stage,
+        jev=jev_stage,
+        ladder=ladder,
+    )
+    packet_path = _persist_decision_packet(packet)
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "action": "decide",
+        "fail_open": decision is None,
+        "jev_available": jev_available(),
+        "system_one_ladder": ladder,
+        "decision_packet": packet.to_dict(),
+        "decision_packet_path": packet_path,
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "element_count": len(candidates),
+    }
+    if decision is not None:
+        target_element = None
+        if decision.target_ref and str(decision.target_ref).isdigit():
+            target_element = int(decision.target_ref)
+        payload["decision"] = {
+            "action": decision.action,
+            "target_ref": decision.target_ref,
+            "target_element": target_element,
+            "needs_vision": decision.needs_vision,
+            "needs_generation": decision.needs_generation,
+            "done": decision.done,
+            "confidence": decision.confidence,
+            "backend": decision.backend,
+        }
+        payload["verdict"] = {
+            "decision": "done" if decision.done else "suggest_action",
+            "hint": _decide_hint(decision),
+        }
+    else:
+        payload["verdict"] = {
+            "decision": "escalate",
+            "hint": "Decision lane abstained — plan the next step with capture + your usual reasoning.",
+        }
+    metrics = get_shadow_state_metrics(session_id)
+    if metrics:
+        payload["semantic_metrics"] = metrics
+    return json.dumps(payload)
+
+
+def _do_run_goal(backend, action, args, session_id=None, **_):
+    """Bounded decide→act loop without main-planner round trips (#113850 / RFC #112639)."""
+    goal = (args.get("goal") or args.get("goal_hint") or "").strip()
+    if not goal:
+        return json.dumps({"error": "run_goal requires `goal` (or `goal_hint`)"})
+    from tools.computer_use.decide_loop import run_decide_loop
+
+    sid = session_id or ""
+    app = args.get("app")
+
+    def handle(cu_args: Dict[str, Any]) -> Any:
+        return handle_computer_use(cu_args, session_id=sid)
+
+    from tools.computer_use.readiness_predicates import verify_action
+
+    def verify_fn(action: str, decision: dict, _exec_result: dict | None) -> dict | None:
+        cap = backend.capture(mode="ax", app=app)
+        if not cap.pid or not cap.window_id:
+            return None
+        vr = verify_action(
+            backend,
+            action=action,
+            pid=int(cap.pid),
+            window_id=int(cap.window_id),
+            expect_label=decision.get("expect_label"),
+            expect_role=decision.get("expect_role"),
+            text=str(decision.get("text") or decision.get("value") or ""),
+            value=str(decision.get("value") or ""),
+        )
+        return {"verify_status": vr.status}
+
+    result = run_decide_loop(
+        goal,
+        handle,
+        app=app,
+        max_steps=min(int(args.get("max_steps") or 8), 32),
+        stuck_threshold=int(args.get("stuck_threshold") or 3),
+        step_pause_s=float(args.get("step_pause_s") or 0.35),
+        use_trajectory_cache=bool(args.get("use_cache")),
+        metrics_fn=lambda: get_shadow_state_metrics(sid),
+        verify_fn=verify_fn,
+        use_prepared_actions=bool(args.get("use_prepared")),
+    )
+    payload = result.to_dict()
+    payload["action"] = "run_goal"
+    payload["ok"] = result.ok
+    payload["semantic_metrics"] = get_shadow_state_metrics(sid)
+    payload["identity_trend"] = get_identity_trend(sid)
+    return json.dumps(payload)
+
 
 def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
@@ -416,8 +643,14 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
+    # Sequence is orchestration, not an authorization bypass: run_sequence re-runs the hard blocks, per-step
+    # approval scopes, and the same backend handlers for every step (see tools/computer_use/sequence.py).
+    "sequence": _ActionSpec(lambda backend, action, args, **delivery: run_sequence(
+        backend, args, session_id=delivery.get("session_id"))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
+    "decide": _ActionSpec(_do_decide),
+    "run_goal": _ActionSpec(_do_run_goal),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
@@ -433,18 +666,30 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], se
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
-    # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
-    # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
-    if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
-            and (mismatch := _input_target_mismatch(backend, requested_app)) is not None):
-        return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
-            f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
-            "— input actions always hit the sticky target from the last capture/focus_app. "
-            f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
+    # app= guard, via the execution revision: input goes to the sticky target from the last capture/focus_app
+    # and the backend drops app= silently — refuse a clear mismatch rather than type into the wrong window while
+    # reporting ok:true. The admitted revision also carries the backend generation, so an input admitted before
+    # a rebind fails closed instead of landing on the new backend's target.
+    if spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip():
+        with phase("admission"):
+            rev = _admit_revision(session_id, backend)
+        with phase("validate"):
+            verdict = _execution_state(session_id).validate(rev, INPUT_DEPS)
+            if not verdict.ok:
+                note_invalidation(verdict.reason)
+                return json.dumps({"ok": False, "action": action, "code": "revision_invalidated",
+                                   "invalidation_reason": verdict.reason,
+                                   "error": f"{action} refused: {verdict.describe()} — re-capture and retry."})
+        if (mismatch := target_mismatch(rev.app, requested_app)) is not None:
+            return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
+                f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
+                "— input actions always hit the sticky target from the last capture/focus_app. "
+                f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
     # handlers forward their kwargs to the backend verbatim, so the dedup session key rides only on read handlers.
-    res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
-                       bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
+    with phase("input") if spec.input else contextlib.nullcontext():
+        res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
+                           bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
     return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")),
                                                                          session_id=session_id)
 
@@ -551,10 +796,12 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
+    with phase("capture_persist"):
+        elements_file = _spill_elements_to_file(cap) if lost_detail else None
+        screenshot_path = _persist_capture_image(cap) if has_image else None
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
-                           elements_file=_spill_elements_to_file(cap) if lost_detail else None,
-                           screenshot_path=_persist_capture_image(cap) if has_image else None,
+                           elements_file=elements_file, screenshot_path=screenshot_path,
                            dims_omitted=dims if too_small else None, has_image=has_image)
 
 def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
@@ -593,9 +840,112 @@ def _capture_digest(cap: CaptureResult) -> str:
     return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
                           + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
 
+# ── Phase 1A shadow semantic state (#112734) ──────────────────────────────────
+# Built on every capture purely as measurement: the delta is never inserted into the
+# prompt, never replaces the capture, never authorizes an action, and creates no
+# persistent semantic IDs. Per-session stores are bounded so a long GUI session cannot
+# grow them without limit. Any failure here must stay silent — measurement never breaks
+# the tool — so the whole observation is guarded.
+_SHADOW_STATE_MAX_SESSIONS = 64
+_shadow_state_prev: Dict[str, "GuiStateV0"] = {}
+_shadow_state_metrics: Dict[str, Dict[str, Any]] = {}
+
+
+def reset_shadow_state_for_tests() -> None:  # pragma: no cover — test seam
+    from tools.computer_use.identity_trend import reset_identity_trends_for_tests
+    _shadow_state_prev.clear()
+    _shadow_state_metrics.clear()
+    reset_identity_trends_for_tests()
+
+
+def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None:
+    """Build the shadow GuiStateV0 for this capture and diff it against the previous
+    one for the session, recording the section-J metrics (reconciliation latency,
+    changed-element ratio, delta vs full bytes, identity retention, ambiguity count)."""
+    if not cap.elements:
+        return  # vision-only captures carry no semantic content to reconcile
+    try:
+        import time as _time
+
+        from tools.computer_use.semantic_state import build_state
+        from tools.computer_use.identity_trend import record_identity_step
+        from tools.computer_use.state_diff import (
+            delta_bytes, diff_states, full_observation_bytes,
+        )
+
+        sid = _scoped_sid(session_id or "")
+        if sid not in _shadow_state_prev and len(_shadow_state_prev) >= _SHADOW_STATE_MAX_SESSIONS:
+            _shadow_state_prev.pop(next(iter(_shadow_state_prev)))
+        prev = _shadow_state_prev.get(sid)
+        revision = (prev.revision + 1) if prev else 1
+        target = f"{cap.app or ''}/{cap.window_title or ''}"
+        started = _time.perf_counter()
+        state = build_state(cap.elements, revision=revision, target=target,
+                            width=cap.width, height=cap.height, captured_at=_time.time())
+        delta = diff_states(prev, state) if prev else None
+        elapsed_ms = (_time.perf_counter() - started) * 1000.0
+        _shadow_state_prev[sid] = state
+        delta_b = delta_bytes(delta) if delta else 0
+        full_b = full_observation_bytes(state)
+        image_est = estimate_image_tokens(cap.width, cap.height) \
+            if (cap.png_b64 or cap.png_bytes_len) else 0
+        set_dimension("token_est", estimate_text_tokens(full_b))  # onto the open element_processing span
+        _shadow_state_metrics[sid] = {
+            "revision": revision,
+            "elements": len(state.elements),
+            "reconciliation_ms": elapsed_ms,
+            "changed_element_ratio": delta.changed_element_ratio if delta else 0.0,
+            "delta_bytes": delta_b,
+            "full_observation_bytes": full_b,
+            "delta_tokens_est": estimate_text_tokens(delta_b),
+            "full_observation_tokens_est": estimate_text_tokens(full_b),
+            "image_tokens_est": image_est,
+            "token_estimate_method": TOKEN_ESTIMATE_METHOD,
+            "identity_retention": delta.identity_retention if delta else 1.0,
+            "ambiguous": len(delta.ambiguous) if delta else 0,
+            "mean_confidence": delta.mean_confidence if delta else 1.0,
+        }
+        if delta:  # first capture has nothing to reconcile; the trend starts at step 2
+            record_identity_step(sid, retention=delta.identity_retention, matched=delta.matched,
+                                 removed=len(delta.removed), ambiguous=len(delta.ambiguous),
+                                 mean_confidence=delta.mean_confidence, revision=revision)
+    except Exception:
+        logger.debug("shadow semantic-state observation failed", exc_info=True)
+
+
+def get_shadow_state_metrics(session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Last shadow measurement for a session (test/reporting seam; empty before any capture)."""
+    return dict(_shadow_state_metrics.get(_scoped_sid(session_id or ""), {}))
+
+
+def get_identity_trend(session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Per-run identity-retention trend for a session (empty before any reconciliation)."""
+    from tools.computer_use.identity_trend import get_identity_trend as _trend
+    return _trend(_scoped_sid(session_id or ""))
+
+
+def aggregate_identity_trends() -> Dict[str, Any]:
+    """Across-runs identity-retention aggregate over every tracked session."""
+    from tools.computer_use.identity_trend import aggregate_identity_trends as _agg
+    return _agg()
+
+
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
                       session_id: Optional[str] = None) -> Any:
-    v = _capture_view(cap, max_elements)
+    with phase("element_processing"):
+        v = _capture_view(cap, max_elements)
+        set_dimension("element_count", v.total)
+        set_dimension("capture_bytes", getattr(cap, "png_bytes_len", None))
+        if cap.png_b64 or cap.png_bytes_len:
+            set_dimension("image_token_est", estimate_image_tokens(cap.width, cap.height))
+        # Phase 1A shadow measurement only; timed here because it is element work.
+        _shadow_state_observe(cap, session_id)
+    with phase("response_shape"):
+        return _capture_response_shaped(v, cap, session_id=session_id)
+
+
+def _capture_response_shaped(v: SimpleNamespace, cap: CaptureResult,
+                             session_id: Optional[str] = None) -> Any:
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
     if v.has_image and session_id and _screenshot_dedup_check(
@@ -622,9 +972,11 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # the multimodal envelope (main model handles vision natively). Issue #24015: previously the
         # multimodal envelope was returned unconditionally, so non-vision main models tripped HTTP 404 / 400
         # at the provider boundary even when auxiliary.vision was explicitly configured to handle this.
-        routed = _route_capture_through_aux_vision(
-            cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
-            elements_file=v.elements_file, screenshot_path=v.screenshot_path)
+        with phase("aux_vision"):
+            routed = _route_capture_through_aux_vision(
+                cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
+                elements_file=v.elements_file, screenshot_path=v.screenshot_path)
+            set_dimension("aux_vision_used", routed is not None)
         if routed is not None:
             return routed
         # Aux routing requested but failed (vision node down, empty analysis...): the multimodal envelope could
@@ -646,18 +998,23 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
         # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so
         # app-only recapture can switch targets.
         exact = {k: (getattr(backend, "_last_target", None) or {}).get(k) for k in ("pid", "window_id")}
-        cap = backend.capture(mode=_capture_after_mode(), **(exact if None not in exact.values()
-                                                            else {"app": getattr(backend, "_last_app", None)}))
+        resp = _guarded_capture(backend, session_id, mode=_capture_after_mode(),
+                                **(exact if None not in exact.values()
+                                   else {"app": getattr(backend, "_last_app", None)}))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
+    payload = _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]
         resp["action_result"] = payload
         return resp
-    return json.dumps({**json.loads(resp), **payload})  # text capture: merge the action payload in
+    data = json.loads(resp) if isinstance(resp, str) else dict(resp)
+    if data.get("code") == "revision_invalidated":
+        # The input stood; only its follow-up frame was fenced — keep both visible, the error wins.
+        return json.dumps({**payload, "follow_capture": data})
+    return json.dumps({**data, **payload})  # text capture: merge the action payload in
 
 # ── Cache files (screenshots, element spills, vision temps) ─────────────────
 def _cache_file(subdir: str, legacy: str, name: str, pattern: str = "", cap: int = 0):

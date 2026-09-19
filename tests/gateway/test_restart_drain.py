@@ -14,6 +14,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
 )
 from gateway.session import SessionEntry, build_session_key
+from gateway.shutdown_flush import flush_overflow_to_file, recover_pending_to_db
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -157,6 +158,124 @@ async def test_request_restart_is_idempotent():
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
     )
+
+
+@pytest.mark.asyncio
+async def test_idle_restart_drain_queues_every_message_but_throttles_notice():
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "steer"
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first", message_type=MessageType.TEXT, source=source, message_id="m1"
+    )
+    second = MessageEvent(
+        text="second", message_type=MessageType.TEXT, source=source, message_id="m2"
+    )
+
+    first_result = await runner._hm_dispatch_idle_commands(first, source, session_key)
+    second_result = await runner._hm_dispatch_idle_commands(second, source, session_key)
+
+    assert first_result[0] is True and "queued" in first_result[1]
+    assert second_result == (True, None)
+    assert adapter._pending_messages == {}
+    assert runner._session_state(session_key).conversation.queued_events == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_busy_and_idle_restart_drain_share_chat_notice_cooldown():
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    idle_event = MessageEvent(
+        text="idle", message_type=MessageType.TEXT, source=source, message_id="m1"
+    )
+    busy_event = MessageEvent(
+        text="busy", message_type=MessageType.TEXT, source=source, message_id="m2"
+    )
+
+    idle_result = await runner._hm_dispatch_idle_commands(idle_event, source, session_key)
+    await runner._send_busy_drain_notice(busy_event, session_key, "queue")
+
+    assert "queued" in idle_result[1]
+    assert adapter.sent == []
+    assert adapter._pending_messages[session_key] is busy_event
+    assert runner._session_state(session_key).conversation.queued_events == [idle_event]
+
+
+@pytest.mark.asyncio
+async def test_idle_restart_drain_holds_events_outside_adapter_lifecycle(
+    tmp_path, monkeypatch
+):
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    handled = []
+
+    async def drain_handler(event):
+        handled.append(event.message_id)
+        await runner._hm_dispatch_idle_commands(event, event.source, session_key)
+        return None
+
+    adapter.set_message_handler(drain_handler)
+    text_events = [
+        MessageEvent(
+            text=text, message_type=MessageType.TEXT, source=source, message_id=f"m{index}"
+        )
+        for index, text in enumerate(("first", "second"), start=1)
+    ]
+    media_events = [
+        MessageEvent(
+            text="",
+            message_type=MessageType.DOCUMENT,
+            source=source,
+            message_id="m3",
+            media_urls=["/tmp/report.pdf"],
+            media_types=["application/pdf"],
+        ),
+        MessageEvent(
+            text="caption",
+            message_type=MessageType.PHOTO,
+            source=source,
+            message_id="m4",
+            media_urls=["/tmp/photo.png", "/tmp/note.mp3", "/tmp/demo.mp4"],
+            media_types=["image/png", "audio/mpeg", "video/mp4"],
+        ),
+    ]
+    events = text_events + media_events
+    for event in events:
+        await adapter.handle_message(event)
+        await adapter._session_tasks[session_key]
+
+    assert handled == ["m1", "m2", "m3", "m4"]
+    assert adapter._pending_messages == {}
+    assert session_key not in adapter._active_sessions
+    assert runner._session_state(session_key).conversation.queued_events == events
+
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir()
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    assert flush_overflow_to_file({session_key: events}) == 4
+    recovered_db = MagicMock()
+    assert recover_pending_to_db(recovered_db) == 4
+    assert [
+        call.kwargs["content"] for call in recovered_db.append_message.call_args_list
+    ] == [
+        "first",
+        "second",
+        "[User sent a file: /tmp/report.pdf]",
+        "caption\n[User sent an image: /tmp/photo.png]\n"
+        "[User sent audio: /tmp/note.mp3]\n"
+        "[User sent a video: /tmp/demo.mp4]",
+    ]
 
 
 @pytest.mark.asyncio

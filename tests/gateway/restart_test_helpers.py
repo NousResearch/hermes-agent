@@ -162,6 +162,7 @@ def make_restart_runner(
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
     runner.session_store._entries = {}
+    runner.session_store.get_or_create_session.return_value.session_id = "restart-session"
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()

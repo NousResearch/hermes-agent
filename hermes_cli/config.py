@@ -1507,11 +1507,15 @@ def _warn_invalid_platform_toolsets(results: Dict[str, Any], quiet: bool) -> Non
     unknown name, silently disabling the affected tools. Best-effort; never blocks migration."""
     try:
         from toolsets import validate_toolset
-        from hermes_cli.toolset_validation import validate_platform_toolsets
+        from hermes_cli.toolset_validation import validate_platform_toolsets, with_plugin_toolsets
         from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
+        # Plugin toolsets only enter the registry once plugins are discovered, which happens
+        # later than this migration step — validating the raw predicate flags a legitimately
+        # enabled plugin toolset as unknown.
         for w in validate_platform_toolsets(
-                read_raw_config().get("platform_toolsets"), validate_toolset, toolset_allowed_for_platform):
+                read_raw_config().get("platform_toolsets"),
+                with_plugin_toolsets(validate_toolset), toolset_allowed_for_platform):
             results["warnings"].append(w)
             if not quiet:
                 print(f"  ⚠ {w}")

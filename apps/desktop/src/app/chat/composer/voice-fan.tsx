@@ -96,14 +96,16 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
         active: wakeListening,
         disabled: disabled || wakePending,
         icon: wakeListening ? <Ear className={iconSize.sm} /> : <EarOff className={iconSize.sm} />,
-        label: c.wakeWord(phrase),
+        // Preserve wake-word failure/arming details in the fan tooltip
+        // (wake-word.ts populates notice on every failure/arming path).
+        label: wake.notice ? `${c.wakeWord(phrase)} — ${wake.notice}` : c.wakeWord(phrase),
         onSelect: () => {
           triggerHaptic(wakeListening ? 'close' : 'open')
           void toggleWakeWord()
         }
       }
     ],
-    [autoSpeak, c, disabled, onToggleAutoSpeak, phrase, wakeListening, wakePending]
+    [autoSpeak, c, disabled, onToggleAutoSpeak, phrase, wake.notice, wakeListening, wakePending]
   )
 
   return <FanMenu direction="vertical" hub={hub} items={items} label={c.voiceControls} />

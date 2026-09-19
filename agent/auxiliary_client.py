@@ -3118,13 +3118,6 @@ def _reset_aux_unhealthy_cache() -> None:
     _aux_unhealthy_logged_at.clear()
     _aux_unhealthy_reason.clear()
 
-
-
-
-
-
-
-
 def _nous_portal_account_has_fresh_paid_access() -> bool:
     """Return True only when the fresh Nous account API says paid access is allowed."""
     try:
@@ -3134,41 +3127,7 @@ def _nous_portal_account_has_fresh_paid_access() -> bool:
         logger.debug("Auxiliary Nous paid-entitlement refresh check failed: %s", exc)
         return False
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 _TRANSIENT_RETRY_BACKOFF_BASE = 1.0  # Backoff base (seconds); overridable so tests can zero it out.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
 # stalls the serialised turn queue). A same-provider retry after a full-budget timeout costs another
@@ -6062,9 +6021,6 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
         converted.append({**msg, "content": new_content} if changed else msg)
     return converted
 
-
-
-
 def _contains_profile_reasoning_fields(value: Any) -> bool:
     """Return whether a profile payload contains a reasoning wire control (recursive)."""
     if not isinstance(value, dict):
@@ -7006,9 +6962,6 @@ def _without_max_tokens(kwargs: dict) -> dict:
     Responses), and the provider's own gateway may inject one — the 400 still names ``max_tokens``
     and the identical request completes on retry (registry class #89897/#90257)."""
     return {k: v for k, v in kwargs.items() if k not in ("max_tokens", "max_completion_tokens")}
-
-
-
 
 def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
     """Ordered ``(matches, strip, log message, remember)`` parameter rungs; ``strip`` returns None

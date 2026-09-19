@@ -2300,6 +2300,10 @@ class BasePlatformAdapter(ABC):
         before handling un-mentioned replies)."""
         self._session_store = session_store
 
+    def _should_dispatch_message_event(self, event: MessageEvent) -> bool:
+        """Final platform gate before an event enters session dispatch."""
+        return True
+
     def set_owner_profile(self, profile_name: Optional[str]) -> None:
         """Declare the owning multiplex profile (secondary profiles only); read by
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
@@ -3877,6 +3881,9 @@ class BasePlatformAdapter(ABC):
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
+            return
+        if not self._should_dispatch_message_event(event):
+            logger.info("[%s] Dropping message before session dispatch: platform gate rejected event", self.name)
             return
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:

@@ -6086,6 +6086,28 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _should_dispatch_message_event(self, event: MessageEvent) -> bool:
+        """Re-apply Telegram trigger rules before session dispatch.
+
+        Cold ingress already runs ``_gate_or_observe`` / ``_should_process_message``
+        (#54709). This hook is the last line of defense for callers that reach
+        ``handle_message`` without that gate again (text-batch flush, held-inbound
+        redispatch, media/location). Fail closed for group/supergroup events that
+        lack ``raw_message`` so a synthetic path cannot skip ``require_mention``.
+        DMs stay fail-open when raw is missing (no mention gate there).
+        """
+        if getattr(event, "internal", False):
+            return True
+        raw_message = getattr(event, "raw_message", None)
+        if raw_message is None:
+            chat_type = getattr(getattr(event, "source", None), "chat_type", "dm") or "dm"
+            if chat_type in ("group", "supergroup"):
+                return False
+            return True
+        # ``is_command`` is unused by ``_should_process_message`` today; keep the
+        # call aligned with the real gate signature without a dead kwarg.
+        return self._should_process_message(raw_message)
+
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;
         Telegram resolves via BotCommandScopeChat)."""

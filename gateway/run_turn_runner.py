@@ -1065,6 +1065,19 @@ class TurnRunner:
                 )
             else:
                 out.agent = cached[0]
+                if sid_mismatch:
+                    # Reusing the agent across session_ids preserves the prompt cache, but
+                    # per-conversation in-memory state must NOT travel with it. The todo
+                    # store hangs off the agent object and ``_hydrate_from_history`` only
+                    # hydrates when it is empty, so the new session would otherwise inherit
+                    # the previous conversation's task list and re-inject it at compaction.
+                    # Clear it so this turn re-hydrates from THIS session's own history.
+                    from tools.todo_tool import TodoStore
+                    out.agent._todo_store = TodoStore()
+                    logger.info(
+                        "Reset _todo_store on cross-session agent reuse (key=%s sid %s -> %s)",
+                        ctx.session_key, cached_sid, ctx.session_id,
+                    )
                 # Refresh LRU order so cap enforcement evicts truly-oldest entries.
                 if hasattr(cache, "move_to_end"):
                     with suppress(KeyError):

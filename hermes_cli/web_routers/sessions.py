@@ -254,21 +254,24 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 @search_router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
-    sources: str = None, exclude_sources: str = None):
-    """Search sessions by ID (first) plus FTS5 message content.
+    sources: str = None, exclude_sources: str = None, offset: int = 0):
+    """Search distinct conversations by ID, title, then FTS5 message content.
 
     Results are deduped by compression lineage, not raw ``session_id``:
     auto-compression rotates a chat onto a fresh id and leaves the old segment
     in the FTS index.  Branches also use ``parent_session_id`` but are real
     alternate conversations — they are NOT collapsed into the parent.
     """
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be nonnegative")
     if not q or not q.strip():
-        return {"results": []}
+        return {"results": [], "has_more": False, "next_offset": None}
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
         row_profile = _serving_profile(profile)
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
+            target = offset + safe_limit + 1
             source_filter = source or None
             source_list = _csv(sources)
             include_sources = [source_filter] if source_filter else (source_list or None)
@@ -321,10 +324,15 @@ async def search_sessions(
                 if not raw_sid:
                     return
                 root = compression_root(raw_sid)
-                if root in seen or len(seen) >= safe_limit:
+                if root in seen or len(seen) >= target:
                     return
                 payload = dict(payload)
                 sid = lineage_tip(root)
+                # Different compression roots can resolve to the SAME live
+                # continuation id (multiple historic segments). LazyList keys
+                # are session ids, so key the final surfaced id, not the root.
+                if any(existing["session_id"] == sid for existing in seen.values()):
+                    return
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
                 payload["profile"] = row_profile
@@ -361,33 +369,55 @@ async def search_sessions(
                     "snippet": snippet, "role": role, "source": row.get("source"),
                     "model": row.get("model"), "session_started": session_started}
 
-            # Direct ID matches first (pasted ids never appear in message text).
-            for row in db.search_sessions_by_id(
-                q, limit=safe_limit, include_archived=True, source=source_filter,
-                sources=source_list or None, exclude_sources=exclude_list or None):
-                sid = row.get("id")
-                preview = (row.get("preview") or "").strip()
-                snippet = preview or f"Session ID: {sid}"
-                add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
+            # Grow candidate windows until enough distinct conversations exist or
+            # the source is exhausted. A busy conversation must never hide later hits.
+            window = max(target, 50)
+            while len(seen) < target:
+                rows = db.search_sessions_by_id(
+                    q, limit=window, include_archived=True, source=source_filter,
+                    sources=source_list or None, exclude_sources=exclude_list or None)
+                for row in rows:
+                    sid = row.get("id")
+                    snippet = (row.get("preview") or "").strip() or f"Session ID: {sid}"
+                    add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
+                if len(rows) < window:
+                    break
+                window *= 2
+
+            title_offset = 0
+            while len(seen) < target:
+                rows = db.search_sessions_by_title(
+                    q, limit=100, offset=title_offset, source=source_filter,
+                    sources=source_list or None, exclude_sources=exclude_list or None)
+                for row in rows:
+                    add_lineage_result(row["id"], hit_payload(
+                        row, row.get("title") or "", None, row.get("started_at")))
+                if len(rows) < 100:
+                    break
+                title_offset += len(rows)
 
             # Prefix wildcards so partial words match ("nimb" -> "nimb*");
             # quoted phrases and existing wildcards are kept as-is.
             prefix_query = " ".join(
                 tok if tok.startswith('"') or tok.endswith("*") else tok + "*"
                 for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
-            # Over-fetch so lineage dedup can still surface `limit` distinct
-            # conversations when several hits collapse onto one root.
-            matches = db.search_messages(
-                query=prefix_query, source_filter=include_sources,
-                exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
-                fields=("session_id", "role", "snippet", "source", "model", "session_started"))
-            for m in matches:
-                if len(seen) >= safe_limit:
+            window = max(target * 5, 50)
+            while len(seen) < target:
+                matches = db.search_messages(
+                    query=prefix_query, source_filter=include_sources,
+                    exclude_sources=exclude_list or None, limit=window,
+                    fields=("session_id", "role", "snippet", "source", "model", "session_started"))
+                for m in matches:
+                    add_lineage_result(m["session_id"], hit_payload(
+                        m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
+                if len(matches) < window:
                     break
-                add_lineage_result(
-                    m["session_id"],
-                    hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
-            return {"results": list(seen.values())}
+                window *= 2
+            results = list(seen.values())
+            has_more = len(results) > offset + safe_limit
+            return {"results": results[offset:offset + safe_limit],
+                    "has_more": has_more,
+                    "next_offset": offset + safe_limit if has_more else None}
         finally:
             db.close()
 

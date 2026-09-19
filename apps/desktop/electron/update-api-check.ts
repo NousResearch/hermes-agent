@@ -110,6 +110,55 @@ export function parseCompare(payload: unknown): { behind: number; commits: Compa
   return { behind: ahead, commits }
 }
 
+/**
+ * The status both update-check paths (API and ls-remote) return once the remote
+ * tip is known and differs from HEAD. Extracted so the parked-branch case -
+ * where the tip is already merged into a local branch - is answered the same
+ * way for every install form instead of only on the non-GitHub path (#114946).
+ */
+export interface TipStatus {
+  behind: number | null
+  updateAvailable: boolean
+  targetSha: string
+  commits: CompareCommit[]
+}
+
+export interface TipStatusInput {
+  /**
+   * The compare payload when the call succeeded; null when it failed. GitHub's
+   * compare endpoint needs BOTH refs on the remote, so an install whose HEAD
+   * carries local commits (parked branch / `update_in_place`) gets a 404.
+   */
+  compared: { behind: number; commits: CompareCommit[] } | null
+  /**
+   * `git merge-base --is-ancestor <tip> HEAD` — the local graph's own answer.
+   * True means everything the remote has is already in HEAD, which is exactly
+   * "up to date" and is the only source that knows it when `compared` is null.
+   */
+  tipIsAncestorOfHead: boolean
+  targetSha: string
+}
+
+export function resolveTipStatus({ compared, tipIsAncestorOfHead, targetSha }: TipStatusInput): TipStatus {
+  // A local commit sitting AHEAD of the remote is not an update: flagging it
+  // nudges the user into wiping their work. `compared.behind === 0` says so
+  // from the compare payload; the local probe says so when the payload never
+  // arrived (404, rate limit, offline) — without it, such installs reported
+  // "update available" forever, immediately after a good update.
+  if (tipIsAncestorOfHead || compared?.behind === 0) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  // Still an honest "update available, count unknown" when the payload is
+  // missing — never a fabricated number, and never a fabricated changelog.
+  return {
+    behind: compared ? compared.behind : null,
+    updateAvailable: true,
+    targetSha,
+    commits: compared?.commits ?? []
+  }
+}
+
 /** GitHub's rate-limit headers off a failed response, when it carried them. */
 export function rateLimitFromHeaders(headers: Record<string, string | string[] | undefined>): {
   rateLimitRemaining: number | null

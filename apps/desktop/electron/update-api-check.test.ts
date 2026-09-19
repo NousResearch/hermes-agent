@@ -20,6 +20,7 @@ import {
   githubRepoSlug,
   parseCompare,
   rateLimitFromHeaders,
+  resolveTipStatus,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -80,6 +81,40 @@ test('compare payload maps to the behind count and a newest-first commit list; m
     branchTipApiUrl('nousresearch/hermes-agent', 'bb/gui'),
     'https://api.github.com/repos/nousresearch/hermes-agent/commits/bb%2Fgui'
   )
+})
+
+// #114946: a parked-branch install (`updates.parked_branch_strategy:
+// update_in_place`) merges origin/main into a local branch, so its HEAD is a
+// commit that exists only locally — GitHub's compare endpoint needs both refs
+// on the remote and answers 404, which the check swallows. Only the local graph
+// can then say the remote tip is already in our history; without that answer
+// the overlay reported "update available" forever, right after a good update.
+test('a failed compare resolves against the local graph instead of nagging forever', () => {
+  // Local-only HEAD, tip already merged in: up to date, nothing behind.
+  assert.deepEqual(resolveTipStatus({ compared: null, targetSha: SHA_A, tipIsAncestorOfHead: true }), {
+    behind: 0,
+    commits: [],
+    targetSha: SHA_A,
+    updateAvailable: false
+  })
+
+  // Genuinely behind with no compare payload (rate limit, offline, 404): keep
+  // the honest "update available, count unknown" — never a fabricated count.
+  assert.deepEqual(resolveTipStatus({ compared: null, targetSha: SHA_A, tipIsAncestorOfHead: false }), {
+    behind: null,
+    commits: [],
+    targetSha: SHA_A,
+    updateAvailable: true
+  })
+
+  // A compare payload the API did return still wins over the local probe.
+  const commits = [{ sha: SHA_B, summary: 'feat: newer', author: 'B', at: 0 }]
+  assert.deepEqual(resolveTipStatus({ compared: { behind: 3, commits }, targetSha: SHA_A, tipIsAncestorOfHead: false }), {
+    behind: 3,
+    commits,
+    targetSha: SHA_A,
+    updateAvailable: true
+  })
 })
 
 // #112615: behind a shared exit IP the anonymous 60/hour budget is spent by

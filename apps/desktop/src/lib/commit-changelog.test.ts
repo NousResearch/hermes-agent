@@ -74,10 +74,17 @@ describe('buildCommitChangelog', () => {
     expect(groups[0].items).toEqual(['Update sidebar styling'])
   })
 
-  it('falls back to a neutral placeholder when every commit is filtered or empty', () => {
-    const groups = buildCommitChangelog([{ summary: 'chore: bump' }, { summary: 'ci: stuff' }])
-
-    expect(groups).toEqual([{ id: 'other', items: ['Improvements and fixes'], label: 'In this update' }])
+  // #114946: an update check that cannot list commits (the compare API 404s for
+  // a parked-branch install's local-only HEAD; SSH remotes and non-git backends
+  // return `commits: []` by design) used to render one fabricated bullet,
+  // "Improvements and fixes", which implied content that was never fetched —
+  // and nothing could ever replace or remove it. No rows means no groups: the
+  // overlay then uses its honest "release notes aren't available for this
+  // install type" copy (resolveUpdateCopy keys off an empty group list).
+  it('reports no changelog rows when every commit is filtered or the list is empty', () => {
+    expect(buildCommitChangelog([{ summary: 'chore: bump' }, { summary: 'ci: stuff' }])).toEqual([])
+    expect(buildCommitChangelog([])).toEqual([])
+    expect(buildCommitChangelog(undefined)).toEqual([])
   })
 
   it('dedupes identical subjects and caps the items per group', () => {

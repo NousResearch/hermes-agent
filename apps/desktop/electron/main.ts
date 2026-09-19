@@ -428,7 +428,8 @@ import {
   describeUpdateCheckFailure,
   githubRepoSlug,
   parseCompare,
-  rateLimitFromHeaders
+  rateLimitFromHeaders,
+  resolveTipStatus
 } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -3302,7 +3303,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const slug = githubRepoSlug(originUrl)
 
   const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    ? await checkUpdatesViaApi({ updateRoot, slug, branch, currentSha })
     : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
 
   const result = {
@@ -3340,11 +3341,23 @@ function writeUpdateCheckCache(entry) {
   }
 }
 
+// The one local-graph question both check paths ask: is the remote tip already
+// in our history? A parked-branch install (`updates.parked_branch_strategy:
+// update_in_place`) merges origin/main into a local branch, so HEAD carries
+// commits that exist only locally — the compare API 404s for it, and only the
+// local graph can still say "up to date" (#114946). Objects are usually already
+// present after an update, so this needs no fetch.
+async function tipIsAncestorOfHead(updateRoot, targetSha) {
+  const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
+
+  return known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
+}
+
 // GitHub origins (official repo AND forks): tip SHA via the commits endpoint,
 // then the compare endpoint only when the tips differ — it yields the exact
 // behind count plus the commit list the overlay renders, replacing both
 // `rev-list --count` and `git log HEAD..origin/<branch>`.
-async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+async function checkUpdatesViaApi({ updateRoot, slug, branch, currentSha }) {
   let targetSha
 
   try {
@@ -3361,25 +3374,21 @@ async function checkUpdatesViaApi({ slug, branch, currentSha }) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
   }
 
-  // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
-  // "update available, count unknown" — never a fabricated number.
+  // Compare failure keeps the honest "update available, count unknown" — never
+  // a fabricated number. It is also where a local-only HEAD lands (GitHub needs
+  // both refs on the remote), so the local graph answers when it does.
   const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
     .then(parseCompare)
     .catch(() => null)
 
-  // ahead_by === 0 with differing tips: the remote tip is reachable from our
-  // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
-  // nudges the user into wiping their work.
-  if (compared?.behind === 0) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  return {
-    behind: compared ? compared.behind : null,
-    updateAvailable: true,
+  // A local commit sitting AHEAD of the remote is not an update: flagging that
+  // as one nudges the user into wiping their work. resolveTipStatus knows both
+  // halves of that (compare payload, local ancestry) for every install form.
+  return resolveTipStatus({
+    compared,
     targetSha,
-    commits: compared?.commits ?? []
-  }
+    tipIsAncestorOfHead: !compared && (await tipIsAncestorOfHead(updateRoot, targetSha))
+  })
 }
 
 // Non-GitHub origins: one ls-remote for the tip SHA (still no pack transfer),
@@ -3396,16 +3405,11 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
   }
 
-  const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
-
-  const isAncestor =
-    known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  if (isAncestor) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  return { behind: null, updateAvailable: true, targetSha, commits: [] }
+  return resolveTipStatus({
+    compared: null,
+    targetSha,
+    tipIsAncestorOfHead: await tipIsAncestorOfHead(updateRoot, targetSha)
+  })
 }
 
 // GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call

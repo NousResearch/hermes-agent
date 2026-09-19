@@ -76,8 +76,6 @@ const HIDDEN_TYPES = new Set([
   'wip'
 ])
 
-const FALLBACK_GROUP: CommitGroup = { id: 'other', items: ['Improvements and fixes'], label: 'In this update' }
-
 const CONVENTIONAL_HEADER = /^(?<type>[a-zA-Z][a-zA-Z0-9_-]*)(?:\((?<scope>[^)]+)\))?(?<bang>!)?:\s+(?<subject>.+)$/
 
 /** Parse a single commit header line per Conventional Commits 1.0. */
@@ -117,8 +115,13 @@ function tidySubject(subject: string): string {
 
 /**
  * Build a small grouped changelog from a list of raw commits.
- * Always returns at least one group; falls back to a neutral placeholder
- * when every commit was filtered or unparseable.
+ * Returns no groups when every commit was filtered or unparseable — the caller
+ * (`updates-overlay.tsx` → `resolveUpdateCopy`) renders honest "release notes
+ * aren't available for this install type" copy for an empty group list. Never
+ * fabricate a bullet here: an update check that cannot list commits (a
+ * parked-branch install's local-only HEAD 404s the compare API; SSH remotes and
+ * non-git backends return none) used to show "Improvements and fixes" for every
+ * such install, forever, implying content that was never fetched (#114946).
  */
 export function buildCommitChangelog(
   commits: readonly CommitChangelogInput[] | undefined,
@@ -170,10 +173,6 @@ export function buildCommitChangelog(
     .sort((a, b) => a.order - b.order)
     .slice(0, maxGroups)
     .map(({ id, items, label }): CommitGroup => ({ id, items, label }))
-
-  if (result.length === 0) {
-    return [FALLBACK_GROUP]
-  }
 
   return result
 }

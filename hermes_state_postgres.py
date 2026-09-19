@@ -21,7 +21,7 @@ from hermes_state import SessionDB, _default_db_path
 from hermes_state_backend import resolve_database_settings
 from hermes_state_common import SCHEMA_VERSION
 from hermes_state_postgres_schema import (
-    CRON_SCHEMA_SQL, DELIVERY_SCHEMA_SQL, DISPLAY_SQL, FUNCTION_SQL, POSTGRES_SCHEMA_VERSION,
+    ASYNC_DELEGATION_SCHEMA_SQL, CRON_SCHEMA_SQL, DELIVERY_SCHEMA_SQL, DISPLAY_SQL, FUNCTION_SQL, POSTGRES_SCHEMA_VERSION,
     POSTGRES_SCHEMA_SQL, SEARCH_SQL,
     TELEGRAM_SCHEMA_SQL,
 )
@@ -174,6 +174,10 @@ class PostgresSessionDB(SessionPostgresSearchMixin, SessionPostgresMaintenanceMi
                 if version == 2:
                     conn.execute(CRON_SCHEMA_SQL)
                     version = 3
+                    conn.execute('UPDATE postgres_schema_version SET version = %s', (version,))
+                if version == 3:
+                    conn.execute(ASYNC_DELEGATION_SCHEMA_SQL)
+                    version = 4
                     conn.execute('UPDATE postgres_schema_version SET version = %s', (version,))
                 if version != POSTGRES_SCHEMA_VERSION:
                     raise RuntimeError('Unsupported PostgreSQL schema version')

@@ -5,7 +5,15 @@ from hermes_state_common import FTS_TOOL_CONTENT_PREFIX_CHARS
 SEARCH_CONTENT_CHARS = 8_192
 SEARCH_TOOL_CALLS_CHARS = 4_096
 SEARCH_TOOL_NAME_CHARS = 256
-POSTGRES_SCHEMA_VERSION = 3
+POSTGRES_SCHEMA_VERSION = 4
+
+ASYNC_DELEGATION_SCHEMA_SQL = """
+ALTER TABLE async_delegations
+    ADD COLUMN IF NOT EXISTS owner_token TEXT,
+    ADD COLUMN IF NOT EXISTS owner_lease_expires_at DOUBLE PRECISION;
+CREATE INDEX IF NOT EXISTS idx_async_delegations_owner_lease
+    ON async_delegations(state, owner_lease_expires_at);
+"""
 
 DELIVERY_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS delivery_obligations (
@@ -311,7 +319,9 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     task_json TEXT,
     delivery_claim TEXT,
     delivery_claimed_at DOUBLE PRECISION,
-    origin_session_id TEXT NOT NULL DEFAULT ''
+    origin_session_id TEXT NOT NULL DEFAULT '',
+    owner_token TEXT,
+    owner_lease_expires_at DOUBLE PRECISION
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -329,6 +339,8 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_async_delegations_owner_lease
+    ON async_delegations(state, owner_lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page

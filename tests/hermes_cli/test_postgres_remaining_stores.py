@@ -211,3 +211,39 @@ def test_optional_memory_stores_use_postgres(stores_home):
         release.set()
         queue.shutdown()
     assert not queue_path.exists()
+
+
+def test_async_delegation_uses_remote_owner_lease(stores_home):
+    from tools import async_delegation as delegation
+    from tools.bot_live_delivery import find_canonical_live_owner
+
+    record = {
+        'delegation_id': 'async-postgres', 'session_key': 'chat',
+        'origin_ui_session_id': 'ui', 'origin_session_id': 'session',
+        'parent_session_id': 'parent', 'dispatched_at': 10.0,
+        'goal': 'verify PostgreSQL delegation state', 'role': 'testing',
+    }
+    delegation._persist_dispatch(record)
+    with delegation._transaction() as connection:
+        row = connection.execute(
+            'SELECT state, owner_token, owner_lease_expires_at '
+            'FROM async_delegations WHERE delegation_id=?', ('async-postgres',),
+        ).fetchone()
+    assert row[0] == 'running'
+    assert row[1] == delegation._OWNER_TOKEN
+    assert row[2] > 10
+    assert delegation.recover_abandoned_delegations() == 0
+
+    with delegation._transaction() as connection:
+        connection.execute(
+            'UPDATE async_delegations SET owner_lease_expires_at=0 WHERE delegation_id=?',
+            ('async-postgres',),
+        )
+    assert delegation.recover_abandoned_delegations() == 1
+    with delegation._transaction() as connection:
+        assert connection.execute(
+            'SELECT state FROM async_delegations WHERE delegation_id=?', ('async-postgres',),
+        ).fetchone()[0] == 'unknown'
+
+    assert find_canonical_live_owner(stores_home) is None
+    assert not (stores_home / 'state.db').exists()

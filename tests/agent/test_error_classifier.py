@@ -219,6 +219,18 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_400_gemini_api_key_not_valid_classified_as_auth(self):
+        e = MockAPIError(
+            "Gemini HTTP 400 (INVALID_ARGUMENT): API key not valid. Please pass a valid API key.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="gemini", model="gemini-3.8-flash")
+        assert result.reason == FailoverReason.auth
+        assert result.is_auth is True
+        assert result.should_rotate_credential is True
+        assert result.retryable is False
+        assert result.should_fallback is True
+
 
 
 

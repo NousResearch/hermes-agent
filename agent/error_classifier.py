@@ -350,7 +350,8 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
 
 # Auth patterns (non-status-code signals).
 _AUTH_PATTERNS = (
-    "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
+    "invalid api key", "invalid_api_key", "api key not valid", "api_key not valid",
+    "gateway_auth_failed", "authentication", "unauthorized",
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
     # Codex backend rejecting an OAuth access token without a usable
     # ``chatgpt_account_id`` claim; arrives as a bare ``detail`` string.
@@ -562,9 +563,11 @@ _404_RULES = (
 )
 
 # 400 tail after the deterministic request-shape checks. Some providers return
-# model-not-found / rate-limit / billing as 400 instead of 404/429/402.
+# auth / model-not-found / rate-limit / billing as 400 instead of 401/404/429/402.
+# Google AI Studio / Gemini returns HTTP 400 (INVALID_ARGUMENT) for invalid API keys.
 _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
     (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_AUTH_PATTERNS, _V_AUTH_ROTATE),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_BILLING_PATTERNS, _billing_hints),
 )
 

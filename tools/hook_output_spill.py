@@ -102,6 +102,12 @@ def spill_if_oversized(
         logger.warning("hook output spill failed: %s", exc)
 
     total = len(text)
+    if saved_path:
+        # The preview points the agent at the saved full content — read_file runs
+        # inside the active backend, so show the path the backend sees (#72389 class).
+        from tools.credential_files import to_agent_visible_cache_path
+
+        saved_path = to_agent_visible_cache_path(saved_path)
     parts = [
         f"[{source} output truncated — {total:,} chars; full content "
         + (f"saved to {saved_path}]" if saved_path else "unavailable — spill write failed]"),

@@ -2416,9 +2416,19 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
 // a backend inside the update's own critical section — which the scan then
 // reports as a blocker, aborting every update attempt.
+// A marker written by the desktop moments ago names the hand-off's
+// `cmd /c start` WRAPPER pid, which is dead before the real script adopts the
+// marker (see update-marker.ts). The boot gate must still read that as "an
+// update owns the venv right now" — otherwise it spawns a backend inside the
+// hand-off, the desktop never exits, and the hand-off aborts itself at its own
+// desktop-exit gate. Bounded: a genuinely crashed hand-off self-heals seconds
+// later.
+const UPDATE_GATE_DEAD_OWNER_GRACE_MS = 10_000
+
 function updateGateDeps() {
   return {
-    hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
+    hasLiveMarker: () =>
+      Boolean(readLiveUpdateMarker(HERMES_HOME, { deadOwnerGraceMs: UPDATE_GATE_DEAD_OWNER_GRACE_MS })),
     isUpdateInFlight: () => updateInFlight
   }
 }
@@ -4075,6 +4085,42 @@ async function releaseBackendLock(updateRoot, tag) {
   return { unlocked: false }
 }
 
+// A hand-off exists for exactly one reason: the detached script needs THIS
+// process gone before it may touch the venv, and it fails closed on our pid
+// ("the Hermes window did not exit within Ns. Nothing was changed."). Every
+// deferral in before-quit is bounded, but a deferred quit can still park —
+// remote joins, backend teardown and SSH teardown all run first — and a parked
+// quit is indistinguishable from a hung app to the script. Arm one watchdog
+// whenever we commit to quitting for a hand-off: after the grace below, stop
+// waiting and exit for real. The script's own venv-blocker scan and straggler
+// cleanup own whatever we could not finish.
+const HANDOFF_QUIT_WATCHDOG_MS = 20_000
+
+// Budget for joining remote operations during a hand-off quit. Connection
+// recoveries are replayed from their durable records on the next launch, so
+// they are safe to abandon; a real remote UPDATE still gets the unbounded join.
+const HANDOFF_MANAGED_JOIN_BUDGET_MS = 5_000
+
+let handoffQuitWatchdog = null
+
+function armHandoffQuitWatchdog(reason) {
+  if (handoffQuitWatchdog) {
+    return
+  }
+
+  handoffQuitWatchdog = setTimeout(() => {
+    rememberLog(
+      `[updates] hand-off quit still pending after ${HANDOFF_QUIT_WATCHDOG_MS}ms (${reason}); exiting so the detached script can proceed`
+    )
+
+    // Bounded backend teardown, then a hard exit: app.exit() skips before-quit,
+    // the only way out of a deferral that never settles.
+    void Promise.race([backendShutdown.run(), new Promise(resolve => setTimeout(resolve, 5_000))]).finally(() =>
+      app.exit(0)
+    )
+  }, HANDOFF_QUIT_WATCHDOG_MS)
+}
+
 // applyUpdates — hand off to the installer's --update flow, then exit.
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
@@ -4426,6 +4472,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     }
 
     isQuittingForHandoff = true
+    armHandoffQuitWatchdog('desktop hand-off')
     setTimeout(
       () => {
         app.quit()
@@ -4461,6 +4508,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     // of clobbering it with our own.
     rememberLog(`[bootstrap] refusing recovery hand-off: ${handoffConflict.message}`)
     isQuittingForHandoff = true
+    armHandoffQuitWatchdog('desktop hand-off')
     setTimeout(() => {
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
@@ -18321,10 +18369,23 @@ app.on('before-quit', event => {
     event.preventDefault()
 
     if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
+      // A hand-off must not be parked by remote work: connection RECOVERIES are
+      // replayed from their durable records on the next launch, so bound that
+      // join. A real remote UPDATE transaction keeps the unbounded join —
+      // cutting it short could strand a remote install.
+      const budgetMs =
+        isQuittingForHandoff && managedConnectionUpdates.size === 0 ? HANDOFF_MANAGED_JOIN_BUDGET_MS : 0
+
+      if (isQuittingForHandoff) {
+        rememberLog(
+          `[updates] hand-off quit waiting on ${managedConnectionUpdates.size + managedConnectionRecoveries.size} remote operation(s) (join budget ${budgetMs}ms)`
+        )
+      }
+
+      managedUpdateQuitWait = waitForManagedUpdateOperations(
+        () => [...managedConnectionUpdates.values(), ...managedConnectionRecoveries.values()],
+        budgetMs
+      ).finally(() => {
         managedUpdateQuitWaitDone = true
         app.quit()
       })

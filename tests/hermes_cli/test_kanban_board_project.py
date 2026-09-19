@@ -7,6 +7,7 @@ metadata round-trip and the create-time inheritance.
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -105,5 +106,70 @@ def test_create_task_explicit_scratch_beats_board(fresh_home, tmp_path):
         assert (scratch.workspace_kind, scratch.project_id) == ("scratch", None)
         default = kb.get_task(conn, kb.create_task(conn, title="default", board="scoped3"))
         assert (default.workspace_kind, default.project_id) == ("worktree", proj_id)
+    finally:
+        conn.close()
+
+
+def test_create_task_uses_the_store_board_not_the_session_board(fresh_home, tmp_path, monkeypatch):
+    """A pinned store must not leak the *session's* board scope into the row.
+
+    ``HERMES_KANBAN_DB`` is injected into every dispatcher-spawned worker and wins
+    over the board slug (``_board_path``), so the store a create lands in can differ
+    from the board the session sits on. The board-derived columns have to come from
+    the store that actually received the task, not from ``get_current_board()``.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    with pdb.connect_closing() as pconn:
+        proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
+
+    kb.create_board("scoped", name="Scoped", project_id=proj_id, default_workdir=str(elsewhere))
+    kb.set_current_board("scoped")  # the session sits on the scoped board ...
+    # ... but the store in play is the default board's, as it is for a spawned worker.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_home() / "kanban.db"))
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="pinned store")
+        task = kb.get_task(conn, tid)
+        assert (task.project_id, task.workspace_kind, task.branch_name) == (None, "scratch", None)
+
+        # The row really landed in the pinned store (default board), not the scoped one.
+        raw = sqlite3.connect(str(kb.kanban_db_path()))
+        try:
+            landed = raw.execute("SELECT count(*) FROM tasks WHERE id = ?", (tid,)).fetchone()[0]
+        finally:
+            raw.close()
+        assert landed == 1
+
+        # A persistent kind must not inherit the other board's default_workdir either.
+        dir_task = kb.get_task(
+            conn, kb.create_task(conn, title="pinned store dir", workspace_kind="dir"))
+        assert dir_task.workspace_path is None
+    finally:
+        conn.close()
+
+
+def test_create_task_inherits_from_the_store_board(fresh_home, tmp_path):
+    """The inverse direction: with no ``board=`` argument the store still decides.
+
+    A session whose active board is ``default`` must not strip the scope from a
+    create against the scoped board's store — the explicit-argument path above is
+    the only case where the caller gets to name the board.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
+
+    kb.create_board("scoped2", name="Scoped2", project_id=proj_id)
+    kb.set_current_board("default")
+    conn = kbc.connect(board="scoped2")
+    try:
+        task = kb.get_task(conn, kb.create_task(conn, title="store decides"))
+        assert (task.workspace_kind, task.project_id) == ("worktree", proj_id)
+        assert task.branch_name
     finally:
         conn.close()

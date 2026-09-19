@@ -21,7 +21,7 @@ Manage Apple Notes via memo CLI: create, search, edit.
 | License | MIT |
 | Platforms | macos |
 | Tags | `Notes`, `Apple`, `macOS`, `note-taking` |
-| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) |
+| Related skills | [`obsidian`](../note-taking/note-taking-obsidian.md) |
 
 ## Reference: full SKILL.md
 

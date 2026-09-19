@@ -1,6 +1,6 @@
 """Thin HTTP client for the agent -> NAS ``agent-cron`` endpoints (Chronos): arm one-shot / cancel /
 list, authenticated with the existing Nous Portal token.
-Wire contract: ``docs/chronos-managed-cron-contract.md``."""
+Wire contract: ``website/docs/developer-guide/chronos-managed-cron-contract.md``."""
 
 from __future__ import annotations
 

@@ -24,11 +24,9 @@ _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
 
 
 def _load_config() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
+    """Read-only view of config.yaml; peers are only read, never mutated (cache-safe)."""
+    from hermes_cli.config import load_config_readonly
+    return load_config_readonly() or {}
 
 
 def _configured_peers() -> dict:

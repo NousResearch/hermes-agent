@@ -16,7 +16,7 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname
+from utils import base_url_hostname, file_signature
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -133,7 +133,8 @@ class CLIInfoMixin:
                     try:
                         from model_tools import get_toolset_for_tool
                         tools = get_tool_definitions(
-                            enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                            enabled_toolsets=self.enabled_toolsets,
+                            disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
                         availability = compute_toolset_availability(self.enabled_toolsets)
                         tmap = _toolset_map(tools, availability, get_toolset_for_tool)
                         save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
@@ -146,7 +147,8 @@ class CLIInfoMixin:
             else:
                 # Cold path: compute live, then persist the snapshot for the next launch.
                 from model_tools import get_toolset_for_tool
-                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                             disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
                 availability = compute_toolset_availability(self.enabled_toolsets)
                 build_welcome_banner(tools=tools, availability=availability, **banner_kw)
                 try:
@@ -256,12 +258,17 @@ class CLIInfoMixin:
         # /help skills — the full list, kept out of the default view so core commands don't
         # scroll off screen.
         if arg.lower() in ("skills", "skill"):
-            if not skill_commands:
-                _cprint("\n  No skill commands installed.\n")
-                return
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
-            for cmd, info in sorted(skill_commands.items()):
-                _row(cmd, info['description'], 22)
+            from agent.skill_commands import skill_command_collision_note
+            from tools.skills_tool import _find_all_skills
+            if skill_commands:
+                _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+                for cmd, info in sorted(skill_commands.items()):
+                    _row(cmd, info['description'], 22)
+            else:
+                _cprint("\n  No skill commands installed.")
+            # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
+            for note in filter(None, (skill_command_collision_note(s["name"]) for s in _find_all_skills())):
+                _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
             return
 
@@ -354,7 +361,8 @@ class CLIInfoMixin:
         from model_tools import get_toolset_for_tool
         # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
         # including tools deferred behind the tool_search bridge (users verify MCP installs here).
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True,
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
                                      skip_tool_search_assembly=True)
         if not tools:
             print("(;_;) No tools available")
@@ -456,7 +464,7 @@ class CLIInfoMixin:
         Dispatched from the input loop BEFORE slash routing and before anything is queued for the
         agent, so a bang command never becomes a turn: nothing touches ``conversation_history``,
         zero tokens, role alternation / prompt caching untouched by construction
-        (tests/cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
+        (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
         from cli import _rich_text_from_ansi
@@ -521,12 +529,7 @@ class CLIInfoMixin:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
 
             print()
-            print("  Session Reset Policy:")
-            print("  " + "-" * 55)
-            policy = config.default_reset_policy
-            print(f"    Mode: {policy.mode}")
-            print(f"    Daily reset at: {policy.at_hour}:00")
-            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            print("  Conversations persist until /new or /reset.")
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")
@@ -656,10 +659,16 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
+        except Exception:
+            file_lines = []
+
         print()
         print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
         print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True):
+        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
             print(f"  {line}")
         print()
 
@@ -715,7 +724,9 @@ class CLIInfoMixin:
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(compressor) != "provider_usage" else ""
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 
@@ -772,9 +783,12 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_state import SessionDB
+            from hermes_state import SessionDB, _default_db_path
             from agent.insights import InsightsEngine
-            db = SessionDB()
+            if not _default_db_path().exists():
+                print("  No session data yet.")
+                return
+            db = SessionDB(read_only=True)
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))
@@ -809,13 +823,13 @@ class CLIInfoMixin:
         if not cfg_path.exists():
             return
         try:
-            mtime = cfg_path.stat().st_mtime
+            sig = file_signature(cfg_path.stat())
         except OSError:
             return
-        if mtime == self._config_mtime:
+        if sig == self._config_sig:
             return  # unchanged — fast path
 
-        self._config_mtime = mtime
+        self._config_sig = sig
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}

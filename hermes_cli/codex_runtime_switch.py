@@ -88,10 +88,10 @@ def _migration_lines(config: dict) -> list[str]:
     """Run the ~/.codex/config.toml migration and describe it; failures are non-fatal."""
     lines: list[str] = []
     try:
-        from hermes_cli.codex_runtime_plugin_migration import migrate
+        from hermes_cli.codex_runtime_plugin_migration import HERMES_TOOLS_MCP_SERVER_NAME, migrate
         mig_report = migrate(config)
         # The hermes-tools callback is internal plumbing — surfaced separately below.
-        user_servers = [s for s in mig_report.migrated if s != "hermes-tools"]
+        user_servers = [s for s in mig_report.migrated if s != HERMES_TOOLS_MCP_SERVER_NAME]
         if user_servers:
             lines.append(f"Migrated {len(user_servers)} MCP server(s): {', '.join(user_servers)}")
         if mig_report.migrated_plugins:
@@ -104,7 +104,7 @@ def _migration_lines(config: dict) -> list[str]:
             lines.append(
                 f"Default sandbox: {mig_report.wrote_permissions_default} "
                 f"(no approval prompt on every write)")
-        if "hermes-tools" in mig_report.migrated:
+        if HERMES_TOOLS_MCP_SERVER_NAME in mig_report.migrated:
             lines.extend(_HERMES_TOOLS_CALLBACK_NOTE)
         lines.append(f"  (config: {mig_report.target_path})")
         for err in mig_report.errors:

@@ -31,6 +31,13 @@ describe('revealDesktopPane', () => {
     expect(setTerminalTakeover).toHaveBeenCalledWith(true)
   })
 
+  it('also un-minimizes the tree pane, since a same-value store set is a no-op', () => {
+    for (const pane of ['files', 'review', 'sessions', 'terminal']) {
+      revealDesktopPane(pane)
+      expect(revealTreePane).toHaveBeenCalledWith(pane)
+    }
+  })
+
   it('returns false for an unknown pane and touches nothing', () => {
     expect(revealDesktopPane('nope')).toBe(false)
     expect(revealTreePane).not.toHaveBeenCalled()

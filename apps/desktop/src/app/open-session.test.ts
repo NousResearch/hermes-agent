@@ -165,6 +165,17 @@ describe('openSession', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it.each(['stack', 'tab'] as const)('%s uncovers the existing main chat when a page is showing', intent => {
+    $selectedStoredSessionId.set('s1')
+    focusOpenSession.mockReturnValue('main')
+    workspaceIsPageGet.mockReturnValue(true)
+
+    openSession('s1', navigate, intent)
+
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
   it('stack opens a tab rather than taking main from a loaded chat', () => {
     $selectedStoredSessionId.set('s0')
     focusOpenSession.mockReturnValue(null)

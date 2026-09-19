@@ -152,13 +152,15 @@ def _get_ollama_native_headers(base_url: Optional[str], *, api_key: Optional[str
     *base_url* shares the configured Ollama root; an explicit *api_key* replaces any configured
     Authorization variant rather than inheriting it."""
     configured_base = _configured_ollama_base_url()
-    explicit_key = str(api_key or "").strip()
+    from agent.command_token_source import materialize_probe_api_key
+    explicit_key = materialize_probe_api_key(api_key)
     configured_matches = bool(configured_base and base_url and _same_ollama_native_root(base_url, configured_base))
     if not configured_matches and not explicit_key:
         return {}
     headers = _get_ollama_request_headers() if configured_matches else {}
-    if explicit_key:
+    if explicit_key or callable(api_key):
         _drop_authorization(headers)
+    if explicit_key:
         headers["Authorization"] = f"Bearer {explicit_key}"
     return headers
 
@@ -366,7 +368,8 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """HTTP headers for LM Studio native API requests."""
     from hermes_cli.models import _HERMES_USER_AGENT
-    token = str(api_key or "").strip()
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
     return {"User-Agent": _HERMES_USER_AGENT, **({"Authorization": f"Bearer {token}"} if token else {})}
 
 
@@ -591,7 +594,8 @@ def ollama_model_supports_thinking(
     if not server_url or not bare_model:
         return None
 
-    token = str(api_key or "").strip()
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
     try:
         with httpx.Client(timeout=timeout, headers={"Authorization": f"Bearer {token}"} if token else {}) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
@@ -653,10 +657,12 @@ def fetch_ollama_cloud_models(
     base_url: Optional[str] = None,
     *,
     force_refresh: bool = False,
+    cache_only: bool = False,
 ) -> list[str]:
     """Ollama Cloud models: fresh disk cache (< 1h, unless force_refresh) → live ``/v1/models``
-    (freshest) merged with models.dev additions (deduped, live first) → stale cache → ``[]``.
-    Never None."""
+    (freshest) merged with models.dev additions (deduped, live first) → stale cache → models.dev
+    only → ``[]``. ``cache_only`` (GUI read path) never runs the 8s network probe and never writes
+    the disk cache. Never None."""
     from hermes_cli.models import fetch_api_models
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
@@ -665,7 +671,9 @@ def fetch_ollama_cloud_models(
 
     api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
     base_url = base_url or os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
-    live_models = (fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else []
+    # cache_only (GUI read path): skip only the network probe. The models.dev additions are a local
+    # cache read, so the row still populates with what is known; the live catalog lands next open.
+    live_models = [] if cache_only else ((fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else [])
     mdev_models: list[str] = []
     try:
         from agent.models_dev import list_agentic_models
@@ -677,9 +685,12 @@ def fetch_ollama_cloud_models(
     for m in [*live_models, *(_strip_ollama_cloud_suffix(m) for m in mdev_models)]:
         if m and m not in merged:
             merged.append(m)
-    if merged:
+    if live_models:
+        # Persist only a result that included the live catalog: writing the models.dev-only list here
+        # (cache_only, or a failed probe) would stamp it fresh, drop the live-only ids, and make the
+        # next non-cache_only call serve that trimmed list for an hour instead of probing.
         _save_ollama_cloud_cache(merged)
         return merged
 
     stale = _load_ollama_cloud_cache(ignore_ttl=True)
-    return stale["models"] if stale is not None else []
+    return stale["models"] if stale is not None else merged

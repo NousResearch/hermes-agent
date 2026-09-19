@@ -35,6 +35,7 @@ import {
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
+import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
@@ -56,6 +57,7 @@ interface EditorState {
   token: string
   host: string
   keyPath: string
+  remoteHermesPath: string
   // ssh remote profile, hydrated on edit so the duplicate key matches the
   // main-process one (user@host:port + profile); the editor doesn't expose it.
   remoteProfile: string
@@ -82,6 +84,7 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     // would silently resurrect the old values.
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || '',
+    remoteHermesPath: conn.remoteHermesPath || '',
     remoteProfile: conn.remoteProfile || '',
     headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
   }
@@ -97,6 +100,7 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     token: '',
     host: '',
     keyPath: '',
+    remoteHermesPath: '',
     remoteProfile: '',
     headers: []
   }
@@ -450,6 +454,7 @@ export function ConnectionsRegistrySection() {
           // of truth — never send separate user/port (see editorFromConnection).
           payload.host = editor.host
           payload.keyPath = editor.keyPath || undefined
+          payload.remoteHermesPath = editor.remoteHermesPath.trim()
         }
 
         const result = await bridge.save(payload)
@@ -552,6 +557,9 @@ export function ConnectionsRegistrySection() {
 
         if (reachable) {
           notify({ title: conn.label, message: s.testOk })
+          // A successful Test may have warmed a cold OAuth session that the
+          // roster missed; explicit recovery should bypass its cache window.
+          void refreshFleetRoster({ force: true })
         } else {
           notifyError(new Error(result.error || conn.label), s.testFailed)
         }
@@ -927,19 +935,32 @@ export function ConnectionsRegistrySection() {
           )}
 
           {editor.kind === 'ssh' && (
-            <ListRow
-              action={
-                <Input
-                  onChange={e => {
-                    setDupeError(null)
-                    setEditor({ ...editor, host: e.target.value })
-                  }}
-                  placeholder="user@host:22"
-                  value={editor.host}
-                />
-              }
-              title={s.sshHostTitle}
-            />
+            <>
+              <ListRow
+                action={
+                  <Input
+                    onChange={e => {
+                      setDupeError(null)
+                      setEditor({ ...editor, host: e.target.value })
+                    }}
+                    placeholder="user@host:22"
+                    value={editor.host}
+                  />
+                }
+                title={s.sshHostTitle}
+              />
+              <ListRow
+                action={
+                  <Input
+                    onChange={e => setEditor({ ...editor, remoteHermesPath: e.target.value })}
+                    placeholder={t.settings.gateway.sshHermesPathPlaceholder}
+                    value={editor.remoteHermesPath}
+                  />
+                }
+                description={t.settings.gateway.sshHermesPathDesc}
+                title={t.settings.gateway.sshHermesPathTitle}
+              />
+            </>
           )}
 
           {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}

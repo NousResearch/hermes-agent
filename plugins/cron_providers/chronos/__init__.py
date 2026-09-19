@@ -4,7 +4,7 @@ Instead of a 60s ticker, asks NAS to arm one external one-shot per job at its ne
 NAS calls back ``/api/cron/fire`` and the job re-arms after running. start() never blocks or
 spawns a periodic wake; reconcile runs only on a warm process (start / on_jobs_changed / fire).
 Holds no scheduler credentials — speaks only to NAS ``agent-cron`` endpoints with the Nous token.
-Inert unless ``cron.provider: chronos``. Wire contract: ``docs/chronos-managed-cron-contract.md``.
+Inert unless ``cron.provider: chronos``. Wire contract: ``website/docs/developer-guide/chronos-managed-cron-contract.md``.
 """
 
 from __future__ import annotations

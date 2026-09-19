@@ -141,7 +141,7 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
             self.audio.speech.with_streaming_response = _StreamingCreate()
 
     monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
-    monkeypatch.setattr(ts, "get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
     monkeypatch.setattr("openai.OpenAI", _OpenAI)
 
     config = {
@@ -199,11 +199,46 @@ def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
     import types
 
     fake = types.ModuleType("tools.xai_http")
-    fake.resolve_xai_http_credentials = lambda: {"api_key": "xai-key"}
+    fake.resolve_xai_http_credentials = lambda **kw: {"api_key": "xai-key"}
     monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
     assert ts.XAIStreamer.available() is True
-    fake.resolve_xai_http_credentials = lambda: {"api_key": ""}
+    fake.resolve_xai_http_credentials = lambda **kw: {"api_key": ""}
     assert ts.XAIStreamer.available() is False
+
+
+def test_xai_streaming_prefers_explicit_api_key(monkeypatch):
+    """Metered TTS 403s on the subscription OAuth bearer — the streaming path must
+    resolve credentials with prefer_api_key=True like the sync path (#87045)."""
+    import sys
+    import types
+
+    calls = []
+
+    fake = types.ModuleType("tools.xai_http")
+    fake.resolve_xai_http_credentials = lambda **kw: calls.append(kw) or {"api_key": "k"}
+    monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
+
+    ts.XAIStreamer.available()
+    assert calls and all(c.get("prefer_api_key") is True for c in calls)
+
+    # The tts_tool availability probe (wired as _BUILTIN_REQUIREMENTS["xai"]) must
+    # resolve key-first too, or a configured key still spends the OAuth pool (#113727).
+    from tools import tts_tool
+
+    calls.clear()
+    assert tts_tool._xai_requirements() is True
+    assert calls and all(c.get("prefer_api_key") is True for c in calls)
+
+    # _async_frames resolves before websockets.connect; an empty key raises first.
+    calls.clear()
+    ws_fake = types.ModuleType("websockets")
+    monkeypatch.setitem(sys.modules, "websockets", ws_fake)
+    fake.resolve_xai_http_credentials = lambda **kw: calls.append(kw) or {"api_key": ""}
+    streamer = ts.XAIStreamer({}, {"voice_id": "v"})
+    with pytest.raises(RuntimeError, match="No xAI credentials"):
+        import asyncio
+        asyncio.run(streamer._async_frames("hi").__anext__())
+    assert calls and calls[0].get("prefer_api_key") is True
 
 
 # ── Gemini SSE parsing ────────────────────────────────────────────────────

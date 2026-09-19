@@ -71,7 +71,7 @@ def _write_manifest(catalog_dir: Path, name: str, body: dict) -> Path:
     entry_dir = catalog_dir / name
     entry_dir.mkdir(exist_ok=True)
     path = entry_dir / "manifest.yaml"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(body, f)
     return path
 
@@ -143,6 +143,57 @@ class TestManifestParsing:
         # Lowercased + stripped; hosts lose any leading dot.
         assert sg.keywords == ["jira", "confluence"]
         assert sg.hosts == ["atlassian.net", "atlassian.com"]
+
+    def test_suggest_onboarding_metadata_is_additive(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _build_server_config, _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        triggers = {"keywords": ["Demo "], "hosts": [".Example.com"]}
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(suggest=triggers))
+        legacy = _parse_manifest(path)
+        enriched = {**triggers, "applications": ["Blender", "Visual Studio Code"],
+                    "examples": ["Create a scene from this sketch."], "future_hint": "ignored"}
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest=enriched))
+        entry = _parse_manifest(path)
+        assert entry.suggest is not None and legacy.suggest is not None
+        assert entry.suggest.applications == enriched["applications"]
+        assert entry.suggest.examples == enriched["examples"]
+        assert entry.suggest.keywords == legacy.suggest.keywords == ["demo"]
+        assert entry.suggest.hosts == legacy.suggest.hosts == ["example.com"]
+        assert legacy.suggest.applications == legacy.suggest.examples == []
+        assert _catalog_entry_json(entry, False, False)["suggest"] == {
+            "keywords": ["demo"], "hosts": ["example.com"],
+            "applications": enriched["applications"], "examples": enriched["examples"],
+            "requires_app": False,
+        }
+        assert _build_server_config(entry, None) == _build_server_config(legacy, None)
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={"applications": ["Blender"]}))
+        assert _parse_manifest(path).suggest.applications == ["Blender"]
+
+    def test_suggest_discovery_metadata_is_bounded_data(self, catalog_dir):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        def parse(**metadata):
+            path = _write_manifest(catalog_dir, "demo", _basic_manifest(
+                suggest={"keywords": ["demo"], **metadata}))
+            return _parse_manifest(path)
+
+        entry = parse(applications=["Blender"], requires_app=True)
+        assert entry.suggest is not None and entry.suggest.requires_app is True
+        assert _catalog_entry_json(entry, False, False)["suggest"]["requires_app"] is True
+        assert parse().suggest.requires_app is False
+        for metadata in (
+            {"applications": "Blender"}, {"applications": [None]}, {"applications": ["/Applications/Blender.app"]},
+            {"applications": ["../blender"]}, {"applications": ["C:\\Blender"]}, {"applications": [".*"]},
+            {"applications": ["blender; id"]}, {"applications": ["--help"]}, {"applications": ["x" * 81]},
+            {"applications": ["Blender"] * 17}, {"applications": [" Blender"]}, {"applications": ["\n"]},
+            {"examples": "example"}, {"examples": [""]}, {"examples": ["x" * 241]},
+            {"examples": ["x"] * 7}, {"examples": ["one\ntwo"]}, {"requires_app": "true"},
+            {"requires_app": 1}, {"requires_app": True},
+        ):
+            with pytest.raises(CatalogError, match="suggest"):
+                parse(**metadata)
 
     def test_suggest_keywords_only_is_valid(self, catalog_dir):
         _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={"keywords": ["demo"]}))
@@ -421,6 +472,24 @@ class TestInstall:
         assert server["tools"]["include"] == ["tool_a"]
         assert "exclude" not in server["tools"]
 
+    def test_empty_discovery_reinstall_keeps_explicit_empty_include(self, catalog_dir, monkeypatch):
+        """A probe that succeeds with zero tools must not widen a deliberate ``include: []``
+        to "all tools" (#12865): the block-all choice survives until the user changes it."""
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config, save_config
+
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: [])
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "npx", "args": ["-y", "demo-mcp"], "enabled": True, "tools": {"include": []},
+        }
+        save_config(cfg)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == []
+
     def test_probe_fail_reinstall_preserves_manual_exclude(self, catalog_dir):
         """A failed probe during reinstall keeps a hand-written
         tools.exclude on a manifest with no tool defaults, instead of
@@ -515,9 +584,50 @@ class TestInstall:
         # load_config resolves it; config.yaml itself stays secret-free.
         from hermes_cli.config import get_config_path
 
-        raw = get_config_path().read_text()
+        raw = get_config_path().read_text(encoding="utf-8")
         assert "${MCP_DEMO_API_KEY}" in raw
         assert "secret-val" not in raw
+
+    def test_install_oauth_preregistered_client_writes_oauth_block(self, catalog_dir, monkeypatch):
+        """Vendors without DCR: ``auth.oauth`` lands verbatim in ``mcp_servers.<name>.oauth`` while
+        the credentials it references are prompted into .env — config.yaml stays secret-free."""
+        auth = {
+            "type": "oauth",
+            "env": [
+                {"name": "DEMO_CLIENT_ID", "prompt": "id", "secret": False},
+                {"name": "DEMO_CLIENT_SECRET", "prompt": "secret"},
+            ],
+            "oauth": {
+                "client_id": "${DEMO_CLIENT_ID}", "client_secret": "${DEMO_CLIENT_SECRET}",
+                "redirect_host": "localhost", "redirect_port": 27890,
+            },
+        }
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/v2/mcp"}, auth=auth))
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_config_path, get_env_value, load_config
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda prompt, **kw: f"val-for-{prompt}")
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["auth"] == "oauth"
+        assert server["oauth"] == {
+            "client_id": "val-for-id", "client_secret": "val-for-secret",
+            "redirect_host": "localhost", "redirect_port": 27890,
+        }
+        assert get_env_value("DEMO_CLIENT_SECRET") == "val-for-secret"
+        raw = get_config_path().read_text(encoding="utf-8")
+        assert "${DEMO_CLIENT_SECRET}" in raw and "val-for-secret" not in raw
+
+        # A ``${VAR}`` the manifest never declares would reach the token endpoint as a literal
+        # placeholder (invalid_client): rejected at parse time, like the api_key header contract.
+        auth["oauth"]["client_id"] = "${UNDECLARED_ID}"
+        path = _write_manifest(catalog_dir, "demo2", _basic_manifest(
+            "demo2", transport={"type": "http", "url": "https://mcp.example.com/v2/mcp"}, auth=auth))
+        with pytest.raises(mcp_catalog.CatalogError, match="UNDECLARED_ID"):
+            mcp_catalog._parse_manifest(path)
 
 
 
@@ -747,6 +857,8 @@ class TestGitInstallShaRef:
 
         monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
         monkeypatch.setattr(mcp_catalog.shutil, "which", lambda x: "/usr/bin/git")
+        from hermes_cli import git_credentials
+        monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: None)
 
         from hermes_cli.mcp_catalog import get_entry
         entry = get_entry("demo")
@@ -817,6 +929,30 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    def test_asana_catalog_targets_v2_with_preregistered_client(self, monkeypatch):
+        """Asana's V1 ``/sse`` server is retired and V2 has no DCR: the shipped entry must install
+        as the V2 Streamable HTTP URL plus a pre-registered client whose credentials are ``${VAR}``
+        references the install path actually prompts for (never literal values)."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _build_server_config, _catalog_root, _parse_manifest
+
+        root = _catalog_root()
+        if not root.exists():
+            pytest.skip("optional-mcps/ not present in this checkout")
+        for m in root.glob("*/manifest.yaml"):
+            assert (_parse_manifest(m).transport.url or "") != "https://mcp.asana.com/sse", m
+
+        entry = _parse_manifest(root / "asana" / "manifest.yaml")
+        cfg = _build_server_config(entry, None)
+        assert cfg["url"] == "https://mcp.asana.com/v2/mcp"
+        assert cfg["auth"] == "oauth"
+        declared = {spec.name for spec in entry.auth.env}
+        for key in ("client_id", "client_secret"):
+            ref = re.fullmatch(r"\$\{([A-Z_]+)\}", cfg["oauth"][key])
+            assert ref and ref.group(1) in declared, (key, cfg["oauth"][key])
+        # Asana matches the registered redirect URL exactly; the callback must be pinned.
+        assert cfg["oauth"]["redirect_host"] and cfg["oauth"]["redirect_port"]
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

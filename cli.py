@@ -4038,6 +4038,14 @@ def _int_or(value, default: int) -> int:
         return default
 
 
+# A trusted, fixed category (#112647 class) — SIGTERM/SIGHUP are unambiguously an external
+# process manager (kill, systemd, the kanban dispatcher reaping a worker) ending this process,
+# not a human choosing to stop the turn, so they must not book as interrupted_by_user like a
+# plain hard_interrupt() would default to. SIGINT is left on the default: in single-query mode
+# it is also how a real interactive Ctrl+C arrives, and that IS a user stop.
+_INTERRUPT_TOOL_REASON_EXTERNAL_SIGNAL = "external signal"
+
+
 def _interrupt_agent_for_signal(agent, signum) -> None:
     """Hard-interrupt ``agent`` for a shutdown signal, then sleep ``HERMES_SIGTERM_GRACE`` (1.5 s).
 
@@ -4046,7 +4054,11 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
     """
     try:
         if agent is not None:
-            request_hard_interrupt(agent, f"received signal {signum}")
+            import signal as _signal
+            is_external = signum in (_signal.SIGTERM, getattr(_signal, "SIGHUP", None))
+            request_hard_interrupt(
+                agent, f"received signal {signum}",
+                tool_reason=_INTERRUPT_TOOL_REASON_EXTERNAL_SIGNAL if is_external else None)
             _grace = _float_env("HERMES_SIGTERM_GRACE", 1.5)
             if _grace > 0:
                 time.sleep(_grace)

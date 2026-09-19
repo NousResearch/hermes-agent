@@ -285,7 +285,8 @@ class TestChatCompletionsBuildKwargs:
         msgs = [{"role": "user", "content": "Hi"}]
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
-        assert kw["tools"] == tools
+        assert kw["tools"][0]["function"]["parameters"] == {"type": "object", "properties": {}}
+        assert tools[0]["function"]["parameters"] == {}
 
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
@@ -518,11 +519,11 @@ class TestChatCompletionsKimi:
         )
         assert kw["tools"][0]["function"]["parameters"]["required"] == []
 
-    def test_non_moonshot_tools_are_not_mutated(self, transport):
-        """Other models don't go through the Moonshot sanitizer."""
+    def test_non_moonshot_tools_use_generic_schema_sanitizer(self, transport):
+        """Every Chat Completions route gets the common schema repair."""
         original_params = {
             "type": "object",
-            "properties": {"q": {"description": "query"}},  # missing type
+            "properties": {"q": "object"},
         }
         tools = [
             {
@@ -540,8 +541,9 @@ class TestChatCompletionsKimi:
             tools=tools,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
-        # The parameters dict is passed through untouched (no synthetic type)
-        assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
+        params = kw["tools"][0]["function"]["parameters"]
+        assert params["properties"]["q"] == {"type": "object", "properties": {}}
+        assert original_params["properties"]["q"] == "object"
 
 
 class TestChatCompletionsLmStudioReasoning:

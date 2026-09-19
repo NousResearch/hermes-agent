@@ -174,6 +174,111 @@ class TestVoiceAttachmentTempCleanup:
 
 
 # ---------------------------------------------------------------------------
+# SILK magic-byte detection & conversion routing
+# ---------------------------------------------------------------------------
+
+# Real QQ voice note header produced by pilk with tencent=True:
+# 0x02 + "#!SILK_V3" (the second byte is '#'=0x23, not '!').
+_TENCENT_SILK_HEADER = b"\x02#!SILK_V3"
+
+
+class TestSilkMagicBytes:
+    def _guess(self, data):
+        from gateway.platforms.qqbot import QQAdapter
+
+        return QQAdapter._guess_ext_from_data(data)
+
+    def _looks_like_silk(self, data):
+        from gateway.platforms.qqbot import QQAdapter
+
+        return QQAdapter._looks_like_silk(data)
+
+    def test_tencent_prefixed_silk_v3_header_is_silk(self):
+        # Regression: a b"\x02!"-only check missed the real header, so no-.silk
+        # voice notes were classified .amr and sent to ffmpeg (no SILK decoder)
+        # instead of pilk → never transcribed.
+        data = _TENCENT_SILK_HEADER + b"\x1f\x00\x00"
+        assert self._guess(data) == ".silk"
+        assert self._looks_like_silk(data) is True
+
+    def test_legacy_tencent_marker_is_still_silk(self):
+        data = b"\x02!\x00\x00"
+        assert self._guess(data) == ".silk"
+        assert self._looks_like_silk(data) is True
+
+    def test_plain_silk_headers_are_silk(self):
+        assert self._guess(b"#!SILK_V3\x1f\x00") == ".silk"
+        assert self._guess(b"#!SILK") == ".silk"
+        assert self._looks_like_silk(b"#!SILK") is True
+
+    def test_non_silk_magic_bytes_unaffected(self):
+        assert self._guess(b"RIFF\x00\x00\x00WAVE") == ".wav"
+        assert self._guess(b"\xff\xfb\x90\x00") == ".mp3"
+        assert self._guess(b"\x00\x00\x00\x20payload") == ".amr"
+        assert self._looks_like_silk(b"RIFF\x00\x00\x00WAVE") is False
+
+    def test_unknown_bytes_default_to_amr(self):
+        assert self._guess(b"\x00\x01\x02garbage") == ".amr"
+        assert self._looks_like_silk(b"\x00\x01\x02garbage") is False
+
+
+class TestVoiceConversionRouting:
+    """A QQ voice note whose URL carries no audio extension must still reach the
+    pilk (SILK) path via magic-byte detection."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_tencent_silk_without_url_suffix_routes_to_pilk(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        # QQ Bot API can return voice URLs whose path has no ".silk" extension.
+        url = (
+            "https://cdn.qq.com/voice/2f5f43c0-9f4a-4b3f-8d0e-1a2b3c4d5e6f"
+            "?sign=abc&t=12345"
+        )
+        data = _TENCENT_SILK_HEADER + b"\x1f\x00" + b"\x00" * 64
+
+        async def fake_silk_to_wav(src_path, wav_path):
+            # Stand-in for pilk: write a tiny valid WAV and return its path.
+            import wave
+
+            with wave.open(wav_path, "w") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(b"\x00\x00" * 160)
+            return wav_path
+
+        ffmpeg_calls = []
+
+        async def fake_ffmpeg_to_wav(src_path, wav_path):
+            ffmpeg_calls.append(src_path)
+            return None
+
+        adapter._convert_silk_to_wav = fake_silk_to_wav
+        adapter._convert_ffmpeg_to_wav = fake_ffmpeg_to_wav
+        cached = {}
+
+        async def fake_cache(data_bytes, name):
+            cached["name"] = name
+            return "/cache/" + name
+
+        adapter._unlink_quiet = lambda *a, **k: None
+        with mock.patch(
+            "gateway.platforms.qqbot.adapter.cache_document_from_bytes_async",
+            fake_cache,
+        ):
+            result = await adapter._convert_audio_to_wav(data, url)
+
+        assert result == "/cache/qq_voice.wav"
+        assert cached.get("name") == "qq_voice.wav"
+        assert ffmpeg_calls == []  # SILK data never fell back to ffmpeg
+
+
+# ---------------------------------------------------------------------------
 # WebSocket proxy handling
 # ---------------------------------------------------------------------------
 

@@ -212,6 +212,72 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
     return None
 
 
+def _probe_video_geometry(path: str) -> Dict[str, int]:
+    """``{"width", "height", "duration"}`` for a local video; ``{}`` when ffprobe can't read it.
+
+    Telegram runs its own video processing only for uploads under roughly 10 MB; above that it
+    stores the file as an unprocessed ``320x320`` video with ``duration=0``, so the message must
+    carry the real geometry or clients draw a square tile for any aspect ratio.
+    """
+    try:
+        import shutil
+        import subprocess
+        if not shutil.which("ffprobe"):
+            return {}
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-show_entries", "format=duration",
+             "-of", "json", path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        if proc.returncode != 0:
+            return {}
+        blob = json.loads(proc.stdout or "{}")
+        streams = blob.get("streams") or []
+        if not streams:
+            return {}
+        geometry = {"width": int(streams[0]["width"]), "height": int(streams[0]["height"])}
+        duration = _coerce_duration_seconds((blob.get("format") or {}).get("duration"))
+        if duration:
+            geometry["duration"] = duration
+        return geometry
+    except Exception:
+        logger.debug("[Telegram] video geometry probe failed for %s", path, exc_info=True)
+        return {}
+
+
+def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
+    """Write a 320px-wide JPEG frame for Telegram's ``thumbnail`` field; None on failure.
+
+    Telegram keeps a supplied thumbnail for the uploads it did not process itself — without one the
+    chat shows a square placeholder tile until the video is opened.
+    """
+    out = None
+    try:
+        import shutil
+        import subprocess
+        import tempfile
+        if not shutil.which("ffmpeg"):
+            return None
+        seek = max(1, int((duration or 3) * 0.25))
+        fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-thumb-")
+        os.close(fd)
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
+             "-vf", "scale=320:-2", "-q:v", "6", out],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        if proc.returncode != 0 or not os.path.getsize(out):
+            with contextlib.suppress(OSError):
+                os.remove(out)
+            return None
+        return out
+    except Exception:
+        logger.debug("[Telegram] video thumbnail extraction failed for %s", path, exc_info=True)
+        if out:
+            with contextlib.suppress(OSError):
+                os.remove(out)
+        return None
+
+
 def telegram_deps_present() -> bool:
     """PASSIVE registry ``check_fn``: is python-telegram-bot importable? Never installs
     (``check_telegram_requirements`` is the active ``ensure_deps_fn``).
@@ -5136,13 +5202,36 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
-        """Send a video natively as a Telegram video message."""
-        return await self._send_local_file(
-            "Video", video_path, chat_id, reply_to, metadata, "video",
-            lambda f: {"video": f, "caption": self._caption_1024(caption)},
-            lambda e: self._warn_then(
-                "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
-            ))
+        """Send a video natively as a Telegram video message.
+
+        Real geometry and a JPEG thumbnail ride along explicitly. Telegram only runs its own video
+        processing for uploads under roughly 10 MB; larger files come back as an unprocessed
+        ``320x320`` video with ``duration=0`` and no thumbnail, which clients then draw as a square
+        tile whatever the true aspect ratio (portrait reels and 16:9 clips alike).
+        """
+        geometry = await asyncio.to_thread(_probe_video_geometry, video_path)
+        thumb_path = (
+            await asyncio.to_thread(_video_thumbnail_jpeg, video_path, geometry.get("duration"))
+            if geometry else None
+        )
+        try:
+            def build_kwargs(f):
+                payload = {"video": f, "caption": self._caption_1024(caption), **geometry}
+                if thumb_path:
+                    # A path (not an open handle) so python-telegram-bot loads the bytes once and a
+                    # retry after a stale topic anchor still has a thumbnail to send.
+                    payload["thumbnail"] = thumb_path
+                return payload
+
+            return await self._send_local_file(
+                "Video", video_path, chat_id, reply_to, metadata, "video", build_kwargs,
+                lambda e: self._warn_then(
+                    "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
+                ))
+        finally:
+            if thumb_path:
+                with contextlib.suppress(OSError):
+                    os.remove(thumb_path)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

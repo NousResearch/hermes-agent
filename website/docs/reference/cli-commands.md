@@ -1881,7 +1881,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--plan] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--check] [--plan] [--no-backup] [--backup] [--yes] [--keep-stash] [--branch NAME] [--switch-branch] [--no-gateway-restart] [--force] [--force-venv]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
@@ -1896,6 +1896,12 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed 
 | `--no-backup` | Skip all pre-update backups for this run (both the quick state snapshot and the full zip), regardless of `updates.pre_update_backup`. |
 | `--backup` | Force a **full** pre-update backup for this run: the quick state snapshot plus a complete zip of `HERMES_HOME` (config, auth, sessions, skills, pairing data). The default mode is `quick` — a lightweight state snapshot only. Set the permanent mode via `updates.pre_update_backup: quick | full | off` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
+| `--keep-stash` | Do **not** re-apply local changes after the update. Uncommitted changes are still stashed so the update can proceed, but they stay parked in `git stash` instead of being restored onto the updated code — the update log prints the exact `git stash apply <ref>` command to bring them back. Always used by the desktop updater; pass it to a terminal update for the same never-reapply behavior. |
+| `--branch NAME` | Update against this branch instead of the default (`main`). If the local checkout is on a different branch, Hermes switches to the requested branch first, auto-stashing any uncommitted changes. |
+| `--switch-branch` | With `updates.parked_branch_strategy: update_in_place`, override it for this run: switch to the update target and update **there** instead of merging the target into the checked-out branch. No effect under the default (switch) strategy; still refuses to touch a dirty tree. |
+| `--no-gateway-restart` | Update code and dependencies but skip the final gateway restart. Use for cron/automated updates that run inside the gateway process — the gateway would otherwise restart its own cgroup and kill the updater. Pair with a separate restart step (e.g. a cron 10–15 minutes later). |
+| `--force` | Windows: proceed with the update even when another `hermes.exe` is detected (the concurrent process will likely cause WinError 32 warnings). Does **not** bypass the venv-process guard — see `--force-venv`. |
+| `--force-venv` | Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native `.pyd` files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives. |
 
 Additional behavior:
 

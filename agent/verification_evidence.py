@@ -27,6 +27,7 @@ _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 
 _INTERPRETERS = {"python", "python3", "node", "bash", "sh", "ruby", "perl"}
+_VERSIONED_INTERPRETER = re.compile(r"^python[0-9.]+(?:\.exe)?$")
 _TARGET_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java")
 _TARGET_PREFIXES = ("test_", "tests", "spec", "__tests__")
 # Ordered: first matching keyword group wins; "check" only counts when the
@@ -232,7 +233,7 @@ def _canonical_tokens(canonical: str) -> list[str]:
 
 def _strip_command_prefix(tokens: list[str]) -> list[str]:
     """Remove harmless command prefixes (env, VAR=x, command/time/noglob)."""
-    i = 1 if tokens and tokens[0] == "env" else 0
+    i = 1 if tokens and Path(tokens[0]).name == "env" else 0
     while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith("-"):
         i += 1
     while i < len(tokens) and tokens[i] in {"command", "time", "noglob"}:
@@ -302,6 +303,16 @@ def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
     return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
 
 
+def _is_interpreter_token(token: str) -> bool:
+    """A known interpreter reached by bare name, absolute path, or versioned python
+    (``python3.12``, ``/usr/bin/python3.12``, ``/usr/bin/env python3``)."""
+    try:
+        name = Path(token).name
+    except Exception:
+        return False
+    return bool(_VERSIONED_INTERPRETER.match(name)) or name in _INTERPRETERS
+
+
 def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:
     candidate_tokens = _strip_command_prefix(tokens)
     if not candidate_tokens:
@@ -309,7 +320,7 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     command = candidate_tokens[0]
     if _is_temp_script_path(command, root):
         return candidate_tokens[1:]
-    if command in _INTERPRETERS:
+    if _is_interpreter_token(command):
         # Skip interpreter flags; the first positional must be the script.
         for idx, token in enumerate(candidate_tokens[1:], start=1):
             if _is_temp_script_path(token, root):

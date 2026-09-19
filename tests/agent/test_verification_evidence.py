@@ -356,3 +356,31 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
     )
+
+
+@pytest.mark.parametrize(
+    "interpreter",
+    ["python", "python3", "python3.12", "/usr/bin/python3.12", "/usr/bin/env python3"],
+)
+def test_ad_hoc_evidence_through_any_interpreter_spelling(tmp_path, monkeypatch, interpreter):
+    """Versioned, absolute and ``env``-prefixed spellings run the same interpreter, so each
+    must still record ad-hoc verification evidence (#115075)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        evidence = classify_verification_command(
+            f"{interpreter} {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+    assert evidence.scope == "targeted"
+    assert evidence.status == "passed"

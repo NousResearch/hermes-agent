@@ -131,6 +131,50 @@ def validate(path: str) -> dict:
                 _issue(issues, "error", "missing-style",
                        f"style id referenced but not defined: {sid}")
 
+    # --- footnote IDs: large random IDs break Word (issue #102228) ---------
+    if "word/footnotes.xml" in names:
+        try:
+            fn_root = etree.fromstring(zf.read("word/footnotes.xml"))
+            fn_ids = []
+            for fn in fn_root.iter(f"{{{W}}}footnote"):
+                v = fn.get(f"{{{W}}}id")
+                if v is None:
+                    continue
+                try:
+                    fn_ids.append(int(v))
+                except ValueError:
+                    _issue(issues, "error", "bad-footnote-id",
+                           f"footnotes.xml: non-integer footnote id {v!r}")
+            # Reserved 0/1 are separator types; real footnotes should be 2..N
+            real_ids = sorted(i for i in fn_ids if i not in (0, 1))
+            if real_ids:
+                expected = list(range(2, 2 + len(real_ids)))
+                if real_ids != expected:
+                    # Large gaps or random IDs
+                    if any(i > 10000 for i in real_ids) or max(real_ids) - min(real_ids) > len(real_ids) * 10:
+                        _issue(issues, "error", "footnote-id-range",
+                               f"footnotes.xml has large/sparse footnote IDs {real_ids[:10]}{'...' if len(real_ids) > 10 else ''} — "
+                               "Word may refuse to open the file; run docx_footnote_fix.py to renumber to 2..N (#102228)")
+                    else:
+                        _issue(issues, "warning", "footnote-id-nonsequential",
+                               f"footnotes.xml footnote IDs are non-sequential {real_ids[:10]}; consider renumbering to 2..N")
+            # Also check document.xml references resolve
+            doc_ids = set()
+            for ref in doc_root.iter(f"{{{W}}}footnoteReference"):
+                v = ref.get(f"{{{W}}}id")
+                if v is not None:
+                    try:
+                        doc_ids.add(int(v))
+                    except ValueError:
+                        pass
+            footnote_set = set(fn_ids)
+            for did in doc_ids:
+                if did not in footnote_set:
+                    _issue(issues, "error", "footnote-reference-missing",
+                           f"document.xml references footnote id {did} with no matching w:footnote in footnotes.xml")
+        except etree.XMLSyntaxError as exc:
+            _issue(issues, "error", "bad-footnotes-xml", f"word/footnotes.xml: {exc}")
+
     # --- python-docx can open it ------------------------------------------
     try:
         from docx import Document

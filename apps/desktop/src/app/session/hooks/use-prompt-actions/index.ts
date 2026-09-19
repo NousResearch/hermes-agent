@@ -884,9 +884,13 @@ export function usePromptActions({
       }
 
       const send = async (id: string): Promise<boolean> => {
-        const response = await target.requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
+        const response = await target.requestGateway<{ status?: string }>('session.steer', {
+          session_id: id,
+          text,
+          input_visibility: 'hidden'
+        })
 
-        return response?.status === 'queued'
+        return response?.status === 'queued' || response?.status === 'streaming'
       }
 
       try {

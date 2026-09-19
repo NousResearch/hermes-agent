@@ -391,14 +391,19 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>('session.steer', {
+              session_id: liveId,
+              text,
+              input_visibility: 'hidden'
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
           }
         )
 
-        return result?.status === 'queued'
+        return result?.status === 'queued' || result?.status === 'streaming'
       } catch {
         return false
       }

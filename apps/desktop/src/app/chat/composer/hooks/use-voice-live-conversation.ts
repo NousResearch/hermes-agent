@@ -321,10 +321,17 @@ export function useVoiceLiveConversation({
       onError: (message, fatal) => {
         notify({ kind: fatal ? 'error' : 'warning', message, title: voiceCopy.liveError })
       },
-      onSpeakingChange: speaking => {
+      onSpeakingChange: (speaking, level) => {
         speakingRef.current = speaking
-        setLevel(speaking ? 0.6 : 0)
+        setLevel(speaking ? level : 0)
         refreshStatus()
+      },
+      // The speaking edge above owns turn-lifecycle state; while speech
+      // continues the meter follows the probe's real amplitude.
+      onSpeakingLevel: level => {
+        if (speakingRef.current) {
+          setLevel(level)
+        }
       }
     })
 

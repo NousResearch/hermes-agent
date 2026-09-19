@@ -34,6 +34,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # xAI Grok: explicit reasoning pairs only, so bare ``grok-3``/``grok-4`` fast variants
         # don't inherit the floor.
         "grok-4-fast-reasoning", "grok-4.20-reasoning", "grok-4.5", "grok-4.6",
+        "glm-5", "glm-4.6",
         # "Ox Alpha" stealth reasoning model (OpenRouter / OpenCode Zen slugs); Thinking
         # Machines Inkling (covers inkling-small and :free SKUs).
         "ox-alpha", "x-preview-f-free", "inkling",

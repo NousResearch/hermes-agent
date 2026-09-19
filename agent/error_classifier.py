@@ -725,11 +725,16 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     if status == 400 and "long context beta" in msg and "not yet available" in msg:
         return _v(_R.oauth_long_context_beta_forbidden)
     # llama.cpp grammar rejects regex ``pattern``/``format`` in tool schemas; the
-    # retry loop strips them. Exclude the Qwen/vLLM "No user query found" error
-    # local engines wrap as "Unable to generate parser for this template" —
-    # that is a poisoned transcript (→ format_error), not a grammar problem.
-    grammar_hit = "error parsing grammar" in msg or "json-schema-to-grammar" in msg or (
-        "unable to generate parser" in msg and "template" in msg
+    # retry loop strips them. Older builds say "error parsing grammar", newer
+    # ones "Failed to initialize samplers: failed to parse grammar". Exclude the
+    # Qwen/vLLM "No user query found" error local engines wrap as "Unable to
+    # generate parser for this template" — that is a poisoned transcript
+    # (→ format_error), not a grammar problem.
+    grammar_hit = (
+        "error parsing grammar" in msg
+        or "failed to parse grammar" in msg
+        or "json-schema-to-grammar" in msg
+        or ("unable to generate parser" in msg and "template" in msg)
     )
     if status == 400 and grammar_hit and _NO_USER_QUERY_SIGNAL not in msg:
         return _v(_R.llama_cpp_grammar_pattern)

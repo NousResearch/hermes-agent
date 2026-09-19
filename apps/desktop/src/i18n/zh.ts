@@ -4378,6 +4378,7 @@ export const zh = defineLocale({
     modelSwitchConfirmLabel: '仍然切换',
     modelSwitchConfirmTitle: (model: string) => `切换到 ${model}？`,
     modelSwitchConfirmTitleFallback: '切换模型？',
+    modelSwitchDontWarnAgainForSession: '本会话中不再提示上下文大小警告',
     modelSwitchFailed: '模型切换失败',
     modelSwitchKeepLabel: '保留当前模型',
     modelSwitchStaleNotice: '选择已更改 — 未应用模型切换。',

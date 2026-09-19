@@ -237,10 +237,55 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
         # Simulate a restart: /status must lazily recover the durable override.
         runner._session_state(session_entry.session_key).conversation.model_override = None
 
-        status = await runner._handle_message(_make_event("/status"))
+        with patch("gateway.run._load_gateway_config", return_value={
+            "model": {"default": "model-c", "provider": "provider-c"}
+        }):
+            status = await runner._handle_message(_make_event("/status"))
 
         assert "**Model:** `model-b` (provider-b)" in status
         assert "**Model:** `model-a` (provider-a)" not in status
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_config_default_over_historical_route(tmp_path, monkeypatch):
+    """Regression for #100323: without /model, status must show the next turn's default."""
+    from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    source = _make_source()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    session_entry = store.get_or_create_session(source)
+    runner = _make_runner(session_entry)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    # Context-window discovery is unrelated and may otherwise probe a remote provider.
+    runner._resolve_route_context = AsyncMock(return_value=None)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session(session_entry.session_id, "telegram", model="model-a")
+        db.update_token_counts(
+            session_entry.session_id,
+            model="model-a",
+            billing_provider="openrouter",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        # The default changes after prior usage; no session /model switch pins the old route.
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  default: model-b\n  provider: openrouter\n", encoding="utf-8"
+        )
+        configured_model = _resolve_gateway_model(_load_gateway_config())
+        assert configured_model == "model-b"
+        assert store.get_model_override(session_entry.session_key) is None
+
+        status = await runner._handle_message(_make_event("/status"))
+
+        assert f"**Model:** `{configured_model}` (openrouter)" in status
+        assert "**Model:** `model-a` (openrouter)" not in status
     finally:
         db.close()
 

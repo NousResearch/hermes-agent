@@ -87,7 +87,8 @@ def _status_model_route(
     """``(model, provider, context_used, context_total, route)`` for /status.
 
     Order: live/cached agent route -> active session override -> persisted recent route ->
-    SessionDB row -> gateway config (only loaded when something is still missing). ``route`` carries
+    SessionDB row -> gateway config. Without a resolved live route or override, a changed config
+    default supersedes the historical model so /status describes the next turn. ``route`` carries
     the ``provider`` / ``base_url`` / ``api_key`` of the winning source only, so a later context-window
     lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
     a winner without a ``base_url`` leaves the lookup on the default runtime route.
@@ -108,17 +109,27 @@ def _status_model_route(
                    _clean_str(active_override.get("provider")),
                    {"base_url": _clean_str(active_override.get("base_url")),
                     "api_key": _clean_str(active_override.get("api_key"))}))
+    has_current_route = any(model and provider for model, provider, _ in routes)
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider")), {}))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")), {})
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
     model_name, provider_name, route = next((r for r in routes if r[0] and r[1]), row_route)
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+    # Loaded on every route-less /status on purpose: config.yaml edits must surface
+    # on the next /status (that is this fallback's whole point), so this read is
+    # deliberately uncached — it is one small YAML parse per idle status call.
     user_config: dict[str, Any] = {}
-    if not model_name or not provider_name:
+    if not has_current_route or not model_name or not provider_name:
         user_config = _quiet_sync(_load_gateway_config, {})
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
+    configured_model = _clean_str(_resolve_gateway_model(user_config))
+    if not has_current_route and configured_model and configured_model != model_name:
+        # Config default carries no endpoint metadata: the empty route leaves the
+        # context-window lookup on the default runtime endpoint (docstring rule),
+        # which matches how a plain config route is served in the first place.
+        model_name, provider_name, route = configured_model, _clean_str(model_cfg.get("provider")), {}
     model_name = model_name or _resolve_gateway_model(user_config)
     provider_name = provider_name or _clean_str(model_cfg.get("provider"))
     # No raw ``model.context_length`` pin here: the resolver applies it only while the displayed

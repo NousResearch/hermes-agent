@@ -229,7 +229,16 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if tool_name == "terminal":
         data = safe_json_loads(result)
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
-        return (True, f" [exit {exit_code}]") if exit_code is not None and exit_code != 0 else (False, "")
+        if exit_code is None or exit_code == 0:
+            return False, ""
+        # Mirror _detect_tool_failure: a benign nonzero exit is tagged by the tool layer
+        # with ``exit_code_meaning`` (grep=1 "no matches", diff=1 "files differ"). Counting
+        # those as failures could trip same_tool_failure_halt on a run of greps that all
+        # succeeded. There is no ``error``-field branch here — safe only because the
+        # producer never sets both on one result.
+        if isinstance(data, dict) and data.get("exit_code_meaning"):
+            return False, ""
+        return True, f" [exit {exit_code}]"
 
     if tool_name == "memory":
         data = safe_json_loads(result)

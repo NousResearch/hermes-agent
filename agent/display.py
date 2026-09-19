@@ -926,7 +926,15 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     if isinstance(data, dict) and data.get("user_summary"):
         return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
 
-    # Terminal: non-zero exit code is the canonical failure signal.
+    # Terminal: a nonzero exit is a failure unless the tool layer tagged it as
+    # benign via ``exit_code_meaning`` (grep=1 "no matches", diff=1 "files differ",
+    # test=1 …). Classifying those as failures fed the same_tool_failure counter
+    # and could trip same_tool_failure_halt mid-turn even though every command had
+    # actually succeeded. The tag is the contract: an untagged nonzero exit — a
+    # failing test suite, a failed build, ``exit 2`` — stays a failure even when it
+    # printed output, so a red run is never silently re-classified as healthy.
+    # An explicit ``error`` field stays authoritative: it marks real
+    # infrastructure/execution failures, and a coincidental tag must not downgrade one.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         if exit_code is None or exit_code == 0:
@@ -934,7 +942,11 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         if data.get("status") == "degraded":
             return True, _degraded_suffix(data)
         err_msg = data.get("error")
-        return True, f" [{_trim_error(str(err_msg))}]" if err_msg else f" [exit {exit_code}]"
+        if err_msg:
+            return True, f" [{_trim_error(str(err_msg))}]"
+        if data.get("exit_code_meaning"):
+            return False, ""
+        return True, f" [exit {exit_code}]"
 
     if isinstance(data, dict):
         failed = data.get("success") is False

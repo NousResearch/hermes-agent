@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.pty_session import RegistryFull
@@ -36,6 +36,43 @@ _ws_auth_reason = late("_ws_auth_reason", "hermes_cli.web_server_chat")
 _ws_client_reason = late("_ws_client_reason", "hermes_cli.web_server_chat")
 _ws_host_origin_reason = late("_ws_host_origin_reason", "hermes_cli.web_server_chat")
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = LateState("_DASHBOARD_EMBEDDED_CHAT_ENABLED")
+
+
+def _is_loopback_peer(request: Request) -> bool:
+    """HTTP attach is local-only even if a server was accidentally exposed."""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(request.client.host if request.client else "").is_loopback
+    except ValueError:
+        return False
+
+
+@router.get("/api/session-attach")
+def cooperative_session_attach(request: Request, session_id: str, lease_id: str, profile_home: str):
+    """Fence a local attach request to the exact active session lease.
+
+    The route is public only so a second local terminal can bootstrap before it
+    has the dashboard token. It never exposes a credential to non-loopback
+    peers, unsupported runtimes, stale leases, or a different profile owner.
+    """
+    if not _is_loopback_peer(request):
+        raise HTTPException(status_code=403, detail="Cooperative attachment is loopback-only")
+    try:
+        home = Path(profile_home).resolve(strict=False)
+        from hermes_cli.active_sessions import active_session_registry_snapshot
+        owners = [entry for entry in active_session_registry_snapshot(home, strict=True)
+                  if entry.get("session_id") == session_id and entry.get("lease_id") == lease_id]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Active-session ownership is unavailable") from exc
+    from hermes_cli.web_server_chat import _build_gateway_ws_url, cooperative_session_origin
+    origin = cooperative_session_origin()
+    if len(owners) != 1 or not origin or (owners[0].get("metadata") or {}).get("shared_runtime_url") != origin:
+        raise HTTPException(status_code=403, detail="Session owner does not support cooperative attachment")
+    if not (websocket_url := _build_gateway_ws_url()):
+        raise HTTPException(status_code=503, detail="Shared runtime is not ready")
+    return {"session_id": session_id, "lease_id": lease_id, "profile_home": str(home),
+            "websocket_url": websocket_url}
 
 
 def _get_event_state(app: "FastAPI"):

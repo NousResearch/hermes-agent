@@ -71,9 +71,20 @@ def _claim_active_session_slot(
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
+        metadata = {"live_session_id": live_session_id, "bot_live_delivery_consumer": True}
+        # A plain stdio TUI has no HTTP peer.  Only a loopback, non-gated
+        # serve backend can safely offer its already-authenticated WS runtime.
+        # Dashboard extras are optional for a standalone TUI, so discovery
+        # failures must leave its ordinary lease behavior unchanged.
+        try:
+            from hermes_cli.web_server_chat import cooperative_session_origin
+            if origin := cooperative_session_origin():
+                metadata["shared_runtime_url"] = origin
+        except Exception:
+            logger.debug("Cooperative runtime is unavailable; claiming without attachment", exc_info=True)
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata=_lease_metadata(live_session_id),
+            metadata=metadata,
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)

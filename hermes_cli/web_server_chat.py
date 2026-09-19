@@ -8,6 +8,7 @@ import atexit
 import concurrent.futures
 import contextlib
 import hmac
+import ipaddress
 import os
 import re
 import sys
@@ -380,6 +381,28 @@ def _resolve_chat_argv(
 # Wildcard bind hosts an in-container client must NOT dial: behind a forward
 # proxy (HTTPS_PROXY without 0.0.0.0 in NO_PROXY) the handshake gets MITM'd.
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
+
+
+def cooperative_session_origin() -> Optional[str]:
+    """Return the local HTTP origin that may hand a live session to another TUI.
+
+    Attachments are deliberately a same-machine convenience: public, wildcard,
+    and auth-gated backends never advertise this capability.  The handshake
+    itself still fences the owner lease before returning a WebSocket credential.
+    """
+    from hermes_cli.web_server import app
+
+    host = str(getattr(app.state, "bound_host", "") or "").strip()
+    port = getattr(app.state, "bound_port", None)
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+        port = int(port)
+    except (TypeError, ValueError):
+        return None
+    if not is_loopback or not 1 <= port <= 65535 or getattr(app.state, "auth_required", False):
+        return None
+    netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    return f"http://{netloc}"
 
 
 def _resolve_client_ws_host() -> Optional[str]:

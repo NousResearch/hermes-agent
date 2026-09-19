@@ -24,4 +24,7 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Chronos managed-cron fire webhook (NAS -> agent). NOT cookie-gated: it
     # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
     # handler verifies — the JWT, not this allowlist, is the security boundary.
-    "/api/cron/fire"})
+    "/api/cron/fire",
+    # Same-machine cooperative attach. The handler rejects non-loopback peers
+    # and requires an exact live lease identity before returning a WS credential.
+    "/api/session-attach"})

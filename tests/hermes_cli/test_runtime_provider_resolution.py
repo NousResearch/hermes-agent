@@ -1097,6 +1097,29 @@ def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+@pytest.mark.parametrize("api_mode, expected_base_url", [
+    (None, "https://api.kimi.com/coding"),
+    ("chat_completions", "https://api.kimi.com/coding/v1"),
+])
+def test_kimi_coding_base_url_matches_resolved_wire(monkeypatch, api_mode, expected_base_url):
+    """#102247: a Kimi Code key auto-resolves to the bare api.kimi.com/coding base, which only the
+    Anthropic SDK can use. A persisted chat_completions mode must get the /coding/v1 OpenAI surface,
+    or every request goes to /coding/chat/completions and 404s."""
+    model_cfg = {"provider": "kimi-coding", "default": "kimi-k3"}
+    if api_mode:
+        model_cfg["api_mode"] = api_mode
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
+    monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+    assert resolved["api_mode"] == (api_mode or "anthropic_messages")
+    assert resolved["base_url"] == expected_base_url
+
+
 def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch):
     """opencode-zen/go re-derive api_mode from the effective model on every
     resolve, ignoring any persisted ``api_mode`` in config. Refs #16878 /

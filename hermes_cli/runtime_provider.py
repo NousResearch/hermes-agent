@@ -379,9 +379,16 @@ def _resolve_nous_creds() -> Dict[str, Any]:
 def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
     """Shared tail for pool-entry and api-key paths: OpenCode /v1 rule (OpenCode URLs end with /v1
     for OpenAI-compatible models but the Anthropic SDK prepends its own /v1/messages — strip for
-    anthropic_messages, re-append otherwise), then LM Studio normalization."""
+    anthropic_messages, re-append otherwise), the Kimi Code /v1 rule, then LM Studio normalization."""
     if _models.opencode_provider_family(provider) is not None:
         base_url = _models.normalize_opencode_base_url(provider, api_mode, base_url)
+    if api_mode != "anthropic_messages" and base_url_host_matches(base_url or "", "api.kimi.com"):
+        # api.kimi.com/coding is kept bare for the Anthropic SDK (it appends /v1/messages), but an explicit
+        # chat_completions mode joins /chat/completions onto it and 404s; the OpenAI wire lives under
+        # /coding/v1 (#102247). Mirrors auxiliary_client._to_openai_base_url.
+        stripped = base_url.rstrip("/")
+        if stripped.endswith("/coding"):
+            base_url = stripped + "/v1"
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
     if provider == "actual":

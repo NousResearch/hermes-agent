@@ -24,7 +24,7 @@ from tools.web_tools_rescue import _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
-    _strict_selection_error, _validate_extract_urls,
+    _signal_empty_content, _strict_selection_error, _validate_extract_urls,
 )
 
 logger = logging.getLogger(__name__)
@@ -392,7 +392,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         debug_call_data["original_response_size"] = len(json.dumps({"results": results}))
         debug_call_data["processing_applied"].append("truncate_and_store")
         _truncate_results(results, _effective_char_limit(char_limit), debug_call_data)
-        trimmed = _trim_results(results)
+        trimmed = _trim_results(_signal_empty_content(results))
         result_json = (
             json.dumps({"results": trimmed}, indent=2, ensure_ascii=False) if trimmed
             else tool_error("Content was inaccessible or not found")

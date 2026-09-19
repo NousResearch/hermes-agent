@@ -64,6 +64,29 @@ def _result_entry(url: str, error: Optional[str]) -> Dict[str, Any]:
     return {"url": url, "title": "", "content": "", "error": error}
 
 
+EMPTY_CONTENT_ERROR = (
+    "No content was extracted from this URL: the backend returned an empty page body without "
+    "reporting an error (the page may be JS-rendered, blocked, paywalled, or genuinely empty). Treat "
+    "the page as NOT retrieved — do not infer or describe its contents; try browser tools or another source."
+)
+
+
+def _signal_empty_content(results: List[dict]) -> List[dict]:
+    """Name the failure when a provider hands back an empty body with no ``error``.
+
+    A ``{"content": "", "error": null}`` entry reads to the model as a successful fetch of an empty
+    page, and models fill that gap with invented page content (arXiv:2609.14758; replay on this exact
+    envelope with three weak models: 9.0% fabricated/relayed answers unsignalled vs 0/144 signalled,
+    see #52120 / #99533). Provider-level errors (Firecrawl statusCode >= 400 etc.) are kept verbatim —
+    only a falsy ``error`` is filled in.
+    """
+    for entry in results:
+        body = (entry.get("content") or "") + (entry.get("raw_content") or "")
+        if not entry.get("error") and not body.strip():
+            entry["error"] = EMPTY_CONTENT_ERROR
+    return results
+
+
 def _extract_error_json(error: str) -> str:
     return json.dumps({"success": False, "error": error}, ensure_ascii=False)
 

@@ -345,6 +345,40 @@ def test_externally_managed_detection(tmp_path, monkeypatch):
     assert er._base_interpreter_is_externally_managed() is True
 
 
+def test_find_uv_binary_prefers_windows_localappdata(monkeypatch, tmp_path):
+    """Windows vendors uv to %LOCALAPPDATA%\\hermes\\bin, not Path.home() — the
+    managed location must win over home candidates and PATH (recovery must not
+    depend on the user having uv on PATH)."""
+    managed_uv = tmp_path / "hermes" / "bin" / "uv.exe"
+    managed_uv.parent.mkdir(parents=True)
+    managed_uv.touch()
+    monkeypatch.setattr(er.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(er.shutil, "which", lambda _exe: "C:/old/uv.exe")
+
+    assert er._find_uv_binary() == str(managed_uv)
+
+
+def test_find_uv_binary_falls_back_to_home_candidates_then_path(monkeypatch, tmp_path):
+    """Without %LOCALAPPDATA%\\hermes\\bin (or on POSIX), the documented home
+    candidates and PATH order still apply."""
+    monkeypatch.setattr(er.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "empty-localappdata"))
+    empty_home = tmp_path / "empty-home"
+    monkeypatch.setattr(er.Path, "home", staticmethod(lambda: empty_home))
+    # No managed uv and no home candidates: falls through to PATH.
+    monkeypatch.setattr(er.shutil, "which", lambda _exe: "C:/old/uv.exe")
+
+    assert er._find_uv_binary() == "C:/old/uv.exe"
+
+    # A home candidate still wins over PATH when the managed location is absent.
+    home_uv = empty_home / ".local" / "bin" / "uv.exe"
+    home_uv.parent.mkdir(parents=True)
+    home_uv.touch()
+
+    assert er._find_uv_binary() == str(home_uv)
+
+
 # ---------------------------------------------------------------------------
 # Pending core install (.update-incomplete) — completed BEFORE native imports
 # (#83569 review: a deferred update must not re-lock itself on the next launch)

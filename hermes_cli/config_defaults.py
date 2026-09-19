@@ -1032,6 +1032,9 @@ DEFAULT_CONFIG = {
             # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
             # onyx, sage, shimmer, verse
             "voice": "alloy",
+            # Forwarded verbatim in the request body for OpenAI-compatible servers whose cloned
+            # voices demand it (400 consent_required otherwise); "" sends nothing.
+            "consent_attestation": "",
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

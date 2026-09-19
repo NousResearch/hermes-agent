@@ -174,7 +174,8 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         except (TypeError, ValueError):
             speed = 1.0
         return _direct(TTS_WIRE_OPENAI, "openai", base_url, api_key, model,
-                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed)
+                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed,
+                       extra_body=tts_tool_openai._openai_extra_body(oai))
     if provider == "elevenlabs":
         api_key = tts._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:

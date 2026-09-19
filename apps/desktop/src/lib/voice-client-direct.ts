@@ -38,6 +38,8 @@ export interface DirectTtsConfig {
   model: null | string
   voice: null | string
   speed: null | number
+  /** Optional tts.openai fields the server forwards verbatim (lang_code, consent_attestation). */
+  extra_body?: Record<string, unknown>
 }
 
 interface RelayConfig {
@@ -282,6 +284,7 @@ export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
 export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: string): Promise<ArrayBuffer> {
   if (tts.wire === 'openai-speech') {
     const body: Record<string, unknown> = {
+      ...(tts.extra_body ?? {}),
       model: tts.model,
       voice: tts.voice,
       input: text,

@@ -139,6 +139,12 @@ def test_edge_tts_relays_openai_goes_direct(voice_home, monkeypatch):
     assert tts["api_key"] == "sk_direct789"
     assert tts["voice"] == "nova"
     assert tts["model"]
+    # Unset tts.openai extras stay off the wire; set ones ride the direct config verbatim.
+    assert tts["extra_body"] == {}
+
+    voice_home({"tts": {"provider": "openai",
+                        "openai": {"voice": "nova", "consent_attestation": "I own this voice"}}})
+    assert _resolve()["tts"]["extra_body"] == {"consent_attestation": "I own this voice"}
 
 
 def test_elevenlabs_tts_direct_carries_voice_and_model(voice_home, monkeypatch):

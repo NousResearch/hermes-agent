@@ -116,6 +116,44 @@ def test_openai_available_reflects_audio_key_resolution(monkeypatch):
     assert ts.OpenAIStreamer.available() is True
 
 
+def test_openai_streamer_forwards_consent_attestation(monkeypatch):
+    """The chunked path sends the same optional tts.openai body fields as the sync path (#99775);
+    an unset key adds no extra_body so strict servers see an unchanged request."""
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["create"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    section = {"api_key": "k", "consent_attestation": "I have consent"}
+    list(ts.OpenAIStreamer({"openai": section}, section).stream("hi"))
+    assert captured["create"]["extra_body"] == {"consent_attestation": "I have consent"}
+
+    list(ts.OpenAIStreamer({"openai": {"api_key": "k"}}, {"api_key": "k"}).stream("hi"))
+    assert "extra_body" not in captured["create"]
+
+
 def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     captured = {}
 

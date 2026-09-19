@@ -358,6 +358,39 @@ class TestGuiMode:
         assert len(gui_handlers) == 1
 
 
+    def test_gui_log_backup_count_follows_config(self, hermes_home):
+        """A raised logging.backup_count applies to gui.log, not just agent.log."""
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home, mode="gui", backup_count=12
+        )
+
+        gui = [
+            h for h in hermes_logging._queued_file_handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui) == 1
+        assert gui[0].backupCount == 12
+
+    def test_gui_log_backup_count_never_below_five(self, hermes_home):
+        """gui.log keeps its historical 5-backup floor when config asks for less.
+
+        ws lifecycle lines live only in gui.log/agent.log, so a low global
+        backup_count must not silently shorten that history.
+        """
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home, mode="gui", backup_count=2
+        )
+
+        gui = [
+            h for h in hermes_logging._queued_file_handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui) == 1
+        assert gui[0].backupCount == 5
+
+
     def test_gui_log_receives_only_gui_components(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
 

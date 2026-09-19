@@ -180,3 +180,53 @@ class TestConfigFlag:
 
     def test_defaults_on(self, tmp_path, monkeypatch):
         assert self._config(tmp_path, monkeypatch, {}).a2a_sessions is True
+
+
+class TestRelayedDmFromALoggedInClient:
+    """A relayed dm whose sender a logged-in client named is attributed to that client's principal —
+    server-derived, unspoofable, and still a BOT author. That last part is what the recipient's memory
+    routes on: the turn lands in the relay principal's own a2a session, never the human's, and the
+    conclusion / profile / mirror guards stay closed for it (#107598 review)."""
+
+    RELAY = None
+
+    @classmethod
+    def setup_class(cls):
+        from tools.bot_relay import relaying_principal_author
+        cls.RELAY = relaying_principal_author("principal:dashboard:0123456789abcdef0123456789abcdef")
+
+    def test_author_shape_is_a_bot_with_a_principal_derived_id(self):
+        assert self.RELAY["is_bot"] is True
+        assert self.RELAY["id"] == "bot:principal:dashboard:0123456789abcdef0123456789abcdef/relay"
+        assert self.RELAY["name"] == "relayed teammate"
+
+    def test_turn_lands_in_its_own_a2a_session_never_the_humans(self):
+        provider = _provider()
+        provider._manager.resolve_author_peer_id.return_value = "relay"
+
+        _sync(provider, turn_author=self.RELAY)
+
+        keys = [c[0][0] for c in provider._manager.get_or_create.call_args_list]
+        assert keys == [provider._a2a_session_key(self.RELAY)]
+        assert "Bot-Chat" not in keys
+
+    def test_memory_writes_stay_refused_during_the_turn(self):
+        provider = _provider()
+        provider._turn_author = dict(self.RELAY)
+        provider._manager.create_conclusion.return_value = True
+        assert provider._bot_turn_write_refusal() is not None
+        assert "error" in json.loads(provider._tool_conclude({"conclusion": "likes tea"}))
+        provider.on_memory_write("add", "user", "likes tea")
+        assert provider._memwrite_thread is None
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_an_unattributed_turn_would_have_been_the_humans(self):
+        """The failure mode this guards against: with no author, the same turn goes to the human session."""
+        provider = _provider()
+        provider._manager.resolve_author_peer_id.return_value = None
+
+        _sync(provider, turn_author=None)
+
+        assert [c[0][0] for c in provider._manager.get_or_create.call_args_list] == ["Bot-Chat"]
+        provider._turn_author = {}
+        assert provider._bot_turn_write_refusal() is None

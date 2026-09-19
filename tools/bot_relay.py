@@ -445,6 +445,19 @@ def _delivery_child_session_env_names() -> "tuple[str, ...]":
     return tuple(_VAR_MAP)
 
 
+def relaying_principal_author(principal: str) -> dict:
+    """The author of a relayed DM whose sender fields cannot be trusted: a logged-in client named them.
+
+    Server-derived and unspoofable — the id is built from the caller's minted identity digest, never from
+    anything the client sent — and still a BOT author, because the recipient's memory routes on that:
+    Honcho writes a bot-authored turn into the bot's own a2a session and refuses conclusion / profile /
+    mirror writes for it, while an unattributed turn is treated as the human's (#107598 review). The
+    human-facing signature stays in the message text the sender composed."""
+    from agent.turn_author import bot_author_id
+
+    return {"id": bot_author_id("relay", str(principal or "").strip()), "name": "relayed teammate", "is_bot": True}
+
+
 def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:
     """Environment for one delivery turn's ``hermes -p <profile>`` child. The dispatcher's own
     HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn

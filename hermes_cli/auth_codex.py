@@ -150,12 +150,15 @@ def _sync_codex_pool_entries(
         _clear_pool_entry_status(entry)
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
+def _save_codex_tokens(
+    tokens: Dict[str, str], last_refresh: str = None, label: str = None, *, set_active: bool = True,
+) -> None:
     """Save Codex OAuth tokens (singleton AND ``credential_pool`` aliases) to the active auth store.
 
     Codex refresh tokens are single-use with rotation-family reuse detection, so the pool rows that
     alias the singleton must rotate with it or the next process replays the consumed token and
-    OpenAI revokes the whole family (#87503).
+    OpenAI revokes the whole family (#87503). ``set_active=False`` stores credentials for a side
+    tool (image gen) without making Codex the active inference provider.
     """
     from hermes_cli.auth import _provider_state_transaction, _save_auth_store, _store_provider_state, _utc_now_z
     if last_refresh is None:
@@ -169,7 +172,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
         if label and str(label).strip():
             state["label"] = str(label).strip()
-        _store_provider_state(auth_store, "openai-codex", state, set_active=True)
+        _store_provider_state(auth_store, "openai-codex", state, set_active=set_active)
         _sync_codex_pool_entries(
             auth_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
         _save_auth_store(auth_store)

@@ -5,6 +5,7 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+import hashlib
 import json
 import logging
 import shutil
@@ -293,6 +294,8 @@ def _jobs_lock():
         # stamps from unlocked loads or prior sections can never suppress a needed merge.
         # See #80703.
         _jobs_lock_state.load_stamp = None
+        _jobs_lock_state.loaded_runtime = None
+        _jobs_lock_state.loaded_definitions_digest = None
         lock_fd = None
         try:
             try:
@@ -321,6 +324,8 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.loaded_runtime = None
+            _jobs_lock_state.loaded_definitions_digest = None
 
 
 @contextlib.contextmanager
@@ -1302,15 +1307,160 @@ def _parse_jobs_file(jobs_file: Path) -> Tuple[Any, bool]:
         return json.loads(raw, strict=False), True
 
 
+# --- Definition / runtime split (#75607) ---
+#
+# jobs.json holds what the operator declared; <cron dir>/runtime.db (cron/runtime_state.py) holds what
+# the scheduler observed. Callers still see ONE merged dict per job: load_jobs() merges, save_jobs()
+# splits, so a fire that only advances bookkeeping never rewrites jobs.json.
+
+# Scheduler-owned fields. Everything else (and any field added later without being listed here) is
+# declarative and stays in jobs.json — an unclassified field keeps the old behaviour, never loses data.
+# ``_``-prefixed keys are scheduler-internal and are runtime too; ``repeat.completed`` is split out
+# of the declarative ``repeat`` as ``repeat_completed``.
+_RUNTIME_JOB_FIELDS = frozenset({
+    "next_run_at", "last_run_at", "last_status", "last_error", "last_delivery_error",
+    "last_delivery_unverified", "last_delivery_queued", "last_fire_error", "last_dispatch",
+    "failure_streak", "fire_claim", "run_claim", "pending_slot", "state", "paused_at",
+    "paused_reason", "preflight_alerted", "monitor_state", "manual_run_at", "manual_run_prompt",
+    "latest_execution", "unreachable_retry",  # cron/unreachable_retry.py STATE_KEY
+})
+_RUNTIME_REPEAT_COMPLETED = "repeat_completed"
+_RUNTIME_SCHEDULE_DIGEST = "_definition_schedule_digest"
+# Bookkeeping keys of the runtime row itself, never copied onto the job. The last three were written
+# by an earlier revision of this store and are read so an existing runtime.db upgrades in place.
+_RUNTIME_ROW_KEYS = frozenset({
+    _RUNTIME_REPEAT_COMPLETED, _RUNTIME_SCHEDULE_DIGEST,
+    "_definition_digest", "_schedule_digest", "runtime_tombstone",
+})
+# Derived from the schedule; dropped when the declared schedule changed behind the scheduler's back
+# (hand edit, restored jobs.json) so the due scan recomputes them (_recover_missing_next_run).
+_SCHEDULE_DERIVED_FIELDS = ("next_run_at", "pending_slot")
+
+
+def _is_runtime_field(key: str) -> bool:
+    return key in _RUNTIME_JOB_FIELDS or key.startswith("_")
+
+
+def _canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _has_legacy_runtime(record: Dict[str, Any]) -> bool:
+    """True for a jobs.json record still carrying scheduler state (pre-split store, or written by an
+    older Hermes after a downgrade)."""
+    repeat = record.get("repeat")
+    return any(_is_runtime_field(k) for k in record) or (
+        isinstance(repeat, dict) and "completed" in repeat)
+
+
+def _split_job(job: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """One merged job -> ``(definition for jobs.json, runtime row)``."""
+    definition: Dict[str, Any] = {}
+    runtime: Dict[str, Any] = {}
+    for key, value in job.items():
+        (runtime if _is_runtime_field(key) else definition)[key] = copy.deepcopy(value)
+    repeat = definition.get("repeat")
+    if isinstance(repeat, dict) and "completed" in repeat:
+        repeat = dict(repeat)
+        runtime[_RUNTIME_REPEAT_COMPLETED] = repeat.pop("completed")
+        definition["repeat"] = repeat
+    runtime[_RUNTIME_SCHEDULE_DIGEST] = _canonical_digest(definition.get("schedule"))
+    return definition, runtime
+
+
+def _merge_job(definition: Dict[str, Any], runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """jobs.json record + its runtime row -> the merged dict every caller works with, built IN PLACE
+    on ``definition`` (both inputs are freshly parsed and private to this load). Per field: a
+    scheduler field the jobs.json record itself carries wins (a pre-split store, an older Hermes
+    after a downgrade, or a hand edit wrote it, so it is the newest word on THAT field); the runtime
+    row supplies every field the record does not carry. Never whole-record: one stray key must not
+    discard the rest of the row (``repeat.completed`` gone = a capped job firing past its limit)."""
+    job = definition
+    if not runtime:
+        return job
+    carried = set(definition)
+    for key, value in runtime.items():
+        if key not in _RUNTIME_ROW_KEYS and key not in carried:
+            job[key] = value
+    repeat = job.get("repeat")
+    if (_RUNTIME_REPEAT_COMPLETED in runtime and isinstance(repeat, dict)
+            and "completed" not in repeat):
+        job["repeat"] = {**repeat, "completed": runtime[_RUNTIME_REPEAT_COMPLETED]}
+    if runtime.get("runtime_tombstone") and "state" not in carried:
+        _complete_job_record(job)
+    stored_digest = runtime.get(_RUNTIME_SCHEDULE_DIGEST)
+    if stored_digest and stored_digest != _canonical_digest(definition.get("schedule")):
+        logger.info(
+            "Cron job %r: schedule changed outside the scheduler; recomputing its next run",
+            definition.get("id"))
+        for key in _SCHEDULE_DERIVED_FIELDS:
+            if key not in carried:
+                job.pop(key, None)
+    return job
+
+
+def _write_definitions_file(jobs_file: Path, definitions: List[Dict[str, Any]]) -> None:
+    """Replace jobs.json with ``definitions`` (fsynced temp + atomic rename, owner preserved)."""
+    stat_before = None
+    for probe in (jobs_file, jobs_file.parent):
+        with contextlib.suppress(OSError):
+            stat_before = os.stat(probe)
+            break
+    tmp_path = _stage_jobs_payload(jobs_file, definitions)
+    try:
+        atomic_replace(tmp_path, jobs_file)
+    except BaseException:
+        _unlink_quiet(tmp_path)
+        raise
+    _secure_file(jobs_file)
+    _preserve_file_ownership(jobs_file, stat_before)
+
+
+def _recover_pending_definitions() -> None:
+    """Finish a save interrupted between committing runtime.db and replacing jobs.json. The journal
+    is applied only when jobs.json is still the file that save started from (or is unreadable); if
+    jobs.json moved on since, that newer file wins and the journal is dropped."""
+    from cron.runtime_state import acknowledge_pending_definitions, load_pending_definitions
+
+    store = _current_cron_store()
+    with _jobs_lock():
+        pending, generation_id, base_digest = load_pending_definitions(store.cron_dir)
+        if pending is None:
+            return
+        current = _peek_jobs_unlocked()
+        current_digest = None if current is None else _canonical_digest(current)
+        if current_digest != _canonical_digest(pending):
+            if current is None or current_digest == base_digest:
+                logger.warning(
+                    "Completing an interrupted cron save: writing %d job definition(s) to %s",
+                    len(pending), store.jobs_file)
+                _write_definitions_file(store.jobs_file, pending)
+            else:
+                logger.warning(
+                    "Discarding an interrupted cron save's pending definitions: %s was changed "
+                    "after that save started, so the newer file is kept", store.jobs_file)
+        acknowledge_pending_definitions(store.cron_dir, generation_id or "")
+
+
 def load_jobs() -> List[Dict[str, Any]]:
-    """Load all jobs from storage."""
-    jobs_file = _current_cron_store().jobs_file
+    """Load all jobs: jobs.json definitions merged with their runtime.db state."""
+    return _load_jobs(recover=True)
+
+
+def _load_jobs(*, recover: bool) -> List[Dict[str, Any]]:
+    store = _current_cron_store()
+    jobs_file = store.jobs_file
     ensure_dirs()
     # Stamp BEFORE reading (fail-safe, see _record_load_stamp): a racing write then forces the
     # merge.
     pre_read_stamp = _jobs_file_stamp(jobs_file)
     if not jobs_file.exists():
+        if recover and _journal_pending(store.cron_dir):
+            _recover_pending_definitions()
+            return _load_jobs(recover=False)
         _record_load_stamp(None)
+        _record_loaded_runtime(None)
         return []
 
     try:
@@ -1344,11 +1494,39 @@ def load_jobs() -> List[Dict[str, Any]]:
     else:
         raise RuntimeError(
             f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}")
+    from cron.runtime_state import read_store
+
+    runtime_rows, stored_rows, journal_pending = read_store(store.cron_dir)
+    if journal_pending and recover:
+        _recover_pending_definitions()
+        return _load_jobs(recover=False)
+    records = [j for j in jobs if isinstance(j, dict)]
+    legacy = sum(1 for j in records if _has_legacy_runtime(j))
+    # Digest the records as parsed, BEFORE the in-place merge below adds runtime fields to them.
+    definitions_digest = _canonical_digest(jobs)
+    jobs = [
+        _merge_job(j, runtime_rows.get(str(j.get("id")))) if isinstance(j, dict) else j
+        for j in jobs
+    ]
+    if legacy and not repair:
+        # Lossless: the merged view already holds every value; the save moves scheduler state
+        # into runtime.db and strips it from jobs.json, atomically via the pending journal.
+        repair = f"moved scheduler state of {legacy} job(s) into {store.cron_dir / 'runtime.db'}"
     if jobs and repair:
+        _record_loaded_runtime(None)  # the repair save must write every row it migrates
         save_jobs(jobs)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
+        return jobs
     _record_load_stamp(pre_read_stamp)
+    _record_loaded_runtime(
+        {str(j["id"]): stored_rows.get(str(j["id"])) for j in records if j.get("id")},
+        definitions_digest)
     return jobs
+
+
+def _journal_pending(cron_dir: Path) -> bool:
+    from cron.runtime_state import read_store
+    return read_store(cron_dir)[2]
 
 
 def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
@@ -1389,6 +1567,35 @@ def _record_load_stamp(stamp: Optional[Tuple[int, int, int]]) -> None:
     """
     if getattr(_jobs_lock_state, "depth", 0):
         _jobs_lock_state.load_stamp = stamp
+
+
+def _record_loaded_runtime(
+    rows: Optional[Dict[str, Optional[str]]], definitions_digest: Optional[str] = None,
+) -> None:
+    """Remember what this _jobs_lock() section loaded — each runtime row's stored text (so its save
+    rewrites only rows it changed; text, because callers mutate the merged dicts in place) and the digest of jobs.json's records (so an unchanged-definition save need not
+    re-parse the file while the load stamp still matches, #80703). Same lifecycle as the stamp: set by
+    load_jobs() inside a section, cleared on section entry/exit and after every save (a stale
+    snapshot must never suppress a write)."""
+    if getattr(_jobs_lock_state, "depth", 0):
+        _jobs_lock_state.loaded_runtime = rows
+        _jobs_lock_state.loaded_definitions_digest = definitions_digest if rows is not None else None
+
+
+def _disk_definitions_digest(jobs_file: Path) -> Tuple[bool, Optional[str]]:
+    """``(known, digest)`` of jobs.json's records: from the load snapshot when the stamp proves the
+    file unchanged since, else by re-reading it. ``digest`` is None for a pre-split (legacy) or
+    unreadable file — both force the full save path."""
+    stamp = getattr(_jobs_lock_state, "load_stamp", None)
+    loaded = getattr(_jobs_lock_state, "loaded_definitions_digest", None)
+    if stamp is not None and loaded is not None and _jobs_file_stamp(jobs_file) == stamp:
+        return True, loaded
+    if not jobs_file.exists():
+        return False, None
+    on_disk = _peek_jobs_unlocked()
+    if on_disk is None or any(isinstance(j, dict) and _has_legacy_runtime(j) for j in on_disk):
+        return True, None
+    return True, _canonical_digest(on_disk)
 
 
 def _unmerged_disk_jobs(
@@ -1464,43 +1671,118 @@ def _save_jobs_unlocked(
 ):
     """Save all jobs; caller must hold _jobs_lock(). ``removed_ids`` = intentional deletes;
     ``replace=True`` skips the shrink-merge guard (wholesale rewrite for tests/disaster
-    recovery)."""
-    jobs_file = _current_cron_store().jobs_file
-    ensure_dirs()
-    # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
-    _stat_before = None
-    for probe in (jobs_file, jobs_file.parent):
-        with contextlib.suppress(OSError):
-            _stat_before = os.stat(probe)
-            break
+    recovery).
 
-    # Shrink-merge loop: merge, stage, re-peek, repeat; the last attempt writes without a re-peek.
-    tmp_path = None
+    Scheduler state goes to runtime.db and jobs.json is rewritten only when a definition changed.
+    When both change, runtime rows and the new definitions commit together as a journal BEFORE the
+    rename, so a crash in between is finished by the next load (_recover_pending_definitions)."""
+    from cron.runtime_state import (
+        acknowledge_pending_definitions, serialize_state, stage_runtime_and_definitions,
+        write_runtime_states)
+
+    store = _current_cron_store()
+    jobs_file = store.jobs_file
+    ensure_dirs()
+    removed = {str(i) for i in (removed_ids or ()) if i}
+    definitions: List[Any] = []
+    runtime: Dict[str, Dict[str, Any]] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            definitions.append(job)  # junk entries round-trip untouched, as before the split
+            continue
+        definition, row = _split_job(job)
+        definitions.append(definition)
+        if job.get("id"):
+            runtime[str(job["id"])] = row
+    loaded = None if replace else getattr(_jobs_lock_state, "loaded_runtime", None)
+    if loaded is not None:
+        # Rows this section never changed are not rewritten, so a stale writer under the degraded
+        # lock cannot roll a sibling's newer state back for jobs it did not touch.
+        runtime = {k: v for k, v in runtime.items()
+                   if k not in loaded or loaded[k] != serialize_state(v)}
+
     try:
-        for attempt in range(_SAVE_JOBS_MERGE_ATTEMPTS + 1):
-            if not replace:
-                jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
-            tmp_path = _stage_jobs_payload(jobs_file, jobs)
-            # Verify-after-stage: a sibling landing during serialization forces another merge round.
-            if (
-                not replace
-                and attempt < _SAVE_JOBS_MERGE_ATTEMPTS
-                and _unmerged_disk_jobs(jobs, removed_ids)
-            ):
-                _unlink_quiet(tmp_path)
-                tmp_path = None
-                continue
-            atomic_replace(tmp_path, jobs_file)
-            tmp_path = None
-            _secure_file(jobs_file)
-            _preserve_file_ownership(jobs_file, _stat_before)
-            # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
-            # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
-            _record_load_stamp(None)
+        if not replace and not _definitions_changed(jobs_file, definitions):
+            write_runtime_states(store.cron_dir, runtime, removed_ids=removed)
             return
-    except BaseException:
-        _unlink_quiet(tmp_path)
-        raise
+
+        # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
+        _stat_before = None
+        for probe in (jobs_file, jobs_file.parent):
+            with contextlib.suppress(OSError):
+                _stat_before = os.stat(probe)
+                break
+
+        # Shrink-merge loop: merge, stage, re-peek, repeat; the last attempt writes without a
+        # re-peek.
+        payload = jobs
+        tmp_path = None
+        try:
+            for attempt in range(_SAVE_JOBS_MERGE_ATTEMPTS + 1):
+                if not replace:
+                    payload = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+                recovered = [j for j in payload[len(jobs):] if isinstance(j, dict)]
+                file_definitions = definitions + [_split_job(j)[0] for j in recovered]
+                # A recovered record still carrying scheduler state is the newest word on it.
+                rows = dict(runtime)
+                rows.update({
+                    str(j["id"]): _split_job(j)[1] for j in recovered
+                    if j.get("id") and _has_legacy_runtime(j)})
+                tmp_path = _stage_jobs_payload(jobs_file, file_definitions)
+                # Verify-after-stage: a sibling landing during serialization forces another merge
+                # round.
+                if (
+                    not replace
+                    and attempt < _SAVE_JOBS_MERGE_ATTEMPTS
+                    and _unmerged_disk_jobs(payload, removed_ids)
+                ):
+                    _unlink_quiet(tmp_path)
+                    tmp_path = None
+                    continue
+                generation_id = stage_runtime_and_definitions(
+                    store.cron_dir, rows, file_definitions,
+                    base_definitions_digest=_raw_disk_digest(jobs_file),
+                    removed_ids=removed, replace=replace)
+                atomic_replace(tmp_path, jobs_file)
+                tmp_path = None
+                _secure_file(jobs_file)
+                _preserve_file_ownership(jobs_file, _stat_before)
+                try:
+                    acknowledge_pending_definitions(store.cron_dir, generation_id)
+                except Exception:
+                    # Both files are durable; the next load sees journal == jobs.json and just
+                    # acknowledges it, so a failed ack must not fail a save that succeeded.
+                    logger.warning(
+                        "Cron save succeeded but its recovery journal could not be cleared yet",
+                        exc_info=True)
+                return
+        except BaseException:
+            _unlink_quiet(tmp_path)
+            raise
+    finally:
+        # Invalidate (never refresh) the stamp and the runtime snapshot: a refresh would let a nested
+        # save certify disk against an OUTER caller's stale payload. Later saves take the full merge
+        # and rewrite every row (fail-safe).
+        _record_load_stamp(None)
+        _record_loaded_runtime(None)
+
+
+def _raw_disk_digest(jobs_file: Path) -> Optional[str]:
+    """Digest of jobs.json's records exactly as on disk (what _recover_pending_definitions compares
+    against); None when unreadable."""
+    stamp = getattr(_jobs_lock_state, "load_stamp", None)
+    loaded = getattr(_jobs_lock_state, "loaded_definitions_digest", None)
+    if stamp is not None and loaded is not None and _jobs_file_stamp(jobs_file) == stamp:
+        return loaded
+    on_disk = _peek_jobs_unlocked()
+    return None if on_disk is None else _canonical_digest(on_disk)
+
+
+def _definitions_changed(jobs_file: Path, definitions: List[Any]) -> bool:
+    """Whether jobs.json must be rewritten: missing, unreadable, still carrying pre-split scheduler
+    state, or its records differ from ``definitions``."""
+    exists, digest = _disk_definitions_digest(jobs_file)
+    return not exists or digest is None or digest != _canonical_digest(definitions)
 
 
 def save_jobs(

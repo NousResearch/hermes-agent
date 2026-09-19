@@ -28,6 +28,11 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
+- **`jobs.json` is declarations; `runtime.db` is scheduler state** (`cron/runtime_state.py`,
+  #75607). `load_jobs()`/`save_jobs()` merge and split by `_RUNTIME_JOB_FIELDS`, so a fire never
+  rewrites `jobs.json`. New scheduler-written fields belong in that set (unlisted = declarative,
+  never lost). A save changing both files journals in `runtime.db` before the rename; never write
+  one without the other outside `save_jobs()`.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**
   `scheduler_provider.py::_start_multiplex` is ONE ticker iterating `profiles_to_serve()`
   sequentially under `_profile_cron_scope(home)` (home + secret scope + terminal scope) — never N

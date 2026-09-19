@@ -196,7 +196,10 @@ def _bot_relay_outbox_sig():
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
+    # Definitions live in jobs.json, run state in runtime.db (committed through its WAL).
+    "cron.changed": (1.0, lambda: _newest_mtime_ns(
+        _watcher_home() / "cron" / name for name in ("jobs.json", "runtime.db", "runtime.db-wal")),
+        lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
     "pairing.changed": (2.0, _pairing_sig, lambda: {}),

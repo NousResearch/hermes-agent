@@ -421,7 +421,12 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
     worker_saved = json.loads(worker_file.read_text(encoding="utf-8"))["jobs"]
     assert [job["id"] for job in worker_saved] == ["worker-job"]
     assert [job["id"] for job in default_saved] == ["default-job"]
-    assert default_saved[0]["next_run_at"] == "2026-07-10T00:00:00+00:00"
+    # Run state lives in each profile's cron/runtime.db, beside that profile's jobs.json.
+    from cron.runtime_state import load_runtime_states
+
+    assert load_runtime_states(default_cron)["default-job"]["next_run_at"] == (
+        "2026-07-10T00:00:00+00:00")
+    assert "default-job" not in load_runtime_states(worker_cron)
 
 
 

@@ -1304,7 +1304,7 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 ## Job storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+Job definitions are stored in `~/.hermes/cron/jobs.json`; run state (next/last run, status, repeat progress) is kept beside it in `~/.hermes/cron/runtime.db`, so running a job never rewrites `jobs.json`. Existing installs migrate automatically on first load. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
 
 Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 

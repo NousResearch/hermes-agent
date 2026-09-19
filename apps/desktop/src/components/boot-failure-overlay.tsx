@@ -20,6 +20,7 @@ import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
   isRemoteConfig,
+  isRemoteReauthError,
   isRemoteReauthFailure,
   signInLabel,
   sshFailureMessage
@@ -81,7 +82,7 @@ export function BootFailureOverlay() {
   const [connectionConfig, setConnectionConfig] = useState<DesktopConnectionConfig | null>(null)
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
-  const [remoteFailure, setRemoteFailure] = useState(false)
+  const [remoteFailure, setRemoteFailure] = useState(() => isRemoteReauthError(boot.error))
   // Swap the card body to the embedded Gateway settings panel in place of routing
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
@@ -123,6 +124,9 @@ export function BootFailureOverlay() {
       const desktop = window.hermesDesktop
 
       if (!desktop?.getConnectionConfig) {
+        if (!cancelled && isRemoteReauthError(boot.error)) {
+          setRemoteFailure(true)
+        }
         return
       }
 
@@ -131,6 +135,9 @@ export function BootFailureOverlay() {
       try {
         config = await desktop.getConnectionConfig()
       } catch {
+        if (!cancelled && isRemoteReauthError(boot.error)) {
+          setRemoteFailure(true)
+        }
         return
       }
 
@@ -139,7 +146,7 @@ export function BootFailureOverlay() {
       }
 
       setConnectionConfig(config)
-      setRemoteFailure(isRemoteConfig(config))
+      setRemoteFailure(isRemoteConfig(config) || isRemoteReauthError(boot.error))
 
       if (!isRemoteReauthFailure(config, boot.error)) {
         return
@@ -406,11 +413,19 @@ export function BootFailureOverlay() {
           <div>
             <DialogPrimitive.Title asChild>
               <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-                {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
+                {remoteReauth || isRemoteReauthError(boot.error)
+                  ? copy.remoteTitle
+                  : cloudDown
+                    ? copy.cloudDownTitle
+                    : copy.title}
               </h2>
             </DialogPrimitive.Title>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
+              {remoteReauth || isRemoteReauthError(boot.error)
+                ? copy.remoteDescription
+                : cloudDown
+                  ? copy.cloudDownDescription
+                  : copy.description}
             </p>
           </div>
         </div>

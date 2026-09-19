@@ -107,6 +107,9 @@ describe('isRemoteReauthError', () => {
   it('recognizes auth-shaped boot errors', () => {
     expect(isRemoteReauthError('Your remote gateway session has expired.')).toBe(true)
     expect(isRemoteReauthError('OAuth: please sign in')).toBe(true)
+    expect(isRemoteReauthError('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.')).toBe(true)
+    expect(isRemoteReauthError('Remote gateway session token is expired')).toBe(true)
+    expect(isRemoteReauthError('Remote gateway session token is required.')).toBe(true)
   })
 
   it('ignores non-auth boot errors and nullish', () => {

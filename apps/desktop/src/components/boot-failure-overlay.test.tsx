@@ -248,4 +248,37 @@ describe('BootFailureOverlay', () => {
       restore()
     }
   })
+
+  it('renders remote reauth title and allows opening gateway settings when remote token expires (#114856)', async () => {
+    const restore = stubDesktop(remoteToken)
+    $desktopBoot.set({
+      error: 'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
+      fakeMode: false,
+      message: 'boot failed',
+      phase: 'renderer.error',
+      progress: 40,
+      running: false,
+      timestamp: Date.now(),
+      visible: true
+    })
+
+    try {
+      render(<BootFailureOverlay />)
+      // Remote title + description should be rendered for expired session
+      expect(await screen.findByText(/Remote gateway sign-in required/i)).toBeTruthy()
+      expect(screen.getByText(/Sign in again to reconnect/i)).toBeTruthy()
+
+      // Primary recovery button should be Gateway settings, not Repair
+      expect(screen.queryByRole('button', { name: /repair/i })).toBeNull()
+      const settingsButton = screen.getByRole('button', { name: /gateway settings/i })
+      expect(settingsButton).toBeTruthy()
+
+      // Clicking Gateway settings opens the embedded panel without requiring local gateway
+      fireEvent.click(settingsButton)
+      expect(await screen.findByRole('button', { name: /back/i })).toBeTruthy()
+      expect(screen.getByRole('dialog', { name: /gateway settings/i })).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
 })

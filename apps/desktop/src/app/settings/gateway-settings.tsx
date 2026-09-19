@@ -410,11 +410,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const hasSavedRemote = state.remoteTokenSet || state.remoteOauthConnected
 
   const authResolved = useMemo(() => {
-    if (probeStatus === 'done') {
+    if (hasSavedRemote) {
       return true
     }
 
-    return probeStatus === 'idle' && hasSavedRemote
+    if (probeStatus === 'done' || probeStatus === 'error') {
+      return true
+    }
+
+    return false
   }, [probeStatus, hasSavedRemote])
 
   const providerLabel = useMemo(() => {

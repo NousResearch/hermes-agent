@@ -190,4 +190,32 @@ describe('GatewaySettings', () => {
     expect(screen.queryByText('All profiles')).toBeNull()
     expect(screen.queryByText('Use default gateway')).toBeNull()
   })
+
+  it('keeps session token input editable on saved remote config even when probe fails (#114856)', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'remote',
+      remoteAuthMode: 'token',
+      remoteTokenSet: true,
+      remoteTokenPreview: 'test...',
+      remoteUrl: 'https://gateway.example.com'
+    })
+
+    const probeConnectionConfig = vi.fn().mockRejectedValue(new Error('connection failed'))
+    Object.assign(window.hermesDesktop, { probeConnectionConfig })
+
+    render(<GatewaySettings embedded />)
+
+    // Mode card for remote should be active
+    expect(await screen.findByDisplayValue('https://gateway.example.com')).toBeTruthy()
+
+    // Token input remains rendered and accessible so user can refresh their expired token
+    const tokenInput = await screen.findByPlaceholderText(/Existing token test\.\.\./i)
+    expect(tokenInput).toBeTruthy()
+    expect(tokenInput.getAttribute('type')).toBe('password')
+
+    // User can type a new token
+    fireEvent.change(tokenInput, { target: { value: 'new-refreshed-token' } })
+    expect((tokenInput as HTMLInputElement).value).toBe('new-refreshed-token')
+  })
 })

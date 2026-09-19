@@ -350,13 +350,25 @@ def _get_beep_volume() -> float:
 
 
 def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
-    """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
-    hangs forever if the device stalls)."""
+    """Play audio until it drains, stopping only if it exceeds *timeout*."""
     sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    deadline = time.monotonic() + timeout
-    while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
-        time.sleep(0.01)
-    sd.stop()
+    drained = threading.Event()
+    errors: List[BaseException] = []
+
+    def wait_for_drain() -> None:
+        try:
+            sd.wait()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            drained.set()
+
+    threading.Thread(target=wait_for_drain, daemon=True, name="voice-output-drain").start()
+    if not drained.wait(timeout):
+        sd.stop()
+        return
+    if errors:
+        raise errors[0]
 
 
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:

@@ -2,6 +2,7 @@
 
 import os
 import struct
+import threading
 import time
 import wave
 from pathlib import Path
@@ -695,12 +696,46 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_short_cue_drains_driver_buffer_without_stopping_playback(self, mock_sd):
+        """A cue handed to the output buffer must finish rather than be aborted."""
+        from tools.voice_mode import _sd_play_blocking
+
+        mock_stream = MagicMock()
+        # A cue shorter than the driver's output buffer can leave the stream
+        # inactive while PortAudio still has queued samples to drain.
+        mock_stream.active = False
+        mock_sd.get_stream.return_value = mock_stream
+
+        _sd_play_blocking(mock_sd, [1] * 8, 16000, timeout=1.0)
+
+        mock_sd.wait.assert_called_once()
+        mock_sd.stop.assert_not_called()
+
+    def test_stalled_playback_stops_at_timeout(self, mock_sd):
+        from tools.voice_mode import _sd_play_blocking
+
+        wait_entered = threading.Event()
+        release_wait = threading.Event()
+
+        def stalled_wait():
+            wait_entered.set()
+            release_wait.wait()
+
+        mock_sd.wait.side_effect = stalled_wait
+
+        _sd_play_blocking(mock_sd, [1] * 8, 16000, timeout=0.01)
+
+        assert wait_entered.is_set()
+        mock_sd.stop.assert_called_once()
+        release_wait.set()
+
+    def test_beep_calls_sounddevice_play(self, mock_sd, monkeypatch):
         np = pytest.importorskip("numpy")
 
         from tools.voice_mode import play_beep
 
-        # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
+        monkeypatch.setattr("tools.voice_mode._sounddevice_output_allowed", lambda: True)
+        # Playback waits for the output buffer to drain after the stream goes inactive.
         mock_stream = MagicMock()
         mock_stream.active = False
         mock_sd.get_stream.return_value = mock_stream
@@ -708,7 +743,8 @@ class TestPlayBeep:
         play_beep(frequency=880, duration=0.1, count=1)
 
         mock_sd.play.assert_called_once()
-        mock_sd.stop.assert_called()
+        mock_sd.wait.assert_called_once()
+        mock_sd.stop.assert_not_called()
         # Verify audio data is int16 numpy array
         audio_arg = mock_sd.play.call_args[0][0]
         assert audio_arg.dtype == np.int16

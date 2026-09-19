@@ -710,6 +710,7 @@ gateway:
     cors_origins: http://localhost:3000
     model_name: my-hermes
     max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
+    history_tool_output_max_chars: 0   # cap tool outputs in stored /v1/responses history; 0 = verbatim
 ```
 
 `port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
@@ -717,6 +718,10 @@ gateway:
 ### Concurrent-run cap
 
 The API server limits how many agent runs may execute at once across the endpoints that start one directly: the OpenAI-compatible endpoints, the Runs endpoints, and the session-chat endpoints (`POST /api/sessions/{id}/chat` and its `/stream` variant, which carry cross-machine agent DMs). Cron-triggered runs (`POST /api/jobs/{id}/run`, `POST /api/cron/fire`) go through the cron scheduler and are governed by cron's own limits, not this cap. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
+
+### Stored history size for `previous_response_id` chaining
+
+Each stored `/v1/responses` snapshot embeds the full cumulative conversation history (that is what `previous_response_id` and `conversation` chaining replay), including every tool output verbatim. A conversation with a few large tool outputs can therefore make a single `response_store.db` write several hundred KB. Set `gateway.api_server.history_tool_output_max_chars` (default **0** = store verbatim) to cap each tool output and each string tool-call argument in the **stored** history at that many characters; anything longer is cut to the head plus a `...[N more chars]` marker. User and assistant text is never touched, and the `response.completed` payload and incremental SSE events are unaffected. Because the stored history is what the model sees on the next chained turn, enabling the cap also trims what the model is replayed — leave it at 0 if your workflow needs complete tool outputs across turns.
 
 ## Security Headers
 

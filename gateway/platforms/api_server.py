@@ -1149,6 +1149,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
     interactive_resume: bool = False
+    # Opt-in cap (chars) on tool outputs / tool-call arguments in the stored /v1/responses
+    # transcript; 0 = store verbatim (gateway.api_server.history_tool_output_max_chars, #82513).
+    _history_tool_output_max_chars: int = 0
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
@@ -1188,6 +1191,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._last_resolved_model: Dict[str, str] = {}
         self._session_db_lock: Optional[asyncio.Lock] = None  # single-flight for lazy init
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
+        self._history_tool_output_max_chars = self._resolve_api_server_int(
+            "history_tool_output_max_chars", default=0)
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
         # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
@@ -1290,12 +1295,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _resolve_max_concurrent_runs() -> int:
         """gateway.api_server.max_concurrent_runs (0 disables; default 10; negatives -> 0)."""
-        default = 10
+        return APIServerAdapter._resolve_api_server_int("max_concurrent_runs", default=10)
+
+    @staticmethod
+    def _resolve_api_server_int(key: str, *, default: int) -> int:
+        """Integer setting under gateway.api_server (unreadable config -> default; negatives -> 0)."""
         try:
             from hermes_cli.config import cfg_get, load_config
-            raw = cfg_get(
-                load_config(), "gateway", "api_server", "max_concurrent_runs", default=default)
-            value = int(raw)
+            value = int(cfg_get(load_config(), "gateway", "api_server", key, default=default))
         except Exception:
             return default
         return max(0, value)

@@ -160,10 +160,12 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gpt-5.6-sol": ("5.00", "30.00", "0.50", "6.25"), "gpt-5.6-terra": ("2.50", "15.00", "0.25", "3.125"),
         "gpt-5.6-luna": ("1.00", "6.00", "0.10", "1.25"),
     }),
-    # Claude 4.5/4.6/4.7/4.8 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
+    # Claude 4.5/4.6/4.7/4.8 Opus and Opus 5 share $5/$25 (same generation
+    # tokenizer/pricing; Opus 5 launched 2026-09-11 at unchanged rates per
+    # platform.claude.com/docs/en/about-claude/pricing).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-05", {
         ("claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-7-20250507", "claude-opus-4-6",
-         "claude-opus-4-6-20250414", "claude-opus-4-5"): _OPUS,
+         "claude-opus-4-6-20250414", "claude-opus-4-5", "claude-opus-5"): _OPUS,
         ("claude-sonnet-4-6", "claude-sonnet-4-6-20250414", "claude-sonnet-4-5", "claude-sonnet-4-20250514",
          "claude-3-5-sonnet-20241022"): _SONNET,
         "claude-haiku-4-5": ("1.00", "5.00", "0.10", "1.25"),
@@ -174,6 +176,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # Fast mode is a separate model id at a 2x premium.
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
         "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
+        "claude-opus-5-fast": ("10.00", "50.00", "1.00", "12.50"),
     }),
     # Claude Sonnet 5: introductory $2/$10 through 2026-08-31, then $3/$15
     # (matching Sonnet 4.6). Update this entry when the intro window closes.
@@ -384,8 +387,14 @@ def _normalize_bedrock_model_name(model: str) -> str:
 
 
 def _normalize_anthropic_model_name(model: str) -> str:
-    """Strip an ``anthropic/`` prefix and map dotted versions (4.7 → 4-7)."""
-    return re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
+    """Strip an ``anthropic/`` prefix, map dotted versions (4.7 → 4-7), and
+    drop a trailing dated-snapshot suffix (``-20251001``) so a pinned
+    Anthropic model id resolves to the same bare price row as its unpinned
+    name. Mirrors ``_normalize_bedrock_model_name``'s ``_BEDROCK_TRAILERS``
+    handling — Anthropic ids lacked the equivalent step, which silently
+    zero-priced every dated snapshot (e.g. claude-haiku-4-5-20251001)."""
+    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
+    return re.sub(r"-\d{8}$", "", name)
 
 
 # Anthropic dot-notation (opus-4.7) and Bedrock region-prefixed ids need

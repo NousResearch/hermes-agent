@@ -35,7 +35,13 @@ function pluginNamespaces() {
 type PluginGlobalKey = keyof ReturnType<typeof pluginNamespaces>
 
 export function installPluginSdk(): void {
-  Object.assign(globalThis, pluginNamespaces())
+  const namespaces = pluginNamespaces()
+  for (const [key, value] of Object.entries(namespaces)) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      get() { return value }
+    })
+  }
 }
 
 /** Build a shim ESM blob that re-exports a global namespace's live members.

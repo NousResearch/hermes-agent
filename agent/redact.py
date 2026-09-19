@@ -1127,7 +1127,12 @@ REDACTION_UNAVAILABLE = "[redaction-unavailable]"
 # The opaque branch needs a 20-char floor (the floor the gateway/A2A sweeps always had): without it the
 # English word "bearer" turns "the bearer of bad news" into "Bearer [redacted] bad news" on every chat
 # reply. The bracket branch folds an already-masked residue ("Bearer [redacted-jwt]") to one marker.
-_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)", re.IGNORECASE)
+# ASCII lookbehind (not Unicode ``\b``): a Unicode word neighbor can hide ``Bearer <opaque>``
+# the same way prefix tokens used to hide behind ``\b``.
+_BEARER_RESIDUE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])Bearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)",
+    re.IGNORECASE,
+)
 
 
 def redact_for_egress(text: str) -> str:

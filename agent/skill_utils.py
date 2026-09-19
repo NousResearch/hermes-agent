@@ -783,6 +783,47 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
 _NAMESPACE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
+# The system-prompt skills index renders two SYNTHETIC category headings that
+# match no directory on disk: skills sitting directly in a skills root are
+# grouped under "general", and org-mirror skills are grouped under
+# "org:<org_id>" while living at "_org/<org_id>/...". The index tells the agent
+# to load skills by their category path, and the name-collision label says so in
+# so many words ("load via category path"), so both headings MUST resolve --
+# otherwise the prompt advertises load paths that fail.
+SYNTHETIC_GENERAL_CATEGORY = "general"
+ORG_CATEGORY_PREFIX = "org:"
+
+
+def parse_index_heading_path(name: str) -> Optional[Tuple[str, str, bool]]:
+    """Split a rendered-index ``<category heading>/<skill>`` into
+    ``(scope_rel, bare_name, recursive)``, or None when *name* uses no synthetic
+    heading.
+
+    ``scope_rel`` is relative to a skills root (``""`` means the root itself):
+
+    * ``general/<skill>``   -> ``("", "<skill>", False)`` — "general" labels the
+      root itself, so the lookup is deliberately NON-recursive: it must not
+      silently resolve to a skill that the index filed under a real category.
+    * ``org:<id>/<skill>``  -> ``("_org/<id>", "<skill>", True)`` — an org
+      heading collapses the mirror's nested categories into one heading, so the
+      bare name is searched across the whole mirror to match what was rendered.
+
+    Callers resolving an org scope MUST still apply the active-org token gate.
+    """
+    head, sep, rest = (name or "").strip().partition("/")
+    if not sep or not rest:
+        return None
+    if head == SYNTHETIC_GENERAL_CATEGORY:
+        return "", rest, False
+    if head.startswith(ORG_CATEGORY_PREFIX):
+        org_id = head[len(ORG_CATEGORY_PREFIX):]
+        # is_valid_namespace also keeps a model-supplied org id from smuggling
+        # separators or traversal into the path we join onto the skills root.
+        if is_valid_namespace(org_id):
+            return f"{ORG_MIRROR_DIR_NAME}/{org_id}", rest, True
+    return None
+
+
 def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
     """Split ``'namespace:skill-name'`` into ``(namespace, bare_name)``; ``(None, name)`` without ``':'``."""
     namespace, sep, bare = name.partition(":")

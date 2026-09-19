@@ -1106,8 +1106,8 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+# v3 corrects root-level categories; rebuild snapshots with the old derived headings.
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1176,7 +1176,10 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     if len(parts) >= 3 and parts[0] == ORG_MIRROR_DIR_NAME:
         org_id, parts = parts[1], parts[2:]
     skill_name = skill_file.parent.name  # == parts[-2] whenever a parent component exists
-    category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+    # A root-level skill is ``<name>/SKILL.md`` (2 parts) — no category component, so it groups
+    # under the synthetic "general" heading. Reading parts[0] there would name the category after
+    # the skill's OWN directory, giving every root-level skill its own bogus one-entry heading.
+    category = "general" if len(parts) < 3 else "/".join(parts[:-2])
     platforms = frontmatter.get("platforms") or []
     platforms = [platforms] if isinstance(platforms, str) else platforms
     entry = {

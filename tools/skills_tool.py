@@ -304,6 +304,75 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     return None, (f"{namespace}/{bare}" if bare else None)  # plugin not found → local scan
 
 
+def _collect_index_heading_candidates(name: str, all_dirs) -> List[Tuple[Optional[Path], Path]]:
+    """``(skill_dir, skill_md)`` candidates for a SYNTHETIC rendered-index heading path.
+
+    The system prompt's skills index groups root-level skills under a ``general:``
+    heading and org-mirror skills under ``org:<org_id>:`` — neither names a real
+    directory, so ``skill_view("general/x")`` / ``skill_view("org:acme/x")`` used to
+    fail even though the index (and its "load via category path" collision label)
+    tells the agent to use exactly those paths. Resolving them here also makes the
+    heading path do its real job: it SCOPES the lookup, so a personal/org name
+    collision is resolvable instead of a permanent ambiguity refusal.
+
+    Empty list when *name* is not a heading path, so ordinary lookups are untouched.
+    """
+    from agent.skill_utils import (ORG_MIRROR_DIR_NAME, iter_skill_index_files,
+                                   parse_index_heading_path, read_active_org_id)
+    parsed = parse_index_heading_path(name)
+    if parsed is None:
+        return []
+    scope_rel, bare, recursive = parsed
+    # `bare` is joined onto a skills root, so it gets the same traversal/absolute
+    # validation the top-level `name` got.
+    if _skill_lookup_path_error(bare) or (not recursive and "/" in bare):
+        return []
+    candidates: List[Tuple[Optional[Path], Path]] = []
+    seen_md: set = set()
+
+    def _record(sd: Optional[Path], smd: Path) -> None:
+        key = smd
+        with suppress(Exception):
+            key = smd.resolve()
+        if key not in seen_md and not _is_skill_support_path(smd):
+            seen_md.add(key)
+            candidates.append((sd, smd))
+
+    for search_dir in all_dirs:
+        if not scope_rel:
+            # Always collect the real general category: sibling frontmatter
+            # collisions must remain visible to the ordinary ambiguity policy.
+            for sd, smd in _collect_skill_candidates(name, None, [search_dir]):
+                _record(sd, smd)
+            # A literal path suppresses only this root's synthetic alias scan.
+            if _collect_skill_candidates(name, None, [search_dir], direct_only=True):
+                continue
+        scope = search_dir / scope_rel if scope_rel else search_dir
+        if scope_rel.startswith(ORG_MIRROR_DIR_NAME):
+            # Token gate: only the `.active_org` mirror may resolve, exactly as the
+            # index walk gates it. A stale mirror on disk must stay unloadable.
+            if read_active_org_id(search_dir) != Path(scope_rel).name:
+                continue
+        if not scope.is_dir():
+            continue
+        # Direct path first ("general/mlops-helper", "org:acme/devops/beta").
+        direct = scope / bare
+        if direct.is_dir() and (direct / "SKILL.md").exists():
+            _record(direct, direct / "SKILL.md")
+        elif ((flat := direct.with_suffix(".md")).exists()
+              and not _is_package_owned_markdown(flat, search_dir)):
+            _record(None, flat)
+        # The index renders the FRONTMATTER name, which may differ from the
+        # directory name, so match on both — otherwise the rendered entry is
+        # unloadable by the very path the index shows.
+        found = iter_skill_index_files(scope, "SKILL.md") if recursive else (
+            d / "SKILL.md" for d in scope.iterdir() if d.is_dir() and (d / "SKILL.md").exists())
+        for skill_md in found:
+            if skill_md.parent.name == bare or _safe_frontmatter(skill_md).get("name") == bare:
+                _record(skill_md.parent, skill_md)
+    return candidates
+
+
 def _under_any(path: Path, dirs) -> bool:
     """True when ``path`` (resolved where possible) lives under one of ``dirs``."""
     resolved = path
@@ -324,7 +393,7 @@ def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
     )
 
 
-def _collect_skill_candidates(name, local_category_name, all_dirs):
+def _collect_skill_candidates(name, local_category_name, all_dirs, *, direct_only=False):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
     Collision detection is the point: silent shadowing of a local skill by a same-named
@@ -352,11 +421,25 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
     for search_dir in all_dirs:
         for direct in filter(None, (name, local_category_name)):  # "p:x" with no plugin p → "p/x"
             _record_direct(search_dir / direct, search_dir)
+        if direct_only:
+            continue
         # Recursive by directory name plus frontmatter `name:` — skills_list()
         # exposes the frontmatter name, so skill_view(name) must accept it too.
+        # A categorized path may use the frontmatter name for its final segment
+        # (the renderer exposes that name, not necessarily the directory name).
+        # Keep the category prefix as a hard scope: ``cli/renamed`` must not
+        # resolve an unrelated ``devops/renamed`` skill.
+        path_parts = name.split("/")
+        scoped_category = path_parts[:-1] if len(path_parts) > 1 else ()
+        requested_name = path_parts[-1]
         for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
-            if (found_skill_md.parent.name == name
-                    or _safe_frontmatter(found_skill_md).get("name") == name):
+            relative_parts = found_skill_md.parent.relative_to(search_dir).parts
+            in_scope = (not scoped_category
+                         or relative_parts[:-1] == tuple(scoped_category))
+            if not in_scope:
+                continue
+            if (found_skill_md.parent.name == requested_name
+                    or _safe_frontmatter(found_skill_md).get("name") == requested_name):
                 _record(found_skill_md.parent, found_skill_md)
         # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
         # directory skill loads through file_path and must not shadow a real skill.
@@ -499,14 +582,20 @@ def _provably_same_skill(candidates) -> bool:
         return False
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
+def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs,
+                  heading_candidates: Optional[List[Tuple[Optional[Path], Path]]] = None):
     """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
     precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
-    skill_md set iff no error."""
+    skill_md set iff no error. ``heading_candidates`` are pre-resolved synthetic index-heading
+    matches (computed by the caller before plugin dispatch); when non-empty they take
+    precedence over the flat scan."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
-    candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
+    candidates = (heading_candidates if heading_candidates is not None
+                  else _collect_index_heading_candidates(name, all_dirs))
+    if not candidates:
+        candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier (two different skills) still refuses.
@@ -581,7 +670,13 @@ def skill_view(
         if lookup_error := _skill_lookup_path_error(name):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         local_category_name: str | None = None
-        if ":" in name:  # plugin registry; bare names use the flat-tree scan below
+        project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
+        # An "org:<id>/<skill>" index heading is NOT a plugin reference. Resolve it
+        # before the ':' dispatch so a plugin sharing the org id can't shadow the load
+        # path the skills index rendered — but only when it ACTUALLY resolves, so a
+        # genuine plugin named e.g. "org" keeps working for everything else.
+        heading_candidates = _collect_index_heading_candidates(name, all_dirs)
+        if ":" in name and not heading_candidates:  # plugin registry; bare names use the flat-tree scan below
             served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
             if served is not None:
                 return served
@@ -589,9 +684,8 @@ def skill_view(
         # since `bare` is not namespace-checked.
         if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
-        project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
         error, skill_dir, skill_md = _locate_skill(
-            name, local_category_name, project_dirs, all_dirs)
+            name, local_category_name, project_dirs, all_dirs, heading_candidates=heading_candidates)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content

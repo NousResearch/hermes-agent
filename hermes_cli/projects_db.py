@@ -106,9 +106,8 @@ def _now() -> int:
 
 
 def _normalize_path(path: str) -> str:
-    """Absolute, user-expanded, separator-normalized path (no trailing sep)."""
-    p = os.path.abspath(os.path.expanduser(str(path).strip()))
-    return p.rstrip("/\\") or p
+    """Absolute, user-expanded, normalized path, preserving root separators."""
+    return os.path.abspath(os.path.expanduser(str(path).strip()))
 
 
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:

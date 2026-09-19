@@ -163,3 +163,72 @@ class TestMicroSummarizeTruncationGuard:
         ):
             result = c._micro_summarize_one("user: hi\nassistant: hello")
         assert result == "merged summary"
+
+
+class TestFailureAttribution:
+    """Errors from the aux summary call must name the route that generated the
+    summary (_aux_route), not the main session model being protected."""
+
+    def test_truncation_error_names_actual_summarizer_route(self):
+        import time as _time
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="glm-main",
+                summary_model_override="agnes-aux",
+                quiet_mode=True,
+            )
+
+        def _fake_call(**kwargs):
+            kwargs["route_info"].update(
+                {"provider": "agnes", "model": "agnes-2.5-flash", "label": "agnes"}
+            )
+            return _mock_response("partial summary that got cut o", "length")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_fake_call):
+            with pytest.raises(RuntimeError) as exc:
+                c._call_summary_llm("summarize: ...", prompt_started_at=_time.monotonic())
+
+        msg = str(exc.value)
+        assert "provider=agnes" in msg, msg
+        assert "model=agnes-2.5-flash" in msg, msg
+        assert "glm-main" not in msg, msg
+
+    def test_empty_content_error_names_actual_summarizer_route(self):
+        import time as _time
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="glm-main",
+                summary_model_override="agnes-aux",
+                quiet_mode=True,
+            )
+
+        def _fake_call(**kwargs):
+            kwargs["route_info"].update(
+                {"provider": "agnes", "model": "agnes-2.5-flash", "label": "agnes"}
+            )
+            return _mock_response("   ", "stop")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_fake_call):
+            with pytest.raises(RuntimeError) as exc:
+                c._call_summary_llm("summarize: ...", prompt_started_at=_time.monotonic())
+
+        msg = str(exc.value)
+        assert "provider=agnes" in msg, msg
+        assert "model=agnes-2.5-flash" in msg, msg
+
+    def test_unknown_route_falls_back_to_main_model_name(self):
+        import time as _time
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="glm-main", quiet_mode=True)
+
+        def _fake_call(**kwargs):  # route_info left empty: transport filled nothing
+            return _mock_response("   ", "stop")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_fake_call):
+            with pytest.raises(RuntimeError) as exc:
+                c._call_summary_llm("summarize: ...", prompt_started_at=_time.monotonic())
+
+        assert "model=glm-main" in str(exc.value)

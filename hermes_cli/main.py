@@ -809,6 +809,7 @@ from hermes_cli.main_install_repair import (  # frozen updater surface: update_c
 )
 from hermes_cli.main_desktop import (
     cmd_gui,
+    cmd_gui_install,
 )
 from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _desktop_build_needed,
@@ -3399,7 +3400,7 @@ def _build_cli_parser():
     )
     # "desktop" is canonical (Hermes-Setup.exe tells users to run it, so it
     # must be the name --help shows); "gui" is a deprecated alias.
-    build_gui_parser(subparsers, cmd_gui=cmd_gui)
+    build_gui_parser(subparsers, cmd_gui=cmd_gui, cmd_gui_install=cmd_gui_install)
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
     return parser, subparsers

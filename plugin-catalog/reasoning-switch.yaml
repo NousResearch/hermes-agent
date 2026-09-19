@@ -2,12 +2,15 @@ name: reasoning-switch
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
 sha: 37fe9446bed8660fcf6c007a9f80226d6bd9e105
 subdir: plugins/reasoning-switch
-description: "Rotate the focused session reasoning effort from the status bar. A dialog sets the levels, colors, and per-level prompt limits."
+description: Rotate the focused session reasoning effort from the status bar. A dialog sets the levels,
+  colors, and per-level prompt limits. Disclosure — changes the focused session's reasoning effort through
+  the gateway config.set API (core may fall back to writing the global config.yaml when the session id
+  is stale) and auto-demotes the level after the configured number of prompts.
 maintainer: apoapostolov
 tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/reasoning-switch
-version: "1.1.1"
+version: 1.1.1
 image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/37fe9446bed8660fcf6c007a9f80226d6bd9e105/plugins/reasoning-switch/docs/hero.png
 platforms: []
 capabilities:

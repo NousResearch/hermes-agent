@@ -394,12 +394,13 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
 
     if src.platform == Platform.TELEGRAM:
         # Stable route identity belongs in session context, not display labels.
-        # Preserve existing privacy redaction; per-turn message IDs stay out of
-        # the cached prompt and are supplied by the message-origin path.
-        lines.append(f"**Telegram Chat ID:** {_format_untrusted_prompt_value(_chat_label(src.chat_id))}")
+        # Match Matrix Room ID: hash when redact_pii, do not JSON-wrap (that
+        # wrapper is for untrusted display names). Per-turn message IDs stay
+        # out of the cached prompt.
+        lines.append(f"**Telegram Chat ID:** {_chat_label(src.chat_id)}")
         lines.append(f"**Telegram Chat Type:** {_format_untrusted_prompt_value(src.chat_type)}")
         if src.thread_id:
-            lines.append(f"**Telegram Thread ID:** {_format_untrusted_prompt_value(_chat_label(src.thread_id))}")
+            lines.append(f"**Telegram Thread ID:** {_chat_label(src.thread_id)}")
 
     if src.chat_topic:
         lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")

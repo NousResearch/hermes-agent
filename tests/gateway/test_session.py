@@ -114,7 +114,7 @@ class TestBuildSessionContextPrompt:
 
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
-        assert f"**Telegram Chat ID:** {json.dumps('111')}" in prompt
+        assert "**Telegram Chat ID:** 111" in prompt
         assert f"**Telegram Chat Type:** {json.dumps('dm')}" in prompt
         assert "Telegram Thread ID" not in prompt
 
@@ -134,8 +134,8 @@ class TestBuildSessionContextPrompt:
         def _prompt_for(msg_id, thread_id=None):
             source = SessionSource(
                 platform=Platform.TELEGRAM,
-                chat_id="-5388221570",
-                chat_name="O+ Store Bot",
+                chat_id="-1009998887776",
+                chat_name="Group Chat",
                 chat_type="group",
                 thread_id=thread_id,
                 message_id=msg_id,
@@ -143,14 +143,14 @@ class TestBuildSessionContextPrompt:
             ctx = build_session_context(source, config)
             return build_session_context_prompt(ctx)
 
-        p1 = _prompt_for("1001", thread_id="72364")
-        p2 = _prompt_for("2002", thread_id="72364")
+        p1 = _prompt_for("1001", thread_id="99")
+        p2 = _prompt_for("2002", thread_id="99")
         assert p1 == p2
         assert "1001" not in p1 and "2002" not in p2
-        assert f"**Telegram Chat ID:** {json.dumps('-5388221570')}" in p1
+        assert "**Telegram Chat ID:** -1009998887776" in p1
         assert f"**Telegram Chat Type:** {json.dumps('group')}" in p1
-        assert f"**Telegram Thread ID:** {json.dumps('72364')}" in p1
-        assert "O+ Store Bot" in p1
+        assert "**Telegram Thread ID:** 99" in p1
+        assert "Group Chat" in p1
 
     def test_discord_prompt_omits_telegram_chat_identity(self):
         config = GatewayConfig(

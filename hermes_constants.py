@@ -937,7 +937,7 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     real_home = get_real_home(env)
     current_home = _env_get(env, "HOME")
     repaired = real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
-    if mode == "real":
+    if mode == "real" or not current_home:
         return repaired
 
     if profile_home and is_container():

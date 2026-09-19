@@ -49,6 +49,19 @@ class TestGetSubprocessHome:
         from hermes_constants import get_subprocess_home
         assert get_subprocess_home() is None
 
+    def test_host_auto_repairs_missing_home(self, tmp_path, monkeypatch):
+        self._host_mode(monkeypatch)
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.delenv("HOME", raising=False)
+
+        env = {"HERMES_REAL_HOME": str(real_home), "PATH": "/usr/bin:/bin"}
+
+        hermes_constants.apply_subprocess_home_env(env)
+
+        assert env["HOME"] == str(real_home)
+        assert env["HERMES_REAL_HOME"] == str(real_home)
+
     def test_container_auto_uses_profile_home_when_home_dir_exists(self, tmp_path, monkeypatch):
         self._container_mode(monkeypatch)
         hermes_home = tmp_path / ".hermes"

@@ -1,8 +1,8 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import React, { act, useLayoutEffect, useRef } from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MAX_HISTORY } from '../config/limits.js'
 import { pruneVirtualHeightCache, useVirtualHistory, virtualHistorySnapshotKey } from '../hooks/useVirtualHistory.js'
@@ -115,6 +115,10 @@ function Harness({
 }
 
 describe('useVirtualHistory offset cache reuse', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('prunes stable-session external height caches to active history keys', () => {
     const cache = new Map([
       ['outgoing', 9],
@@ -437,24 +441,32 @@ describe('useVirtualHistory offset cache reuse', () => {
     const streams = makeStreams()
     const initialHeights = new Map(items.map(item => [item.key, item.height]))
 
-    const instance = renderSync(React.createElement(Harness, { columns: 40, expose, initialHeights, items }), {
-      patchConsole: false,
-      stderr: streams.stderr as NodeJS.WriteStream,
-      stdin: streams.stdin as NodeJS.ReadStream,
-      stdout: streams.stdout as NodeJS.WriteStream
-    })
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+
+    const instance = await act(async () =>
+      renderSync(React.createElement(Harness, { columns: 40, expose, initialHeights, items }), {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      })
+    )
 
     try {
-      await delay(20)
       const scroll = expose.current!.scroll!
 
-      scroll.scrollTo(0)
-      await delay(20)
-      scroll.scrollTo(5)
+      // The stale-width control also needs an outgoing row, not an unmounted
+      // tail-only fixture that would pass without exercising the guard.
+      await act(async () => {
+        scroll.scrollTo(0)
+      })
+      expect(expose.current!.virtualHistory.start).toBe(0)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
 
-      instance.rerender(React.createElement(Harness, { columns: 80, expose, initialHeights, items }))
-      await delay(40)
+      await act(async () => {
+        scroll.scrollTo(5)
+        instance.rerender(React.createElement(Harness, { columns: 80, expose, initialHeights, items }))
+      })
 
       expect(adjustScrollTop).not.toHaveBeenCalled()
       expect(scroll.getScrollTop()).toBe(5)
@@ -463,8 +475,10 @@ describe('useVirtualHistory offset cache reuse', () => {
       expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
       expect(expose.current!.virtualHistory.offsets[items.length]).toBe(40)
     } finally {
-      instance.unmount()
-      instance.cleanup()
+      await act(async () => {
+        instance.unmount()
+        instance.cleanup()
+      })
     }
   })
 
@@ -475,19 +489,31 @@ describe('useVirtualHistory offset cache reuse', () => {
     const streams = makeStreams()
     const initialHeights = new Map(outgoing.map(item => [item.key, item.height]))
 
-    const instance = renderSync(React.createElement(Harness, { expose, initialHeights, items: outgoing }), {
-      patchConsole: false,
-      stderr: streams.stderr as NodeJS.WriteStream,
-      stdin: streams.stdin as NodeJS.ReadStream,
-      stdout: streams.stdout as NodeJS.WriteStream
-    })
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+
+    const instance = await act(async () =>
+      renderSync(React.createElement(Harness, { expose, initialHeights, items: outgoing }), {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      })
+    )
 
     try {
-      await delay(20)
       const scroll = expose.current!.scroll!
 
-      scroll.scrollTo(5)
-      await delay(20)
+      // The negative assertion below passes vacuously if no outgoing row ever
+      // mounted. Drain React's work and require a mounted range first, so the
+      // rerender genuinely has outgoing refs it must refuse to compensate.
+      await act(async () => {
+        scroll.scrollTo(0)
+      })
+      expect(expose.current!.virtualHistory.start).toBe(0)
+      expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
+      await act(async () => {
+        scroll.scrollTo(5)
+      })
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
 
       const replacementCache = new Map<string, number>([
@@ -495,22 +521,25 @@ describe('useVirtualHistory offset cache reuse', () => {
         ...incoming.map(item => [item.key, item.height] as const)
       ])
 
-      instance.rerender(
-        React.createElement(Harness, {
-          expose,
-          generation: 1,
-          initialHeights: replacementCache,
-          items: incoming
-        })
-      )
-      await delay(40)
+      await act(async () => {
+        instance.rerender(
+          React.createElement(Harness, {
+            expose,
+            generation: 1,
+            initialHeights: replacementCache,
+            items: incoming
+          })
+        )
+      })
 
       expect(adjustScrollTop).not.toHaveBeenCalled()
       expect(scroll.getScrollTop()).toBe(5)
       expect(expose.current!.virtualHistory.offsets[incoming.length]).toBe(40)
     } finally {
-      instance.unmount()
-      instance.cleanup()
+      await act(async () => {
+        instance.unmount()
+        instance.cleanup()
+      })
     }
   })
 
@@ -520,26 +549,37 @@ describe('useVirtualHistory offset cache reuse', () => {
     const streams = makeStreams()
     const initialHeights = new Map(items.map(item => [item.key, item.height]))
 
-    const instance = renderSync(React.createElement(Harness, { expose, initialHeights, items }), {
-      patchConsole: false,
-      stderr: streams.stderr as NodeJS.WriteStream,
-      stdin: streams.stdin as NodeJS.ReadStream,
-      stdout: streams.stdout as NodeJS.WriteStream
-    })
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+
+    const instance = await act(async () =>
+      renderSync(React.createElement(Harness, { expose, initialHeights, items }), {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      })
+    )
 
     try {
-      await delay(20)
       const scroll = expose.current!.scroll!
 
-      scroll.scrollTo(0)
-      await delay(20)
-      scroll.scrollTo(5)
+      // Scrolling from the tail grows a deferred range. Drain React's work,
+      // not a wall-clock delay: item-0 must mount before it can unmount.
+      await act(async () => {
+        scroll.scrollTo(0)
+      })
+      expect(expose.current!.virtualHistory.start).toBe(0)
+      expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)
 
       staleHeights.set(items[0]!.key, 1)
-      instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
-      await delay(40)
+      await act(async () => {
+        // Keep the scroll and cache replacement in one commit so the outgoing
+        // row, rather than a mounted-row layout effect, owns the correction.
+        scroll.scrollTo(5)
+        instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
+      })
 
       expect(adjustScrollTop).toHaveBeenCalledOnce()
       expect(adjustScrollTop).toHaveBeenCalledWith(1)
@@ -548,8 +588,10 @@ describe('useVirtualHistory offset cache reuse', () => {
       expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
       expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
     } finally {
-      instance.unmount()
-      instance.cleanup()
+      await act(async () => {
+        instance.unmount()
+        instance.cleanup()
+      })
     }
   })
 

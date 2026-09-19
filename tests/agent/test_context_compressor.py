@@ -3810,3 +3810,75 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+class TestCompactionFixedPoint:
+    """Consecutive boundaries that stop shrinking must arm the structural backoff (#109682).
+
+    The existing no-progress arm fires only when the rewrite returns the transcript
+    UNCHANGED. A block re-summarized on every pass is never byte-identical, so a boundary
+    that lands at the same size each time reads as a success: the backoff is lifted, the
+    threshold is still crossed, and the next turn compacts again. The reported session held
+    one block size across four passes with 29 truncation continuations and zero writes.
+    """
+
+    @staticmethod
+    def _complete(compressor, size, **kwargs):
+        compressor.last_compression_rough_tokens = size
+        compressor.record_completed_compaction(**kwargs)
+
+    def test_three_boundaries_at_the_same_size_arm_the_backoff(self, compressor):
+        for size in (51_710, 51_705, 51_712):  # re-summarized each pass, never identical
+            self._complete(compressor, size)
+
+        assert compressor._structural_no_op_backoff_until > time.monotonic()
+
+    def test_two_are_not_enough(self, compressor):
+        # Two equal sizes happen whenever a turn adds little; the loop is three in a row.
+        for size in (51_710, 51_705):
+            self._complete(compressor, size)
+
+        assert compressor._structural_no_op_backoff_until == 0.0
+
+    def test_a_shrinking_boundary_does_not_arm_it(self, compressor):
+        # The healthy shape: each pass leaves the transcript smaller than the last.
+        for size in (80_000, 60_000, 40_000, 20_000):
+            self._complete(compressor, size)
+
+        assert compressor._structural_no_op_backoff_until == 0.0
+
+    def test_a_shrink_after_two_equal_sizes_restarts_the_count(self, compressor):
+        for size in (51_710, 51_705, 30_000, 29_900):
+            self._complete(compressor, size)
+
+        assert compressor._structural_no_op_backoff_until == 0.0
+
+    def test_a_completed_boundary_after_the_arm_lifts_it_again(self, compressor):
+        for size in (51_710, 51_705, 51_712):
+            self._complete(compressor, size)
+        assert compressor._structural_no_op_backoff_until > 0.0
+
+        # Compaction started working again: the lift at the top of
+        # record_completed_compaction must win, and the cleared window must not re-arm
+        # off the sizes that are already spent.
+        self._complete(compressor, 20_000)
+
+        assert compressor._structural_no_op_backoff_until == 0.0
+
+    def test_a_feasibility_skip_does_not_feed_the_detector(self, compressor):
+        # A skip rewrites nothing, so its "size" is whatever the previous pass left behind;
+        # counting it would arm the backoff on a boundary that never ran. Exactly three, so an
+        # arm would still be standing at the assertion: a fourth completion lifts the backoff
+        # at the top of record_completed_compaction and would hide it.
+        for _ in range(3):
+            self._complete(compressor, 51_710, feasibility_skip=True)
+
+        assert compressor._structural_no_op_backoff_until == 0.0
+
+    def test_a_missing_estimate_is_not_evidence(self, compressor):
+        # No usable measurement is not the same as a measurement that did not move. Three, for
+        # the same reason as above: a fourth completion would lift an arm the third one made.
+        for _ in range(3):
+            self._complete(compressor, 0)
+
+        assert compressor._structural_no_op_backoff_until == 0.0

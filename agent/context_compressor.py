@@ -1,6 +1,7 @@
 """Automatic context window compression: a cheap auxiliary model summarizes middle turns while head and
 tail are protected (iterative summaries, token-budget tail, tool-output pruning first, scaled budgets)."""
 
+import collections
 import contextlib
 import contextvars
 import copy
@@ -2005,6 +2006,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._ineffective_compression_count = 0
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        # Sizes of the last few COMPLETED boundaries, for the fixed-point check (#109682).
+        self._recent_compaction_sizes: "collections.deque[int]" = collections.deque(
+            maxlen=self._FIXED_POINT_COMPACTIONS
+        )
         # Observability only; never feeds the strike latch or the fallback streak.
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
@@ -2206,6 +2211,39 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         elif self._fallback_compression_streak:
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
+        self._note_compaction_size()
+
+    def _note_compaction_size(self) -> None:
+        """Arm the structural backoff once consecutive boundaries stop shrinking.
+
+        The existing no-progress arm fires only when the rewrite returns the transcript
+        UNCHANGED. A block that is re-summarized on every pass is never byte-identical, so a
+        boundary that lands at the same size each time reads as a success here: the backoff
+        above is lifted, the threshold is still crossed, and the next turn compacts again.
+        The reported loop held one block size across four consecutive passes while the
+        unchanged-transcript check never fired (#109682).
+
+        Only completed boundaries reach this — a feasibility skip returns before it, since it
+        rewrites nothing and would record a size no pass produced. The window is cleared once
+        armed, so a stuck session backs off once per streak rather than once per turn, and any
+        boundary that does shrink starts the count over.
+        """
+        size = self.last_compression_rough_tokens
+        if not isinstance(size, int) or size <= 0:
+            # No usable estimate: an absent measurement is not evidence of a fixed point.
+            self._recent_compaction_sizes.clear()
+            return
+        self._recent_compaction_sizes.append(size)
+        sizes = list(self._recent_compaction_sizes)
+        if len(sizes) < self._FIXED_POINT_COMPACTIONS:
+            return
+        largest, smallest = max(sizes), min(sizes)
+        if largest - smallest > largest * self._FIXED_POINT_TOLERANCE:
+            return
+        self._recent_compaction_sizes.clear()
+        self._record_structural_no_op(
+            f"{len(sizes)} consecutive compactions landed at ~{largest} tokens (fixed point)"
+        )
 
     def get_active_compression_failure_cooldown(self, *, refresh: bool = False) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
@@ -2384,6 +2422,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     # Structural no-op (nothing eligible) is not an ineffective attempt: defer retries instead of striking.
     _STRUCTURAL_NO_OP_BACKOFF_SECONDS = 300.0
+    #: How many CONSECUTIVE completed boundaries may land at the same size before the
+    #: rewrite is treated as a fixed point. Three is the smallest count that is not a
+    #: coincidence: two equal sizes happen whenever a turn adds little, three in a row
+    #: means each pass is reproducing its own input (#109682).
+    _FIXED_POINT_COMPACTIONS = 3
+    #: Relative tolerance for "the same size". The block is re-summarized every pass, so
+    #: consecutive passes differ by a few tokens without differing in substance — the
+    #: reported loop sat at one block size across four passes.
+    _FIXED_POINT_TOLERANCE = 0.02
 
     @staticmethod
     def _coerce_max_tokens(value: Any) -> int | None:

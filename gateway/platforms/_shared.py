@@ -155,14 +155,19 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     ``_profile_runtime_scope``, so a write there would pin that profile's policy process-wide and the
     default profile's adapters would read it as their own (first-writer-wins poisoning, #80099).
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
-    Lists are comma-joined; ``None`` is skipped.
+    Lists and tuples are comma-joined in input order; sets are sorted before
+    comma-joining so their environment representation is deterministic.
     """
     skip = profile_scoped()
 
     def set_env(name: str, value: Any) -> None:
         if value is None or skip or os.getenv(name):
             return
-        os.environ[name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        if isinstance(value, set):
+            value = sorted(str(v) for v in value)
+        if isinstance(value, (list, tuple)):
+            value = ",".join(str(v) for v in value)
+        os.environ[name] = str(value)
 
     return set_env
 

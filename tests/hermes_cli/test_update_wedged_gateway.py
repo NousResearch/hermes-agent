@@ -1116,3 +1116,230 @@ def test_default_probe_budget_stays_inside_query_tier():
         "tier — retune tick_timeout/tick_strikes/tick_gap_s or update the "
         "subprocess-timeout doc reference in hermes_cli/gateway.py"
     )
+
+
+class TestGatewayStateRecordsTerminalExit:
+    """``_gateway_state_records_terminal_exit`` reads ``gateway_state.json`` and only escalates
+    on full evidence (matching PID + terminal ``gateway_state``). Ambiguity -> False, so a wedged
+    but bookkeeping-incomplete gateway keeps the full drain budget.
+    """
+
+    def test_stopped_state_with_matching_pid_is_terminal(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli, "read_runtime_status",
+            lambda *a, **kw: {"pid": 4242, "gateway_state": "stopped"},
+        )
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is True
+
+    def test_startup_failed_with_matching_pid_is_terminal(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli, "read_runtime_status",
+            lambda *a, **kw: {"pid": 4242, "gateway_state": "startup_failed"},
+        )
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is True
+
+    def test_running_state_is_not_terminal(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli, "read_runtime_status",
+            lambda *a, **kw: {"pid": 4242, "gateway_state": "running"},
+        )
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False
+
+    def test_draining_state_is_not_terminal(self, monkeypatch):
+        """``gateway_state: "draining"`` means the gateway is mid-shutdown, not done."""
+        monkeypatch.setattr(
+            gateway_cli, "read_runtime_status",
+            lambda *a, **kw: {"pid": 4242, "gateway_state": "draining"},
+        )
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False
+
+    def test_pid_mismatch_is_not_terminal(self, monkeypatch):
+        """State file from a prior gateway instance must never trigger escalation on the new PID."""
+        monkeypatch.setattr(
+            gateway_cli, "read_runtime_status",
+            lambda *a, **kw: {"pid": 9999, "gateway_state": "stopped"},
+        )
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False
+
+    def test_missing_state_file_is_not_terminal(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "read_runtime_status", lambda *a, **kw: None)
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False
+
+    def test_unreadable_state_file_is_not_terminal(self, monkeypatch):
+        def raise_oserror(*a, **kw):
+            raise OSError("permission denied")
+        monkeypatch.setattr(gateway_cli, "read_runtime_status", raise_oserror)
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False
+
+    def test_non_dict_state_file_is_not_terminal(self, monkeypatch):
+        """A corrupt or unexpected shape must not escalate."""
+        monkeypatch.setattr(gateway_cli, "read_runtime_status", lambda *a, **kw: ["not", "a", "dict"])
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False
+
+
+class TestForceExitWedgedViaStateEvidence:
+    """``_force_exit_wedged_via_state_evidence`` is bounded (~6s total) SIGTERM→SIGKILL; it must
+    never block on the full drain budget because the gateway already wrote ``"stopped"``.
+    """
+
+    def test_sigterm_succeeds_no_sigkill(self, monkeypatch):
+        signals = []
+        monkeypatch.setattr(
+            gateway_cli, "terminate_pid",
+            lambda pid, force=False, **kw: signals.append(("kill" if force else "term", pid)),
+        )
+        # ``_pid_exists`` returns True once (process alive before term), then False.
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(
+            gateway_cli, "_wait_for_pid_exit",
+            lambda pid, timeout, **_: signals.append(("wait", timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli, "get_process_start_time", lambda pid: 12345,
+        )
+
+        assert gateway_cli._force_exit_wedged_via_state_evidence(4242) is True
+        # SIGTERM sent, no SIGKILL needed.
+        assert ("term", 4242) in signals
+        assert ("kill", 4242) not in signals
+
+    def test_escalates_to_sigkill_when_sigterm_ignored(self, monkeypatch):
+        signals = []
+        waits = []
+
+        def fake_wait(pid, timeout, **_):
+            waits.append(timeout)
+            # First call (SIGTERM grace) times out; second (post-SIGKILL) succeeds.
+            return len(waits) > 1
+
+        monkeypatch.setattr(
+            gateway_cli, "terminate_pid",
+            lambda pid, force=False, **kw: signals.append(("kill" if force else "term", pid)),
+        )
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(gateway_cli, "_wait_for_pid_exit", fake_wait)
+        monkeypatch.setattr(gateway_cli, "get_process_start_time", lambda pid: 12345)
+
+        assert gateway_cli._force_exit_wedged_via_state_evidence(4242) is True
+        assert signals == [("term", 4242), ("kill", 4242)]
+
+    def test_total_wait_budget_is_bounded_well_under_drain(self, monkeypatch):
+        """Worst case is term_grace + kill_wait (3s + 3s = 6s), never the 1800s drain budget."""
+        waits = []
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False, **kw: None)
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(
+            gateway_cli, "_wait_for_pid_exit",
+            lambda pid, timeout, **_: waits.append(timeout) or False,
+        )
+        monkeypatch.setattr(gateway_cli, "get_process_start_time", lambda pid: 12345)
+
+        assert gateway_cli._force_exit_wedged_via_state_evidence(4242) is False
+        assert sum(waits) < 30.0
+
+    def test_process_already_gone_is_success(self, monkeypatch):
+        """PID exits between the state check and our first terminate_pid -> instant success."""
+        monkeypatch.setattr(
+            gateway_cli, "terminate_pid",
+            lambda pid, force=False, **kw: (_ for _ in ()).throw(ProcessLookupError),
+        )
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: False)
+
+        assert gateway_cli._force_exit_wedged_via_state_evidence(4242) is True
+
+    def test_sigkill_permission_error_does_not_raise(self, monkeypatch):
+        """SIGTERM ignored AND SIGKILL raises PermissionError -> returns False, no exception."""
+        calls = []
+
+        def term(pid, force=False, **kw):
+            calls.append(force)
+            if force:
+                raise PermissionError
+
+        monkeypatch.setattr(gateway_cli, "terminate_pid", term)
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: False)
+        monkeypatch.setattr(gateway_cli, "get_process_start_time", lambda pid: 12345)
+
+        assert gateway_cli._force_exit_wedged_via_state_evidence(4242) is False
+        assert calls == [False, True]
+
+
+class TestWaitForPidExitShortCircuit:
+    """``_wait_for_pid_exit`` must short-circuit (~6s bounded force-exit) when the gateway has
+    already written terminal state to ``gateway_state.json`` — instead of burning the full
+    ``timeout`` (default 30+ min) waiting for a wedged ``os._exit``.
+    """
+
+    def test_short_circuits_when_state_is_terminal(self, monkeypatch):
+        """On the very first poll, ``gateway_state_records_terminal_exit`` flips True; we
+        must call the bounded force-exit and return immediately without sleeping through
+        ``timeout``."""
+        sleeps = []
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda s: sleeps.append(s))
+        # PID stays alive forever (would otherwise burn the full budget).
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        # The state-check witness flips True on the first call.
+        check_calls = []
+
+        def fake_check(pid):
+            check_calls.append(pid)
+            return True
+
+        monkeypatch.setattr(gateway_cli, "_gateway_state_records_terminal_exit", fake_check)
+        # Force-exit returns True (success).
+        monkeypatch.setattr(
+            gateway_cli, "_force_exit_wedged_via_state_evidence",
+            lambda pid, **kw: True,
+        )
+
+        # 1800s budget — without the short-circuit this would burn it.
+        assert gateway_cli._wait_for_pid_exit(4242, 1800.0) is True
+        # Check ran exactly once, no time.sleep happened (we returned on first poll).
+        assert check_calls == [4242]
+        assert sleeps == []
+
+    def test_keeps_full_budget_when_state_is_not_terminal(self, monkeypatch):
+        """When the state check is False (gateway hasn't finished its bookkeeping yet), the
+        loop must keep polling for the full ``timeout``."""
+        sleeps = []
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda s: sleeps.append(s))
+
+        pid_live = [True]
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: pid_live[0])
+        # After 3 polls, the PID exits normally.
+        poll_count = [0]
+
+        def maybe_exit(pid):
+            poll_count[0] += 1
+            if poll_count[0] >= 3:
+                pid_live[0] = False
+            return False
+
+        monkeypatch.setattr(gateway_cli, "_gateway_state_records_terminal_exit", maybe_exit)
+
+        assert gateway_cli._wait_for_pid_exit(4242, 5.0) is True
+        # Multiple polls happened, each with its 0.5s sleep.
+        assert poll_count[0] >= 3
+        assert sum(sleeps) >= 1.0
+
+    def test_returns_false_on_timeout_when_never_terminal(self, monkeypatch):
+        """Without terminal state and a persistent PID, the full budget must still elapse."""
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(
+            gateway_cli, "_gateway_state_records_terminal_exit", lambda pid: False,
+        )
+        # Tiny budget so the test finishes in <1s; we don't care about sleep precision here.
+        assert gateway_cli._wait_for_pid_exit(4242, 0.05) is False
+
+    def test_state_check_exceptions_do_not_break_wait(self, monkeypatch):
+        """A flaky ``read_runtime_status`` (transient I/O) must not abort the wait; the loop
+        must treat it as ``not terminal`` and keep polling. Mirrors the
+        ``_probe_gateway_loop_liveness`` "never raises" contract for the loop-tick witness."""
+        # Real function, with read_runtime_status patched to raise.
+        monkeypatch.setattr(
+            gateway_cli, "read_runtime_status",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("transient I/O")),
+        )
+        # Flaky must not raise; it must swallow and return False.
+        assert gateway_cli._gateway_state_records_terminal_exit(4242) is False

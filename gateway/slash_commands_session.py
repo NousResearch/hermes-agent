@@ -19,7 +19,13 @@ from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
+from gateway.session import (
+    SessionSource,
+    build_session_key,
+    effective_session_thread_id,
+    is_shared_multi_user_session,
+    resolve_runner_session_isolation,
+)
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_status import HISTORY_UNREADABLE
 
@@ -271,7 +277,9 @@ class GatewaySessionCommandsMixin:
         if origin.platform != current.platform or origin.chat_id != current.chat_id:
             return False
         # thread_id is part of every session key: threads of one chat are DIFFERENT sessions.
-        if _sattr(current, "thread_id") != _sattr(origin, "thread_id"):
+        if str(effective_session_thread_id(current) or "") != str(
+            effective_session_thread_id(origin) or ""
+        ):
             return False
         if _sattr(current, "chat_type").lower() in _DM_CHAT_TYPES:
             # An equal non-empty chat_id IS the DM key. build_session_key falls back to the
@@ -293,9 +301,12 @@ class GatewaySessionCommandsMixin:
     def _is_shared_session_source(self, source: SessionSource) -> bool:
         """Whether *source*'s session key is shared by every participant (not per-user); mirrors
         build_session_key's isolation rules so the guards stay in lock-step with the key."""
+        group_per_user, thread_per_user = resolve_runner_session_isolation(self, source)
         return is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+            source,
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
+        )
 
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin (cross-origin /resume, /sessions).
@@ -320,8 +331,9 @@ class GatewaySessionCommandsMixin:
         if not caller_uid:
             return False
         row_thread = str(row.get("thread_id") or "")
+        caller_thread = str(effective_session_thread_id(source) or "")
         if not (row_src and caller_src and str(row_src) == str(caller_src)
-                and row_thread == _sattr(source, "thread_id")):
+                and row_thread == caller_thread):
             return False  # blank/legacy source cannot prove the platform; other thread = other session
         row_uid = str(row.get("user_id") or "")
         row_chat = str(row.get("chat_id") or "")

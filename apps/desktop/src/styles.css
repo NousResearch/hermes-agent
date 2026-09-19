@@ -91,6 +91,29 @@
   src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* Noto Sans — bundled UI font (SIL OFL-1.1) under a private family name.
+   Works around an Electron 40.10.2 Chromium font-matching bug on Linux
+   (Fedora Atomic + KDE Plasma + Wayland) where named system fonts /
+   system-ui resolve to a monospace face for regular UI text, even though
+   the host's fontconfig correctly resolves Noto Sans. Bundling under a
+   private family name sidesteps Electron's broken resolution entirely,
+   the same way JetBrains Mono above sidesteps it for terminal/code text.
+   See: NousResearch/hermes-agent#102773, electron/electron#53499 */
+@font-face {
+  font-family: 'Hermes UI Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/NotoSans-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Hermes UI Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/NotoSans-Bold.woff2') format('woff2');
+}
+
 @theme inline {
   --color-background: var(--dt-background);
   --color-foreground: var(--dt-foreground);
@@ -441,8 +464,8 @@
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
     --dt-font-sans:
-      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      'Hermes UI Sans', 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui,
+      sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
     /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read

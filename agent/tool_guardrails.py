@@ -422,7 +422,7 @@ class ToolCallGuardrailController:
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        result_hash = _result_hash(result)
+        result_hash = _result_hash(result, tool_name)
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
@@ -446,7 +446,7 @@ class ToolCallGuardrailController:
         """
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        result_hash = _result_hash(result) if is_plain_str else ""
+        result_hash = _result_hash(result, tool_name) if is_plain_str else ""
 
         if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
@@ -600,26 +600,28 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-# Per-call bookkeeping that changes on every invocation even when the tool did the same
-# thing (execute_code reports a running kernel execution_count and wall-clock duration).
-# Left in the hash, every replay of an identical empty probe looks new and the identical-call
-# streak never forms — a model re-ran one empty execute_code call 147 times unflagged.
-_VOLATILE_RESULT_KEYS = frozenset({"duration_seconds", "execution_count"})
+# execute_code reports per-call kernel bookkeeping — a running `kernel.execution_count` and wall-clock
+# `duration_seconds` — that changes on every invocation even when the code did the same thing. Hashed
+# as-is, every replay of an identical empty probe looks new and the identical-call streak never forms
+# (a model re-ran one empty execute_code call 147 times unflagged). Only these known locations in
+# execute_code's own result shape are dropped: for any other tool the same key names can be real output.
+def _without_execute_code_metadata(parsed: Any) -> Any:
+    if not isinstance(parsed, dict):
+        return parsed
+    cleaned = {k: v for k, v in parsed.items() if k != "duration_seconds"}
+    kernel = cleaned.get("kernel")
+    if isinstance(kernel, dict):
+        cleaned["kernel"] = {k: v for k, v in kernel.items() if k != "execution_count"}
+    return cleaned
 
 
-def _without_volatile_keys(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: _without_volatile_keys(v) for k, v in value.items() if k not in _VOLATILE_RESULT_KEYS}
-    if isinstance(value, list):
-        return [_without_volatile_keys(v) for v in value]
-    return value
-
-
-def _result_hash(result: str | None) -> str:
+def _result_hash(result: str | None, tool_name: str = "") -> str:
     parsed = safe_json_loads(result or "")
     if parsed is None:
         return _sha256(result or "")
-    return _sha256(_canonical_json(_without_volatile_keys(parsed)))
+    if tool_name == "execute_code":
+        parsed = _without_execute_code_metadata(parsed)
+    return _sha256(_canonical_json(parsed))
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

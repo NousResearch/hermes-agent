@@ -450,3 +450,18 @@ def test_identical_streak_still_resets_when_real_output_changes():
                           "kernel": {"execution_count": i}})
         controller.observe_call("execute_code", args, out, failed=False)
     assert controller.halt_decision is None, "different real output must not count as a replay"
+
+
+def test_other_tools_keep_duration_and_execution_count_as_real_output():
+    # Only execute_code's known metadata locations are volatile. For any other tool these keys
+    # can be the actual answer (e.g. a job-status tool reporting how long a job ran), so results
+    # that differ only there are different results and must not form an identical streak.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"job": "build-42"}
+    for i in range(6):
+        out = json.dumps({"status": "done", "duration_seconds": 10 + i,
+                          "stats": {"execution_count": 100 + i}})
+        controller.observe_call("mcp_ci_job_status", args, out, failed=False)
+    assert controller.halt_decision is None, "a real change in duration_seconds/execution_count was treated as a replay"

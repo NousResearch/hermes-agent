@@ -26,6 +26,7 @@ _MCP_HARD_RESULT_CAP_CHARS = 2_000_000
 # Base64 expands ~4/3; oversized payloads are rejected BEFORE decoding (never doubled in memory).
 _MCP_RESOURCE_MAX_BYTES = 50 * 1024 * 1024
 _MCP_RESOURCE_MAX_B64_CHARS = _MCP_RESOURCE_MAX_BYTES * 4 // 3 + 4
+_ASCII_B64_WHITESPACE = b" \t\r\n\v\f"
 
 
 def _truncate_mcp_text_result(text: str, max_chars: int = _MCP_HARD_RESULT_CAP_CHARS) -> str:
@@ -77,7 +78,13 @@ def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = 
     if cap_what and len(data) > _MCP_RESOURCE_MAX_B64_CHARS:
         return None, f"[MCP {cap_what} too large to cache: ~{len(data) * 3 // 4} bytes{cap_suffix}]"
     try:
-        raw_bytes = base64.b64decode(data)
+        if isinstance(data, str):
+            encoded = data.translate({char: None for char in _ASCII_B64_WHITESPACE})
+        elif isinstance(data, (bytes, bytearray)):
+            encoded = bytes(data).translate(None, _ASCII_B64_WHITESPACE)
+        else:
+            encoded = data
+        raw_bytes = base64.b64decode(encoded, validate=True)
     except (TypeError, ValueError) as exc:
         logger.warning("MCP %s decode failed (%s): %s", what, label, exc)
         return None, decode_fail

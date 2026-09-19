@@ -1923,6 +1923,9 @@ class GatewayTurnMixin:
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
         """``except Exception`` body of the agent turn: stop typing, log, persist the inbound user
         turn once and close it, and build the sanitized user-facing error reply."""
+        # Completion hooks still receive delivery success when this sanitized reply is sent, so expose
+        # the independent semantic result on the event rather than overloading ProcessingOutcome.
+        event.agent_turn_failed = True
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
@@ -2185,6 +2188,8 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            # Keep delivery outcome and agent execution outcome separate for platform completion hooks.
+            event.agent_turn_failed = agent_failed_early
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
@@ -3816,6 +3821,10 @@ class GatewayTurnMixin:
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
             raise
+        if pending_event is not None and isinstance(followup_result, dict):
+            # The drained follow-up bypasses base.py's handler path, but its completion hook still
+            # needs the same semantic signal when a sanitized failure reply was produced.
+            pending_event.agent_turn_failed = bool(followup_result.get("failed"))
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)

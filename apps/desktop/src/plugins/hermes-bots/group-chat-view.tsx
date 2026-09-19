@@ -1057,8 +1057,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     return (
       <div
         className={cn(
-          'group flex items-start gap-2',
-          isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1'
+        'group flex items-start gap-1',
+        isUser ? 'rounded-md bg-(--chrome-action-hover) px-1.5 py-px' : 'px-1.5 py-px'
         )}
         key={entryKey}
       >
@@ -1069,7 +1069,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               image={photo ? image : null}
               name={entry.from.name}
               shape={appearance.shape}
-              size={24}
+              size={14}
             />
           </div>
         ) : null}

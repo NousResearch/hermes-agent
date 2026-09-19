@@ -10,7 +10,7 @@ import os
 import tomllib
 from typing import Callable, Dict, Optional
 
-from tools.file_operations_common import LintResult
+from tools.file_operations_common import LintResult, _strip_bom
 
 # Shell linters by extension (external toolchain). ``.tsx`` is deliberately absent:
 # it hits the "No linter" skip and LSP covers it when enabled.
@@ -138,6 +138,11 @@ class LintMixin:
                 if read_result.exit_code != 0:
                     return LintResult(skipped=True, message=f"Failed to read {path} for lint")
                 content = read_result.stdout
+            # A leading UTF-8 BOM is an encoding marker, not syntax: json.loads,
+            # tomllib and ast.parse all reject it, so linting BOM-bearing content
+            # (write_file re-prepends the on-disk BOM; ``cat`` returns it) would
+            # flag every BOM-marked file as broken.
+            content, _ = _strip_bom(content)
             ok, err = inproc(content)
             if err == "__SKIP__":
                 return LintResult(skipped=True, message=f"No linter available for {ext} (missing dependency)")

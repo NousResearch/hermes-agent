@@ -381,6 +381,19 @@ class TestBomHandling:
         target.write_bytes(self.BOM.encode("utf-8") + b"x = 1\n")
         assert ops._file_has_bom(str(target), pre_content="x = 1\n") is True
 
+    def test_write_file_bom_json_lint_is_clean(self, ops, tmp_path: Path):
+        # write_file re-prepends the on-disk BOM and then lints that content.
+        # json.loads rejects a leading BOM, so a valid BOM-marked file used to
+        # come back with lint status "error" ("file is still broken") on every
+        # write, and the LSP tier (gated on a clean lint) was skipped.
+        target = tmp_path / "settings.json"
+        target.write_bytes(self.BOM.encode("utf-8") + b'{"a": 1}\n')
+        res = ops.write_file(str(target), '{"a": 2}\n')
+        assert res.error is None, res.error
+        assert target.read_bytes() == self.BOM.encode("utf-8") + b'{"a": 2}\n'
+        assert res.lint is not None
+        assert res.lint["status"] == "ok", res.lint
+
 
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.

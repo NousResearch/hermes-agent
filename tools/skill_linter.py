@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter, parse_qualified_name
 
 # Shell utilities already wrapped as native tools; naming them in prose steers
 # the model to a raw shell call. banned token -> native tool to name instead.
@@ -50,6 +51,33 @@ _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat
 # shape this catches was 443 one-per-session files.
 _MAX_REFERENCE_FILES = 60
 
+# Collection-level rules (lint_collection). Skills rarely fail alone; they fail at the seams of a
+# collection: a near-duplicate description splits routing between two skills, a description with
+# no concrete trigger gets loaded speculatively for everything, and a related_skills name that no
+# longer resolves sends the agent looking. All three are only visible across the installed set.
+_STOPWORDS = frozenset((
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "with", "by", "from", "at", "as",
+    "is", "are", "be", "this", "that", "it", "its", "into", "via", "your", "you", "when", "any",
+    "all", "each", "per", "up", "out", "over", "about", "than", "then", "if", "so", "not", "no"))
+# Words that describe every skill and therefore route none: a description left with fewer than
+# _MIN_TRIGGER_TOKENS content words after these are removed has no trigger the model can match.
+_GENERIC_WORDS = frozenset((
+    "help", "helps", "helping", "helper", "task", "tasks", "general", "generic", "utility",
+    "utilities", "tool", "tools", "tooling", "various", "assist", "assists", "assistance",
+    "support", "supports", "manage", "manages", "management", "handle", "handles", "handling",
+    "stuff", "thing", "things", "work", "works", "working", "misc", "miscellaneous", "common",
+    "purpose", "skill", "skills", "agent", "hermes", "use", "uses", "using", "used", "user",
+    "users", "provide", "provides", "useful", "functionality", "feature", "features",
+    "operation", "operations", "action", "actions", "related", "etc", "more", "other", "do",
+    "does", "doing", "get", "make", "run", "perform", "performs", "enable", "enables", "allow",
+    "allows", "let", "lets", "can", "will", "way", "ways", "basic", "simple", "easy", "quick"))
+_MIN_TRIGGER_TOKENS = 2
+# alias-overlap thresholds: Jaccard over description content tokens (the skill name is kept —
+# "codex" vs "claude-code" is a real distinction, not an alias); an identical tag set means the
+# two already claim the same lane, so the bar drops.
+_ALIAS_JACCARD = 0.6
+_ALIAS_JACCARD_SAME_TAGS = 0.4
+
 ERROR = "error"
 WARNING = "warning"
 
@@ -61,6 +89,7 @@ class LintFinding:
     severity: str  # ERROR | WARNING
     rule: str
     message: str
+    skill: str = ""  # set by lint_collection: the skill the finding is attributed to
 
 
 def _err(rule: str, message: str) -> LintFinding:
@@ -149,6 +178,17 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         if not (skill_dir / rel).exists():
             yield _warn("dangling-reference", f"body references '{rel}' but that file "
                         f"does not exist in the skill directory.")
+    # A skill that ships its own scripts/ owns every scripts/ path it mentions; a missing one
+    # sends the agent hunting for a helper that was renamed or never committed.
+    if (skill_dir / "scripts").is_dir():
+        for match in re.finditer(r"(?<![\w/])scripts/[\w./-]+", body):
+            rel = match.group(0)
+            if rel in seen or "*" in rel or rel.endswith("/"):
+                continue
+            seen.add(rel)
+            if not (skill_dir / rel).exists():
+                yield _warn("dangling-reference", f"body references '{rel}' but that file "
+                            f"does not exist in the skill's scripts/ directory.")
 
 
 def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintFinding]:
@@ -203,6 +243,95 @@ def lint_skill(skill_md_path: Path) -> List[LintFinding]:
     skill_md_path = Path(skill_md_path)
     content = skill_md_path.read_text(encoding="utf-8", errors="ignore")
     return lint_content(content, skill_dir=skill_md_path.parent)
+
+
+# ---- Collection-level rules -------------------------------------------------------------
+
+def _content_tokens(text: str) -> Set[str]:
+    """Lowercase word tokens minus stopwords and generic filler; what a router can match on."""
+    return {t for t in re.findall(r"[a-z0-9]+", text.lower())
+            if t not in _STOPWORDS and t not in _GENERIC_WORDS}
+
+
+def _tags(frontmatter: Dict[str, Any]) -> Set[str]:
+    meta = frontmatter.get("metadata")
+    hermes = meta.get("hermes") if isinstance(meta, dict) else None
+    tags = hermes.get("tags") if isinstance(hermes, dict) else None
+    return {str(t).strip().lower() for t in tags if str(t).strip()} if isinstance(tags, list) else set()
+
+
+def _related_skills(frontmatter: Dict[str, Any]) -> List[str]:
+    meta = frontmatter.get("metadata")
+    hermes = meta.get("hermes") if isinstance(meta, dict) else None
+    related = hermes.get("related_skills") if isinstance(hermes, dict) else None
+    return [str(r).strip() for r in related if str(r).strip()] if isinstance(related, list) else []
+
+
+def _load_collection(skill_dirs: Iterable[Path]) -> List[Tuple[str, Path, Dict[str, Any]]]:
+    """(name, skill_dir, frontmatter) per readable SKILL.md; unreadable entries are skipped."""
+    entries = []
+    for skill_dir in skill_dirs:
+        skill_dir = Path(skill_dir)
+        try:
+            content = (skill_dir / "SKILL.md").read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        frontmatter, _ = parse_frontmatter(content)
+        name = str(frontmatter.get("name") or skill_dir.name).strip()
+        entries.append((name, skill_dir, frontmatter))
+    return entries
+
+
+def _check_related_skills(entries: Sequence[Tuple[str, Path, Dict[str, Any]]]) -> Iterator[LintFinding]:
+    known = {name for name, _, _ in entries} | {skill_dir.name for _, skill_dir, _ in entries}
+    for name, _, frontmatter in entries:
+        missing = [r for r in _related_skills(frontmatter)
+                   if r not in known and parse_qualified_name(r)[1] not in known]
+        if missing:
+            yield LintFinding(WARNING, "related-skill-missing",
+                              f"metadata.hermes.related_skills names {missing}, which are not in "
+                              f"this collection; drop the entries or fix the names.", skill=name)
+
+
+def _check_bland_triggers(entries: Sequence[Tuple[str, Path, Dict[str, Any]]]) -> Iterator[LintFinding]:
+    for name, _, frontmatter in entries:
+        desc = str(frontmatter.get("description", "")).strip().strip("'\"")
+        if not desc:
+            continue  # the hard validator rejects a missing description
+        tokens = _content_tokens(desc) - _content_tokens(name.replace("-", " ").replace("_", " "))
+        if len(tokens) < _MIN_TRIGGER_TOKENS:
+            yield LintFinding(WARNING, "bland-trigger",
+                              f"description '{desc}' names no concrete trigger (nouns/verbs the "
+                              f"model can match a request against); it gets loaded speculatively "
+                              f"for everything. Say what the skill does and when.", skill=name)
+
+
+def _check_alias_overlap(entries: Sequence[Tuple[str, Path, Dict[str, Any]]]) -> Iterator[LintFinding]:
+    profiles = []
+    for name, _, frontmatter in entries:
+        tokens = _content_tokens(str(frontmatter.get("description", "")))
+        if tokens:
+            profiles.append((name, tokens, _tags(frontmatter)))
+    for (a, tok_a, tags_a), (b, tok_b, tags_b) in combinations(profiles, 2):
+        jaccard = len(tok_a & tok_b) / len(tok_a | tok_b)
+        same_tags = bool(tags_a) and tags_a == tags_b
+        if jaccard >= _ALIAS_JACCARD or (same_tags and jaccard >= _ALIAS_JACCARD_SAME_TAGS):
+            yield LintFinding(WARNING, "alias-overlap",
+                              f"description overlaps with '{b}' ({jaccard:.0%} shared trigger "
+                              f"words{', same tags' if same_tags else ''}); requests will route to "
+                              f"either. Merge them or give each a distinct trigger.", skill=a)
+
+
+def lint_collection(skill_dirs: Iterable[Path]) -> List[LintFinding]:
+    """Cross-skill rules over a whole collection (the active profile, or a repo's skills/ tree).
+
+    Per-file rules cannot see these: a ``related_skills`` name that resolves to nothing, two
+    descriptions that claim the same requests, and a description with no trigger at all. Findings
+    carry ``skill`` for attribution; a pair is reported once, on the first skill.
+    """
+    entries = _load_collection(skill_dirs)
+    return (list(_check_related_skills(entries)) + list(_check_bland_triggers(entries))
+            + list(_check_alias_overlap(entries)))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

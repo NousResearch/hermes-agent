@@ -419,6 +419,40 @@ skills:
 The dashboard's Browse-hub scan button returns the same advisory data in
 its response (`tier1` field) alongside the built-in scanner's verdict.
 
+## Linting skills (`hermes skills lint`)
+
+The advisory linter that `skill_manage` reports on every create is also a command, so you can
+run it over skills written by hand, by an older Hermes, or by a contributor before a PR:
+
+```bash
+hermes skills lint                        # every skill in the active profile (+ collection checks)
+hermes skills lint my-skill ~/other/skill # named installed skills, skill dirs, or SKILL.md paths
+hermes skills lint --dir skills/          # every SKILL.md under a directory (a repo's skill tree)
+hermes skills lint --json                 # per-skill findings, collection findings, summary
+hermes skills lint --dir skills/ --strict # exit 1 on warnings too (CI gate)
+```
+
+Per-skill rules are the [skill authoring standards](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#skill-authoring-standards-hardline):
+name format and name/directory match, the 60-character description budget, marketing words,
+missing `version`/`author`/`license`/`metadata.hermes`, shell utilities named in prose instead of
+the native tool, a missing `## When to Use` section, dangling `references/`, `templates/`,
+`assets/` and (when the skill ships its own) `scripts/` paths, POSIX-only scripts without a
+`platforms:` gate, scaffolding files, and incident-log-shaped bodies.
+
+A collection scope (no targets, `--all`, or `--dir`) adds the checks that only show up across
+the installed set — skills rarely fail alone, they fail at the seams:
+
+- **`related-skill-missing`** — a `metadata.hermes.related_skills` entry that resolves to no
+  skill in the collection. Linting `skills/` alone reports names that live under
+  `optional-skills/`; lint the repo root to see both.
+- **`alias-overlap`** — two descriptions that share most of their trigger words (or share a tag
+  set and half their trigger words): requests will route to either one.
+- **`bland-trigger`** — a description with no concrete trigger beyond the skill's own name
+  ("Helps with tasks.", "General utilities."): it gets loaded speculatively for everything.
+
+Findings never block anything by themselves. The exit status is `1` when any error-severity
+finding exists (any finding with `--strict`), `2` on a usage error, otherwise `0`.
+
 ## External Skill Directories
 
 If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
@@ -732,6 +766,8 @@ hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
+hermes skills lint                                # Lint every installed SKILL.md against the authoring conventions
+hermes skills lint --dir skills/ --strict         # CI: lint a repo's skill tree, fail on any finding
 hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
 hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits

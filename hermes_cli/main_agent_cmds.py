@@ -178,7 +178,7 @@ def cmd_skills(args):
         _cmd_skills_trust(args)
     else:
         from hermes_cli.skills_hub import skills_command
-        skills_command(args)
+        return skills_command(args)  # int exit status for CI-gating actions (lint)
 
 
 def _cmd_skills_trust(args):

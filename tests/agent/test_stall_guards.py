@@ -107,7 +107,11 @@ def test_allowlist_membership_contract():
 
 
 def test_resets_per_turn():
-    c = ToolCallGuardrailController()
+    # Per-turn streak only: the session-spanning guard (#111635) deliberately KEEPS counting
+    # across turns, so it is switched off here to observe the streak state in isolation.
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(session_spanning_enabled=False))
     assert _observe_n(c, 2)[-1] is None
     c.reset_for_turn()
     # Streak restarted: two more identical calls still under threshold.

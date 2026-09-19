@@ -514,10 +514,14 @@ DEFAULT_CONFIG = {
         # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
         # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
         "non_interactive_hard_stop_enabled": True,
-        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
+        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2, "session_spanning": 3},
         "hard_stop_after": {
-            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
+            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5, "session_spanning": 6
         },
+        # Session-spanning guard (#111635): counts identical (tool, args, result) calls ACROSS turns,
+        # which per-turn counters structurally cannot see (a cron heartbeat making one identical call
+        # per turn). Only warns unless hard stops are on, like the rest of the detector.
+        "session_spanning_enabled": True,
         # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
         # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
         # pathological, hence low defaults. 0 = unlimited.

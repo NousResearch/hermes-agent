@@ -1936,10 +1936,13 @@ tool_loop_guardrails:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
     idempotent_no_progress: 2  # same result, no progress, N times
+    session_spanning: 3        # identical call repeated N turns apart (see below)
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    session_spanning: 6
+  session_spanning_enabled: true  # cross-turn identical-call guard (default: true)
   loop_caps:
     max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
@@ -1960,6 +1963,13 @@ Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings
 A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
 
 This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
+
+### Session-spanning identical-call guard
+
+Every threshold above counts **within one turn**, which a recurring worker defeats by construction: a cron or heartbeat job that makes *one* identical call per turn (the reported case: an unattended cron session issuing the same `write_file` 15 times, each in its own turn 86–343s apart) never accumulates a streak, so no per-turn counter ever fires. The session-spanning guard closes that window. It counts identical `(tool, canonical args, result)` calls **across turns for the life of one session** and can only advance the count when a repeat lands in a *later* turn — a same-turn repeat stays the per-turn guards' business, exactly as before.
+
+- Normalization: the key is the tool name plus a hash of the model-supplied arguments as canonical JSON (key order and whitespace are normalized away). Wall-clock time, turn index, `tool_call_id`, duration and other transport metadata are not part of the key; argument *values* are compared verbatim, and the result must be byte-identical too. A changed argument — or changed output, e.g. re-reading a file an edit just touched — is new information and restarts that signature's count.
+- Behavior: warns from `warn_after.session_spanning` (default 3) by appending a notice to the tool result, and blocks the repeat *after* `hard_stop_after.session_spanning` (default 6) identical calls — but, like the rest of the detector, only when hard stops are active, so unattended gateway/cron sessions are stopped and interactive ones stay warning-only. Repeatable pollers (`process`, `*_get_result`, `*_poll`) are exempt, and `session_spanning_enabled: false` disables the guard entirely.
 
 ### Runtime anti-stall guards
 

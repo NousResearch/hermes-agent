@@ -412,3 +412,177 @@ def test_a_real_tool_error_is_still_a_failure():
     assert _detect_tool_failure("read_file", real)[0] is True
     # The marker is only honoured as the literal boolean, never as truthy prose.
     assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True
+
+
+# ── Session-spanning identical-call guard (#111635) ─────────────────────────
+# A recurring worker (cron heartbeat) makes ONE identical call PER TURN, so the
+# per-turn counters above never accumulate and never fire. `reset_for_turn()`
+# between calls is exactly what the runtime does at every turn boundary, so
+# these tests only exercise the state that must survive it.
+
+def _call_across_turns(c, tool_name, args, results, *, turns=12):
+    """One call per turn (per-turn state reset between turns, as turn_context does);
+
+    ``results`` cycles per turn so a changing result can be simulated. Returns
+    ``(notices, block_decision)`` where the block decision ends the loop.
+    """
+    notices = []
+    for i in range(turns):
+        result = results[i % len(results)]
+        c.reset_for_turn()
+        decision = c.before_call(tool_name, args)
+        if decision.action == "block":
+            return notices, decision
+        c.after_call(tool_name, args, result)
+        observation = c.observe_call(tool_name, args, result)
+        if observation.notice:
+            notices.append(observation.notice)
+    return notices, None
+
+
+def test_session_spanning_thresholds_default_conservatively_and_parse_from_config():
+    default = ToolCallGuardrailConfig()
+    assert default.session_spanning_enabled is True
+    assert default.session_spanning_warn_after == 3
+    assert default.session_spanning_block_after == 6
+
+    parsed = ToolCallGuardrailConfig.from_mapping(
+        {
+            "session_spanning_enabled": False,
+            "warn_after": {"session_spanning": 4},
+            "hard_stop_after": {"session_spanning": 9},
+        }
+    )
+    assert parsed.session_spanning_enabled is False
+    assert parsed.session_spanning_warn_after == 4
+    assert parsed.session_spanning_block_after == 9
+
+
+def test_session_spanning_guard_warns_then_blocks_one_identical_call_per_turn():
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"path": "heartbeat.txt", "content": "tick"}
+    result = json.dumps({"success": True, "path": "heartbeat.txt", "bytes": 4})
+
+    notices, blocked = _call_across_turns(c, "write_file", args, [result])
+
+    assert len(notices) == 4  # calls 3..6 warn; call 7 is refused
+    # Every notice is the session-spanning one: one call per turn never forms a per-turn streak,
+    # so no per-turn guard fired on this loop — the session counter is the only thing that saw it.
+    assert all("SESSION" in notice and "write_file" in notice for notice in notices)
+    assert blocked is not None
+    assert blocked.code == "session_spanning_block"
+    assert blocked.tool_name == "write_file"
+    assert blocked.count == 6
+    assert blocked.should_halt is True
+    assert c.halt_decision is blocked  # the turn stops on the session-spanning block, nothing earlier
+
+
+def test_session_spanning_thresholds_are_configurable():
+    c = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            session_spanning_warn_after=2,
+            session_spanning_block_after=3,
+        )
+    )
+
+    notices, blocked = _call_across_turns(c, "web_search", {"query": "same"}, ['{"hits": []}'])
+
+    assert len(notices) == 2  # calls 2 and 3 warn; call 4 is refused
+    assert blocked is not None
+    assert blocked.code == "session_spanning_block"
+    assert blocked.count == 3
+
+
+def test_session_spanning_guard_can_be_disabled():
+    c = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, session_spanning_enabled=False)
+    )
+
+    notices, blocked = _call_across_turns(
+        c, "write_file", {"path": "heartbeat.txt", "content": "tick"}, ["ok"]
+    )
+
+    assert notices == []
+    assert blocked is None
+
+
+def test_session_spanning_guard_ignores_repeats_with_different_arguments():
+    # A worker writing DIFFERENT content each cycle is making progress, not looping.
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+
+    for tick in range(12):
+        args = {"path": "status.txt", "content": f"tick {tick}"}
+        c.reset_for_turn()
+        assert c.before_call("write_file", args).action == "allow"
+        c.after_call("write_file", args, "ok")
+        assert c.observe_call("write_file", args, "ok").notice is None
+
+
+def test_session_spanning_guard_stays_quiet_below_the_threshold():
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+
+    notices, blocked = _call_across_turns(c, "skill_view", {"name": "hermes-agent"}, ['{"ok": true}'], turns=2)
+
+    assert notices == []
+    assert blocked is None
+    assert c.halt_decision is None
+
+
+def test_session_spanning_guard_resets_when_the_result_changes():
+    # read -> edit -> read: the re-read returns NEW content, which is information,
+    # not repetition. Only an identical result counts as a repeat.
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+
+    notices, blocked = _call_across_turns(
+        c, "read_file", {"path": "notes.md"}, [f"version {i}" for i in range(12)]
+    )
+
+    assert notices == []
+    assert blocked is None
+
+
+def test_session_spanning_guard_exempts_repeatable_pollers():
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+
+    for _ in range(12):
+        c.reset_for_turn()
+        c.observe_call("process_manage", {"action": "poll", "session_id": "p1"}, "running")
+
+    assert c.before_call("process_manage", {"action": "poll", "session_id": "p1"}).action == "allow"
+
+
+def test_session_spanning_guard_counts_turns_not_calls_within_a_turn():
+    # A within-turn repeat is the per-turn streak's job. Repeats inside ONE turn count as that
+    # one turn, so a pathological turn can't burn the session budget for a legitimate next turn.
+    c = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, session_spanning_warn_after=2)
+    )
+    args = {"command": "ls"}
+
+    for _ in range(3):
+        c.observe_call("terminal", args, "same\n")
+
+    c.reset_for_turn()
+    notice = c.observe_call("terminal", args, "same\n").notice
+
+    assert notice is not None and "this is the 2nd identical call" in notice
+
+
+def test_within_turn_repeats_keep_the_per_turn_streak_semantics():
+    # Per-turn behaviour must not change: the consecutive-streak notice/halt still
+    # owns within-turn repeats, and its wording wins over the session-spanning one.
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"command": "hermes config get memory.provider"}
+
+    def once():
+        c.after_call("terminal", args, "local\n", failed=False)
+        return c.observe_call("terminal", args, "local\n", failed=False).notice
+
+    assert once() is None and once() is None  # 1st/2nd identical call: silent
+    assert (once() or "").startswith("[hermes note: this is the 3rd consecutive identical call")
+    assert (once() or "").startswith("[hermes note: this is the 4th consecutive identical call")
+    assert c.halt_decision is None  # per-turn halt still comes at no_progress_block_after == 5
+    assert (once() or "").startswith("[hermes note: this is the 5th consecutive identical call")
+    halt = c.halt_decision
+    assert halt is not None and halt.code == "identical_call_streak_halt" and halt.count == 5

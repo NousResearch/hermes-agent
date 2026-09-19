@@ -65,20 +65,33 @@ PROGRESS_RESET_TOOL_NAMES = frozenset({
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
 })
 
-_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
+_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled", "session_spanning_enabled")
 # Threshold field -> (nested section, nested key). The flat legacy key is the field name itself.
 _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
     "same_tool_failure_warn_after": ("warn_after", "same_tool_failure"),
     "no_progress_warn_after": ("warn_after", "idempotent_no_progress"),
+    "session_spanning_warn_after": ("warn_after", "session_spanning"),
     "exact_failure_block_after": ("hard_stop_after", "exact_failure"),
     "same_tool_failure_halt_after": ("hard_stop_after", "same_tool_failure"),
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
+    "session_spanning_block_after": ("hard_stop_after", "session_spanning"),
 }
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+
+# Session-spanning companion to the per-turn streak (#111635): a recurring worker (cron/heartbeat)
+# makes ONE identical call per turn, so no per-turn counter ever accumulates — each turn looks
+# innocent. Defaults are deliberately lazier than the plugin that reported this (warn 2 / block 4):
+# the warn is verdict text on a repeat that produced nothing new, and the block only ever arms when
+# hard stops are on (unattended platforms by default, see ToolCallGuardrailConfig).
+_DEFAULT_SESSION_SPANNING_WARN_AFTER = 3
+_DEFAULT_SESSION_SPANNING_BLOCK_AFTER = 6
+# Ceiling on tracked signatures per session, least-recently-seen evicted first. A live loop re-touches
+# its signature every turn, so it stays; only long sessions full of one-shot calls churn.
+_SESSION_SPANNING_MAX_ENTRIES = 2048
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -127,6 +140,10 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # Session-spanning identical-call guard (counts survive turn boundaries, unlike everything above).
+    session_spanning_enabled: bool = True
+    session_spanning_warn_after: int = _DEFAULT_SESSION_SPANNING_WARN_AFTER
+    session_spanning_block_after: int = _DEFAULT_SESSION_SPANNING_BLOCK_AFTER
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
@@ -279,6 +296,12 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "session_spanning_block": (
+        "Blocked {tool_name}: this exact call has now run {count} times across this session, one per turn. "
+        "Per-turn counters reset at every turn boundary, so a recurring worker can repeat one call forever "
+        "without looking like a loop. Repeating it cannot make progress: change the arguments, use the result "
+        "already provided, or report why it must run again."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -295,6 +318,14 @@ _IDENTICAL_CYCLE_NOTICE = (
     "proceed with what you have.]"
 )
 
+# Session-spanning companion notice: same information as _IDENTICAL_CALL_NOTICE, but the repeat spans
+# TURNS, so the model is told why a per-turn counter never mentioned it.
+_SESSION_SPANNING_NOTICE = (
+    "[hermes note: this is the {ordinal} identical call to {tool_name} with identical arguments AND an "
+    "identical result in this SESSION — once per turn, so no single turn ever saw the pattern. "
+    "Do not repeat it — change arguments, use a different tool, or proceed with what you have.]"
+)
+
 # tool -> (LoopCapConfig field, controller counter attribute, decision code)
 _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
@@ -303,13 +334,21 @@ _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
 
 
 class ToolCallGuardrailController:
-    """Per-turn controller for repeated failed/non-progressing tool calls."""
+    """Per-turn controller for repeated failed/non-progressing tool calls.
+
+    One counter family is session-scoped instead of per-turn: the session-spanning identical-call guard
+    (see ``reset_for_session``), which sees the one-identical-call-per-turn loops a per-turn window
+    structurally cannot. Everything else resets in ``reset_for_turn``.
+    """
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        self._turn_index = 0
         self.reset_for_turn()
+        self.reset_for_session()
 
     def reset_for_turn(self) -> None:
+        self._turn_index += 1
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         # signature -> a mutating call succeeded since its last failure
@@ -336,6 +375,13 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def reset_for_session(self) -> None:
+        """Clear the session-spanning counters. Deliberately NOT part of ``reset_for_turn``: the whole
+        point of the guard is that its counts survive turn boundaries (a cron/heartbeat worker makes one
+        identical call per turn). Called only on controller construction, i.e. once per session."""
+        # signature -> (result_hash, cross-turn count, turn index it was last seen in)
+        self._session_spanning: dict[ToolCallSignature, tuple[str, int, int]] = {}
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
@@ -361,6 +407,16 @@ class ToolCallGuardrailController:
         cap_block = self._check_loop_cap(tool_name, args, signature)
         if cap_block is not None or not self.config.hard_stop_enabled:
             return cap_block or allow
+        # Session-spanning companion (#111635): everything above resets at the turn boundary, so a
+        # recurring worker making ONE identical call per turn accumulates nothing there. This counter
+        # is session-scoped, so the block fires on the call AFTER the count reached the threshold.
+        session_record = self._session_spanning.get(signature)
+        if (
+            self.config.session_spanning_enabled
+            and session_record is not None
+            and session_record[1] >= self.config.session_spanning_block_after
+        ):
+            return self._decide("block", "session_spanning_block", tool_name, session_record[1], signature)
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -447,6 +503,7 @@ class ToolCallGuardrailController:
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         result_hash = _result_hash(result) if is_plain_str else ""
+        session_notice = self._observe_session_spanning(tool_name, signature, result_hash) if is_plain_str else None
 
         if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
@@ -484,7 +541,48 @@ class ToolCallGuardrailController:
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
             stub = self._build_result_reference_stub(tool_name, args)
-        return IdenticalCallObservation(notice=notice, stub=stub)
+        # Per-turn notices win: a repeat that is BOTH within-turn and session-spanning is already
+        # described by the streak notice, and duplicate guidance in one result is noise.
+        return IdenticalCallObservation(notice=notice or session_notice, stub=stub)
+
+    def _observe_session_spanning(
+        self, tool_name: str, signature: ToolCallSignature, result_hash: str,
+    ) -> str | None:
+        """Count identical calls for this signature ACROSS turns; return the notice once past the warn
+        threshold.
+
+        Key and normalization: ``signature`` is the same ``(tool_name, sha256(canonical JSON of the
+        model-supplied args))`` the per-turn streak uses — key order, whitespace and non-mapping args are
+        normalized away. Wall-clock time, turn index, ``tool_call_id``, duration and every other piece of
+        transport metadata are NOT part of the key, so the same call made 300 seconds and 8 turns later
+        lands on the same entry; argument VALUES are compared verbatim, so a call whose args differ at all
+        (including a timestamp the model put inside the args) is a different call, not a repeat. A repeat
+        must also return an IDENTICAL result: changed output (re-reading a file an edit just changed) is
+        information, not a replay, and restarts the count — read -> edit -> read stays legal.
+
+        Only repeats that land in a LATER turn advance the count: a same-turn repeat is what the per-turn
+        streak and cycle guards above exist for, and this guard exists precisely to catch what they
+        structurally cannot. It therefore never blocks on its own (``before_call`` owns the block), never
+        touches per-turn state, and inherits the poller exemption. Multimodal results never reach here
+        (they cannot form a streak).
+        """
+        if not self.config.session_spanning_enabled or is_stall_guard_repeatable(tool_name):
+            return None
+        previous = self._session_spanning.get(signature)
+        if previous is None or previous[0] != result_hash:
+            count = 1  # first sighting, or new output: new information, not a replay
+        elif previous[2] == self._turn_index:
+            count = previous[1]  # same turn — the per-turn guards own this shape
+        else:
+            count = previous[1] + 1
+        # Re-insert so the least-recently-seen entry is evictable (dicts keep insertion order).
+        self._session_spanning.pop(signature, None)
+        self._session_spanning[signature] = (result_hash, count, self._turn_index)
+        if len(self._session_spanning) > _SESSION_SPANNING_MAX_ENTRIES:
+            self._session_spanning.pop(next(iter(self._session_spanning)))
+        if count >= self.config.session_spanning_warn_after and self.config.warnings_enabled:
+            return _SESSION_SPANNING_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name)
+        return None
 
     def _detect_identical_cycle(self) -> tuple[int, int] | None:
         """Detect a repeating identical-call cycle ending at the latest observed call.

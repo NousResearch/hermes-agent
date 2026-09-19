@@ -407,6 +407,46 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
 
 
+def test_session_spanning_block_stops_a_worker_repeating_one_call_per_turn():
+    """#111635: a cron/heartbeat worker makes ONE identical call per turn. Every
+    per-turn counter resets at the turn boundary, so the per-turn guards stay
+    silent; the session-spanning counter is what stops the loop."""
+    agent = _make_agent(
+        "write_file",
+        config=_hard_stop_config(session_spanning_warn_after=2, session_spanning_block_after=2),
+    )
+    args = {"path": "heartbeat.txt", "content": "tick"}
+    result = json.dumps({"success": True, "path": "heartbeat.txt", "bytes": 4})
+    responses = []
+    for turn in range(1, 4):
+        responses.append(
+            _mock_response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call("write_file", json.dumps(args), f"c{turn}")],
+            )
+        )
+        responses.append(_mock_response(content="ticked", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("model_tools.handle_function_call", return_value=result) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        first = agent.run_conversation("tick")
+        second = agent.run_conversation("tick")
+        third = agent.run_conversation("tick")
+
+    # Turn 1 is silent; turn 2 warns (identical call, previous turn); turn 3 is refused.
+    assert "session" not in json.dumps(first["messages"])
+    assert "identical call" in json.dumps(second["messages"])
+    assert dispatch.call_count == 2
+    assert third["turn_exit_reason"] == "guardrail_halt"
+    assert "session_spanning_block" in json.dumps(third["messages"])
+
+
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     """Regression for #30770: when the guardrail halts the loop, the
     synthesized halt message must be pushed through ``stream_delta_callback``

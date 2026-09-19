@@ -560,6 +560,31 @@ from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configur
 from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
 
 
+def _gateway_setup_marker_path() -> Path:
+    """Return the installer-scoped gateway setup marker path."""
+    return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")) / ".gateway_setup_done"
+
+
+def _write_gateway_setup_marker() -> None:
+    """Record a successful gateway setup when the installer requested it."""
+    if os.environ.get("HERMES_INSTALLER_GATEWAY_MARKER") != "1":
+        return
+    try:
+        _gateway_setup_marker_path().write_text("", encoding="utf-8")
+    except OSError:
+        logger.warning("Failed to write gateway setup marker.", exc_info=True)
+
+
+def _run_gateway_setup_and_record_installer_result(config: dict) -> None:
+    """Mark only a gateway service started by this setup invocation."""
+    from hermes_cli.gateway import _is_service_running
+
+    was_running = _is_service_running()
+    setup_gateway(config)
+    if not was_running and _is_service_running():
+        _write_gateway_setup_marker()
+
+
 # ── Main Wizard Orchestrator ──
 
 SETUP_SECTIONS = [
@@ -618,7 +643,7 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, migration_r
 
     def _gateway_step() -> None:
         if not _skip("gateway", "Messaging Platforms"):
-            setup_gateway(config)
+            _run_gateway_setup_and_record_installer_result(config)
             return
         # A skipped (migrated) gateway section still needs its service so imported platforms
         # and cron jobs become active.

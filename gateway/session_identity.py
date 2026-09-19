@@ -87,12 +87,16 @@ def identity_of(source: Any) -> Optional[RoutingIdentity]:
 
 
 def clear_identity(source: Any) -> None:
-    """Drop the pinned identity so the next :func:`canonical_identity` re-resolves — for sources a
-    caller reuses across events whose routing may differ (a guild's cached voice source is shared by
-    every speaker, and ``profile_routes[].user_id`` routes per speaker)."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected"):
+    """Drop the pinned identity AND the routed runtime profile so the next :func:`canonical_identity`
+    re-routes from scratch — for sources a caller reuses across events whose routing may differ (a
+    guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
+    per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
+    short-circuits the route and the new speaker runs as the old one."""
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
         with suppress(AttributeError):
             delattr(source, attr)
+    with suppress(AttributeError):
+        source.profile = None
 
 
 def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":

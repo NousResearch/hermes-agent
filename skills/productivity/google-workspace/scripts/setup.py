@@ -55,6 +55,15 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
+READONLY_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+]
+
 # Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
 # and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
 # Pinning all protects against version drift and ensures the security floors
@@ -307,7 +316,7 @@ def store_client_secret(path: str):
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
-def _save_pending_auth(*, state: str, code_verifier: str):
+def _save_pending_auth(*, state: str, code_verifier: str, scopes: list[str]):
     """Persist the OAuth session bits needed for a later token exchange."""
     PENDING_AUTH_PATH.write_text(
         json.dumps(
@@ -315,6 +324,7 @@ def _save_pending_auth(*, state: str, code_verifier: str):
                 "state": state,
                 "code_verifier": code_verifier,
                 "redirect_uri": REDIRECT_URI,
+                "scopes": scopes,
             },
             indent=2,
         ), encoding="utf-8"
@@ -359,7 +369,7 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
     return params["code"][0], state
 
 
-def get_auth_url():
+def get_auth_url(*, readonly: bool = False):
     """Print the OAuth authorization URL. User visits this in a browser."""
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
@@ -368,9 +378,10 @@ def get_auth_url():
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
 
+    requested_scopes = list(READONLY_SCOPES if readonly else SCOPES)
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
+        scopes=requested_scopes,
         redirect_uri=REDIRECT_URI,
         autogenerate_code_verifier=True,
     )
@@ -378,7 +389,7 @@ def get_auth_url():
         access_type="offline",
         prompt="consent",
     )
-    _save_pending_auth(state=state, code_verifier=flow.code_verifier)
+    _save_pending_auth(state=state, code_verifier=flow.code_verifier, scopes=requested_scopes)
     # Print just the URL so the agent can extract it cleanly
     print(auth_url)
 
@@ -401,7 +412,8 @@ def exchange_auth_code(code: str):
     from urllib.parse import parse_qs, urlparse
 
     # Extract granted scopes from the callback URL if the user pasted the full redirect URL.
-    granted_scopes = list(SCOPES)
+    requested_scopes = pending_auth.get("scopes") or list(SCOPES)
+    granted_scopes = list(requested_scopes)
     if isinstance(raw_callback, str) and raw_callback.startswith("http"):
         params = parse_qs(urlparse(raw_callback).query)
         scope_val = (params.get("scope") or [""])[0].strip()
@@ -434,7 +446,7 @@ def exchange_auth_code(code: str):
     actually_granted = list(creds.granted_scopes or []) if hasattr(creds, "granted_scopes") and creds.granted_scopes else []
     if actually_granted:
         token_payload["scopes"] = actually_granted
-    elif granted_scopes != SCOPES:
+    elif granted_scopes != requested_scopes:
         # granted_scopes was extracted from the callback URL
         token_payload["scopes"] = granted_scopes
 
@@ -489,6 +501,7 @@ def main():
     group.add_argument("--check-live", action="store_true", help="Check auth with a real API call (detects disabled_client)")
     group.add_argument("--client-secret", metavar="PATH", help="Store OAuth client_secret.json")
     group.add_argument("--auth-url", action="store_true", help="Print OAuth URL for user to visit")
+    group.add_argument("--readonly-auth-url", action="store_true", help="Print OAuth URL requesting read-only Workspace scopes")
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
@@ -502,6 +515,8 @@ def main():
         store_client_secret(args.client_secret)
     elif args.auth_url:
         get_auth_url()
+    elif args.readonly_auth_url:
+        get_auth_url(readonly=True)
     elif args.auth_code:
         exchange_auth_code(args.auth_code)
     elif args.revoke:

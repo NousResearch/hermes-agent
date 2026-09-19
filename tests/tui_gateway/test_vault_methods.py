@@ -138,7 +138,69 @@ def test_undetected_manager_stays_off(home, monkeypatch):
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
     rows = _sources_rows(home)
     assert rows["bitwarden"]["installed"] is False
+
+
+def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
+    """A hand-edited ``vault: true`` in config.yaml must not crash the Desktop
+    Credential Vault source toggle: the malformed section is coerced to a dict
+    before the opt-out is written (same YAML-shape hazard class _voice_cfg_dict
+    documents for voice.*, #19835)."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    (home / "config.yaml").write_text("vault: true\n")
+    _result(
+        srv._methods["vault.source.set"](82, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
     assert rows["bitwarden"]["enabled"] is False
+
+
+def test_source_set_tolerates_scalar_named_section(home, monkeypatch):
+    """``vault: {bitwarden: true}`` must not crash either: the named section is
+    coerced before ``enabled`` is written."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    (home / "config.yaml").write_text("vault:\n  bitwarden: true\n")
+    _result(
+        srv._methods["vault.source.set"](83, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["enabled"] is False
+
+
+def test_source_set_enable_tolerates_scalar_vault_section(home, monkeypatch):
+    """The enable arm (``section.pop``) must also survive a scalar ``vault:``
+    section: coercion happens before either write shape."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    (home / "config.yaml").write_text("vault: true\n")
+    _result(
+        srv._methods["vault.source.set"](84, {"name": "bitwarden", "enabled": True})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["enabled"] is True
+
+
+def test_vault_list_reports_corrupt_store_cleanly(home):
+    """A decryptable-but-malformed vault file degrades to the 5095 envelope
+    carrying the VaultError text, never a traceback."""
+    from agent.vault_store import VaultStore
+
+    store = VaultStore(home / "vault")
+    store.add_item(
+        "login",
+        "site",
+        {"identifier_type": "email", "identifier": "u", "password": "p"},
+        origin="https://x.example",
+    )
+    store._vault_path.write_bytes(store._fernet().encrypt(b"{not json"))
+
+    err = _error(srv._methods["vault.list"](95, {}))
+    assert err["code"] == 5095
+    assert "corrupted" in err["message"]
 
 
 def test_remove_is_idempotent(home):

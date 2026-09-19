@@ -212,6 +212,67 @@ def _check_version_consistency(issues: list[str]) -> None:
                     "Re-sync version files (e.g. run 'hermes update', or set hermes_cli/__init__.py __version__ to match pyproject.toml)", issues)
 
 
+def _relevant_bytecode_cache_count(root: Path) -> int:
+    """Count checkout bytecode caches, ignoring dependency and Git trees."""
+    from hermes_cli import main as main_mod
+
+    count = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [
+            name for name in dirnames
+            if name not in main_mod._BYTECODE_CACHE_IGNORED_DIRS
+        ]
+        if Path(dirpath).name == "__pycache__":
+            count += 1
+            dirnames.clear()
+    return count
+
+
+def _check_bytecode_cache(should_fix: bool, f: Finding) -> None:
+    """Warn when checkout bytecode may predate its Git revision; unavailable Git data is harmless."""
+    # The main facade is the call-time seam for checkout state and bytecode
+    # helpers; do not bind mutable attributes with ``from ... import ...``.
+    from hermes_cli import main as main_mod
+
+    try:
+        root = main_mod.PROJECT_ROOT
+        fingerprint = main_mod._read_git_revision_fingerprint(root)
+        # A missing Git object/ref is not evidence that bytecode is stale.  In
+        # particular, the helper's unresolved-ref sentinel cannot safely be
+        # compared to a persisted commit fingerprint.
+        if not fingerprint or fingerprint.endswith(":unresolved"):
+            return
+        try:
+            recorded = (root / ".bytecode-fingerprint").read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if not recorded or recorded.endswith(":unresolved"):
+            return
+        if recorded == fingerprint:
+            return check_ok("Python bytecode cache is current")
+
+        if not _relevant_bytecode_cache_count(root):
+            return
+
+        if not should_fix:
+            return _fail_and_issue(
+                "Python bytecode cache may be stale", "(checkout revision changed)",
+                "Clear stale Python bytecode: run `hermes doctor --fix`", f.issues,
+            )
+        removed = main_mod._clear_bytecode_cache(root)
+        remaining = _relevant_bytecode_cache_count(root)
+        if remaining:
+            return _fail_and_issue(
+                "Python bytecode cache could not be fully cleared", f"({remaining} cache directories remain)",
+                "Clear stale Python bytecode after fixing permissions: run `hermes doctor --fix`", f.issues,
+            )
+        main_mod._record_bytecode_fingerprint()
+        f.fixed += 1
+        check_ok("Python bytecode cache cleared and fingerprint recorded", f"({removed} cache director{'y' if removed == 1 else 'ies'} removed)")
+    except Exception:
+        return
+
+
 def _check_s6_supervision(issues: list[str]) -> None:
     """Under our s6 /init, report static services and per-profile gateway slots that are ``up``; no-op elsewhere.
     Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
@@ -458,6 +519,7 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
     # loses every permission grant on each rebuild; a post-#73681 identifier-pinned DR survives, but grants
     # made to older binaries stay stale (toggle shows ON while macOS re-prompts).
     check_macos_tcc_grants()
+    _check_bytecode_cache(should_fix, f)
 
 
 @doctor_check()

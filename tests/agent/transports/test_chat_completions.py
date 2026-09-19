@@ -689,6 +689,59 @@ class TestChatCompletionsCacheStats:
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 1500, "creation_tokens": 0}
 
+    def test_anthropic_bridge_cache_creation_tokens(self, transport):
+        """Anthropic-backed OpenAI-compatible bridges (claude-code-bridge,
+        Yunwu) spell the write field `cache_creation_tokens`, not OpenAI's
+        `cache_write_tokens`. Payload is a verbatim capture from a live
+        bridge on a cache-MISS. Without the fallback these writes are
+        silently booked as uncached input."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=3148,
+                completion_tokens=8,
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=0, cache_creation_tokens=3144
+                ),
+            )
+        )
+        assert transport.extract_cache_stats(r) == {
+            "cached_tokens": 0,
+            "creation_tokens": 3144,
+        }
+
+    def test_bridge_cache_read_hit_still_reports(self, transport):
+        """Cache-HIT side of the same bridge (verbatim capture): reads were
+        never broken, so the fallback must not disturb them."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=664,
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=662, cache_creation_tokens=0
+                ),
+            )
+        )
+        assert transport.extract_cache_stats(r) == {
+            "cached_tokens": 662,
+            "creation_tokens": 0,
+        }
+
+    def test_openai_cache_write_tokens_takes_precedence(self, transport):
+        """OpenAI's own `cache_write_tokens` must still win when present --
+        the bridge spelling is a FALLBACK, not a replacement."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=100,
+                    cache_write_tokens=900,
+                    cache_creation_tokens=7,
+                )
+            )
+        )
+        assert transport.extract_cache_stats(r) == {
+            "cached_tokens": 100,
+            "creation_tokens": 900,
+        }
+
 
 
 class TestChatCompletionsGeminiNativeExtraBodyStrip:

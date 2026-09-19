@@ -508,7 +508,7 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         return api_mode, (re.sub(r"/v1/?$", "", base_url) if api_mode == "anthropic_messages" else base_url)
     # Honour model.base_url only when the pool entry carries no explicit base_url (i.e. it fell
     # back to the registry default). Env var overrides win.
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = auth_mod.get_provider_config(provider)
     if pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/"):
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=True), base_url
@@ -674,7 +674,7 @@ def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_c
     resolver = _EXPLICIT_RESOLVERS.get(provider)
     if resolver is not None:
         return resolver(requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = auth_mod.get_provider_config(provider)
     if not (pconfig and pconfig.auth_type == "api_key"):
         return None
     return _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
@@ -721,7 +721,7 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
 
 
 def _minimax_oauth_runtime(provider, requested_provider) -> Optional[Dict[str, Any]]:
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = auth_mod.get_provider_config(provider)
     if not (pconfig and pconfig.auth_type == "oauth_minimax"):
         return None
     creds = auth_mod.resolve_minimax_oauth_runtime_credentials()
@@ -973,7 +973,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
         yield _anthropic_env_runtime(requested_provider, model_cfg, target_model)
     if provider == "bedrock":
         yield _resolve_bedrock_runtime(requested_provider, model_cfg, target_model)
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = auth_mod.get_provider_config(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
     fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)

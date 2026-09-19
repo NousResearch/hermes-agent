@@ -275,11 +275,42 @@ def _register_plugin_provider(pp: Any) -> None:
         PROVIDER_REGISTRY.setdefault(alias, pconfig)
 
 
+def _provider_profile_config(provider_id: str) -> Optional[ProviderConfig]:
+    """Current profile's plugin-declared provider config, without global mutation."""
+    try:
+        from providers import get_provider_profile
+
+        pp = get_provider_profile(provider_id)
+    except Exception:
+        return None
+    if pp is None or pp.name in _REGISTRY_PLUGIN_SKIP:
+        return None
+    if pp.auth_type == "external_process":
+        return ProviderConfig(
+            pp.name, pp.display_name or pp.name, "external_process",
+            inference_base_url=pp.base_url)
+    if pp.auth_type != "api_key" or not pp.env_vars:
+        return None
+    is_url = lambda value: value.endswith("_BASE_URL") or value.endswith("_URL")  # noqa: E731
+    return _api_key_provider(
+        pp.name, pp.display_name or pp.name, pp.base_url,
+        tuple(value for value in pp.env_vars if not is_url(value)) or pp.env_vars,
+        next((value for value in pp.env_vars if is_url(value)), None) or "")
+
+
+def get_provider_config(provider_id: str) -> Optional[ProviderConfig]:
+    """Profile-aware provider config; static Core rows remain authoritative."""
+    normalized = (provider_id or "").strip().lower()
+    return PROVIDER_REGISTRY.get(normalized) or _provider_profile_config(normalized)
+
+
 try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
-        if _pp.name not in PROVIDER_REGISTRY:
-            _register_plugin_provider(_pp)
+    from agent.secret_scope import is_multiplex_active as _provider_multiplex_active
+    if not _provider_multiplex_active():
+        from providers import list_providers as _list_providers_for_registry
+        for _pp in _list_providers_for_registry():
+            if _pp.name not in PROVIDER_REGISTRY:
+                _register_plugin_provider(_pp)
 except Exception:
     pass
 
@@ -738,13 +769,14 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
+    return get_provider_config(normalized) is not None or normalized in SERVICE_PROVIDER_NAMES
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
     normalized = (provider_id or "").strip().lower()
-    if normalized in PROVIDER_REGISTRY:
-        return PROVIDER_REGISTRY[normalized].name
+    pconfig = get_provider_config(normalized)
+    if pconfig is not None:
+        return pconfig.name
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
@@ -1279,7 +1311,7 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         provider = _plugin_aliases().get(provider, provider)
         if provider == "custom" or provider.startswith("custom:"):
             return model_cfg, "custom"
-        if provider in PROVIDER_REGISTRY:
+        if get_provider_config(provider) is not None:
             return model_cfg, provider
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
         # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
@@ -1305,7 +1337,16 @@ def _env_key_auto_detected(
     scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
     """First registry api_key provider (registry order) with a usable env key, warning when it
     preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
-    for pid, pconfig in PROVIDER_REGISTRY.items():
+    configs = dict(PROVIDER_REGISTRY)
+    try:
+        from providers import list_providers
+        for profile in list_providers():
+            configs.setdefault(profile.name, get_provider_config(profile.name))
+    except Exception:
+        pass
+    for pid, pconfig in configs.items():
+        if pconfig is None:
+            continue
         if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
             continue
         for env_var in pconfig.api_key_env_vars:
@@ -1348,7 +1389,7 @@ def resolve_provider(
     normalized = (requested or "auto").strip().lower()
     normalized = _plugin_aliases().get(normalized, normalized)
 
-    if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
+    if normalized in ("openrouter", "custom") or get_provider_config(normalized) is not None:
         return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)
@@ -1754,7 +1795,7 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
@@ -1842,7 +1883,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 
     ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
     subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
     command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
@@ -1974,7 +2015,7 @@ _API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
@@ -2005,7 +2046,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = get_provider_config(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
             f"Provider '{provider_id}' is not an external-process provider.",

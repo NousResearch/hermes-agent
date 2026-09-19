@@ -72,12 +72,34 @@ class CLILoopsMixin:
         from hermes_cli.banner import build_welcome_banner
         if self._confirm_destructive_slash(
             "clear",
-            "This clears the screen and starts a new session.\n"
-            "The current conversation history will be discarded.",
+            "This clears the active conversation context in this session.\n"
+            "The current conversation history will be archived.",
             cmd_original=cmd_original,
         ) is None:
             return True  # confirmation cancelled — command handled, keep REPL alive
-        self.new_session(silent=True)
+        if not self._session_db or not self.session_id:
+            _cprint("  Cannot clear: session storage is unavailable.")
+            return True
+        try:
+            epoch = self._session_db.clear_conversation(self.session_id)
+        except Exception as exc:
+            _cprint(f"  Failed to clear the active conversation: {exc}")
+            return True
+        self._cli_conversation_epoch = epoch
+        try:
+            from tools.async_delegation import interrupt_for_session
+            interrupt_for_session(session_key=self.session_id, reason="session_clear", parent_session_id=self.session_id)
+        except Exception:
+            pass
+        self._discard_stale_process_notifications(epoch)
+        self.conversation_history = []
+        if self.agent:
+            self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = 0
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+        self._notify_session_boundary("on_session_reset")
         _clear_output_history()
         if not self._app:
             self.console.clear()

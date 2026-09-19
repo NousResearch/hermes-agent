@@ -2,8 +2,64 @@
 
 
 class CLIProcessNotificationsMixin:
+    def _event_conversation_epoch(self, event: dict):
+        """Return the event's origin epoch when known, without guessing for legacy events."""
+        value = event.get("conversation_epoch")
+        return value if isinstance(value, int) else None
+
+    def _current_conversation_epoch(self):
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is not None and session_id:
+            try:
+                row = db.get_session(session_id)
+                value = row.get("conversation_epoch") if row else None
+                if isinstance(value, int):
+                    self._cli_conversation_epoch = value
+                    return value
+            except Exception:
+                pass
+        value = getattr(self, "_cli_conversation_epoch", None)
+        return value if isinstance(value, int) else None
+
+    def _event_is_current_conversation(self, event: dict) -> bool:
+        event_epoch = self._event_conversation_epoch(event)
+        current_epoch = self._current_conversation_epoch()
+        if event_epoch is not None and current_epoch is not None:
+            return event_epoch == current_epoch
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return True
+        try:
+            row = db.get_session(session_id)
+            cleared_at = row.get("conversation_cleared_at") if row else None
+            event_at = event.get("dispatched_at", event.get("started_at"))
+            return not (cleared_at is not None and event_at is not None and float(event_at) < float(cleared_at))
+        except (TypeError, ValueError):
+            return False
+        except Exception:
+            return True
+
+    def _discard_stale_process_notifications(self, epoch: int) -> None:
+        """Remove already-queued timeline notifications that predate a same-ID clear."""
+        queue_ = getattr(self, "_pending_input", None)
+        if queue_ is None or not hasattr(queue_, "mutex"):
+            return
+        from tools.process_registry_notifications import TimelineNotification
+        with queue_.mutex:
+            kept = []
+            for item in queue_.queue:
+                if isinstance(item, TimelineNotification):
+                    continue
+                kept.append(item)
+            queue_.queue.clear()
+            queue_.queue.extend(kept)
+
     def _owns_process_notification(self, event: dict) -> bool:
         """Whether this session owns a delegation event (pre-compression keys resolve to their continuation; fail closed)."""
+        if not self._event_is_current_conversation(event):
+            return False
         event_key = str(event.get("session_key") or "")
         current_key = str(getattr(self, "session_id", "") or "")
         if not event_key or not current_key:
@@ -29,6 +85,13 @@ class CLIProcessNotificationsMixin:
         for event, text in process_registry.drain_notifications(
             session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
         ):
+            if not self._event_is_current_conversation(event):
+                # Consume the old-context event: retaining it would re-offer the same stale
+                # completion after every prompt in the new conversation.
+                stale_claim = claim_event_delivery(event, consumer)
+                if stale_claim is not None:
+                    complete_event_delivery(event, stale_claim)
+                continue
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue

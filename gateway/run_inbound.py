@@ -855,6 +855,12 @@ class GatewayInboundMixin:
             self._handle_reset_command,
         )
 
+    async def _hm_cmd_clear(self, event, source, _quick_key):
+        return await self._hm_confirm_destructive(
+            event, "clear", "This archives the active conversation context while keeping this session.",
+            self._handle_clear_command,
+        )
+
     async def _hm_cmd_start(self, event, source, _quick_key):
         logger.info("Ignoring /start platform ping for session %s", _quick_key)
         return True, ""
@@ -985,7 +991,7 @@ class GatewayInboundMixin:
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "clear", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
     })
 
     async def _hm_dispatch_canonical_command(

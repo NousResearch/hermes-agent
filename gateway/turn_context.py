@@ -60,6 +60,7 @@ class TurnContext:
     # "internal_notification" for async-delegation/background notifications (#82888).
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
+    expected_conversation_epoch: Optional[int] = None
     user_config: Any = None
     mute_notification_reply: bool = False
     enabled_toolsets: Any = None

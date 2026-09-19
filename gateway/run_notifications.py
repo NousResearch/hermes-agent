@@ -1183,6 +1183,9 @@ class GatewayNotificationsMixin:
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
             metadata = {}
+            expected_epoch = evt.get("_expected_conversation_epoch")
+            if isinstance(expected_epoch, int):
+                metadata["expected_conversation_epoch"] = expected_epoch
             session_key = str(evt.get("session_key") or "").strip()
             from agent.notification_presentation import diagnostic_process_event
             if diagnostic_process_event(evt):
@@ -1264,7 +1267,7 @@ class GatewayNotificationsMixin:
                 self._completion_deliveries_inflight.add(identity)
             return seen
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
+    async def _classify_completion_target(self, parent_session_id: str, *, dispatched_at=None, evt: Optional[dict] = None) -> str:
         """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
         session live or compression-rotated with a live continuation; the resolver still retargets),
         ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
@@ -1280,6 +1283,16 @@ class GatewayNotificationsMixin:
             return "retry"
         if parent is None:
             return "terminal"
+        epoch = parent.get("conversation_epoch")
+        if isinstance(epoch, int) and evt is not None:
+            evt["_expected_conversation_epoch"] = epoch
+        cleared_at = parent.get("conversation_cleared_at")
+        if cleared_at is not None and dispatched_at is not None:
+            try:
+                if float(dispatched_at) < float(cleared_at):
+                    return "terminal"
+            except (TypeError, ValueError):
+                return "retry"
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
@@ -1316,7 +1329,9 @@ class GatewayNotificationsMixin:
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
-            verdict = await self._classify_completion_target(parent_session_id)
+            verdict = await self._classify_completion_target(
+                parent_session_id, dispatched_at=evt.get("dispatched_at"), evt=evt,
+            )
             if verdict != "deliver":
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
@@ -1379,7 +1394,9 @@ class GatewayNotificationsMixin:
         # can still fail closed inside the message pipeline AFTER the adapter accepted, which would falsely
         # acknowledge the durable row as delivered. Verify the target here, before acceptance, and give
         # drops an honest durable disposition.
-        verdict = await self._classify_completion_target(parent_session_id)
+        verdict = await self._classify_completion_target(
+            parent_session_id, dispatched_at=evt.get("dispatched_at"), evt=evt,
+        )
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(
@@ -1817,6 +1834,7 @@ class GatewayNotificationsMixin:
             **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
             "message_id": str(watcher.get("message_id") or "").strip() or None,
             "started_at": getattr(session, "started_at", None),
+            "dispatched_at": getattr(session, "started_at", None),
             "command": _redact_gateway_user_facing_secrets(_command),
             "exit_code": session.exit_code,
             "completion_reason": getattr(session, "completion_reason", "exited"),

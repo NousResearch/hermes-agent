@@ -133,6 +133,17 @@ def _completion_evt(parent_session_id=None, session_id="proc_x"):
 # The stamp is threaded from the watcher into the completion event
 # ---------------------------------------------------------------------------
 
+def test_process_completion_event_uses_started_at_as_clear_fence_timestamp():
+    """Detached process results must carry a timestamp for same-session clear fencing."""
+    session = SimpleNamespace(
+        command="echo done", output_buffer="done", started_at=123.0,
+        exit_code=0, completion_reason="exited", termination_source="",
+        parent_session_id="parent",
+    )
+    event = GatewayRunner._build_process_completion_event({}, session, "proc-1")
+    assert event["dispatched_at"] == 123.0
+
+
 def test_watcher_stamps_parent_session_id_on_completion_event(
     monkeypatch, isolated_registry,
 ):

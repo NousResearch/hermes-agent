@@ -64,6 +64,11 @@ def _adapter(**desc_kw) -> tuple[RelayAdapter, StubConnector]:
     return adapter, stub
 
 
+def test_relay_manifest_includes_same_session_clear():
+    commands = {row["name"] for row in build_relay_command_manifest()}
+    assert "clear" in commands
+
+
 # ── thread_create (handoff) ──────────────────────────────────────────────
 
 

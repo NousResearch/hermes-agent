@@ -150,6 +150,15 @@ class SessionTurnLeaseLostError(RuntimeError):
     be persisting a newer turn, and landing this one would interleave a stale reply."""
 
 
+class SessionConversationEpochStaleError(RuntimeError):
+    """A transcript write belongs to a conversation generation cleared by ``/clear``.
+
+    The expected epoch is captured when a turn begins and checked inside the same
+    SQLite transaction as its insert, so an interrupted worker cannot repopulate
+    a freshly cleared same-session conversation.
+    """
+
+
 class StateDbReplacedError(RuntimeError):
     """The state.db path no longer names the file this SessionDB opened
     (out-of-band cp/mv/restore). In-place FTS repair and fail-open trigger

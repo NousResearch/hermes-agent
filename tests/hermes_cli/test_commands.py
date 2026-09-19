@@ -58,7 +58,7 @@ class TestCommandRegistry:
 
         clear = resolve_command("clear")
         assert clear is not None
-        assert clear.desktop == "terminal"
+        assert clear.desktop is None
 
         model = resolve_command("model")
         assert model is not None

@@ -228,6 +228,7 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
         turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+        expected_conversation_epoch=getattr(agent, "_active_conversation_epoch", None),
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
@@ -287,6 +288,25 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
 
 class SessionPersistenceMixin:
     """Session DB flush and trajectory persistence (see module docstring)."""
+
+    def _capture_conversation_epoch_for_turn(self) -> None:
+        """Bind persistence writes to the durable epoch visible when this turn starts.
+
+        ``/clear`` advances this epoch atomically. A late flush from an interrupted
+        turn then fails closed in ``append_messages_batch`` instead of reviving the
+        old transcript after the new context has started.
+        """
+        self._active_conversation_epoch = None
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if not session_db or not session_id or getattr(self, "_persist_disabled", False):
+            return
+        try:
+            session = session_db.get_session(session_id)
+            if session is not None:
+                self._active_conversation_epoch = int(session.get("conversation_epoch", 0))
+        except Exception:
+            logger.debug("Unable to capture conversation epoch for %s", session_id, exc_info=True)
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message in place: some paths send an API-only variant that must not

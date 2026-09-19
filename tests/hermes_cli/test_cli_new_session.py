@@ -227,7 +227,7 @@ def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
 
 
 
-def test_clear_command_starts_new_session_before_redrawing(tmp_path):
+def test_clear_command_keeps_session_and_redraws(tmp_path):
     cli = _prepare_cli_with_active_session(tmp_path)
     cli.console = MagicMock()
     cli.show_banner = MagicMock()
@@ -235,9 +235,9 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
     old_session_id = cli.session_id
     cli.process_command("/clear")
 
-    assert cli.session_id != old_session_id
-    assert cli._session_db.get_session(old_session_id)["end_reason"] == "new_session"
-    assert cli._session_db.get_session(cli.session_id) is not None
+    assert cli.session_id == old_session_id
+    assert cli._session_db.get_session(old_session_id)["end_reason"] is None
+    assert cli._session_db.get_session(old_session_id)["conversation_epoch"] == 1
     cli.console.clear.assert_called_once()
     cli.show_banner.assert_called_once()
     assert cli.conversation_history == []

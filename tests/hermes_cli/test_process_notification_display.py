@@ -81,3 +81,25 @@ def test_process_completion_titles_reflect_outcome_and_batch():
     long_cmd = "x" * 200
     title = process_completion_display_text([_event("p", 0, command=long_cmd)])
     assert title.endswith("...") and len(title) < 120
+
+
+def test_cli_clear_rejects_pre_clear_completion_event(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    cli._session_db = SessionDB(tmp_path / "state.db")
+    cli._session_db.create_session(cli.session_id, source="cli")
+    try:
+        cli._session_db.clear_conversation(cli.session_id)
+        event = {**_event("proc-old", 0), "started_at": 0.0}
+        registry = _registry([event])
+        monkeypatch.setattr("tools.process_registry.process_registry", registry)
+        monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+        monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+
+        cli._drain_process_notifications("cli-idle")
+        assert cli._pending_input.empty()
+    finally:
+        cli._session_db.close()

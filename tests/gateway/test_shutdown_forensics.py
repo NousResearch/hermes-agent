@@ -196,6 +196,52 @@ class TestParseSystemdDuration:
 
 
 # ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us
+# ---------------------------------------------------------------------------
+
+class TestSystemdTimeoutStopUs:
+    """``systemctl show`` exits 0 for a unit the manager does not have and answers with that
+    manager's own ``DefaultTimeoutStopUSec``, so a value is only the unit's once ``LoadState``
+    says that manager loaded it."""
+
+    @staticmethod
+    def _fake_systemctl(units):
+        """Stand-in for ``systemctl show`` that answers only the properties asked for, so a
+        query that stops requesting ``LoadState`` stops being able to tell the managers apart."""
+        def run(cmd, **kwargs):
+            scope = "user" if "--user" in cmd else "system"
+            # systemctl takes properties as one comma list or as repeated flags, so accumulate:
+            # the contract under test is "LoadState was asked for", not how it was spelled.
+            requested = []
+            for arg in cmd:
+                if arg.startswith("--property="):
+                    requested.extend(arg.split("=", 1)[1].split(","))
+            props = units.get(scope, {"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"})
+            out = "".join(f"{k}={props[k]}\n" for k in requested if k in props)
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        return run
+
+    def test_a_manager_without_the_unit_does_not_answer_for_it(self, monkeypatch):
+        """The system unit's real 210s must win over the user manager's 90s default."""
+        monkeypatch.setattr(sf.subprocess, "run", self._fake_systemctl({
+            "user": {"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+            "system": {"LoadState": "loaded", "TimeoutStopUSec": "3min 30s"},
+        }))
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+
+    def test_no_manager_has_the_unit_is_undeterminable_not_a_default(self, monkeypatch):
+        """Undeterminable must stay None; a default read as the unit's own setting is what
+        made a correct unit look stale."""
+        monkeypatch.setattr(sf.subprocess, "run", self._fake_systemctl({
+            "user": {"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+            "system": {"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+        }))
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+
+# ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
 

@@ -621,6 +621,21 @@ def _configured_stale_base(agent) -> float:
     return cfg if cfg is not None else env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
 
 
+def _local_stream_stale_timeout_default() -> float:
+    """Local-provider stale ceiling: ``agent.local_stream_stale_timeout`` (900s) or
+    HERMES_LOCAL_STREAM_STALE_TIMEOUT. Shared by the stream stale detector and the
+    Responses first-event watchdog so both give a local server the same prefill grace."""
+    local_default = 900.0
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()  # read-only consumer — no deepcopy
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        value = agent_cfg.get("local_stream_stale_timeout") if isinstance(agent_cfg, dict) else None
+        if isinstance(value, (int, float)):
+            local_default = float(value)
+    return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+
+
 def _scale_stale_timeout_for_context(base: float, est_tokens: int) -> float:
     """Large contexts: slow models think for minutes before the first token;
     scale the threshold or the detector kills healthy streams."""
@@ -1184,6 +1199,16 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "(context=~%s tokens) per HERMES_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
+    elif not ttfb_explicit and (base_url := getattr(agent, "base_url", None)) and is_local_endpoint(base_url):
+        # A local server prefills for minutes before its first event; the chat-completions
+        # siblings already grant local endpoints the local stale ceiling, so the Responses
+        # transport gets the same grace instead of the 120s hosted cutoff (#92302).
+        local_ceiling = _local_stream_stale_timeout_default()
+        if local_ceiling > ttfb_timeout:
+            logger.info("Local provider detected (%s) — no-event TTFB watchdog raised from %.0fs to %.0fs "
+                "(agent.local_stream_stale_timeout); set HERMES_CODEX_TTFB_TIMEOUT_SECONDS for an explicit cutoff.",
+                base_url, ttfb_timeout, local_ceiling)
+            ttfb_timeout = local_ceiling
     if ttfb_enabled and not ttfb_explicit:
         # High-effort thinking precedes the first event; the floor outranks the cap.
         ttfb_timeout = max(ttfb_timeout, effort_floor)
@@ -3483,15 +3508,7 @@ class _StreamingCall(StreamingWaitMonitor):
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
         base = _configured_stale_base(self.agent)
         if base == 180.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
-            _local_default = 900.0
-            with contextlib.suppress(Exception):
-                from hermes_cli.config import load_config_readonly
-                _cfg = load_config_readonly()  # read-only consumer — no deepcopy
-                _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
-                _v = _agent_cfg.get("local_stream_stale_timeout") if isinstance(_agent_cfg, dict) else None
-                if isinstance(_v, (int, float)):
-                    _local_default = float(_v)
-            self._stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", _local_default)
+            self._stream_stale_timeout = _local_stream_stale_timeout_default()
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return

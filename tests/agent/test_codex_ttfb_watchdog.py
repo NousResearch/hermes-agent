@@ -102,6 +102,32 @@ def _install_codex_event_stream(agent, monkeypatch, event_factory, closes):
     )
 
 
+def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypatch):
+    """#92302: a local Responses endpoint gets the local stale ceiling as its implicit
+    no-event TTFB cutoff (the chat-completions siblings already grant local servers that
+    prefill grace); hosted endpoints keep the 120s default."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
+    hosted = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="https://api.example.com/v1")
+    kwargs = {"model": "qwen3-27b", "input": "hi"}
+
+    assert h._resolve_nonstream_watchdogs(local, kwargs).ttfb_timeout == 600.0
+    assert h._resolve_nonstream_watchdogs(hosted, kwargs).ttfb_timeout == 120.0
+
+
+def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
+    """An operator-set HERMES_CODEX_TTFB_TIMEOUT_SECONDS is honoured verbatim on local endpoints."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45")
+
+    assert h._resolve_nonstream_watchdogs(local, {"model": "qwen3-27b", "input": "hi"}).ttfb_timeout == 45.0
+
+
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
     """The no-first-event watchdog should surface the same actionable hint as the
     stale-call timeout path when the model matches the silent-hang heuristic."""

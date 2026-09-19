@@ -1619,6 +1619,154 @@ class TestBangPrefixCommands:
 
 
 # ---------------------------------------------------------------------------
+# TestBangSkillAndBundleCommands
+# ---------------------------------------------------------------------------
+
+
+class TestBangSkillAndBundleCommands:
+    """``!skill-name`` and ``!bundle-name`` also rewrite to ``/`` form.
+
+    The built-in ``!cmd`` rewrite (TestBangPrefixCommands) resolves only
+    gateway registry commands, so a bang-prefixed SKILL command or bundle
+    (e.g. ``!arxiv`` when the arxiv skill is installed) fell through as
+    plain text — leaving Slack thread users with no way to invoke skills
+    without the leading-space workaround. Mirrors Matrix's resolver
+    (``_resolve_matrix_bang_command``), which already checks the skill and
+    bundle registries after the built-in registry.
+    """
+
+    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+        evt = {
+            "text": text,
+            "user": "U_USER",
+            "channel": channel,
+            "channel_type": channel_type,
+            "ts": "1234567890.000001",
+        }
+        if thread_ts:
+            evt["thread_ts"] = thread_ts
+        return evt
+
+    @pytest.mark.asyncio
+    async def test_bang_skill_command_rewrites_to_slash(self, adapter):
+        """``!arxiv`` resolves via get_skill_commands() → ``/arxiv``."""
+        import agent.skill_commands as skill_commands_mod
+
+        fake_skills = {"/arxiv": {}, "/obsidian": {}}
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value=fake_skills
+        ):
+            await adapter._handle_slack_message(self._make_event("!arxiv"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/arxiv")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_skill_command_with_args_preserved(self, adapter):
+        """``!obsidian search foo`` keeps its arguments after the rewrite."""
+        import agent.skill_commands as skill_commands_mod
+
+        fake_skills = {"/arxiv": {}, "/obsidian": {}}
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value=fake_skills
+        ):
+            await adapter._handle_slack_message(
+                self._make_event("!obsidian search foo")
+            )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/obsidian search foo")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_skill_command_underscore_normalizes(self, adapter):
+        """``!reload_skills`` style tokens hyphenate like Matrix (``/reload-skills``
+        is a built-in there, but skills registered with hyphens resolve the
+        same way — underscore↔hyphen equivalence comes from
+        resolve_skill_command_key)."""
+        import agent.skill_commands as skill_commands_mod
+
+        fake_skills = {"/my-skill": {}}
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value=fake_skills
+        ):
+            await adapter._handle_slack_message(self._make_event("!my_skill"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/my_skill")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_skill_works_inside_thread(self, adapter):
+        """The whole point: a skill invocation inside a thread reply."""
+        import agent.skill_commands as skill_commands_mod
+
+        fake_skills = {"/arxiv": {}}
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value=fake_skills
+        ):
+            await adapter._handle_slack_message(
+                self._make_event("!arxiv", thread_ts="1111111111.000001")
+            )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/arxiv")
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
+    async def test_bang_bundle_command_rewrites_to_slash(self, adapter):
+        """``!mybundle`` resolves via resolve_bundle_command_key → ``/mybundle``."""
+        import agent.skill_bundles as skill_bundles_mod
+
+        with patch.object(
+            skill_bundles_mod, "resolve_bundle_command_key", return_value="/mybundle"
+        ):
+            await adapter._handle_slack_message(self._make_event("!mybundle"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/mybundle")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_unknown_skill_stays_plain_text(self, adapter):
+        """``!definitelynotaskill`` is neither built-in nor skill nor bundle —
+        it must stay plain text (never rewritten)."""
+        import agent.skill_commands as skill_commands_mod
+        import agent.skill_bundles as skill_bundles_mod
+
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value={"/arxiv": {}}
+        ), patch.object(
+            skill_bundles_mod, "resolve_bundle_command_key", return_value=None
+        ):
+            await adapter._handle_slack_message(
+                self._make_event("!definitelynotaskill")
+            )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!definitelynotaskill"
+        assert msg_event.message_type != MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_casual_exclamation_with_skills_installed_stays_text(self, adapter):
+        """Regression guard: with skills resolvable, casual ``!nice work`` must
+        still pass through — the skill branch must not loosen the known-token
+        gate."""
+        import agent.skill_commands as skill_commands_mod
+
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value={"/arxiv": {}}
+        ):
+            await adapter._handle_slack_message(self._make_event("!nice work"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!nice work"
+        assert msg_event.message_type != MessageType.COMMAND
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
 

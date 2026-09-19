@@ -38,6 +38,7 @@ from .embedded import (
     _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
     _may_rewrite_profile_env,
 )
+from .reliability import RetainReliability
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
@@ -315,7 +316,7 @@ _SYSTEM_PROMPT_TAILS = {
 }
 
 
-class HindsightMemoryProvider(MemoryProvider):
+class HindsightMemoryProvider(RetainReliability, MemoryProvider):
     """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
 
     # Each server-side op status poll is a round trip — coarser than the 0.05s queue poll.
@@ -361,6 +362,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._pending_retain_ops: set[str] = set()
         self._pending_retain_ops_lock = threading.Lock()
         self._retain_ops_bank_id = ""
+        # Durable journal (outbox.py): lazily opened, bound to this provider's
+        # (home, mode, api_url, bank, key) partition. See RetainReliability._outbox.
+        self._journal = self._journal_binding = None
         self._apply_retain_policy({})
 
         # Recall: pending prefetch block + count, and the indicator state (recall_status()).
@@ -721,6 +725,9 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
+        # Replay any retain still durable-but-unconfirmed from a prior process
+        # (crash, SIGKILL, gateway restart) before accepting new turns.
+        self._recover_retains()
 
         if self._mode == "local_embedded":
             self._start_embedded_daemon()
@@ -1022,27 +1029,24 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _make_turn_retain_job(self, turns: list[str], *, document_id: str, update_mode: str | None,
                               label: str, track_ops: bool = True) -> Callable[[], None]:
-        """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
-        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
+        """Journal *turns* as one durable unit of work NOW — a crash after this
+        call returns cannot lose it, even before the writer thread picks it up —
+        and return the writer job that sends it via the existing legacy retain
+        path (``_process_retain``, ``reliability.py``)."""
         content = "[" + ",".join(turns) + "]"
         metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
         tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
-        bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
-
-        def _job() -> None:
-            item = self._build_retain_kwargs(content, context=retain_context, metadata=metadata,
-                                             tags=tags, update_mode=update_mode)
-            logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
-            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
-            # Async retains are only *accepted* here; track the op id(s) so the
-            # next-turn prefetch can wait for true server-side completion.
-            if retain_async and track_ops:
-                self._track_retain_ops(resp, bank_id)
-            logger.debug("Hindsight %s succeeded", label)
-
-        return _job
+        item = self._build_retain_kwargs(content, context=self._retain_context, metadata=metadata,
+                                         tags=tags, update_mode=update_mode)
+        logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
+                     label, self._bank_id, document_id, update_mode, self._retain_async, len(content), len(turns))
+        identity = self._outbox().put(
+            {"item": item, "bank_id": self._bank_id, "document_id": document_id,
+             "retain_async": self._retain_async, "track_ops": track_ops},
+            document_id=document_id,
+        )
+        return lambda: self._process_retain(identity)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn (non-blocking; writer thread). Dropped
@@ -1179,16 +1183,12 @@ class HindsightMemoryProvider(MemoryProvider):
             job = self._make_turn_retain_job(list(self._session_turns), document_id=old_document_id,
                                              update_mode=old_update_mode, label="flush-on-switch",
                                              track_ops=False)
-
-            def _flush():
-                try:
-                    job()
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
             # Same writer queue as sync_turn: FIFO behind queued old-session retains,
             # no two threads racing aretain_batch on one document, shutdown drain intact.
+            # job() is _process_retain, which never raises (failures are journaled
+            # as 'quarantined', not thrown).
             if not self._shutting_down.is_set():
-                self._enqueue_retain(_flush)
+                self._enqueue_retain(job)
 
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
@@ -1231,6 +1231,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if writer.is_alive():
                 logger.warning("Hindsight writer did not stop within 10s; abandoning %d pending retain(s)",
                                self._retain_queue.qsize())
+        self._warn_if_unconfirmed()
         self._join_prefetch(5.0)
         if self._client is not None:
             with contextlib.suppress(Exception):

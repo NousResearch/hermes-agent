@@ -183,6 +183,11 @@ def _make_hindsight_provider():
     provider._retain_context = "test-context"
     provider._retain_async = False
     provider._bank_id = "test-bank"
+    provider._observation_scopes = None
+    # Durable retain journal (outbox.py): _make_turn_retain_job journals the
+    # flush-on-switch payload eagerly, so _outbox() must be able to lazily
+    # open one against the isolated test HERMES_HOME.
+    provider._journal = provider._journal_binding = None
     # Prefetch state the switch path drains/clears.
     provider._prefetch_thread = None
     provider._prefetch_lock = threading.Lock()

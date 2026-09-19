@@ -3,6 +3,7 @@ command as a native Slack slash (``/btw``, ``/stop``, ``/model``, …)."""
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -112,13 +113,24 @@ def slack_manifest_command(args) -> int:
     else:
         messaging_experience = "assistant"
 
-    if slashes_only:
-        from hermes_cli.commands_platforms import slack_app_manifest
-        manifest = slack_app_manifest()["features"]["slash_commands"]
-    else:
-        manifest = _build_full_manifest(
-            name, description, messaging_experience=messaging_experience,
-            long_description=long_description)
+    # CLI logging writes only to rotating log files (no console handler), so mirror
+    # manifest-generation warnings — e.g. commands skipped for exceeding Slack's name-length
+    # limit — to stderr where the operator can see them. stdout stays reserved for the JSON.
+    commands_logger = logging.getLogger("hermes_cli.commands")
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    commands_logger.addHandler(stderr_handler)
+    try:
+        if slashes_only:
+            from hermes_cli.commands_platforms import slack_app_manifest
+            manifest = slack_app_manifest()["features"]["slash_commands"]
+        else:
+            manifest = _build_full_manifest(
+                name, description, messaging_experience=messaging_experience,
+                long_description=long_description)
+    finally:
+        commands_logger.removeHandler(stderr_handler)
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 
     write_target = getattr(args, "write", None)

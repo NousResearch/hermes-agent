@@ -139,11 +139,15 @@ done
 #
 # These are test-infrastructure knobs, not credentials — same class as the
 # HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER opt-ins already forwarded.
+# SSL_CERT_FILE/DIR are trust-store locations: the pinned interpreter's
+# OpenSSL has no compiled-in bundle path on NixOS, so network tests (PM
+# downloads, channel reads) need the host's pointer to verify TLS.
 # Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
 for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
-  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE; do
+  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
+  SSL_CERT_FILE SSL_CERT_DIR; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi

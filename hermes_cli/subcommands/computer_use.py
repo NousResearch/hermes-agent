@@ -8,43 +8,28 @@ from hermes_cli.subcommands._shared import add_json_flag
 
 
 def _cu_install(args) -> int:
-    from hermes_cli.tools_config import _cua_driver_contract_status, install_cua_driver
-    if not install_cua_driver(upgrade=bool(getattr(args, "upgrade", False))):
-        return 1
-    return 0 if _cua_driver_contract_status().get("ready") else 1
+    from hermes_cli.tools_config_cua import install_cua_driver
+    return 0 if install_cua_driver(upgrade=bool(getattr(args, "upgrade", False))) else 1
 
 
 def _cu_status(args) -> int:
     import os as _os
-    import subprocess
-    from hermes_cli.tools_config import _cua_driver_contract_status
-    from tools.computer_use.cua_backend_driver import cua_driver_update_check, resolve_cua_driver_cmd
-    # Must match the runtime resolver: Desktop/TUI processes can omit
-    # ~/.local/bin even though the official installer put the driver there.
+    from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
+    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+
     path = resolve_cua_driver_cmd()
     override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
     if not path:
         print("cua-driver: not installed")
         print("  Run: hermes computer-use install")
         return 1
-    version = ""
-    try:
-        from hermes_cli.tools_config import _cua_driver_env
-        version = subprocess.run(
-            [path, "--version"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            env=_cua_driver_env(),
-        ).stdout.strip()
-    except Exception:
-        pass
-    from hermes_cli.tools_config import _cua_version_summary
-    version = _cua_version_summary(version)
+    contract = _cua_driver_contract_status(path)
+    version = _cua_version_summary(contract.get("version") or "")
     # Name the override here too. Without it the operator is told to repair an
     # install that `hermes computer-use install` will (correctly) refuse to touch,
     # with nothing pointing at the env var that actually selected the binary.
     origin = " [custom binary from HERMES_CUA_DRIVER_CMD]" if override else ""
     print(f"cua-driver: installed at {path}{origin}" + (f" ({version})" if version else ""))
-    contract = _cua_driver_contract_status(path)
     if not contract.get("ready"):
         print("  ⚠ Repair required: " + (contract.get("reason") or "runtime contract is incomplete"))
         if override:
@@ -54,19 +39,8 @@ def _cu_status(args) -> int:
         else:
             print("    Run: hermes computer-use install")
         return 1
-    try:
-        st = cua_driver_update_check()
-        if st and st.get("update_available"):
-            latest = st.get("latest_version") or "?"
-            print(f"  ⬆ Update available: cua-driver {latest}.")
-            print("    Run: hermes computer-use install --upgrade")
-        elif st:
-            print("  ✓ Up to date.")
-        else:
-            # Older driver (no check-update verb) or offline.
-            print("  Refresh to latest: hermes computer-use install --upgrade")
-    except Exception:
-        print("  Refresh to latest: hermes computer-use install --upgrade")
+    print("  ✓ Runtime contract ready (externally managed)." if override
+          else "  ✓ Runtime contract ready (Hermes PM pin).")
     return 0
 
 
@@ -120,8 +94,8 @@ def build_computer_use_parser(subparsers) -> None:
         description="Install or check the cua-driver binary used by the\n"
             "`computer_use` toolset. Supported on macOS, Windows, and\n"
             "Linux.\n\n"
-            "Use `hermes computer-use install` to fetch and run the\n"
-            "upstream cua-driver installer. This is equivalent to the\n"
+            "Use `hermes computer-use install` to prepare the pinned\n"
+            "cua-driver package and host integration. This is equivalent to the\n"
             "post-setup hook that `hermes tools` runs when you first\n"
             "enable the Computer Use toolset, and is a stable target\n"
             "for re-running the install if it didn't fire (e.g. when\n"
@@ -136,10 +110,8 @@ def build_computer_use_parser(subparsers) -> None:
         "install", help="Install or repair the cua-driver binary (macOS/Windows/Linux)")
     computer_use_install.add_argument(
         "--upgrade", action="store_true",
-        help="Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
-            "so this performs an in-place upgrade.")
-    computer_use_sub.add_parser("status", help="Print whether cua-driver is installed and on PATH")
+        help="Reconcile cua-driver with Hermes' pinned PM package and repair host setup.")
+    computer_use_sub.add_parser("status", help="Check the selected cua-driver and its runtime contract")
     computer_use_doctor = computer_use_sub.add_parser(
         "doctor", help="Run cua-driver `health_report` and surface the check matrix",
         description="Drive cua-driver's stable `health_report` MCP tool and render\n"

@@ -81,7 +81,7 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
     directory = get_hermes_home() / "serve_restart_pending"
     for path in sorted(directory.glob("*.json")):
         try:
-            row = json.loads(path.read_text(encoding="utf-8"))
+            row = json.loads(path.read_text(encoding="utf-8-sig"))
             if _pid_alive_matches(row["pid"], row["create_time"]) is False:
                 path.unlink(missing_ok=True)
                 continue

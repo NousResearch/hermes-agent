@@ -1327,6 +1327,7 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
+@pytest.mark.platforms("linux")
 def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     """Mixed failure kinds must not consume the violation retry budget.
 

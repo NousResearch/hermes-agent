@@ -1,24 +1,4 @@
-/**
- * gateway-stop-before-update.ts
- *
- * Windows-only helper for the update hand-off (#70337): stop every
- * separately-running messaging gateway BEFORE the venv-shim lock poll.
- *
- * Why not just tree-kill gateway.pid's PID:
- *  - gateway.pid records the uv WORKER process, but the venv shim lock is
- *    held by its parent LAUNCHER (venv\Scripts\python.exe). taskkill /T from
- *    the worker PID does not reach parents, so the lock could survive.
- *  - a single gateway.pid read misses multi-profile setups entirely.
- *
- * So we delegate to `hermes gateway stop --all`: the CLI discovers every
- * profile's gateway processes (launcher + worker) via find_gateway_pids,
- * drains in-flight agents (planned-stop marker -> resume_pending), and
- * force-kills survivors — the same logic `hermes update`'s
- * _pause_windows_gateways_for_update relies on.
- *
- * Pure + dependency-injected so the launcher/worker and multi-profile
- * behavior is assertable without booting Electron.
- */
+/** Windows uninstall delegates fleet draining to the CLI before deleting files. */
 
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
 import fs from 'node:fs'
@@ -36,13 +16,7 @@ export interface StopGatewayBeforeUpdateDeps {
 
 export const GATEWAY_STOP_TIMEOUT_MS = 20_000
 
-/**
- * Best-effort stop of all-profile messaging gateways via the CLI.
- * Never throws: a wedged/absent CLI must not abort the update hand-off
- * (the shim-lock poll + the updater's venv-blocker scan still fail loudly
- * if the venv stays held). Returns true when the CLI ran (or was invoked
- * with the injected spy), false when skipped (non-Windows / missing CLI).
- */
+/** Best-effort all-profile drain for uninstall. The deletion lock gate follows. */
 export function stopGatewayBeforeUpdate(
   hermesCliPath: string,
   hermesHome: string,
@@ -51,17 +25,6 @@ export function stopGatewayBeforeUpdate(
   return runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'stop', '--all'], deps)
 }
 
-/**
- * Drain-semantics counterpart (#76057 review): `gateway stop --all` before
- * the lock gate takes gateways down even when the update later ABORTS
- * (venv-blocked by a user terminal, probe failure, updater spawn failure).
- * The updater's own pause machinery resumes what it pauses — the Desktop
- * must mirror that on its abort paths, or a failed update strands every
- * profile's gateway stopped. Best-effort, never throws.
- */
-export function startGatewaysAfterUpdateAbort(hermesCliPath: string, deps: StopGatewayBeforeUpdateDeps = {}): boolean {
-  return runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'start', '--all'], deps)
-}
 
 function runGatewayLifecycleCommand(hermesCliPath: string, args: string[], deps: StopGatewayBeforeUpdateDeps): boolean {
   const isWindows = deps.isWindows ?? process.platform === 'win32'

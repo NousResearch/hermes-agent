@@ -14,7 +14,7 @@ forever" gap:
 
 ``_resolve_detached_python`` is a pure path helper and runs on any host.
 ``windowless_gateway_restart_spec`` returns its argv unchanged off Windows,
-so the test that exercises the rewrite is ``windows_only`` rather than run
+so the test that exercises the rewrite is ``platforms("windows")`` rather than run
 against a faked ``sys.platform``.
 """
 
@@ -58,13 +58,13 @@ def test_resolve_detached_python_swaps_legacy_pythonw_for_console_sibling(tmp_pa
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     """A pre-rework Scheduled Task argv snapshot (leading pythonw.exe) must be
     respawned through the console python + hidden-console launch, with every
     argument after the interpreter preserved verbatim.
 
-    ``windows_only``: ``windowless_gateway_restart_spec`` returns the argv
+    ``platforms("windows")``: ``windowless_gateway_restart_spec`` returns the argv
     untouched off Windows, so the fake was the only thing making the rewrite
     (and its ``Scripts/``-layout venv derivation) run at all.
     """

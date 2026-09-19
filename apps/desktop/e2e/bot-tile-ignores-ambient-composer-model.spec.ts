@@ -1,14 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
+  waitForAppReady
 } from './fixtures'
 import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'

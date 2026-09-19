@@ -183,7 +183,7 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
             owner_task_id=f"owner-{index}", session_key=f"chat-{index}",
             parent_session_id="owner-session",
             started_at=time.time() - receipts.RESULT_RETENTION_SECONDS * 2,
-            output_buffer="x" * MAX_OUTPUT_CHARS + "\n" + secret,
+            output_buffer="x" * MAX_OUTPUT_CHARS + "\nréponse 世界\n" + secret,
             exited=True, exit_code=index,
         )
         registry._running[session.id] = session
@@ -193,9 +193,16 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     paths = list((get_hermes_home() / "logs" / "process-results").glob("*.json"))
     assert len(paths) == 2
     assert all(secret not in path.read_text(encoding="utf-8") for path in paths)
+    for path in paths:
+        raw = path.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+        path.write_bytes(b"\xef\xbb\xbf" + raw)
     fresh = ProcessRegistry()
     assert fresh.get(sessions[0].id) is None
     recovered = fresh.get(sessions[-1].id)
+    assert recovered is not None
+    assert "réponse 世界" in recovered.output_buffer
+    assert recovered.exited and recovered._completion_event.is_set()
     assert recovered.owner_task_id == sessions[-1].owner_task_id
     assert len(recovered.output_buffer) <= MAX_OUTPUT_CHARS
     assert fresh.list_sessions() == []  # Status/liveness scans stay in memory.

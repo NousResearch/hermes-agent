@@ -264,6 +264,7 @@ class TestEdgeCases:
 
 
 class TestConcurrency:
+    @pytest.mark.platforms("linux")
     def test_sync_back_waits_for_active_sync_transaction(self, tmp_path):
         initial_file = tmp_path / "initial.png"
         new_file = tmp_path / "new.png"
@@ -317,6 +318,7 @@ class TestConcurrency:
 
 
 class TestSyncBackSecurity:
+    @pytest.mark.platforms("linux")
     def test_sync_back_does_not_overwrite_uploaded_credential_files(self, tmp_path, monkeypatch):
         credential = tmp_path / "token.json"
         credential.write_text("host-token", encoding="utf-8")

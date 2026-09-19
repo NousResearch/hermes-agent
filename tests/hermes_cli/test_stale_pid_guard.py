@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the fail-closed PID-ownership guard.
 
-Refs #90471 / #89614.  The three patched Windows ``taskkill`` boundaries:
+Refs #90471 / #89614.  The shared Windows ``taskkill`` boundaries:
 
 - ``hermes_cli/_subprocess_compat.pid_is_hermes`` / ``kill_process_tree``
 - ``hermes_cli/dashboard_procs._kill_stale_dashboard_processes`` (win32)
-- ``hermes_cli/update_cmd._stop_process_trees``
 
 Acceptance from #90471:
 1. missing / unreadable / non-matching identity fails closed -> no taskkill
@@ -20,7 +19,6 @@ import pytest
 
 from hermes_cli import _subprocess_compat
 from hermes_cli import dashboard_procs
-from hermes_cli import update_cmd
 
 
 def _probe_stdout(value: str) -> mock.Mock:
@@ -139,40 +137,8 @@ class TestKillProcessTree:
             assert str(4321) in argv
 
 
-class TestStopProcessTrees:
-    """update_cmd._stop_process_trees guard behaviour."""
-
-    def test_foreign_pids_only_probed(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
-        ), mock.patch.object(update_cmd.subprocess, "run") as run:
-            update_cmd._stop_process_trees([1111, 2222])
-        run.assert_not_called()
-
-    def test_hermes_pid_probed_then_taskkilled(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=True
-        ), mock.patch.object(
-            update_cmd.subprocess, "run", return_value=mock.Mock(returncode=0)
-        ) as run:
-            update_cmd._stop_process_trees([1111])
-        assert len(run.call_args_list) == 1
-        assert run.call_args.args[0][0] == "taskkill"
-
-    def test_probe_timeout_skips_taskkill(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
-        ), mock.patch.object(update_cmd.subprocess, "run") as run:
-            update_cmd._stop_process_trees([1111, 2222])  # must not raise
-        run.assert_not_called()
-
-
+# taskkill dispatch must execute on Windows, not under a fake sys.platform.
+@pytest.mark.platforms("windows")
 class TestKillStaleDashboardProcesses:
     """dashboard_procs win32 kill branch guard behaviour."""
 
@@ -182,9 +148,7 @@ class TestKillStaleDashboardProcesses:
         return mock.patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(pids))
 
     def test_foreign_pid_reported_not_killed(self):
-        with self._patch_find(), mock.patch.object(
-            dashboard_procs.sys, "platform", "win32"
-        ), mock.patch(
+        with self._patch_find(), mock.patch(
             "gateway.status.get_process_start_time", return_value=123
         ), mock.patch(
             "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
@@ -197,9 +161,7 @@ class TestKillStaleDashboardProcesses:
         run.assert_not_called()
 
     def test_hermes_pid_killed(self):
-        with self._patch_find(), mock.patch.object(
-            dashboard_procs.sys, "platform", "win32"
-        ), mock.patch(
+        with self._patch_find(), mock.patch(
             "gateway.status.get_process_start_time", return_value=123
         ), mock.patch(
             "hermes_cli._subprocess_compat.pid_is_hermes", return_value=True

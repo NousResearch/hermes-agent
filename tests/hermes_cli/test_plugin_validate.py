@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 
@@ -34,8 +34,9 @@ BASE_MANIFEST = {
 
 
 def test_requires_hermes_spec_is_validated(tmp_path):
-    manifest = dict(BASE_MANIFEST, requires_hermes=">=0.21")
+    manifest = dict(BASE_MANIFEST, description="café", requires_hermes=">=0.21")
     d = _make_plugin(tmp_path, manifest=manifest)
+    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8-sig")
 
     report = validate_plugin_dir(d)
 
@@ -200,4 +201,3 @@ class TestRequiresHermesSpec:
         assert any(
             "requires_hermes" in f and "does not parse" in f for f in report.failures
         ), report.failures
-

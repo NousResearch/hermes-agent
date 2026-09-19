@@ -70,7 +70,6 @@ def _err(rule: str, message: str) -> LintFinding:
 def _warn(rule: str, message: str) -> LintFinding:
     return LintFinding(WARNING, rule, message)
 
-
 def _strip_code_blocks(body: str) -> str:
     """Remove fenced code blocks so prose-only checks don't fire on examples."""
     return re.sub(r"```.*?```", "", body, flags=re.S)
@@ -160,7 +159,7 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
             if not script.is_file() or script.suffix not in (".py", ".sh", ".bash"):
                 continue
             try:
-                text = script.read_text(encoding="utf-8", errors="ignore")
+                text = script.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
             hit = [p for p in _POSIX_PRIMITIVES if p in text]
@@ -201,7 +200,7 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[Lint
 def lint_skill(skill_md_path: Path) -> List[LintFinding]:
     """Lint a SKILL.md file on disk, with all on-disk checks enabled."""
     skill_md_path = Path(skill_md_path)
-    content = skill_md_path.read_text(encoding="utf-8", errors="ignore")
+    content = skill_md_path.read_text(encoding="utf-8-sig", errors="ignore")
     return lint_content(content, skill_dir=skill_md_path.parent)
 
 

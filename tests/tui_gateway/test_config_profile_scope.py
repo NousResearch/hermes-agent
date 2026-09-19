@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 import tui_gateway.server as server
 

@@ -1,0 +1,40 @@
+name: Icon Assets Freshness
+
+# Guard for the icon pipeline. The sources of truth are the nous-girl SVGs
+# (assets/nous-girl-*.svg) and the per-platform backgrounds
+# (assets/backgrounds/*.svg). Generated outputs are NOT committed — every
+# consuming pipeline regenerates them via scripts/generate-icons.mjs — so
+# this lane regenerates everything from a fresh checkout and runs --check,
+# which asserts structural invariants (sizes, transparent squircle corners,
+# container frame sets). A source change can never land broken. See
+# scripts/generate_icons.py.
+#
+# Byte-determinism note: resvg renders the same SVG to identical bytes on any
+# host for pure-shape artwork. If the master ever contains <text>, font
+# rendering can differ across OSes — pin fonts via resvg's font_files/font_dirs
+# and commit a known font before relying on this check for that master.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Regenerate icons + structural check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache-python: true
+          prune-python-cache: true
+
+      - name: Regenerate every target, then verify structure
+        run: |
+          node scripts/generate-icons.mjs
+          node scripts/generate-icons.mjs --check

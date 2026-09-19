@@ -75,7 +75,7 @@ def github(tmp_path, monkeypatch):
         thread.join()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_pr_completion_requires_current_required_evidence(github):
     with connect() as conn:
         for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
@@ -109,7 +109,7 @@ def test_pr_completion_requires_current_required_evidence(github):
         assert len(github["requests"]) == before
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
     with connect() as conn:
         for conclusion in ("success", "failure"):

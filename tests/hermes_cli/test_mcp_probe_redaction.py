@@ -5,7 +5,7 @@ import itertools
 import json
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 SYNTHETIC = "SYNTHETIC_MCP_BEARER_NOT_A_SECRET_123456"

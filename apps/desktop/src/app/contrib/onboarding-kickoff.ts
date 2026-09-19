@@ -15,6 +15,7 @@ import {
   SETUP_CHAT_TITLE,
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
+import { chatMessageText } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { loadMachineProfile } from '@/store/machine'
@@ -29,7 +30,8 @@ import {
   ensureGatewayAgent,
   ensureGatewayProfile
 } from '@/store/profile'
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $messages, $selectedStoredSessionId } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
@@ -53,7 +55,7 @@ interface GuideSession {
   resolved_id?: string
 }
 
-async function adoptGuideSession(
+export async function adoptGuideSession(
   canonical: GuideSession,
   freeTier: SetupStatus['free_tier'],
   resumeSession: OnboardingKickoffOptions['resumeSession'],
@@ -61,17 +63,32 @@ async function adoptGuideSession(
 ): Promise<void> {
   await resumeSession(canonical.resolved_id ?? canonical.id, true)
   const adoptedRuntimeId = $activeSessionId.get()
-  $chatOnboardingThreadIds.set(adoptedRuntimeId ? [canonical.id, adoptedRuntimeId] : [canonical.id])
+  const state = adoptedRuntimeId ? $sessionStates.get()[adoptedRuntimeId] : undefined
+
+  // resumeSession can settle without adopting (failed or superseded resume).
+  // Only release the splash for the guide's actual binding and visible transcript.
+  if (
+    !adoptedRuntimeId ||
+    !state?.storedSessionId ||
+    ![canonical.id, canonical.resolved_id].includes(state.storedSessionId) ||
+    $selectedStoredSessionId.get() !== state.storedSessionId ||
+    $activeGatewayProfile.get() !== SETUP_PROFILE ||
+    !$messages.get().some(message => message.role === 'assistant' && !message.hidden && chatMessageText(message).trim())
+  ) {
+    throw new Error('The welcome conversation could not be loaded. Please try again.')
+  }
+
+  $chatOnboardingThreadIds.set([canonical.id, adoptedRuntimeId])
   $setupSession.set({
     connectionId: guideSourceConnectionId(canonical.id),
     profile: SETUP_PROFILE,
-    runtimeId: adoptedRuntimeId ?? canonical.id,
+    runtimeId: adoptedRuntimeId,
     storedId: canonical.id
   })
 
   if (freeTier) {
     await guideRequest('config.set', {
-      session_id: adoptedRuntimeId ?? canonical.id,
+      session_id: adoptedRuntimeId,
       key: 'reasoning',
       value: 'minimal'
     })
@@ -163,18 +180,12 @@ export function useOnboardingKickoff({
       }
 
       const storedId = $selectedStoredSessionId.get()
-      $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
-      $setupSession.set({
-        connectionId: guideSourceConnectionId(storedId),
-        profile: SETUP_PROFILE,
-        runtimeId,
-        storedId
-      })
 
       // Set the title explicitly so the backend does not name the session after the hidden runbook message.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
 
-      // session.create has already persisted both seed rows, so the caller may advance the phase.
+      await adoptGuideSession({ id: storedId ?? runtimeId }, record.free_tier, resumeSession, guideRequest)
+
       return true
     } catch (error) {
       $newChatProfile.set(previousNewChatProfile)

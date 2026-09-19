@@ -38,7 +38,8 @@ secrets:
     )
 
     dispatch = (
-        "hermes_main.cmd_update = lambda _args: 0\n"
+        "from hermes_cli import update_cmd\n"
+        "update_cmd._cmd_update_check = lambda **kwargs: 0\n"
         "hermes_main.main()\n"
         if run_main
         else ""

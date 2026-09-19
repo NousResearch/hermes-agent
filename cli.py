@@ -4700,6 +4700,15 @@ def main(
         _run_legacy_gateway()
         return
 
+    if not (list_tools or list_toolsets):
+        from hermes_cli.process_identity import register_self
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+
+        register_self("cli")
+        warning = shared_profile_warning()
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
+
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
     # ``hermes chat`` already validated this; the direct Fire entry point gets the same contract.

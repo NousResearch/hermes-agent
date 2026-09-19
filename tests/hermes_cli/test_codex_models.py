@@ -303,8 +303,7 @@ def test_catalog_requests_use_ungated_client_version(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
     codex_models._fetch_models_from_api(access_token="tok")
-    monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
-    monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+    monkeypatch.setattr(model_metadata.model_metadata_http, "get", _FakeRequests.get)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
     model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
 

@@ -5,27 +5,28 @@
 //
 // Usage: node mock-provider.mjs <url-file>
 //   Writes "<url-file>" with the base URL (http://127.0.0.1:<port>) once
-//   the server is listening, then stays alive until stdin closes.
+//   the server is listening, then stays alive until SIGINT or SIGTERM.
 
 // @ts-check
 import fs from 'node:fs';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
-
-const mockUrl = fileURLToPath(new URL('../../../tests-js/scripts/mock-server.ts', import.meta.url));
-
-const { startMockServer } = await import(mockUrl);
-const mock = await startMockServer();
+import { startMockServer } from '../../../tests-js/scripts/mock-server.ts';
 
 const urlFile = process.argv[2];
 if (!urlFile) {
   console.error('usage: node mock-provider.mjs <url-file>');
   process.exit(1);
 }
+const mock = await startMockServer();
 fs.writeFileSync(urlFile, mock.url);
 console.log(`[mock-provider] listening at ${mock.url}`);
 
-// Live until killed. NOT gated on stdin closing: a backgrounded process's
-// stdin is already at EOF, so an end-event exit would fire immediately
-// and the server would die right after writing its URL.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, async () => {
+    await mock.close();
+    process.exit(0);
+  });
+}
+
+// A background shell starts with stdin at EOF; signals own this lifetime.
 await new Promise(() => {});

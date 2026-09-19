@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -48,18 +49,12 @@ def update_marker_path() -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when a process with ``pid`` currently exists.
-
-    Delegates to :func:`gateway.status._pid_exists`. Do NOT hand-roll ``os.kill(pid, 0)``: on
-    Windows CPython routes ``sig=0`` to ``GenerateConsoleCtrlEvent``, which Ctrl+C's the
-    target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
-    dead so a corrupt marker never wedges the lock.
-    """
+    """Use the dependency-free, Windows-safe probe before PM is available."""
     if pid <= 0:
         return False
     try:
-        from gateway.status import _pid_exists
-        return bool(_pid_exists(pid))
+        from hermes_cli._early_recovery import _pid_is_running
+        return _pid_is_running(pid)
     except Exception as exc:
         logger.debug("Could not probe pid %s: %s", pid, exc)
         return False
@@ -75,6 +70,35 @@ def _handoff_pid() -> int | None:
     return pid if pid > 0 else None
 
 
+def _stdlib_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` without psutil, or ``None`` when unresolvable.
+
+    The update-takeover child is spawned ``-I -S -B`` (hermes_cli/_old_updater.py) so
+    psutil cannot import there — and that grandchild is exactly the process that most
+    needs the two-hop ancestry walk to adopt the orchestrator's marker. /proc serves
+    Linux; macOS keeps /proc absent, so shell out to ps once per hop.
+    """
+    try:
+        if os.path.isdir("/proc"):
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                stat = fh.read()
+        else:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True, text=True, check=True, timeout=5,
+            ).stdout
+            value = int(out.strip() or -1)
+            return value if value > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    # Field 4 (1-indexed) is ppid, but comm may contain spaces/parens: split
+    # after the closing paren of comm instead of on whitespace.
+    try:
+        return int(stat[stat.rindex(b")") + 2:].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def _is_ancestor_pid(pid: int) -> bool:
     """True when ``pid`` is a live ancestor of this process.
 
@@ -84,9 +108,24 @@ def _is_ancestor_pid(pid: int) -> bool:
     """
     if pid <= 0:
         return False
+    if pid == os.getppid():
+        return True
     try:
         import psutil
         return any(parent.pid == pid for parent in psutil.Process().parents())
+    except ImportError:
+        # -I -S -B takeover child: walk the same chain with stdlib probes.
+        child = os.getpid()
+        for _ in range(32):
+            parent = _stdlib_parent_pid(child)
+            if parent is None:
+                return False
+            if parent == pid:
+                return True
+            if parent == child:  # pid 1 re-parenting or a kernel loop guard
+                return False
+            child = parent
+        return False
     except Exception as exc:
         logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
         return False
@@ -109,7 +148,7 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     """
     marker = path or update_marker_path()
     try:
-        lines = marker.read_text(encoding="utf-8").splitlines()
+        lines = marker.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return None
     try:
@@ -129,17 +168,14 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     return UpdateHolder(pid=pid, age_seconds=age)
 
 
-def describe_holder(holder: UpdateHolder) -> str:
-    """One-line, user-facing explanation of who holds the update lock."""
-    minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
+def describe_holder(holder: UpdateHolder | None) -> str:
+    minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     return (
-        f"✗ Another Hermes update is already running (started {elapsed} ago, "
-        f"process {holder.pid}).\n"
+        f"✗ Another Hermes update is already running {f'(PID {holder.pid})' if holder else ''}, "
+        f"started {elapsed} ago).\n"
         "\n"
-        "  Running two at once would corrupt the install. Wait for it to finish\n"
-        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
-        "  started it, then run `hermes update` again."
+        "  Two updates running at once can corrupt Hermes. Wait for the update to finish, then try again."
     )
 
 
@@ -187,7 +223,7 @@ class UpdateLock:
             return
         self.acquired = False
         try:
-            owner = int(self.path.read_text(encoding="utf-8").splitlines()[0].strip())
+            owner = int(self.path.read_text(encoding="utf-8-sig").splitlines()[0].strip())
         except (OSError, IndexError, ValueError):
             return
         if owner != os.getpid():

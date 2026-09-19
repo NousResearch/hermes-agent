@@ -932,7 +932,7 @@ class TestSkillViewCollisionDetection:
         assert "matches" in result
         assert len(result["matches"]) == 2
         # Both paths surfaced
-        assert any("foundations/runtime" in p for p in result["matches"])
+        assert any(os.path.join("foundations", "runtime") in p for p in result["matches"])
         assert any("external" in p for p in result["matches"])
         assert "hint" in result
 
@@ -969,7 +969,7 @@ class TestSkillViewCollisionDetection:
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["path"] == "creative/sketch/SKILL.md"
+        assert result["path"] == os.path.join("creative", "sketch", "SKILL.md")
         assert "REAL SKETCH SKILL" in result["content"]
 
 

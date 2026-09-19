@@ -381,10 +381,20 @@ async function listBranches(repoPath, gitBin) {
   }
 
   try {
-    const [localOut, remoteOut] = await Promise.all([
+    // Both children own cwd handles: a failed probe must still wait for its
+    // sibling before the caller may remove or switch the repository directory.
+    const probes = await Promise.allSettled([
       runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/heads'], resolved),
       runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/remotes'], resolved)
     ])
+
+    const [local, remote] = probes
+
+    if (local.status === 'rejected' || remote.status === 'rejected') {
+      return []
+    }
+
+    const [localOut, remoteOut] = [local.value, remote.value]
 
     const trees = await listWorktrees(resolved, gitBin)
     const pathByBranch = new Map(trees.filter(tree => tree.branch).map(tree => [tree.branch, tree.path]))

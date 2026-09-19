@@ -108,7 +108,7 @@ def test_repair_checks_foreign_holders_before_opening_sqlite(tmp_path, monkeypat
     assert "live writer" in (report["error"] or "").lower()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_linux_holder_scan_does_not_require_psutil(tmp_path, monkeypatch):
     """The Linux safety scan must not make psutil a repair dependency."""
     monkeypatch.setattr(hermes_state_holders, "psutil", None)
@@ -120,7 +120,7 @@ def test_linux_holder_scan_does_not_require_psutil(tmp_path, monkeypatch):
     assert holders == []
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_incomplete_holder_scan_keeps_unknown_sentinel(tmp_path, monkeypatch):
     """A partial scan must not hide uncertainty behind an ordinary holder."""
     db = tmp_path / "state.db"
@@ -152,7 +152,7 @@ def test_incomplete_holder_scan_keeps_unknown_sentinel(tmp_path, monkeypatch):
     assert any(pid < 0 and "scan interrupted" in path for pid, path in holders)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_uninspectable_watched_descriptor_blocks_repair_before_sqlite(
     tmp_path, monkeypatch
 ):
@@ -188,7 +188,7 @@ def test_uninspectable_watched_descriptor_blocks_repair_before_sqlite(
     assert "live writer" in (report["error"] or "").lower()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize(
     ("argv", "should_block"),
     (
@@ -252,7 +252,7 @@ def test_uninspectable_unknown_descriptor_uses_hermes_identity_at_repair_boundar
         assert "live writer" not in (report["error"] or "").lower()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_uninspectable_watched_identity_blocks_alias_before_sqlite(
     tmp_path, monkeypatch
 ):
@@ -293,7 +293,7 @@ def test_uninspectable_watched_identity_blocks_alias_before_sqlite(
     assert "live writer" in (report["error"] or "").lower()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_uninspectable_alias_descriptor_for_hermes_blocks_before_sqlite(
     tmp_path, monkeypatch
 ):
@@ -338,7 +338,7 @@ def test_uninspectable_alias_descriptor_for_hermes_blocks_before_sqlite(
 
 
 @pytest.mark.requires_wal
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_repair_refuses_while_foreign_process_holds_deleted_wal(tmp_path):
     """Reproduce the inode split that a pathname lock probe cannot observe."""
     db = _make_wal_db(tmp_path)

@@ -21,8 +21,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: rust-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: rust-tests-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   bootstrap-installer:
@@ -37,6 +37,18 @@ jobs:
         working-directory: apps/bootstrap-installer/src-tauri
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # tauri::generate_context! embeds the app icons, which are generated,
+      # not committed.
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache-python: true
+          prune-python-cache: true
+
+      - name: Generate icons
+        working-directory: .
+        run: node scripts/generate-icons.mjs
 
       # Tauri links against the system webkit2gtk on Linux, so the crate does
       # not compile without these even for `cargo test --lib`.

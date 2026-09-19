@@ -58,8 +58,7 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope): Promise<Tim
 
   const request = hermesApi<TimelinePage>({
     ...route,
-    path: `/api/sessions/${encodeURIComponent(id)}/timeline?${query}`,
-    passive: true
+    path: `/api/sessions/${encodeURIComponent(id)}/timeline?${query}`
   })
     .then(page => {
       const merged = new Map(previous?.entries.map(entry => [entry.rowId, entry]))

@@ -35,7 +35,7 @@ def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> Path:
     if not common_py.is_file():
         raise PsutilAndroidInstallError(f"psutil sdist did not contain {rel!s}")
     try:
-        content = common_py.read_text(encoding="utf-8")
+        content = common_py.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise PsutilAndroidInstallError(f"Failed to read {rel!s}") from exc
     if MARKER not in content:

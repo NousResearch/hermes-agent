@@ -360,7 +360,7 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
 
 def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     """/model switch should resolve credentials for providers: dict providers."""
-    import yaml
+    import hermes_yaml as yaml
     
     config = {
         "providers": {
@@ -373,7 +373,7 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     }
     
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(yaml.dump(config))
+    config_file.write_text(yaml.safe_dump(config))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     
     # Mock validation to pass

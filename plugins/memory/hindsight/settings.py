@@ -13,8 +13,7 @@ logger = logging.getLogger(__name__.rpartition(".")[0])
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.6.1"
+
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` on retained memories is OPT-IN (AGENTS.md forbids

@@ -101,7 +101,7 @@ def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
         conn.close()
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_connect_preserves_wal_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):

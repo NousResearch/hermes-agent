@@ -107,8 +107,8 @@ class TestGetSubprocessHome:
         assert home_a is not None
         assert home_b is not None
         assert home_a != home_b
-        assert home_a.endswith("alpha/home")
-        assert home_b.endswith("beta/home")
+        assert home_a.endswith(os.path.join("alpha", "home"))
+        assert home_b.endswith(os.path.join("beta", "home"))
 
 
 

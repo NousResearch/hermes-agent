@@ -422,7 +422,7 @@ def test_actual_profile_translates_explicit_reasoning_controls():
             assert top_level["reasoning_effort"] == expected_effort
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
     import certifi
 
@@ -436,7 +436,7 @@ def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
     )
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch):
     from agent.agent_runtime_helpers import create_openai_client
 

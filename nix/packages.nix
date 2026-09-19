@@ -12,12 +12,39 @@
 
       sandbox = pkgs.callPackage ./sandbox.nix { };
 
+      # pm/lock.json translated into derivations — one per tool package
+      # with an artifact for this system. The lockfile carries resolved
+      # urls + hashes, so nix consumes it as pure data. callPackage adds
+      # .override/.overrideDerivation to the returned SET; keep only the
+      # real derivations.
+      pmPackages = lib.filterAttrs (_: lib.isDerivation) (
+        pkgs.callPackage ./pm-packages.nix { }
+      );
+
+      dirtyRevision = inputs.self.dirtyRev or null;
+      # inputs.self.sourceInfo is a string (store path) in current Nix, not a
+      # record. The metadata fields are available as top-level attributes on
+      # inputs.self directly. A flake URL's requested ref is intentionally not
+      # exposed as self.ref after Nix resolves it to an immutable source, so
+      # branch is normally null for remote flakes. Preserve null rather than
+      # inventing a sentinel that could be a real branch name.
+      rev =
+        inputs.self.rev or (if dirtyRevision != null then builtins.substring 0 40 dirtyRevision else null);
+      revCount = inputs.self.revCount or null;
+      rawRef = inputs.self.ref or null;
+      branch = if rawRef != null then builtins.replaceStrings [ "refs/heads/" ] [ "" ] rawRef else null;
+      dirty = dirtyRevision != null;
+      lastModified = inputs.self.lastModified or null;
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-        # Only embed clean revs — dirtyRev doesn't represent any upstream
-        # commit, so comparing it would always claim "update available".
-        rev = inputs.self.rev or null;
+        inherit
+          rev
+          revCount
+          branch
+          dirty
+          lastModified
+          ;
       };
 
       # All platform-portable optional integrations pre-built.
@@ -70,6 +97,9 @@
         desktop = full.hermesDesktop;
 
         update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
-      };
+      }
+      # Every pm lockfile tool as its own installable derivation:
+      # `nix build .#pm-ripgrep`, `nix build .#pm-gh`, ...
+      // lib.mapAttrs' (name: drv: lib.nameValuePair "pm-${name}" drv) pmPackages;
     };
 }

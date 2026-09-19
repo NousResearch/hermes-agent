@@ -33,7 +33,7 @@
 
 ## فوری انسٹالیشن (Quick Install)
 
-### لینکس (Linux)، میک او ایس (macOS)، ڈبلیو ایس ایل ٹو (WSL2)، ٹرمکس (Termux)
+### لینکس (Linux)، میک او ایس (macOS)، ڈبلیو ایس ایل ٹو (WSL2)
 
 <div dir="ltr">
 
@@ -57,13 +57,14 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 </div>
 
-انسٹالر سب کچھ خود سنبھالتا ہے: uv، Python 3.11، Node.js، ripgrep، ffmpeg، **اور ایک پورٹ ایبل (portable) گٹ بیش (Git Bash)** (یعنی MinGit، جو `%LOCALAPPDATA%\hermes\git` میں ان پیک ہوتا ہے — اس کے لیے ایڈمن کی اجازت درکار نہیں، اور یہ سسٹم کے کسی بھی گٹ انسٹال سے بالکل الگ ہے)۔ ہرمیس اس بنڈل شدہ گٹ بیش کو شیل کمانڈز چلانے کے لیے استعمال کرتا ہے۔
+سورس انسٹالر Python 3.14، Node.js، npm، ripgrep، FFmpeg اور Python کی
+ڈیپینڈینسیز کے لیے PM استعمال کرتا ہے۔ اگر Git موجود نہ ہو تو Git for Windows
+کا تصدیق شدہ آرکائیو ہرمیس کے ٹول اسٹور میں نصب کرتا ہے۔ سسٹم کا Git تبدیل نہیں
+ہوتا۔ MSIX/App Installer ایک الگ پیکیج ہے۔
 
-اگر آپ کے پاس پہلے سے گٹ (Git) انسٹال ہے، تو انسٹالر اسے شناخت کر لیتا ہے اور اسے ہی استعمال کرتا ہے۔ بصورت دیگر آپ کو صرف ~45MB کے MinGit ڈاؤنلوڈ کی ضرورت ہوگی — یہ آپ کے سسٹم کے گٹ پر کوئی اثر نہیں ڈالے گا۔
-
-> **اینڈرائیڈ (Android) / ٹرمکس (Termux):** ٹیسٹ کیا گیا مینوئل طریقہ [Termux گائیڈ](https://hermes-agent.nousresearch.com/docs/getting-started/termux) میں موجود ہے۔ ٹرمکس پر ہرمیس ایک مخصوص `.[termux]` ایکسٹرا انسٹال کرتا ہے کیونکہ مکمل `.[all]` ایکسٹرا میں ایسی وائس ڈیپینڈینسیز شامل ہیں جو اینڈرائیڈ کے ساتھ مطابقت نہیں رکھتیں۔
+> **اینڈرائیڈ / ٹرمکس (Android / Termux):** aarch64 آلات کے لیے آزمائشی APT پیکیج دستیاب ہے۔ اس میں Python، Node.js اور TUI شامل ہیں۔ ڈیسک ٹاپ اور سرور کے انسٹالیشن اسکرپٹ کے بجائے [Termux گائیڈ](https://hermes-agent.nousresearch.com/docs/getting-started/termux) استعمال کریں۔
 >
-> **ونڈوز (Windows):** مقامی ونڈوز کی مکمل سپورٹ موجود ہے — اوپر دی گئی پاور شیل کی کمانڈ سب کچھ انسٹال کر دیتی ہے۔ اگر آپ WSL2 استعمال کرنا چاہتے ہیں، تو لینکس کی کمانڈ وہاں کام کرتی ہے۔ مقامی ونڈوز میں انسٹالیشن `%LOCALAPPDATA%\hermes` میں ہوتی ہے؛ جبکہ WSL2 میں لینکس کی طرح `~/.hermes` میں ہوتی ہے۔ ہرمیس کا وہ واحد فیچر جسے فی الحال خاص طور پر WSL2 کی ضرورت ہے وہ براؤزر پر مبنی ڈیش بورڈ چیٹ پین ہے (یہ POSIX PTY استعمال کرتا ہے — کلاسک CLI اور گیٹ وے دونوں مقامی طور پر چلتے ہیں)۔
+> **ونڈوز (Windows):** مقامی سورس انسٹال کے لیے اوپر دیا گیا PowerShell کمانڈ استعمال کریں۔ WSL2 میں لینکس کمانڈ استعمال ہوتا ہے۔ مقامی ڈیٹا `%LOCALAPPDATA%\hermes` میں اور WSL2 کا ڈیٹا `~/.hermes` میں ہوتا ہے۔ ڈیش بورڈ چیٹ مقامی Windows پر pywinpty/ConPTY استعمال کرتا ہے؛ پلیٹ فارم کی حدود [Windows گائیڈ](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native) میں درج ہیں۔
 
 انسٹالیشن کے بعد:
 
@@ -213,32 +214,8 @@ hermes claw migrate --overwrite  # موجودہ متصادم فائلوں کو �
 
 ہم آپ کے تعاون کا خیرمقدم کرتے ہیں! ڈیویلپمنٹ سیٹ اپ، کوڈ کے انداز اور PR کے طریقہ کار کے لیے براہ کرم ہماری [Contributing گائیڈ](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) دیکھیں۔
 
-معاونین (contributors) کے لیے فوری آغاز — کلون (clone) کریں اور `setup-hermes.sh` چلائیں:
-
-<div dir="ltr">
-
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # uv کو انسٹال کرتا ہے، venv بناتا ہے، .[all] کو انسٹال کرتا ہے، اور ~/.local/bin/hermes کا سیم لنک (symlink) بناتا ہے
-./hermes              # خود بخود venv کی شناخت کرتا ہے، پہلے `source` کرنے کی ضرورت نہیں
-```
-
-</div>
-
-مینوئل طریقہ (اوپر والے طریقے کے مساوی):
-
-<div dir="ltr">
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
-</div>
+PM اور Python 3.14 کے ٹیسٹ ماحول اور تصدیقی کمانڈز کے لیے
+[Development Setup](CONTRIBUTING.md#development-setup) دیکھیں۔
 
 ---
 

@@ -48,7 +48,7 @@ def _fresh_import():
 class TestWindowsBehavior:
     """Windows: the bootstrap does its job."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_env_vars_set_on_windows(self, monkeypatch):
         # Clear any pre-existing values and re-run bootstrap.
         monkeypatch.delenv("PYTHONUTF8", raising=False)
@@ -59,7 +59,7 @@ class TestWindowsBehavior:
         assert os.environ.get("PYTHONIOENCODING") == "utf-8"
         assert hb._bootstrap_applied is True
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_stdout_reconfigured_to_utf8_on_windows(self):
         # The live process's stdout should now be UTF-8 (the Hermes CLI
         # runs on Windows with a pytest console that's cp1252 by default).
@@ -79,7 +79,7 @@ class TestWindowsBehavior:
             "reconfigured it to UTF-8"
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_child_process_inherits_utf8_mode(self):
         """A subprocess spawned from this process should inherit
         PYTHONUTF8=1 and be able to print non-ASCII to stdout."""
@@ -112,7 +112,7 @@ class TestUserOptOut:
     """If the user has explicitly set PYTHONUTF8 / PYTHONIOENCODING in
     their environment, we respect that (setdefault, not overwrite)."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_user_pythonutf8_zero_preserved(self, monkeypatch):
         monkeypatch.setenv("PYTHONUTF8", "0")
         _fresh_import()
@@ -122,12 +122,12 @@ class TestUserOptOut:
 
 
 
-@pytest.mark.linux_only
 class TestPosixNoOp:
     """POSIX: zero behavior change.  We don't touch LANG, LC_*, or any
     stdio.  The goal is that Linux/macOS behave identically before and
     after this module is imported."""
 
+    @pytest.mark.platforms("linux")
     def test_noop_on_posix_host(self, monkeypatch):
         """Even when imported, the bootstrap function must return False
         and leave env untouched on a POSIX host (``_IS_WINDOWS`` is
@@ -166,12 +166,12 @@ class TestStdioReconfigureErrorHandling:
     don't support reconfigure (e.g. by a test harness), the bootstrap
     must degrade gracefully rather than crash."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_non_reconfigurable_stream_does_not_crash(self, monkeypatch):
         """Replace sys.stdout with a BytesIO (no reconfigure method),
         then run the bootstrap and make sure it doesn't raise.
 
-        ``windows_only``: forcing ``_IS_WINDOWS = True`` on Linux was the only
+        ``platforms("windows")``: forcing ``_IS_WINDOWS = True`` on Linux was the only
         thing that made the reconfigure block reachable — off Windows the
         bootstrap returns before touching stdio, so the test proved nothing
         about the guard it names.
@@ -189,86 +189,54 @@ class TestStdioReconfigureErrorHandling:
 
 
 
-class TestEntryPointsImportBootstrap:
-    """Every Hermes entry point must import hermes_bootstrap as its
-    first non-docstring import.  We check this by scanning source files
-    rather than invoking the entry points (which would require a full
-    agent context)."""
+@pytest.mark.parametrize("path", [
+    "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
+    "gateway/run.py", "batch_runner.py", "cli.py",
+])
+def test_entrypoint_executes_bootstrap_before_application_imports(tmp_path, path):
+    import subprocess
+    from pathlib import Path
 
-    # Entry points that invoke Hermes as a process.  Each one must
-    # import hermes_bootstrap before doing any file I/O or stdout writes.
-    ENTRY_POINTS = [
-        "hermes_cli/main.py",   # hermes CLI (console_script)
-        "run_agent.py",          # hermes-agent (console_script)
-        "acp_adapter/entry.py",  # hermes-acp (console_script)
-        "gateway/run.py",        # gateway
-        "batch_runner.py",       # batch mode
-        "cli.py",                # legacy direct-launch CLI
-    ]
-
-    @pytest.mark.parametrize("path", ENTRY_POINTS)
-    def test_entry_point_imports_bootstrap(self, path):
-        """The file must contain 'import hermes_bootstrap' and that
-        line must appear before the first 'import' of anything else.
-
-        We're lenient about the docstring (can be arbitrarily long) and
-        about comment lines — just need to verify the first import
-        statement is the bootstrap.
-
-        Also lenient about a try/except wrapper around the import: entry
-        points may guard the import against ``ModuleNotFoundError`` so a
-        half-finished ``hermes update`` (git-reset landed new code but
-        ``uv pip install -e .`` didn't finish re-registering
-        ``hermes_bootstrap`` as a top-level module) leaves hermes
-        recoverable instead of crashing on every invocation.  When the
-        first top-level node is such a guarded-import block, we peek
-        inside it to verify bootstrap is the imported module.
-        """
-        # Resolve relative to the hermes-agent repo root.  Tests live
-        # at tests/test_hermes_bootstrap.py, so go up one dir.
-        import pathlib
-        here = pathlib.Path(__file__).resolve()
-        repo_root = here.parent.parent  # tests/ -> repo root
-        full_path = repo_root / path
-        assert full_path.exists(), f"entry point missing: {full_path}"
-
-        source = full_path.read_text(encoding="utf-8")
-
-        # Find the first non-comment, non-blank line that starts with
-        # 'import ' or 'from ', or a Try block whose body is the import.
-        import ast
-        tree = ast.parse(source)
-
-        first_import_node = None
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                first_import_node = node
-                break
-            # Accept a guarded-import Try block where the body is a lone
-            # Import node — this is the recovery-friendly form that lets
-            # hermes start even when hermes_bootstrap hasn't been
-            # re-registered in the venv yet.
-            if isinstance(node, ast.Try) and len(node.body) == 1 and isinstance(
-                node.body[0], (ast.Import, ast.ImportFrom)
-            ):
-                first_import_node = node.body[0]
-                break
-
-        assert first_import_node is not None, (
-            f"{path}: no top-level imports found at all"
-        )
-
-        if isinstance(first_import_node, ast.Import):
-            first_import_name = first_import_node.names[0].name
-        else:  # ImportFrom
-            first_import_name = first_import_node.module or ""
-
-        assert first_import_name == "hermes_bootstrap", (
-            f"{path}: first top-level import is {first_import_name!r}, "
-            f"but it must be 'hermes_bootstrap' so UTF-8 stdio is "
-            f"configured before anything else initializes.  Move the "
-            f"'import hermes_bootstrap' line to be the first import."
-        )
+    root = Path(__file__).resolve().parents[1]
+    entry = tmp_path / "startup.py"
+    entry.write_bytes((root / path).read_bytes())
+    # Stop at the first application import, after executing the REAL bootstrap.
+    # pm repair is the supported stdlib-only startup, so no update/service runs.
+    program = r"""
+import builtins, os, runpy, sys
+root, entry = sys.argv[1:]
+sys.path.insert(0, root)
+sys.argv = [entry, 'pm', 'repair']
+real_import = builtins.__import__
+class Boundary(BaseException): pass
+seen = []
+def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+    if globals and globals.get('__file__') == entry:
+        if name == '__future__':
+            return real_import(name, globals, locals, fromlist, level)
+        if not seen:
+            assert name == 'hermes_bootstrap', name
+            module = real_import(name, globals, locals, fromlist, level)
+            assert module._pm_repair is True
+            assert module._bootstrap_applied is (sys.platform == 'win32')
+            seen.append(name)
+            return module
+        raise Boundary()
+    return real_import(name, globals, locals, fromlist, level)
+builtins.__import__ = guarded
+try:
+    runpy.run_path(entry, run_name='__main__')
+except Boundary:
+    assert seen == ['hermes_bootstrap']
+    print('bootstrap-before-app')
+else:
+    raise AssertionError('entrypoint never reached the application import boundary')
+"""
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root), str(entry)],
+                            cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "bootstrap-before-app"
 
 
 class TestHardenImportPath:
@@ -339,7 +307,7 @@ class TestHardenImportPath:
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_noop_on_posix(self):
         import platform
         hb = _fresh_import()
@@ -347,7 +315,7 @@ class TestSuppressPlatformVerConsole:
         hb.suppress_platform_ver_console()
         assert getattr(platform, "_syscmd_ver", None) is original
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_stub_applied_when_windows(self):
         # Faking _IS_WINDOWS on Linux asserted only that the stub was
         # installed; the reason it exists — ``platform.win32_ver()`` shelling

@@ -29,7 +29,7 @@ before(async () => {
   })
   await server.listen()
   url = 'http://127.0.0.1:18120/scripts/fixtures/tasks-scroll.html'
-  browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
+  browser = await chromium.launch({ channel: 'chromium', executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH, headless: true, args: ['--no-sandbox'] })
 })
 after(async () => {
   await browser?.close()

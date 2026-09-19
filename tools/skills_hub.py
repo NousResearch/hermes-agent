@@ -208,7 +208,7 @@ def _read_json_if_fresh(path: Path, ttl: float) -> Optional[Any]:
     try:
         if time.time() - path.stat().st_mtime > ttl:
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -252,7 +252,7 @@ class _JsonStateFile:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             return json.loads(json.dumps(self.EMPTY))
 
@@ -407,7 +407,7 @@ from urllib.parse import unquote  # noqa: F401,E402
 from urllib.parse import urlparse  # noqa: F401,E402
 from urllib.parse import urlsplit  # noqa: F401,E402
 from urllib.parse import urlunparse  # noqa: F401,E402
-import yaml  # noqa: F401,E402
+import hermes_yaml as yaml  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {

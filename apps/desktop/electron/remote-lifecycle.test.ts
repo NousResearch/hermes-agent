@@ -41,6 +41,7 @@ import {
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
+import type { SshConnection } from './ssh-connection'
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
@@ -576,20 +577,22 @@ test('pidIsOurDashboard accepts the venv entrypoint an installer wrapper execs i
 
 test.skipIf(process.platform === 'win32')(
   'pidIsOurDashboard recognizes an installer wrapper after it execs python + entrypoint',
-  async () => {
-    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
+  async (): Promise<void> => {
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const temp: string = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
     const installDir = path.join(temp, 'install dir')
     const venvBin = path.join(installDir, 'venv', 'bin')
     const pythonLink = path.join(venvBin, 'python')
     const entrypoint = path.join(installDir, 'hermes')
     const launcher = path.join(temp, 'hermes launcher')
-    const python = (await exec('command -v python3')).stdout.trim()
-    const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+    const python: string = (await exec('command -v python3', { shell })).stdout.trim()
+    const tokenPath: string = path.join(temp, spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: temp, HERMES_HOME: temp }
 
     await mkdir(venvBin, { recursive: true })
     await symlink(python, pythonLink)
     await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
-    await writeFile(launcher, `#!/bin/bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await writeFile(launcher, `#!${shell}\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
     await chmod(launcher, 0o755)
 
     const backendFlags = [
@@ -605,8 +608,8 @@ test.skipIf(process.platform === 'win32')(
 
     const children: ReturnType<typeof spawn>[] = []
 
-    const spawnInstaller = (args: string[]) => {
-      const process = spawn(launcher, args, { stdio: 'ignore' })
+    const spawnInstaller = (args: string[]): ReturnType<typeof spawn> => {
+      const process: ReturnType<typeof spawn> = spawn(launcher, args, { stdio: 'ignore', env })
 
       children.push(process)
 
@@ -615,13 +618,13 @@ test.skipIf(process.platform === 'win32')(
 
     const child = spawnInstaller(['--profile', 'ops', 'serve', '--isolated', ...backendFlags])
 
-    const ssh = {
-      exec: async (command: string) => (await exec(command, { shell: '/bin/bash' })).stdout
+    const ssh: Pick<SshConnection, 'exec'> = {
+      exec: async (command: string): Promise<string> => (await exec(command, { shell, env })).stdout
     }
 
-    const waitForEntrypoint = async (process: ReturnType<typeof spawn>) => {
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        const command = (await exec(`ps -ww -o command= -p ${process.pid}`)).stdout
+    const waitForEntrypoint = async (process: ReturnType<typeof spawn>): Promise<boolean> => {
+      for (let attempt: number = 0; attempt < 100; attempt += 1) {
+        const command: string = (await exec(`ps -ww -o command= -p ${process.pid}`, { shell, env })).stdout
 
         if (command.includes(entrypoint)) {
           return true
@@ -830,42 +833,45 @@ test('buildSpawnCommand atomically reserves the ownership slot through spawn and
   assert.ok(cmd.indexOf('lock_json') > cmd.indexOf('serve --isolated'))
 })
 
-test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
-  const hermesPath = path.join(directory, 'hermes')
-  const reportPath = path.join(directory, 'descriptor-report')
-  const logPath = path.join(directory, 'spawn.log')
+test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async (): Promise<void> => {
+  const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+  const directory: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
+  const hermesPath: string = path.join(directory, 'hermes')
+  const reportPath: string = path.join(directory, 'descriptor-report')
+  const logPath: string = path.join(directory, 'spawn.log')
 
   try {
     await writeFile(
       hermesPath,
-      `#!/bin/sh
-: > ${reportPath}
+      `#!${shell}
+report=${expandRemotePath(reportPath)}
+: > "$report.tmp"
 for fd in /proc/$$/fd/*; do
   target=$(readlink "$fd" 2>/dev/null || true)
   case "$target" in
-    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> ${reportPath} ;;
+    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> "$report.tmp" ;;
   esac
 done
+mv "$report.tmp" "$report"
 `,
-      { mode: 0o700 }
+      { encoding: 'utf8', mode: 0o700 }
     )
 
-    const command = buildSpawnCommand(hermesPath, '', {
+    const command: string = buildSpawnCommand(hermesPath, '', {
       hermesHome: path.join(directory, 'home'),
       logPath
     })
 
-    await exec(command, { shell: '/bin/bash' })
+    await exec(command, { shell, env: { ...process.env, HOME: directory, HERMES_HOME: directory } })
 
-    for (let attempt = 0; attempt < 40; attempt += 1) {
+    for (let attempt: number = 0; attempt < 100; attempt += 1) {
       try {
-        const report = await readFile(reportPath, 'utf8')
+        const report: string = await readFile(reportPath, 'utf8')
         assert.equal(report, '', 'the backend process must not retain the update mutex descriptor')
 
         return
-      } catch (error: any) {
-        if (error?.code !== 'ENOENT') {
+      } catch (error: unknown) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
           throw error
         }
 
@@ -1500,24 +1506,6 @@ test('buildSpawnCommand payload variables keep $HOME expandable (no double quoti
   }
 })
 
-test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
-  })
-
-  // ${var//pat/rep} is bash-only; dash aborts the payload on it AFTER the
-  // serve was spawned, so the client sees an unknown failure, deletes the
-  // token file, and orphans the backend.
-  assert.doesNotMatch(cmd, /\$\{lock_json\/\//, 'must not use ${var//} substitution under sh')
-  assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
-})
-
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
 
@@ -1941,7 +1929,8 @@ test.skipIf(process.platform === 'win32')(
     })
 
     // Capture the argv a remote shell would hand to python3, via a shim on PATH.
-    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const root: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
 
     try {
       const shimDir = path.join(root, 'shim')
@@ -1949,10 +1938,11 @@ test.skipIf(process.platform === 'win32')(
       await mkdir(shimDir)
       await mkdir(fakeHome)
       const argvFile = path.join(shimDir, 'argv')
-      await writeFile(path.join(shimDir, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
+      await writeFile(path.join(shimDir, 'python3'), `#!${shell}\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
         mode: 0o755
       })
       await exec(cmd, {
+        shell: 'sh',
         env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, HOME: fakeHome }
       })
       const argv = (await readFile(argvFile, 'utf8')).split('\0')
@@ -1973,6 +1963,7 @@ test.skipIf(process.platform === 'win32')(
       const { stdout } = await exec(
         `${payload.slice(0, loopStart)} printf '%s\\n' "$reservation" "$lock" "$owner_file"`,
         {
+          shell: 'sh',
           env: { ...process.env, HOME: fakeHome }
         }
       )

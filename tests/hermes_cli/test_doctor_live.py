@@ -191,20 +191,18 @@ class TestConfiguredOnlySelection:
         assert results["Browser"].status == "pass"
 
 
-class TestBrowserAvailableNpxRung:
-    """agent-browser resolves lazily via npx on the default install (#43564),
-    invisible to the bare PATH/node_modules probes _browser_available starts
-    with. It must fall through to the same cascade `hermes doctor` uses."""
+class TestBrowserAvailable:
+    """Live probes use the same passive selection as browser execution."""
 
     def _block_path_and_node_modules_checks(self, monkeypatch, tmp_path):
         monkeypatch.setattr("shutil.which", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.doctor.HERMES_HOME", tmp_path / "home")
         monkeypatch.setattr("hermes_cli.doctor.PROJECT_ROOT", tmp_path / "root")
 
-    def test_true_when_npx_resolves_agent_browser(self, monkeypatch, tmp_path):
+    def test_true_when_installed_browser_resolves(self, monkeypatch, tmp_path):
         self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
 
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/pm/agent-browser")
 
         assert _real_browser_available() is True
 
@@ -215,17 +213,6 @@ class TestBrowserAvailableNpxRung:
             raise FileNotFoundError("agent-browser CLI not found")
 
         monkeypatch.setattr(bt_install, "_find_agent_browser", _raise)
-
-        assert _real_browser_available() is False
-
-    def test_false_on_termux_local_bare_npx(self, monkeypatch, tmp_path):
-        """On Termux in local mode the bare npx fallback is too fragile to
-        advertise as ready — must not diverge from dep_ensure/nous_subscription's
-        same carve-out."""
-        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
-
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
-        monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda cmd: True)
 
         assert _real_browser_available() is False
 

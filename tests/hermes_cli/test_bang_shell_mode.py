@@ -89,6 +89,7 @@ class TestBangContextGating:
 # ── execution ──────────────────────────────────────────────────────────────
 
 class TestBangExecution:
+    @pytest.mark.platforms("linux")
     def test_output_is_streamed_to_writer(self):
         lines = []
         code = run_bang_command("echo bang-one; echo bang-two", writer=lines.append)
@@ -96,6 +97,7 @@ class TestBangExecution:
         assert "bang-one" in lines
         assert "bang-two" in lines
 
+    @pytest.mark.platforms("linux")
     def test_stderr_is_merged_into_output(self):
         lines = []
         run_bang_command("echo to-stderr >&2", writer=lines.append)
@@ -106,6 +108,7 @@ class TestBangExecution:
         code = run_bang_command("exit 42", writer=lines.append)
         assert code == 42
 
+    @pytest.mark.platforms("linux")
     def test_runs_in_requested_cwd(self, tmp_path):
         lines = []
         code = run_bang_command("pwd", cwd=str(tmp_path), writer=lines.append)

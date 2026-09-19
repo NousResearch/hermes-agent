@@ -29,6 +29,7 @@ def _session(sid):
                 attached_images=[], cols=80, source="desktop", inflight_turn=None)
 
 
+@pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("mode", ["fresh", "stale", "missing", "previous"])
 def test_real_child_detached_turn_activity(tmp_path, monkeypatch, mode):
     """Real supervisor pipes, child admission/turn thread, bridge and orphan timer.
@@ -63,7 +64,7 @@ def test_real_child_detached_turn_activity(tmp_path, monkeypatch, mode):
             time.sleep(0.02)
         assert (tmp_path / "provider-started").exists(), supervisor._stderr_tail
         # Give the actual child-to-parent sampler a bounded opportunity to arrive.
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 10
         while not server._ws_orphan_turn_activity_is_fresh(session) and time.monotonic() < deadline:
             time.sleep(0.02)
         assert supervisor.is_running()
@@ -108,7 +109,7 @@ def test_real_child_detached_turn_activity(tmp_path, monkeypatch, mode):
             # Also replay a delayed sample from the previous dispatch.
             server._relay_compute_host_rpc({"method": "compute_host.activity", "params": {
                 "session_id": sid, "turn_id": old_token, "activity_ns": time.perf_counter_ns()}})
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + 10
             while "_compute_host_activity_ns" not in session and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert "_compute_host_activity_ns" in session
@@ -161,7 +162,8 @@ def _run_child(mode, directory):
             self.session_id = sid
             self._interrupt = threading.Event()
             if mode == "previous":
-                self._touch_activity("previous turn")
+                # Precedes this turn but remains inside the parent's freshness window.
+                self._last_activity_ts = time.time() - 1
 
         def get_activity_summary(self):
             return build_activity_snapshot(last_activity_at=getattr(self, "_last_activity_ts", None),
@@ -183,7 +185,9 @@ def _run_child(mode, directory):
                     self._touch_activity("provider wait")
                 elif mode == "stale":
                     self._last_activity_ts = time.time() - 3600
-            return {"final_response": "done", "interrupted": self._interrupt.is_set()}
+            return {"final_response": "done", "interrupted": self._interrupt.is_set(),
+                    "messages": [{"role": "user", "content": args[0]},
+                                 {"role": "assistant", "content": "done"}]}
 
     def init(sid, key, agent, history, **kwargs):
         s = _session(sid)

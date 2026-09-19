@@ -9,7 +9,7 @@ import pytest
 from hermes_cli.gateway import _windows_scheduled_task_state
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_task_query_without_powershell_module_autoload():
     real_run = subprocess.run
 

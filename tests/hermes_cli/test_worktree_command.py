@@ -98,7 +98,7 @@ def test_new_outside_repo(tmp_path, monkeypatch):
 @requires_git
 def test_list_shows_worktrees(repo):
     out = _run(_Stub(), "/worktree list")
-    assert str(repo) in out
+    assert repo.as_posix() in out
 
 
 @requires_git

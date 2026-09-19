@@ -9,6 +9,25 @@ import model_tools
 import tools.mcp_tool_discovery
 
 
+def test_banner_snapshot_accepts_bom_without_weakening_freshness(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(banner, "get_git_banner_state", lambda: None)
+    monkeypatch.setattr(banner, "get_available_skills", lambda: {"notes": ["café"]})
+    tools = [{"function": {"name": "read_file"}}]
+    banner.save_banner_snapshot(tools, ["file"], {}, {"read_file": "file"})
+    path = banner._banner_snapshot_path()
+    raw = path.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    expected = json.loads(raw)
+    path.write_text(json.dumps(expected, ensure_ascii=False), encoding="utf-8-sig")
+    assert banner.load_banner_snapshot(["file"]) == expected
+    assert banner.load_banner_snapshot(["web"]) is None
+    (tmp_path / "config.yaml").write_text("display: {skin: mono}", encoding="utf-8")
+    assert banner.load_banner_snapshot(["file"]) is None
+
+
 def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(capsys):
     with patch(
         "prompt_toolkit.print_formatted_text",

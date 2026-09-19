@@ -155,8 +155,8 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
     runner._session_db = None
-    # Ensure model resolution returns the codex model even if xdist
-    # leaked env vars cleared HERMES_MODEL.
+    # Ensure model resolution returns the codex model even if a previous
+    # test leaked env vars that cleared HERMES_MODEL.
     monkeypatch.setattr(
         gateway_run.GatewayRunner,
         "_resolve_turn_agent_config",

@@ -2718,7 +2718,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
     """Derive ``(slug, declared_name)`` from a SKILL.md; ``(None, None)`` if unreadable or no ``name:``.
     Matches ``scan_skill_commands``: the slug comes from frontmatter ``name:``, NOT the directory."""
     try:
-        content = skill_md.read_text(encoding="utf-8", errors="replace")
+        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         return None, None
     content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
@@ -5475,8 +5475,8 @@ def main():
 
     config = None
     if args.config:
-        import yaml
-        with open(args.config, encoding="utf-8") as f:
+        import hermes_yaml as yaml
+        with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
         from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode

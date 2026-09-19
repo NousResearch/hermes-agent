@@ -34,7 +34,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
-### Linux, macOS, WSL2, Termux
+### Linux, macOS, WSL2
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -50,11 +50,13 @@ Run this in PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
+The source installer delegates Python 3.14, Node.js, npm, ripgrep, FFmpeg,
+and Python dependencies to PM. If Git is absent, it stages the verified Git
+for Windows archive in Hermes' tool store. It does not replace your system Git.
+See [installation methods](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
+for the separate MSIX/App Installer package and its update ownership.
 
-If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
-
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+> **Android / Termux:** A prerelease APT package is available for aarch64 devices. It includes Python, Node.js, and the TUI. Use the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux), not the desktop/server installer script.
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
@@ -218,32 +220,9 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
 
-Quick start for contributors — use the standard installer, then work from the
-full git checkout it creates at `$HERMES_HOME/hermes-agent` (usually
-`~/.hermes/hermes-agent`). This matches the layout used by `hermes update`, the
-managed venv, lazy dependencies, gateway, and docs tooling.
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
-Manual clone fallback (for throwaway clones/CI where you intentionally do not
-want the managed install layout):
-
-Create the venv outside the cloned source tree — a venv inside the directory
-the agent operates from can be wiped by a relative-path command the agent runs
-against its own checkout, destroying the running runtime mid-session.
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv ~/.hermes/venvs/hermes-dev --python 3.11
-source ~/.hermes/venvs/hermes-dev/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
+Start with the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow)
+for activation, daily use, dependency changes, and leaving the environment.
+[Development Setup](CONTRIBUTING.md#development-setup) covers the separate test environment and verification commands.
 
 ---
 

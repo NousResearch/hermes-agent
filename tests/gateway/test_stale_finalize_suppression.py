@@ -159,10 +159,10 @@ def _make_runner(adapter):
 
 
 async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {
@@ -289,10 +289,10 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     monkeypatch, tmp_path
 ):
     """#78541 — payload-less split-delivery flags must not swallow the reply."""
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {

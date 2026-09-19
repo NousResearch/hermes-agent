@@ -1,0 +1,85 @@
+name: PM toolchain native smoke
+on:
+  workflow_call:
+    inputs:
+      warm:
+        type: boolean
+        required: true
+permissions:
+  contents: read
+jobs:
+  native:
+    name: ${{ inputs.warm && 'warm' || 'cold' }} ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-15
+          - target: win32-x64
+            runner: windows-2025
+          - target: win32-arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # The dev extra can build ARM64 sdists during setup-pm itself.
+      - name: Set up native ARM64 build dependencies
+        if: matrix.target == 'win32-arm64'
+        uses: ./.github/actions/setup-windows-build-deps
+
+      - name: Set up tools and dev extra from PM
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '["dev"]'
+          # Each workflow run proves a genuinely cold save followed by a
+          # different runner restoring it. No pre-existing cache can mask it.
+          cache-suffix: smoke-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Verify next-step PATH and exact cache hits
+        shell: bash
+        env:
+          EXPECT_WARM: ${{ inputs.warm }}
+          TOOLS_HIT: ${{ steps.pm.outputs.tools-cache-hit }}
+          PYTHON_HIT: ${{ steps.pm.outputs.python-cache-hit }}
+          NODE_HIT: ${{ steps.pm.outputs.node-cache-hit }}
+        run: |
+          python scripts/ci/verify_toolchain.py --extras
+          python -c 'import os; expected=os.environ["EXPECT_WARM"]=="true"; values={k:os.environ[k]=="true" for k in ("TOOLS_HIT","PYTHON_HIT","NODE_HIT")}; print(values); assert all(v==expected for v in values.values()), values'
+
+      - name: Install the real locked npm workspace
+        shell: bash
+        env:
+          EXPECT_WARM: ${{ inputs.warm }}
+        run: |
+          flags=()
+          if [ "$EXPECT_WARM" = true ]; then flags+=(--offline); fi
+          npm ci --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund ${flags[@]+"${flags[@]}"}
+          node node_modules/vitest/vitest.mjs run --root tests-js setup-pm-post.test.mjs generate-icons.test.mjs
+
+      - name: Run the PM and action contracts
+        shell: bash
+        run: |
+          scripts/run_tests.sh -j 2 tests/scripts/test_setup_toolchain.py tests/pm/test_pm_core.py tests/pm/test_bootstrap_import_closure.py tests/pm/test_uv_cache.py tests/pm/test_windows_build_deps.py
+          python scripts/ci/verify_toolchain.py --extras
+
+      - name: Upload native setup proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pm-toolchain-${{ matrix.target }}-${{ inputs.warm && 'warm' || 'cold' }}
+          path: ${{ runner.temp }}/pm-toolchain-proof.json
+          if-no-files-found: warn
+          retention-days: 7

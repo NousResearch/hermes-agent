@@ -76,7 +76,7 @@ def _str_map(value: object) -> bool:
 
 def _read_json_object(path: Path, *, label: str) -> dict:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AgentPluginError(f"{label} is not valid readable JSON: {exc}") from exc
     if not isinstance(value, dict):
@@ -141,7 +141,7 @@ def _valid_skill_frontmatter(frontmatter: Mapping[str, Any], directory_name: str
 
 def _parse_skill_frontmatter(skill_md: Path) -> dict:
     """Read SKILL.md and return its YAML frontmatter object; raises ValueError/OSError/UnicodeError."""
-    content = skill_md.read_text(encoding="utf-8").lstrip("\ufeff")
+    content = skill_md.read_text(encoding="utf-8-sig").lstrip("\ufeff")
     if not content.startswith("---"):
         raise ValueError("missing YAML frontmatter")
     end_match = re.search(r"\n---\s*\n", content[3:])

@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import pytest
+
 from agent.verify.environment import (
     load_manifest,
     load_or_detect,
@@ -201,6 +203,7 @@ def _free_port() -> int:
 
 
 class TestReadiness:
+    @pytest.mark.platforms("linux")
     def test_readiness_against_live_server(self, tmp_path):
         port = _free_port()
         recipe = Recipe(

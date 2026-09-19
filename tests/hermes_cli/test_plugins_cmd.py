@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
+from tests.pm._fixtures import client, isolated_python  # noqa: F401
+import hermes_yaml as yaml
 
 from hermes_cli.plugins_cmd import (
     PluginOperationError,
@@ -39,18 +40,7 @@ class TestSanitizePluginName:
             _sanitize_plugin_name("../../etc/passwd", tmp_path)
 
 
-
-
-
-
-
     # ── allow_subdir=True ──
-
-
-
-
-
-
 
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
@@ -60,14 +50,10 @@ class TestResolveGitUrl:
     """Shorthand and full-URL resolution, with optional subdirectory."""
 
 
-
-
-
     def test_url_with_fragment_subdir(self):
         url, subdir = _resolve_git_url("https://github.com/owner/repo.git#my-plugin")
         assert url == "https://github.com/owner/repo.git"
         assert subdir == "my-plugin"
-
 
 
     @pytest.mark.parametrize(
@@ -100,7 +86,6 @@ class TestResolveSubdirWithin:
         (tmp_path / "a" / "b" / "c").mkdir(parents=True)
         result = _resolve_subdir_within(tmp_path, "a/b/c")
         assert result == (tmp_path / "a" / "b" / "c").resolve()
-
 
 
     def test_rejects_symlink_escape(self, tmp_path):
@@ -165,23 +150,6 @@ class TestResolveGitExecutable:
         for call in run.call_args_list:
             assert call.args[0][0] == "/resolved/git"
         assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
-
-    def test_git_pull_clean_tree_never_stashes(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(pc, "_resolve_git_executable", return_value="/g"):
-            with patch.object(pc.subprocess, "run") as run:
-                run.side_effect = [
-                    MagicMock(returncode=0, stdout="", stderr=""),      # status
-                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),  # remote get-url
-                    MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
-                ]
-                ok, msg = pc._git_pull_plugin_dir(tmp_path)
-        assert ok is True
-        assert msg == "Updated"
-        commands = [c.args[0][1] for c in run.call_args_list]
-        assert "stash" not in commands
 
 
 class TestGitPullPluginDirAutostash:
@@ -294,6 +262,7 @@ class TestGitPullPluginDirAutostash:
         ok, msg = pc._git_pull_plugin_dir(checkout)
         assert ok is True
         assert "Already up to date" in msg
+        assert git(checkout, "stash", "list").strip() == ""
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -306,8 +275,6 @@ class TestRepoNameFromUrl:
         assert (
             _repo_name_from_url("https://github.com/owner/my-plugin.git") == "my-plugin"
         )
-
-
 
 
 # ── plugins_command dispatch ──────────────────────────────────────────────
@@ -398,30 +365,6 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
-        from hermes_cli.plugins_cmd import cmd_update
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_target.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=True)
-        )
-        mock_sanitize.return_value = mock_target
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
-            MagicMock(returncode=0, stdout="git@example.com:x.git", stderr=""),  # remote get-url
-            MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
-        ]
-
-        cmd_update("test-plugin")
-
-        assert mock_run.call_count == 3
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -447,20 +390,19 @@ class TestCmdUpdate:
 class TestCmdRemove:
     """Test the remove command."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
-    def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
+    def test_remove_deletes_only_the_requested_plugin(self, tmp_path, monkeypatch):
         from hermes_cli.plugins_cmd import cmd_remove
 
-        mock_plugins_dir.return_value = MagicMock()
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_sanitize.return_value = mock_target
-
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "plugins/test-plugin"
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text("name: test-plugin\n", encoding="utf-8")
+        sibling = tmp_path / "plugins/keep/plugin.yaml"
+        sibling.parent.mkdir()
+        sibling.write_text("name: keep\n", encoding="utf-8")
         cmd_remove("test-plugin")
-
-        mock_rmtree.assert_called_once_with(mock_target)
+        assert not target.exists()
+        assert sibling.read_text(encoding="utf-8") == "name: keep\n"
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -478,41 +420,6 @@ class TestCmdRemove:
             cmd_remove("nonexistent-plugin")
 
         assert exc_info.value.code == 1
-
-
-# ── cmd_list tests ─────────────────────────────────────────────────────────
-
-
-class TestCmdList:
-    """Test the list command."""
-
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_list_empty_plugins_dir(self, mock_plugins_dir):
-        from hermes_cli.plugins_cmd import cmd_list
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir_val.iterdir.return_value = []
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-
-        cmd_list()
-
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._read_manifest")
-    def test_list_with_plugins(self, mock_read_manifest, mock_plugins_dir):
-        from hermes_cli.plugins_cmd import cmd_list
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugin_dir = MagicMock()
-        mock_plugin_dir.name = "test-plugin"
-        mock_plugin_dir.is_dir.return_value = True
-        mock_plugin_dir.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=False)
-        )
-        mock_plugins_dir_val.iterdir.return_value = [mock_plugin_dir]
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_read_manifest.return_value = {"name": "test-plugin", "version": "1.0.0"}
-
-        cmd_list()
 
 
 # ── _copy_example_files tests ─────────────────────────────────────────────────
@@ -562,8 +469,6 @@ class TestPromptPluginEnvVars:
     """Tests for _prompt_plugin_env_vars."""
 
 
-
-
     def test_prompts_for_missing_var_rich_format(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
@@ -609,8 +514,6 @@ class TestPromptPluginEnvVars:
         mock_prompt.assert_called_once()
 
 
-
-
 # ── curses_radiolist ─────────────────────────────────────────────────────
 
 
@@ -630,7 +533,6 @@ class TestCursesRadiolist:
 
 class TestProviderDiscovery:
     """Test provider plugin discovery and config helpers."""
-
 
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
@@ -656,19 +558,14 @@ class TestProviderDiscovery:
 # ── Auto-activation fix ──────────────────────────────────────────────────
 
 
-class TestNoAutoActivation:
-    """Verify that plugin engines don't auto-activate when config says 'compressor'."""
-
-    def test_compressor_default_ignores_plugin(self):
-        """When context.engine is 'compressor', a plugin-registered engine should NOT
-        be used — only explicit config triggers plugin engines."""
-        # This tests the run_agent.py logic indirectly by checking that the
-        # code path for default config doesn't call get_plugin_context_engine.
-        import run_agent as ra_module
-        source = Path(ra_module.__file__).read_text(encoding="utf-8")
-        # The old code had: "Even with default config, check if a plugin registered one"
-        # The fix removes this. Verify it's gone.
-        assert "Even with default config, check if a plugin registered one" not in source
+def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
+    from agent.agent_init import _select_context_engine
+    from types import SimpleNamespace
+    candidate = SimpleNamespace(name='offered')
+    monkeypatch.setattr('plugins.context_engine.load_context_engine', lambda _: None)
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
+    assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
+    assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'
 
 
 # ── End-to-end subdirectory install ──────────────────────────────────────────
@@ -724,9 +621,8 @@ class TestSubdirInstallE2E:
         repo_root = tmp_path / "monorepo"
         self._make_repo_with_subdir_plugin(repo_root)
 
-        plugins_dir = tmp_path / "installed"
-        plugins_dir.mkdir()
-        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        plugins_dir = tmp_path / "home/plugins"
+        monkeypatch.setenv("HERMES_HOME", str(plugins_dir.parent))
 
         identifier = f"file://{repo_root}#my-plugin"
         target, manifest, name = pc._install_plugin_core(identifier, force=False)
@@ -784,9 +680,8 @@ class TestSubdirInstallE2E:
         sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
         sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
         sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
-        plugins_dir = tmp_path / "installed"
-        plugins_dir.mkdir()
-        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        plugins_dir = tmp_path / "home/plugins"
+        monkeypatch.setenv("HERMES_HOME", str(plugins_dir.parent))
 
         target, manifest, name = pc._install_plugin_core(
             f"file://{repo_root}", force=False
@@ -798,6 +693,12 @@ class TestSubdirInstallE2E:
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
 
 
+@pytest.fixture
+def prepared_publication(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
+@pytest.mark.usefixtures("prepared_publication")
 class TestReviewedPinScanTrust:
     """A caution-verdict tree installs without a prompt when it is the reviewed catalog pin, still
     prompts/blocks as a raw source or at a different revision, and dangerous blocks regardless."""
@@ -841,6 +742,7 @@ class TestReviewedPinScanTrust:
             pc._install_plugin_core("https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
 
 
+@pytest.mark.usefixtures("prepared_publication")
 class TestInstallReadabilityGate:
     """A clone that lands unreadable is repaired or rolled back, never shipped (#111804)."""
 
@@ -856,7 +758,8 @@ class TestInstallReadabilityGate:
         monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
         monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: None)
 
-    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    @pytest.mark.platforms("posix")
+    @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
     def test_unreadable_file_is_repaired_before_install(self, tmp_path, monkeypatch):
         from hermes_cli import plugins_cmd as pc
 
@@ -870,7 +773,8 @@ class TestInstallReadabilityGate:
         assert name == "badperm"  # manifest read after repair, not the URL fallback
         assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")
 
-    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    @pytest.mark.platforms("posix")
+    @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
     def test_unrepairable_tree_rolls_back_and_names_the_fix(self, tmp_path, monkeypatch):
         from hermes_cli import plugins_cmd as pc
 

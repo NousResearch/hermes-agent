@@ -68,7 +68,7 @@ def test_rename_preserves_profile_local_checkpoint_history(profile_env, tmp_path
         assert str(new_workdir.resolve()) in project_paths
         assert str(workdir.resolve()) not in project_paths
 
-        plan = manager.safe_restore_plan(str(new_workdir), checkpoint_hash)
+        plan = manager._safe_restore_plan(str(new_workdir), checkpoint_hash)
         assert plan["success"] is True
         assert plan["restore"] == ["note.txt"]
         assert plan["skipped"] == []

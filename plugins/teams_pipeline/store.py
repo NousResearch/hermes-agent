@@ -42,9 +42,12 @@ class TeamsPipelineStore:
 
     def _load(self) -> None:
         with self._lock:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}") if self.path.exists() else None
-            if isinstance(data, dict):
-                self._state = {bucket: dict(data.get(bucket) or {}) for bucket in _BUCKETS}
+            if not self.path.exists():
+                return
+            data = json.loads(self.path.read_text(encoding="utf-8-sig") or "{}")
+            if not isinstance(data, dict):
+                return
+            self._state = {bucket: dict(data.get(bucket) or {}) for bucket in _BUCKETS}
 
     def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

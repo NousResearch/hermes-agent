@@ -1,0 +1,770 @@
+"""ensure(): make the installed state match the lockfile for a package,
+and hand back its composed environment."""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import threading
+from contextlib import ExitStack, contextmanager, nullcontext
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from pm import paths
+from pm.downloader import DownloadPaused, ProgressFn
+from pm.lock import Facts, Lockfile
+from pm.package import InstallError, Package, Runner, StatePackage, compose_env
+from pm.registry import get_package, walk
+from pm.store import Store, current_target, merge_tree, tree_digest
+
+LOG = logging.getLogger(__name__)
+
+# ``progress(stage, done, total, label)`` reports download/unpack/verify;
+# multi-archive labels follow lockfile order.
+
+
+def _prepare_artifacts(package, store, scratch, artifacts, version, target, *,
+                       progress=None, pause_event=None, download_progress=None):
+    def tick(done, total, ranges):
+        if progress is not None:
+            active = next(reversed(ranges))
+            index = next(i for i, artifact in enumerate(artifacts) if artifact["url"] == active)
+            label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+            progress("download", done, total, label)
+        if download_progress is not None:
+            download_progress(done, total, ranges)
+
+    staged = scratch / "tree"
+    archives = store.fetch_many(artifacts, scratch, progress=tick, pause_event=pause_event)
+    for index, archive in enumerate(archives):
+        if pause_event is not None and pause_event.is_set():
+            raise DownloadPaused("install paused")
+        if progress is not None:
+            label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+            progress("unpack", 0, 0, label)
+        # unpack empties its destination; extract additional archives separately.
+        destination = staged if index == 0 else scratch / f"extra-{index}"
+        package.unpack(archive, destination, target)
+        if index:
+            merge_tree(destination, staged)
+    package.stage(store, staged, version, target)
+    return staged
+
+
+def _lockfile() -> Lockfile:
+    return Lockfile(paths.lockfile_path())
+
+
+def _facts() -> Facts:
+    return Facts(paths.facts_path())
+
+
+def _store() -> Store:
+    return Store(paths.store_root())
+
+
+def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
+                        verify: bool = False, allow_outdated: bool = False,
+                        roots: tuple[Path, ...] | None = None):
+    """Prefer the current pin. An explicit read may retain a prior PM install."""
+    search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
+    fallback = None
+    for root in search_roots:
+        store = Store(root)
+        facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        fact = facts.get(package.name)
+        if not fact or not facts.installed(package.name, None, root):
+            continue
+        binary = package.binary(store.entry(fact["entry"]), target)
+        if binary is not None and not binary.is_file():
+            continue
+        if verify and not _entry_verified(package, fact, store, target):
+            continue
+        if facts.installed(package.name, lockfile.version(package.name), root,
+                           _identity(lockfile, package.name, target)):
+            return facts, store
+        if (allow_outdated and fact.get("target") == target
+                and fact.get("artifacts") and fact.get("digest")):
+            fallback = facts, store
+    return fallback
+
+
+@dataclass(frozen=True)
+class InstalledPackage:
+    path: Path
+    version: str
+    binary: Path | None
+
+
+def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPackage | None:
+    """Read the selected PM entry without installing or changing its facts."""
+    package = get_package(name)
+    if package.internal:
+        raise ValueError(f"{name} is internal PM tooling, not an application package")
+    target = current_target()
+    location = _installed_location(package, _lockfile(), target, allow_outdated=allow_outdated)
+    if location is None:
+        return None
+    facts, store = location
+    fact = facts.get(name)
+    entry = store.entry(fact["entry"])
+    return InstalledPackage(entry, fact["version"], package.binary(entry, target))
+
+
+def _identity(lockfile: Lockfile, name: str, target: str):
+    """The identity the lock currently pins for `name` on `target`:
+    (target, tuple(artifact sha256s)) — or None when the lock pins no
+    artifacts (nothing digest-bound to compare)."""
+    artifacts = lockfile.artifacts(name, target)
+    if not artifacts:
+        return None
+    return (target, tuple(a["sha256"] for a in artifacts))
+
+
+def lazy_installs_allowed() -> bool:
+    """Policy: may pm install things on demand right now?
+
+    HERMES_DISABLE_LAZY_INSTALLS is an internal bridge var set by the
+    official Docker image and the hermetic test harness. The user-facing
+    setting is security.allow_lazy_installs in config.yaml; a config
+    system that fails to load counts as ALLOWED only when hermes_cli is
+    genuinely absent (bootstrap) — config errors fail closed.
+    """
+    import os
+
+    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return False
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly, require_readable_config_before_write
+    except ModuleNotFoundError as exc:
+        return exc.name in {"hermes_cli", "hermes_cli.config"}
+    except ImportError:
+        return False
+    try:
+        # The normal loader falls back to defaults on invalid YAML. A broken
+        # security policy must not grant permission to acquire dependencies.
+        require_readable_config_before_write()
+        return cfg_get(load_config_readonly(), "security", "allow_lazy_installs", default=True) is True
+    except Exception:
+        return False
+
+
+def enabled_extras() -> list[str]:
+    """The venv extras recorded in the installed state."""
+    fact = Facts(paths.runtime_facts_path()).get("venv") or _facts().get("venv") or {}
+    return list(fact.get("extras", []))
+
+
+def is_installed(name: str) -> bool:
+    return _installed_location(get_package(name), _lockfile(), current_target()) is not None
+
+
+def sealed() -> bool:
+    """Sealed = bundled LAYOUT only: the store sits beside the bundle
+    manifest and is read-only as shipped."""
+    return (paths.store_root().parent / "manifest.json").is_file()
+
+
+def _refuse_lazy(name: str, what: str) -> InstallError:
+    from pm import receipt
+
+    error = InstallError(
+        name,
+        f"not installed and lazy installs are disabled: {what}",
+        "enable security.allow_lazy_installs or run `hermes pm install`",
+    )
+    receipt.record_refusal("lazy-install", str(error))
+    return error
+
+
+def _remove_entry(store: Store, entry_name: str) -> None:
+    """Remove a replaced or failed entry, retrying transient Windows holds.
+
+    Corruption may leave a file where the directory belonged. Failure
+    must propagate so recovery never claims to have removed surviving bytes.
+    """
+    import time
+
+    entry = store.entry(entry_name)
+    for attempt in range(5):
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(entry)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            if attempt == 4:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+
+
+def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
+    """Release this package's archives after publication, under its store lock."""
+    for artifact in artifacts:
+        _remove_entry(store, f"fetch-{artifact['sha256']}")
+
+
+def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
+    """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
+    entry = store.entry(fact["entry"])
+    try:
+        return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+    except OSError:
+        return False
+
+
+def _restore_previous_entry(store: Store, entry, previous) -> None:
+    """Keep both versions recoverable until the restore rename succeeds."""
+    import uuid
+
+    displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
+    had_entry = entry.exists() or entry.is_symlink()
+    if had_entry:
+        entry.rename(displaced)
+    try:
+        previous.rename(entry)
+    except BaseException:
+        if had_entry:
+            displaced.rename(entry)
+        raise
+    if had_entry:
+        _remove_entry(store, displaced.name)
+
+
+@contextmanager
+def _publish_entry(package, store, staged, entry, previous_entry, target):
+    """Keep rollback live through the caller's native facts commit, if any."""
+    if entry.exists() or entry.is_symlink():
+        entry.rename(previous_entry)
+    try:
+        store.publish(staged, entry.name)
+        reason = package.verify(entry, target)
+        if reason:
+            raise InstallError(package.name, f"published entry failed verification: {reason}")
+        yield
+    except BaseException:
+        if previous_entry.exists():
+            _restore_previous_entry(store, entry, previous_entry)
+        raise
+    if previous_entry.exists():
+        _remove_entry(store, previous_entry.name)
+
+
+def _install(
+    package: Package,
+    lockfile: Lockfile,
+    facts: Facts | None,
+    store: Store,
+    target: str,
+    progress=None,
+    pause_event: threading.Event | None = None,
+    download_progress: ProgressFn | None = None,
+    *,
+    copy_from: tuple[Facts, Store] | None = None,
+    _lock_held: bool = False,
+    _fresh_copy: bool = False,
+) -> Path:
+    """Realize one pin. Host installs commit facts; cross-target stages carry a marker."""
+    version = lockfile.version(package.name)
+    if version is None:
+        raise InstallError(
+            package.name, "not in the lockfile", "add it with `hermes pm lock --bump`"
+        )
+
+    reason = package.missing_reason(target)
+    if reason is not None:
+        raise InstallError(package.name, f"unavailable on {target}: {reason}", "none")
+
+    entry_name = package.store_entry(version, target)
+    entry = store.entry(entry_name)
+    if getattr(package, "pin_only", False):
+        return entry
+    artifacts = lockfile.artifacts(package.name, target)
+    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
+
+    with nullcontext() if _lock_held else store.install_lock():
+        if pause_event is not None and pause_event.is_set():
+            raise DownloadPaused("install paused")
+        if facts is not None:
+            facts.reload()
+        previous = facts.get(package.name) if facts is not None else None
+        previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
+        if previous_entry.exists():
+            # Facts commit last. Stages have no host-side commit record, so
+            # an interrupted stage always restores its prior usable bytes.
+            if (previous and previous.get("entry") == entry_name
+                    and _entry_verified(package, previous, store, target)):
+                _remove_entry(store, previous_entry.name)
+            else:
+                _restore_previous_entry(store, entry, previous_entry)
+        if facts is not None:
+            current = previous is not None and facts.installed(
+                package.name, version, store.root, _identity(lockfile, package.name, target)
+            ) and _entry_verified(package, previous, store, target)
+        else:
+            try:
+                recorded = (entry / ".pm-stage-pin.json").read_text(encoding="utf-8-sig")
+            except OSError:
+                recorded = None
+            current = recorded == pin and not package.verify(entry, target)
+        if current and not _fresh_copy:
+            _remove_downloads(store, artifacts)
+            return entry
+        if not artifacts:
+            raise InstallError(
+                package.name,
+                f"no artifact for {target} in the lockfile",
+                "run `hermes pm lock --bump` for this package",
+            )
+        with store.scratch() as scratch:
+            staged = scratch / "tree"
+            try:
+                if copy_from is not None:
+                    source_facts, source_store = copy_from
+                    source = source_facts.get(package.name)
+                    if (not source_facts.installed(package.name, version, source_store.root,
+                                                   _identity(lockfile, package.name, target))
+                            or not _entry_verified(package, source, source_store, target)):
+                        raise InstallError(package.name, "bundled copy source failed verification")
+                    shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
+                    if tree_digest(staged) != source["digest"]:
+                        raise InstallError(package.name, "copied bytes do not match the bundled source")
+                else:
+                    staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
+                                                progress=progress, pause_event=pause_event,
+                                                download_progress=download_progress)
+                if pause_event is not None and pause_event.is_set():
+                    raise DownloadPaused("install paused")
+                if progress is not None:
+                    progress("verify", 0, 0, "")
+                reason = package.verify(staged, target)
+                if reason:
+                    raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                if facts is None:
+                    (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
+                with _publish_entry(package, store, staged, entry, previous_entry, target):
+                    if facts is not None:
+                        facts.record(
+                            package.name, version, entry_name, package.env(entry, target), store.root,
+                            target=target, artifacts=[a["sha256"] for a in artifacts],
+                            digest=tree_digest(entry),
+                        )
+                _remove_downloads(store, artifacts)
+            except (InstallError, DownloadPaused):
+                raise
+            except Exception as e:
+                raise InstallError(package.name, f"install failed: {e}") from e
+
+        if previous and "entry" in previous:
+            # Work item 6: replacing an ESTABLISHED fact is a repair —
+            # log it, no transaction system, no receipt file.
+            old_artifact = (previous.get("artifacts") or ["?"])[0]
+            old = f"{previous.get('version', '?')}/{str(old_artifact)[:12]}"
+            new = (
+                f"{version}/{artifacts[0]['sha256'][:12]}"
+                if artifacts
+                else version
+            )
+            LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
+    return entry
+
+
+def stage_only(
+    name: str, target: str, progress=None, *,
+    pause_event: threading.Event | None = None,
+    download_progress: ProgressFn | None = None,
+) -> Path:
+    """Realize a cross-target pin without host facts or an executable Runner."""
+    return _install(get_package(name), _lockfile(), None, _store(), target,
+                    progress=progress, pause_event=pause_event, download_progress=download_progress)
+
+
+class _InstallOperation:
+    """Validity lasts only while this operation holds the publication lock."""
+
+    def __init__(self) -> None:
+        self.stack = ExitStack()
+        self.store: Store | None = None
+        self.checked: set[tuple[str, str | None, str, str]] = set()
+
+    def lock(self) -> Store:
+        if self.store is None:
+            self.store = Store(paths.writable_store_root())
+            self.stack.enter_context(self.store.install_lock())
+        return self.store
+
+    def close(self) -> None:
+        self.checked.clear()
+        self.store = None
+        self.stack.close()
+
+
+@contextmanager
+def _install_operation():
+    operation = _InstallOperation()
+    try:
+        yield operation
+    finally:
+        operation.close()
+
+
+def ensure(
+    name: str,
+    *,
+    base_env: Optional[dict] = None,
+    explicit: bool = False,
+    progress=None,
+    pause_event: threading.Event | None = None,
+    download_progress: ProgressFn | None = None,
+    _operation: _InstallOperation | None = None,
+) -> Runner:
+    """``explicit`` marks a deliberate install command (`hermes pm
+    install`, `hermes pm bundle`) — those ARE the remedy the lazy-install
+    policy names, so the policy does not apply to them.
+
+    ``progress(stage, done, total, label)`` reports the slow parts of an
+    install to a UI, including ordered multi-archive labels.
+    """
+    if isinstance(get_package(name), StatePackage):
+        if _operation is not None:
+            # Python construction can provision tools itself. Drop both the
+            # lock and its validity before entering that independent operation.
+            _operation.close()
+        sync_venv(explicit=explicit)
+        return Runner(name, compose_env([], base=base_env))
+
+    lockfile = _lockfile()
+    target = current_target()
+    chain = walk([name])
+    checked = _operation.checked if _operation is not None else set()
+    if _operation is not None:
+        _operation.lock()
+    missing = []
+    for package in chain:
+        identity = (package.name, lockfile.version(package.name), target,
+                    json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
+        if identity in checked:
+            continue
+        if _installed_location(package, lockfile, target, verify=explicit) is None:
+            missing.append(package)
+        else:
+            checked.add(identity)
+    if missing and not explicit and not lazy_installs_allowed():
+        raise _refuse_lazy(name, ", ".join(p.name for p in missing))
+    if missing:
+        store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
+        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
+        for package in missing:
+            # Publication may change entries; do not carry observations across it.
+            checked.clear()
+            _install(package, lockfile, facts, store, target, progress=progress,
+                     pause_event=pause_event, download_progress=download_progress,
+                     _lock_held=_operation is not None)
+    return Runner(name, env_for(name, base_env=base_env))
+
+
+def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
+    """Composed env of already-installed packages only. Never installs,
+    never raises on missing packages — they contribute nothing."""
+    lockfile = _lockfile()
+    target = current_target()
+    diffs: list[dict] = []
+    for name in names:
+        try:
+            chain = walk([name])
+        except KeyError:
+            continue
+        for package in chain:
+            if package.internal:
+                continue
+            location = _installed_location(package, lockfile, target)
+            if location:
+                facts, store = location
+                diffs.append(facts.env_for(package.name, store.root))
+    return compose_env(diffs, base=base_env)
+
+
+def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None = None) -> bool:
+    if not isinstance(fact, dict) or fact.get("stamp") != stamp:
+        return False
+    from pm.environments import selected_venv
+
+    try:
+        environment = selected_venv(paths.repo_root() if project_root is None else project_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    recorded = fact.get("environment")
+    if recorded is not None and (not isinstance(recorded, str) or Path(recorded).resolve() != environment):
+        return False
+    return (environment / "pyvenv.cfg").is_file()
+
+
+def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_plugin_dirs=(),
+                    project_root: Path | None = None) -> bool:
+    """Probe the requested union without changing recorded dependency state."""
+    from pm.environments import runtime_facts_path
+    from pm.packages import Venv
+
+    root = paths.repo_root() if project_root is None else Path(project_root).absolute()
+    package = get_package("venv") if project_root is None else Venv(root)
+    fact = Facts(runtime_facts_path(root), strict=True).get("venv")
+    if fact is None:
+        fact = Facts(paths.facts_path(), strict=True).get("venv")
+    if fact is None:
+        return False
+    if (not isinstance(fact, dict) or not isinstance(fact.get("stamp"), str) or not fact["stamp"]
+            or not isinstance(fact.get("extras"), list)
+            or any(not isinstance(extra, str) for extra in fact["extras"])):
+        raise ValueError("invalid recorded dependency state")
+    enabled = sorted(set(fact["extras"]) | set(extras or []))
+    from pm.publication import candidate_members
+    if extra_plugin_dirs and plugin_dirs is not None:
+        raise ValueError("additional candidates require member discovery")
+    members = candidate_members(extra_plugin_dirs) if extra_plugin_dirs else plugin_dirs
+    inputs = {} if members is None else {"plugin_dirs": members}
+    stamp = package.expected_stamp(enabled, **inputs)
+    return _runtime_state_matches(fact, stamp, project_root=root)
+
+
+def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, extra_plugin_dirs=(), selection=None, staged_plugin=None, repair: bool = False) -> None:
+    """Make the venv match uv.lock + the enabled extras. Extras union into
+    the installed state (one ledger); no-op when the stamp already matches.
+    ``repair`` restores the recorded dependency graph into a fresh generation,
+    bypassing both that shortcut and config discovery. It cannot add features.
+    ``explicit`` marks a deliberate install command (`hermes pm install`,
+    `hermes update`) — those are the remedy the lazy-install policy points
+    at, so the policy does not apply to them.
+
+    Lazy installs OFF = the frozen feature set: when
+    security.allow_lazy_installs is false AND the bundle's
+    enabled-features.json exists, the feature list is FROZEN to that file
+    — requested extras outside it are refused, and plugin members are
+    never installed (the bundle IS the install).
+
+    Receipt contract: EVERY outcome writes a receipt. ``begin`` fires
+    BEFORE the frozen/lazy refusals (a refusal is a recorded ``failed``
+    outcome, not a silent raise); finalize runs in FINALLY — no-op syncs
+    ("ok" with ``venv_rebuild`` false) and refusals ("failed") both get
+    a receipt. Plugin selection data is discovered and published by the worker
+    under this lock; no executable transaction phases cross the process boundary."""
+    from pm import receipt
+    from pm.features import read_features
+
+    token = receipt.begin("sync")
+    outcome = "failed"
+    try:
+        if repair and (extras is not None or plugin_dirs is not None or selection is not None or staged_plugin is not None or extra_plugin_dirs):
+            raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
+        if extras:
+            from pm.extras import extra_supported
+            unsupported = [extra for extra in extras
+                           if not extra_supported(extra, importable=lambda _: False)]
+            if unsupported:
+                raise InstallError("venv", f"extras {unsupported} are not supported by this Python/platform",
+                                   "choose a supported provider; no dependency environment was changed")
+        shipped = read_features()
+        frozen = shipped
+        # Without a frozen declaration, explicit source setup needs no policy
+        # read: the config loader initializes/chmods unrelated user state.
+        if frozen is not None and not repair and lazy_installs_allowed():
+            frozen = None
+        if frozen is not None and extras:
+            outside = sorted(set(extras) - set(frozen))
+            if outside:
+                raise _refuse_lazy(
+                    "venv",
+                    f"extras {outside} are outside this bundle's frozen feature "
+                    "set (security.allow_lazy_installs is false)",
+                )
+
+        package = get_package("venv")
+        from hermes_cli.runtime_state import (
+            INSTALL_LOCK_TIMEOUT_SECONDS, runtime_lock, recover_publication, finish_publication)
+        from pm.publication import PluginSelection, StagedPlugin, candidate_members
+        # Holding this lock means rebuilding the whole dependency environment, which takes tens of
+        # seconds on a bundle. Only an install the user asked for may queue for it; an opportunistic
+        # one (a lazy extra at first use, the only non-explicit caller) refuses instead of holding
+        # a sibling profile's backend off its port behind a rebuild it did not request.
+        lock_timeout = None if (explicit or repair) else INSTALL_LOCK_TIMEOUT_SECONDS
+        with runtime_lock(paths.repo_root(), timeout=lock_timeout) as held:
+            if not held:
+                error = InstallError(
+                    "venv",
+                    f"another Hermes process is installing dependencies (waited {INSTALL_LOCK_TIMEOUT_SECONDS:.0f}s)",
+                    "retry in a moment, or run `hermes pm install` to install explicitly",
+                )
+                receipt.record_refusal("install-busy", str(error))
+                raise error
+            recover_publication(paths.repo_root())
+            if sum(value is not None for value in (selection, staged_plugin, plugin_dirs)) + bool(extra_plugin_dirs) > 1:
+                raise ValueError("publication owns plugin member discovery")
+            change = (PluginSelection(selection) if selection is not None else
+                      StagedPlugin(staged_plugin) if staged_plugin is not None else None)
+            if isinstance(change, StagedPlugin) and not change.active:
+                try:
+                    change.publish(paths.repo_root())
+                    finish_publication(paths.repo_root())
+                except BaseException:
+                    recover_publication(paths.repo_root())
+                    raise
+                receipt.record_venv_rebuild(False, "inactive plugin")
+                outcome = "ok"
+                return
+            members = (change.members if change is not None else
+                       candidate_members(extra_plugin_dirs) if extra_plugin_dirs else plugin_dirs)
+            inputs = {} if members is None else {"plugin_dirs": members}
+            facts = Facts(paths.runtime_facts_path(), strict=repair)
+            fact = facts.get("venv") or _facts().get("venv") or {}
+            if repair:
+                if fact and (not isinstance(fact.get("extras"), list)
+                             or any(not isinstance(extra, str) for extra in fact["extras"])
+                             or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
+                    raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
+                enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
+                stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
+                inputs = {"repair": True}
+            else:
+                # The first writable generation replaces, rather than layers on,
+                # the payload. Retain its extras until a recorded selection owns them.
+                enabled = sorted(set(fact.get("extras", shipped or [])) | set(extras or []))
+                stamp = package.expected_stamp(enabled, **inputs)
+            if not repair and not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
+                raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
+            current = not repair and _runtime_state_matches(fact, stamp)
+            receipt.record_feature_list(enabled)
+            try:
+                result = {} if current else (package.apply(enabled, explicit=explicit, **inputs) or {})
+                if not repair and package.expected_stamp(enabled, **inputs) != stamp:
+                    raise ValueError("Dependency inputs changed while preparing publication; retry.")
+                if change is not None:
+                    change.publish(paths.repo_root())
+                if not current:
+                    facts.record_state("venv", stamp, enabled, **result)
+                if change is not None:
+                    finish_publication(paths.repo_root())
+                receipt.record_venv_rebuild(not current, "already in sync" if current else "")
+            except BaseException:
+                recover_publication(paths.repo_root())
+                raise
+        outcome = "ok"
+    except BaseException as exc:
+        receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)
+
+
+def drift() -> dict[str, str]:
+    """Cheap stamp comparisons of the installed state
+    against the lockfile. Maps package names to reasons; empty means healthy. Never
+    installs, never touches the network. An install pm has never touched
+    (no installed-state file) reports nothing — pm only vouches for what
+    it installed. Lockfile packages this build doesn't know (version skew
+    during a partial update) are skipped, not fatal."""
+    if not paths.facts_path().is_file() and not paths.runtime_facts_path().is_file():
+        return {}
+
+    problems: dict[str, str] = {}
+    lockfile = _lockfile()
+    facts = _facts()
+    store = _store()
+    target = current_target()
+    for name in lockfile.names():
+        try:
+            package = get_package(name)
+        except KeyError:
+            continue
+        if package.optional or package.internal:
+            continue
+        if package.missing_reason(target) is not None:
+            continue
+        if _installed_location(package, lockfile, target) is None:
+            problems[name] = "not installed or outdated"
+    try:
+        venv = get_package("venv")
+    except KeyError:
+        venv = None
+    if venv is not None and (paths.runtime_facts_path().is_file() or facts.get("venv") is not None):
+        try:
+            if not venv_is_current():
+                problems["venv"] = "out of sync with uv.lock"
+        except (OSError, RuntimeError, ValueError) as exc:
+            problems["venv"] = str(exc)
+    return problems
+
+
+def check() -> list[str]:
+    """Human-readable startup diagnostics. Use drift() for package identities."""
+    return [f"{name}: {reason}" for name, reason in drift().items()]
+
+
+def _store_path_dirs() -> list[str]:
+    """Composed PATH dirs of all installed (non-internal, on_path) store
+    packages, deps-first, deduped. Includes optional packages that are
+    *installed* (facts say so) — an installed git/gh must be on PATH even
+    though it's not in the root closure. Never installs."""
+
+    lockfile = _lockfile()
+    target = current_target()
+    dirs: list[str] = []
+    for name in lockfile.names():
+        try:
+            package = get_package(name)
+        except KeyError:
+            continue
+        if package.internal:
+            continue
+        if not getattr(package, "on_path", True):
+            continue
+        if package.missing_reason(target) is not None:
+            continue
+        location = _installed_location(package, lockfile, target)
+        if location is None:
+            continue
+        facts, store = location
+        env = facts.env_for(name, store.root)
+        path_dirs = env.get("PATH") or []
+        if isinstance(path_dirs, str):
+            path_dirs = [path_dirs]
+        for directory in path_dirs:
+            if directory and directory not in dirs:
+                dirs.append(str(directory))
+    return dirs
+
+
+def activate() -> list[str]:
+    """Make the installed store usable: prepend its tool dirs to
+    os.environ['PATH'] so reactive `shutil.which('git'|'bash'|'ffmpeg'|...)`
+    resolves the bundled binaries. The gate is `check()` — if the store is
+    broken, refuse to inject (fail fast rather than serving a partial PATH).
+    Return the check's problems, or an empty list on success, so startup
+    callers can report the verdict without checking the store twice.
+
+    This is the ONE sanctioned global PATH write: PATH is the discovery
+    contract every `which` reads, not a tool-specific env leak. Store-first
+    unconditionally — pinned bundled versions win on dev machines too.
+    """
+    import os
+
+    problems = check()
+    if problems:
+        return problems
+    dirs = _store_path_dirs()
+    if not dirs:
+        return []
+    existing = os.environ.get("PATH", "")
+    prefix = os.pathsep.join(dirs)
+    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
+    missing = [d for d in dirs if d.lower() not in existing_lower]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join([*missing, existing]) if existing else os.pathsep.join(missing)
+    return []

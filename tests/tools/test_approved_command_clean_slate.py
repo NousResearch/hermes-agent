@@ -86,6 +86,7 @@ def test_non_approved_command_still_interrupts_on_stale_bit(monkeypatch):
     assert "[Command interrupted]" in result["output"]
 
 
+@pytest.mark.platforms("linux")
 def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
     """The clean-slate clear must NOT make approved commands un-interruptible:
     an interrupt that arrives after execution starts still SIGINTs (130)."""
@@ -112,6 +113,7 @@ def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
     set_interrupt(False, thread_id=t.ident)
 
 
+@pytest.mark.platforms("linux")
 def test_approved_note_enriched_not_misleading_on_interrupt(monkeypatch, tmp_path):
     """On a genuine post-start interrupt of an approved command, the note must
     read '...approved by the user, then interrupted.' — the bare

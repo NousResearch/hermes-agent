@@ -12,7 +12,7 @@ through ``_gateway_config_home()`` like the reads do.
 from __future__ import annotations
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.run import GatewayRunner, _profile_runtime_scope

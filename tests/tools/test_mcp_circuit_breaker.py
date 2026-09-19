@@ -609,4 +609,3 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)
-

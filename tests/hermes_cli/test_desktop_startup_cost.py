@@ -59,7 +59,7 @@ def test_desktop_hash_invalidates_for_edits_even_with_restored_mtime(tmp_path):
     assert desktop._compute_desktop_content_hash(root) != original
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_desktop_hash_detects_memory_mapped_edits(tmp_path):
     import mmap
 
@@ -73,7 +73,7 @@ def test_desktop_hash_detects_memory_mapped_edits(tmp_path):
     assert desktop._compute_desktop_content_hash(root) != original
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_desktop_hash_recovers_after_a_temporary_read_lock(tmp_path):
     import msvcrt
 

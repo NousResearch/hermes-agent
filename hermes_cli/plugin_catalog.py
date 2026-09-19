@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception as exc:
         logger.warning("Plugin catalog: failed to read %s: %s", path, exc)
         return None
@@ -281,7 +281,7 @@ _live_fetch_failed_until = 0.0
 def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
     """A previously fetched copy still beats the in-tree one when the network is down."""
     try:
-        return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
+        return json.loads(cache.read_text(encoding="utf-8-sig")) if cache.is_file() else None
     except Exception:
         return None
 
@@ -296,7 +296,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8"))
+            return json.loads(cache.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:

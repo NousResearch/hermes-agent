@@ -48,7 +48,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     expected = t("gateway.draining", count=1)
     assert result == expected
     # Guard against the silent-degradation regression in #22266: if the i18n
-    # catalog cannot be resolved (e.g. xdist workers losing the locales path)
+    # catalog cannot be resolved (e.g. workers losing the locales path)
     # then ``t("gateway.draining", count=1)`` returns the bare key
     # ``"gateway.draining"`` instead of the formatted English string, and both
     # sides of the equality above would still match. Assert on the catalog
@@ -265,7 +265,7 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
     )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
     """Faking sys.platform="win32" on Linux could not reach the real Windows
@@ -308,7 +308,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert kwargs["stderr"] is subprocess.DEVNULL
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
     """The restart watcher must run sys.executable (console python) under the

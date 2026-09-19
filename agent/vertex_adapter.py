@@ -15,13 +15,15 @@ from typing import Any, Optional, Tuple
 
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
-# The [vertex] extra is not in [all]; install google-auth on demand, else fall through to the ImportError below.
+# Ensure google-auth is installed before importing. The [vertex] extra is no
+# longer in [all] per the lazy-install policy added 2026-05-12 — pm
+# handles on-demand installation so the Vertex provider still works for users
+# who installed plain `hermes-agent` and only later selected a Gemini model.
 try:
-    from tools.lazy_deps import ensure as _lazy_ensure
-    _lazy_ensure("provider.vertex", prompt=False)
+    from pm import ensure_import as _ensure_import
+    _ensure_import("vertex")
 except Exception:
-    pass
-
+    pass  # pm unavailable or install failed — fall through to the real ImportError below
 try:
     import google.auth
     import google.auth.transport.requests

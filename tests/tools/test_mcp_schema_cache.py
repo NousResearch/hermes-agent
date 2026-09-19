@@ -4,6 +4,8 @@ The module landed in #56832's extraction without its tests; these cover the
 fingerprint keying, read/write round-trip, and invalidation behavior.
 """
 
+import pytest
+
 import tools.mcp_schema_cache as msc
 from tools import mcp_tool_registration as _mcp_registration
 
@@ -68,6 +70,7 @@ class TestCacheRoundTrip:
 
 
 class TestCacheFileLocation:
+    @pytest.mark.platforms("linux")
     def test_cache_lives_under_hermes_home_cache_dir_with_0600(
         self, monkeypatch, tmp_path
     ):

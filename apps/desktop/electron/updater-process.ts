@@ -1,26 +1,99 @@
-import { spawn, type SpawnOptions } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { execFileSync, spawn, type SpawnOptions } from 'node:child_process'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
-import { resolveVenvDir } from './venv-blocker-scan'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+/** Historical layouts still matter when uninstalling or migrating a source install. */
+export function resolveVenvDir(updateRoot: string): string {
+  for (const name of ['venv', '.venv']) {
+    const candidate: string = path.join(updateRoot, name)
 
-/** File prerequisites only: dependency recovery must remain reachable through update. */
-export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
-  const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
-  const required = [path.join(resolveVenvDir(updateRoot), 'Scripts', 'python.exe')]
-
-  // Pre-reorg flat scripts remain supported; damaged modern trees do not.
-  if (existsSync(maintainedDir)) {
-    required.push(path.join(maintainedDir, 'windows.ps1'))
+    try {
+      if (statSync(candidate).isDirectory()) {
+        return candidate
+      }
+    } catch {
+      // Try the other supported layout, then retain the legacy diagnostic path.
+    }
   }
 
-  for (const candidate of required) {
-    if (stagedFileExists(candidate)) {
-      continue
-    }
+  return path.join(updateRoot, 'venv')
+}
+import { hiddenWindowsChildOptions } from './windows-child-options'
 
-    return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+/** Exact installation identity; PATH may refer to another checkout. */
+export function resolveInstallationLauncher(updateRoot: string, isWindows: boolean = process.platform === 'win32', hermesHome: string = process.env.HERMES_HOME ?? ''): string | null {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+
+  for (const name of names) {
+    const candidate: string = path.join(updateRoot, '.hermes', 'bin', name)
+
+    if (stagedFileExists(candidate)) { return candidate }
+  }
+
+  // Earlier PM installers published only to user-bin. Trust that historical
+  // launcher only after its existing version surface proves exact source identity.
+  if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
+    const defaultHome: string = isWindows
+      ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'hermes')
+      : path.join(os.homedir(), '.hermes')
+
+    const dirs: string[] = isWindows
+      ? [path.join(hermesHome || defaultHome, 'bin'), path.join(defaultHome, 'bin'), path.join(path.dirname(updateRoot), 'bin')]
+      : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin')]
+
+    for (const dir of new Set(dirs)) {
+      for (const name of names) {
+        const candidate: string = path.join(dir, name)
+
+        if (stagedFileExists(candidate) && launcherTargetsInstallation(candidate, updateRoot)) { return candidate }
+      }
+    }
+  }
+
+  // An old shim is a migration rung, never a damaged PM install fallback.
+  if (!existsSync(path.join(updateRoot, 'pm'))) {
+    const legacy: string = path.join(updateRoot, 'venv', isWindows ? 'Scripts' : 'bin', names[0])
+
+    if (stagedFileExists(legacy)) { return legacy }
+  }
+
+  return null
+}
+
+export function launcherTargetsInstallation(launcher: string, root: string): boolean {
+  try {
+    const shell: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
+
+    const output: string = execFileSync(shell ? `"${launcher}"` : launcher, ['--version'], {
+      cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true, shell,
+      env: { ...process.env, HERMES_INSTALL_ROOT: root }
+    })
+
+    const reported: string | undefined = /^Install directory: (.+)$/m.exec(output)?.[1]?.trim()
+
+    return reported !== undefined && realpathSync(reported) === realpathSync(root)
+  } catch {
+    return false
+  }
+}
+
+/** File prerequisites only: dependency recovery remains reachable through update. */
+export function windowsUpdatePrerequisiteError(updateRoot: string, hermesHome?: string): string | null {
+  if (!resolveInstallationLauncher(updateRoot, true, hermesHome)) {
+    return `Update aborted: the installation launcher under ${updateRoot} is missing. Repair this installation before retrying.`
+  }
+
+  const maintainedDir: string = path.join(updateRoot, 'scripts', 'desktop-update')
+
+  if (existsSync(maintainedDir)) {
+    for (const name of ['windows.ps1']) {
+      const candidate: string = path.join(maintainedDir, name)
+
+      if (!stagedFileExists(candidate)) {
+        return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+      }
+    }
   }
 
   return null

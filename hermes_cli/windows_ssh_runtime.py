@@ -341,34 +341,25 @@ def terminate_owned(pid: int, creation_time_ns: int, hermes_path: str, spawn_non
     return True
 
 
-def _resolve_direct_interpreter(python_entry: str) -> tuple[str, list[str]]:
-    """Resolve the venv launcher to (base interpreter, sys.path to reproduce).
+def _resolve_direct_command(hermes_path: str) -> list[str]:
+    """Ask the configured installation for its direct, boot-selecting command.
 
-    On Windows a venv Scripts\\python.exe is a stub that spawns the real interpreter as a CHILD
-    (two PIDs); spawning the base interpreter with the launcher's sys.path injected yields ONE
-    process that both owns the port and is the one we lock. hermes_cli's parent is prepended
-    because the launcher finds it via cwd / an editable-install hook a bare PYTHONPATH lacks."""
-    query = (
-        "import sys,json,os,importlib.util as u;"
-        "s=u.find_spec('hermes_cli');"
-        "root=os.path.dirname(os.path.dirname(s.origin)) if s and s.origin else '';"
-        "print(json.dumps({'base':getattr(sys,'_base_executable','') or sys.executable,"
-        "'path':[p for p in sys.path if p],'root':root}))")
-    out = subprocess.run([python_entry, "-c", query], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    The port owner must be the process we lock, not a console-launcher child.
+    No assumption about python.exe beside an external bin launcher is valid.
+    """
+    out = subprocess.run([hermes_path, "--print-runtime-command"], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace", timeout=30)
     if out.returncode != 0:
-        raise ValueError("could not resolve the base Python interpreter")
-    info = json.loads(out.stdout.strip().splitlines()[-1])
-    base = info["base"]
-    if not base or not os.path.isfile(base):
-        raise ValueError("base Python interpreter was not found")
-    # keep only real filesystem entries (drops '__editable__.*' finder markers)
-    py_path = [p for p in info.get("path", []) if os.path.exists(p)]
-    root = info.get("root") or ""
-    if not root or not os.path.isdir(root):
-        raise ValueError("could not locate the hermes_cli package")
-    if root not in py_path:
-        py_path.insert(0, root)
-    return base, py_path
+        raise ValueError("could not resolve Hermes runtime; refresh this installation's launcher")
+    try:
+        command = json.loads(out.stdout)
+    except ValueError as exc:
+        raise ValueError("Hermes launcher did not report a runtime command") from exc
+    if (not isinstance(command, list) or not command
+            or not all(isinstance(part, str) and "\x00" not in part for part in command)
+            or not os.path.isabs(command[0]) or not os.path.isfile(command[0])):
+        raise ValueError("Hermes launcher reported an invalid runtime command")
+    return command
 
 
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
@@ -382,24 +373,13 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     profile = str(payload.get("profile") or "")
     if len(profile) > 256 or any(ch in profile for ch in "\x00\r\n"):
         raise ValueError("invalid profile")
-    venv_dir = os.path.dirname(hermes_path)
-    python_entry = os.path.join(venv_dir, "python.exe")
-    if not os.path.isfile(python_entry):
-        raise ValueError("Hermes Python runtime was not found")
-    base_python, sys_path = _resolve_direct_interpreter(python_entry)
-    # Seed sys.path IN-PROCESS via -c rather than PYTHONPATH, which every subprocess the backend
-    # spawns (terminal tool, user scripts) would inherit, shadowing their imports.
-    bootstrap = (
-        "import sys,runpy;"
-        f"sys.path[:0]={sys_path!r};"
-        "runpy.run_module('hermes_cli.main',run_name='__main__',alter_sys=True)")
-    args = [base_python, "-c", bootstrap]
+    args = _resolve_direct_command(hermes_path)
     if profile:
         args.extend(["--profile", profile])
     args.extend(["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                  "--ssh-session-token-file", token_path, "--ssh-owner-nonce", spawn_nonce])
     env = dict(os.environ)
-    env["VIRTUAL_ENV"] = os.path.dirname(venv_dir)
+    env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONPATH", None)
     _ensure_scope(ownership_id)
     log_path = _log_path(ownership_id, spawn_nonce)

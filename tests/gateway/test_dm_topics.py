@@ -170,7 +170,7 @@ async def test_ensure_dm_topic_creates_on_demand_and_persists():
 
 def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     """Should write thread_id into the correct topic in config.yaml."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -193,7 +193,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     adapter = _make_adapter()
 
@@ -214,7 +214,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
 
 def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
     """Failed writes should leave the original config.yaml intact."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -235,7 +235,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
-    original_text = yaml.dump(config_data)
+    original_text = yaml.safe_dump(config_data)
     config_file.write_text(original_text, encoding="utf-8")
 
     adapter = _make_adapter()
@@ -245,7 +245,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
-         patch("yaml.dump", side_effect=fail_dump):
+         patch("hermes_yaml.safe_dump", side_effect=fail_dump):
         adapter._persist_dm_topic_thread_id(111, "General", 999)
 
     assert config_file.read_text(encoding="utf-8") == original_text
@@ -275,7 +275,7 @@ def test_get_dm_topic_info_finds_cached_topic():
 
 def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     """Should find a topic added to config after startup (hot-reload)."""
-    import yaml
+    import hermes_yaml as yaml
 
     # Start with empty topics
     adapter = _make_adapter([
@@ -302,7 +302,7 @@ def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):

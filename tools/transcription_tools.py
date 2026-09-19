@@ -156,10 +156,16 @@ def _resolve_explicit_openai() -> str:
 
 
 def _detect_local_backend() -> Optional[str]:
-    """faster-whisper > local whisper CLI > lazy-installed faster-whisper; None when nothing local works."""
+    """faster-whisper > local whisper CLI; None when no local backend is installed.
+
+    Resolution only — it must never install. Asking a status probe to resolve the provider used
+    to run a full dependency sync here (``_try_lazy_install_stt`` → ``pm.ensure_import``) under
+    the per-install lock, so ``wake.status`` and ``/voice status`` could hold a sibling profile's
+    backend off its port for the length of a venv rebuild. A missing faster-whisper now reports
+    unavailable; the install happens on first transcription, in ``_transcribe_local``."""
     if _HAS_FASTER_WHISPER:
         return "local"
-    return "local_command" if _has_local_command() else ("local" if _try_lazy_install_stt() else None)
+    return "local_command" if _has_local_command() else None
 
 
 def _resolve_explicit_local() -> str:

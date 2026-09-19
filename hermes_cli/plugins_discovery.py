@@ -109,7 +109,12 @@ def scan_directory(
     manifests: List[PluginManifest] = []
     if not path.is_dir():
         return manifests
-    for child in sorted(path.iterdir()):
+    try:
+        children = sorted(path.iterdir())
+    except OSError as exc:
+        logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
+        return manifests
+    for child in children:
         try:
             if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
                 continue

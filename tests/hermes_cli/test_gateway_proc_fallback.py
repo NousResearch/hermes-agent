@@ -13,6 +13,8 @@ import pytest
 
 import hermes_cli.gateway as gateway_mod
 
+pytestmark = pytest.mark.platforms("linux")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,7 +55,6 @@ def _fake_proc_dir(entries: dict):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.linux_only
 class TestProcFallback:
     """_scan_gateway_pids reads /proc when available, skips ps.
 

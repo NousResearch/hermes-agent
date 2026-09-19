@@ -34,7 +34,7 @@ Usa cualquier modelo que quieras — [Nous Portal](https://portal.nousresearch.c
 
 ## Instalación rápida
 
-### Linux, macOS, WSL2, Termux
+### Linux, macOS, WSL2
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -50,11 +50,12 @@ Ejecuta esto en PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-El instalador se encarga de todo: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **y un Git Bash portátil** (MinGit, descomprimido en `%LOCALAPPDATA%\hermes\git` — no requiere administrador, completamente aislado de cualquier instalación de Git del sistema). Hermes usa este Git Bash incluido para ejecutar comandos de shell.
+El instalador de código fuente usa PM para Python 3.14, Node.js, npm,
+ripgrep, FFmpeg y las dependencias de Python. Si falta Git, descarga el archivo
+verificado de Git for Windows en el almacén de Hermes, sin reemplazar el Git
+del sistema. MSIX/App Installer es una distribución separada.
 
-Si ya tienes Git instalado, el instalador lo detecta y lo usa en su lugar. De lo contrario, una descarga de ~45MB de MinGit es todo lo que necesitas — no tocará ni interferirá con ningún Git del sistema.
-
-> **Android / Termux:** La ruta manual probada está documentada en la [guía de Termux](https://hermes-agent.nousresearch.com/docs/getting-started/termux). En Termux, Hermes instala el extra `.[termux]` curado porque el extra completo `.[all]` actualmente incluye dependencias de voz incompatibles con Android.
+> **Android / Termux:** Hay un paquete APT en pruebas para dispositivos aarch64. Incluye Python, Node.js y la TUI. Sigue la [guía de Termux](https://hermes-agent.nousresearch.com/docs/getting-started/termux), no el script de instalación para escritorio y servidor.
 >
 > **Windows:** Windows nativo es totalmente compatible — el comando de PowerShell de arriba instala todo. Si prefieres usar WSL2, el comando de Linux también funciona allí. La instalación nativa de Windows se encuentra en `%LOCALAPPDATA%\hermes`; WSL2 instala en `~/.hermes` como en Linux.
 
@@ -182,24 +183,8 @@ Consulta `hermes claw migrate --help` para todas las opciones, o usa la habilida
 
 ¡Las contribuciones son bienvenidas! Consulta la [Guía de Contribución](CONTRIBUTING.es.md) para la configuración del desarrollo, el estilo de código y el proceso de PR.
 
-Inicio rápido para colaboradores — clona y comienza con `setup-hermes.sh`:
-
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # instala uv, crea venv, instala .[all], enlaza ~/.local/bin/hermes
-./hermes              # detecta automáticamente el venv, no necesitas hacer `source` primero
-```
-
-Ruta manual (equivalente a lo anterior):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
+La configuración de PM, el entorno de pruebas con Python 3.14 y los comandos
+de verificación están en [Development Setup](CONTRIBUTING.md#development-setup).
 
 ---
 

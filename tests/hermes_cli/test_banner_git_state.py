@@ -35,97 +35,10 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
             raise AssertionError(f"unexpected command: {cmd}")
         return results[key]
 
-    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+    with patch("hermes_cli.source_check.subprocess.run", side_effect=fake_run):
         state = banner.get_git_banner_state(repo_dir)
 
     assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
-
-
-def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
-    """SSH fast path must not report an ahead (carried) HEAD as behind.
-
-    A carried local commit means tip SHAs differ, but the fresh upstream tip
-    is an ancestor of HEAD — that is "ahead", and reporting it as behind
-    nudges the user into `hermes update`, which can wipe the carried work.
-    """
-    from unittest.mock import MagicMock
-
-    from hermes_cli import banner
-
-    repo_dir = tmp_path / "repo"
-    (repo_dir / ".git").mkdir(parents=True)
-
-    def fake_git_stdout(args, *, cwd, timeout=5, network=False):
-        if args == ["remote", "get-url", "origin"]:
-            return "git@github.com:NousResearch/hermes-agent.git"
-        if args == ["rev-parse", "HEAD"]:
-            return "b" * 40  # carried commit, differs from upstream tip
-        raise AssertionError(f"unexpected git call: {args}")
-
-    with (
-        patch.object(banner, "_git_stdout", side_effect=fake_git_stdout),
-        patch.object(banner, "_github_branch_tip", return_value="a" * 40),
-        # merge-base --is-ancestor exits 0: upstream tip IS an ancestor of HEAD
-        patch.object(banner.subprocess, "run", return_value=MagicMock(returncode=0)),
-    ):
-        behind = banner._check_via_local_git(repo_dir)
-
-    assert behind == 0
-
-
-def test_check_via_local_git_ssh_fastpath_genuinely_behind(tmp_path):
-    """SSH fast path reports the exact count (compare API) when behind."""
-    from unittest.mock import MagicMock
-
-    from hermes_cli import banner
-
-    repo_dir = tmp_path / "repo"
-    (repo_dir / ".git").mkdir(parents=True)
-
-    def fake_git_stdout(args, *, cwd, timeout=5, network=False):
-        if args == ["remote", "get-url", "origin"]:
-            return "git@github.com:NousResearch/hermes-agent.git"
-        if args == ["rev-parse", "HEAD"]:
-            return "b" * 40
-        raise AssertionError(f"unexpected git call: {args}")
-
-    with (
-        patch.object(banner, "_git_stdout", side_effect=fake_git_stdout),
-        patch.object(banner, "_github_branch_tip", return_value="a" * 40),
-        # merge-base --is-ancestor exits 1: not an ancestor -> genuinely behind
-        patch.object(banner.subprocess, "run", return_value=MagicMock(returncode=1)),
-        patch.object(banner, "_github_compare_behind", return_value=3),
-    ):
-        behind = banner._check_via_local_git(repo_dir)
-
-    assert behind == 3
-
-
-def test_check_via_local_git_ssh_fastpath_offline_keeps_sentinel(tmp_path):
-    """Behind + compare API unreachable = honest no-count sentinel, never 1."""
-    from unittest.mock import MagicMock
-
-    from hermes_cli import banner
-
-    repo_dir = tmp_path / "repo"
-    (repo_dir / ".git").mkdir(parents=True)
-
-    def fake_git_stdout(args, *, cwd, timeout=5, network=False):
-        if args == ["remote", "get-url", "origin"]:
-            return "git@github.com:NousResearch/hermes-agent.git"
-        if args == ["rev-parse", "HEAD"]:
-            return "b" * 40
-        raise AssertionError(f"unexpected git call: {args}")
-
-    with (
-        patch.object(banner, "_git_stdout", side_effect=fake_git_stdout),
-        patch.object(banner, "_github_branch_tip", return_value="a" * 40),
-        patch.object(banner.subprocess, "run", return_value=MagicMock(returncode=1)),
-        patch.object(banner, "_github_compare_behind", return_value=None),
-    ):
-        behind = banner._check_via_local_git(repo_dir)
-
-    assert behind == banner.UPDATE_AVAILABLE_NO_COUNT
 
 
 def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, monkeypatch):
@@ -173,7 +86,8 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
     monkeypatch.setenv("USERPROFILE", str(home))  # Git for Windows resolves global config here too
 
     calls = []
-    real_run = banner.subprocess.run
+    from hermes_cli import source_check
+    real_run = source_check.subprocess.run
 
     def spy_run(args, **kwargs):
         calls.append((list(args), kwargs))
@@ -181,10 +95,10 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
             raise AssertionError(f"a GitHub origin must be probed via the API, not git {args[1]}")
         return real_run(args, **kwargs)
 
-    monkeypatch.setattr(banner.subprocess, "run", spy_run)
-    monkeypatch.setattr(banner, "_github_branch_tip", lambda slug, branch: head_sha)
+    monkeypatch.setattr(source_check.subprocess, "run", spy_run)
+    monkeypatch.setattr(source_check, "_branch_tip", lambda *args: (head_sha, False))
 
-    behind = banner._check_via_local_git(repo_dir)
+    behind = source_check.check_for_updates(install_root=repo_dir, branch="main").get("behind")
 
     # Same upstream tip as HEAD: the SSH fast path concludes "not behind".
     assert behind == 0

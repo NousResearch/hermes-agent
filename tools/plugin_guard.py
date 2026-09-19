@@ -142,7 +142,7 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     conservative severity.
     """
     try:
-        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        tree = ast.parse(file_path.read_text(encoding="utf-8-sig"))
     except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
         return set()
     lines: set[int] = set()

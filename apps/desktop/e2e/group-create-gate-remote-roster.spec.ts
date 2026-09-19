@@ -12,15 +12,14 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
   type Sandbox,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
+  waitForAppReady
 } from './fixtures'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'

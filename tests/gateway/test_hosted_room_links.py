@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 
 from gateway.hosted_room_links import (
@@ -35,7 +36,6 @@ def test_room_link_store_is_private_transactional_and_upserted(tmp_path):
         trace_id="trace-1",
     )
     save_room_link(path, first)
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert load_room_links(path) == (first,)
 
     replacement = make_stored_link(
@@ -50,6 +50,17 @@ def test_room_link_store_is_private_transactional_and_upserted(tmp_path):
     )
     save_room_link(path, replacement)
     assert load_room_links(path) == (replacement,)
+
+
+@pytest.mark.platforms("posix")
+def test_room_link_store_has_owner_only_mode(tmp_path):
+    path = tmp_path / "state.db"
+    save_room_link(path, make_stored_link(
+        room_id="room", member_id="member", target_url="https://peer.example.test",
+        target_profile="default", grant="grant", catalog=_catalog(),
+        cancellation_scope_id="cancel", trace_id="trace",
+    ))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_room_link_store_keeps_distinct_room_member_routes(tmp_path):

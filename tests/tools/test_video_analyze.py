@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
@@ -145,6 +146,7 @@ class TestVideoAnalyzeTool:
         assert data["success"] is True
         assert "demo" in data["analysis"].lower()
 
+    @pytest.mark.require_symlinks
     def test_local_file_read_guard_blocks_env_via_video_extension(self, tmp_path):
         """A .env file symlinked with a video extension must still be blocked.
 

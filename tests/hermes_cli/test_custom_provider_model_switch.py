@@ -38,7 +38,7 @@ class TestCustomProviderModelSwitch:
     ):
         """Switching custom endpoints must not leave the old model.api_key
         credential selectable from the previous endpoint's pool."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.credential_pool import load_pool
         from hermes_cli.auth import read_credential_pool, write_credential_pool
         from hermes_cli.model_setup_flows import _model_flow_custom
@@ -121,7 +121,7 @@ class TestCustomProviderModelSwitch:
 
     def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
         """Selecting an env-backed custom provider must not inline the secret."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
@@ -164,7 +164,7 @@ class TestCustomProviderModelSwitch:
 
     def test_key_env_custom_provider_persists_reference_not_secret(self, config_home, monkeypatch):
         """key_env custom providers should also avoid writing plaintext keys."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
@@ -211,7 +211,7 @@ class TestCustomProviderModelSwitch:
         ``api_key_ref`` to stay empty and the resolved secret to be written to
         ``config.yaml``. This test drives the real picker-callsite code path.
         """
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.main import select_provider_and_model
 
         config_path = config_home / "config.yaml"
@@ -279,7 +279,7 @@ class TestCustomProviderModelSwitch:
         ``key_env``; the runtime resolves it directly, so no inline
         ``api_key`` belongs on disk.
         """
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
@@ -393,7 +393,7 @@ class TestCustomProviderModelSwitch:
         """A ``providers:`` entry that already has an inline ``api_key``
         template must keep it untouched. Only entries that never declared
         an ``api_key`` should skip the write."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
@@ -470,7 +470,7 @@ class TestCustomProviderDiscoverModels:
 
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
         """User picks the 2nd configured model; it persists, list-driven."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         provider_info = {
@@ -498,7 +498,7 @@ class TestCustomProviderDiscoverModels:
     def test_probe_empty_falls_back_to_configured_list(self, config_home):
         """When discovery is on but the probe returns nothing, fall back to the
         configured models: list instead of forcing manual entry."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         provider_info = {

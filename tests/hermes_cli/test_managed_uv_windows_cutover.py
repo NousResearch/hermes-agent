@@ -29,7 +29,7 @@ def _info(exe: Path, version: tuple[int, int, int], sqlite: str) -> SQLiteRuntim
         sqlite_version_string=sqlite, sqlite_source_id=sqlite)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_runtime_config_cutover_repoints_a_running_venv(tmp_path: Path, monkeypatch) -> None:
     from hermes_cli import managed_uv
 

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Run a repo Python script under the activated Hermes environment.
+#
+# Shebang target for POSIX scripts:
+#     #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#
+# The kernel appends the invoking script, so `$1` is the Python file to run
+# and `$@` its arguments. Activates when there is no environment to inherit, or
+# when the inherited one predates its inputs; then execs the interpreter on the
+# same file, so tracebacks and __file__ point at the real script.
+set -u
+
+target=${1:-}
+if [ -z "$target" ]; then
+    printf 'usage: %s <script.py> [args...]\n' "$0" >&2
+    exit 2
+fi
+shift
+
+_here="$(cd "$(dirname "$target")" && pwd)"
+while [ "$_here" != / ] && [ ! -f "$_here/activate" ]; do _here="$(dirname "$_here")"; done
+if [ ! -f "$_here/activate" ]; then
+    printf '%s: no activate script above %s\n' "$0" "$target" >&2
+    exit 1
+fi
+
+# __HERMES_ACTIVATED holds the installed-state file the environment was built
+# against, so `-nt` against the inputs that decide the dependency set answers
+# "is the inherited environment stale". `[ -nt ]` is a bash builtin — no
+# process spawn — and pm rewrites that file on every real sync while no-oping
+# otherwise, so one re-activation settles this back to current rather than
+# re-syncing on every run. A path that no longer exists (or a legacy literal
+# "1") fails `-e` and activates.
+_needs_activation=1
+if [ -n "${__HERMES_ACTIVATED:-}" ] && [ -e "${__HERMES_ACTIVATED}" ]; then
+    _needs_activation=0
+    for _input in uv.lock pyproject.toml pm/lock.json; do
+        if [ "$_here/$_input" -nt "$__HERMES_ACTIVATED" ]; then
+            _needs_activation=1
+            break
+        fi
+    done
+fi
+
+if [ "$_needs_activation" = 1 ]; then
+    # shellcheck source=/dev/null
+    . "$_here/activate" || exit 1
+fi
+
+exec python3 "$target" "$@"

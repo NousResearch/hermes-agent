@@ -59,7 +59,7 @@ def _verify_packaged_entry(resources: Path) -> None:
 
     index = resources / "app.asar.unpacked" / "dist" / "index.html"
     try:
-        html = index.read_text(encoding="utf-8")
+        html = index.read_text(encoding="utf-8-sig")
         if not any(_MODULE_TAG.search(match.group(0))
                    and match.group(0).lower().startswith("<script")
                    and not re.match(r"^[a-z]+:|^//", match.group(1), re.IGNORECASE)
@@ -93,3 +93,7 @@ def verify_windows_desktop_update(project_root: Path | None = None) -> None:
     _verify_packaged_entry(executable.parent / "resources")
     if _desktop_build_needed(desktop, project_root, source_mode=False):
         raise RuntimeError("The updated Desktop build is stale, unstamped, or incomplete")
+
+
+if __name__ == "__main__":
+    verify_windows_desktop_update()

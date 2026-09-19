@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 def _yaml_error(text: str = "model:\n  default: x\n bad: [unterminated\n") -> Exception:

@@ -306,7 +306,7 @@ def capture_before(
 def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Read the ledger, newest first. Malformed lines are skipped."""
     try:
-        lines = ledger_path().read_text(encoding="utf-8").splitlines()
+        lines = ledger_path().read_text(encoding="utf-8-sig").splitlines()
     except OSError:  # missing or unreadable ledger == empty
         return []
     rows: List[Dict[str, Any]] = []

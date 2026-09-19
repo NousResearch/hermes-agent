@@ -11,7 +11,7 @@ These tests pin the gating predicate and the resulting binding behavior.
 ``_preserve_ctrl_enter_newline()`` short-circuits to True on native Windows
 before it ever looks at the environment, so the env-driven cases below are
 POSIX assertions and run on the Linux job. The native-Windows short-circuit
-is marked ``windows_only`` and asserted on the real host — patching
+is marked ``platforms("windows")`` and asserted on the real host — patching
 ``sys.platform`` to ``"win32"`` here would only re-assert the literal in the
 ``if``, on an interpreter where none of the Windows terminal behaviour it
 exists for is present.
@@ -52,7 +52,7 @@ def _bind_submit_keys_for_local_linux(cli_mod, *, multiline_shortcuts_enabled):
                 return kb
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_windows_preserves_newline():
     import cli as cli_mod
 
@@ -211,11 +211,11 @@ def test_non_ghostty_terminals_still_push_kitty_protocol():
     assert b"\x1b[>4;2m" in out.written
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_proc_version_microsoft_marker_preserves_newline():
     """WSL detection via /proc when env vars are scrubbed (sudo etc.).
 
-    ``linux_only``: the fallback reads ``/proc/version`` — a Linux-only
+    ``platforms("linux")``: the fallback reads ``/proc/version`` — a Linux-only
     interface, and the WSL kernels it sniffs for are Linux kernels.
     """
     import cli as cli_mod

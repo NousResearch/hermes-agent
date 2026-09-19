@@ -57,16 +57,16 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
 - **config.yaml option:** add to `DEFAULT_CONFIG`. Bump `_config_version` ONLY to actively
   migrate/transform existing config (rename keys, restructure); new keys deep-merge automatically.
   Top-level sections (non-exhaustive): `model, agent, terminal, compression, display, stt, tts,
-  memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
-  gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
+memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
+gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
   (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
-  archive_after_days, backup.*`.
+archive_after_days, backup.*`.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with
   `{"description", "prompt", "url", "password": True, "category": provider|tool|messaging|setting}`.
   Non-secret settings go in config.yaml; if internal code needs an env mirror, bridge it in code
   (`gateway_timeout`; `terminal.cwd` → `TERMINAL_CWD`). `MESSAGING_CWD` is removed and `TERMINAL_CWD`
   in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`. `hermes config
-  set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
+set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
   (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
   file the platform setup flows write — never to the top level of config.yaml.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
@@ -127,25 +127,21 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (exit 1) — automation must never treat a mixed-version fleet as healthy.
 - **Report**: every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/`
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
-  Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
-  refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt is opened by
-  the pre-swap process and finished by the post-swap child (below): `detach_update_receipt` /
-  `resume_update_receipt` carry it across, so one run still yields exactly one receipt. A write
-  failure prints `⚠ Update receipt not written` and logs at WARNING, never debug.
-- **Nothing runs pulled code in the pre-pull interpreter** (`update_handoff.py`). The process that
-  started `hermes update` imported the PRE-pull tree; once git (or the ZIP swap) has replaced the
-  checkout it stops, writes the hand-off payload (open receipt, pre-update plan, pre-update
-  version/active features, Windows pause token) and re-executes
-  `hermes update <same flags> --post-swap <file>` under the venv interpreter, which imports only the
-  pulled tree and owns the tail (deps, Node/web/Desktop, maintenance, config migration, fleet
-  restart, verification, receipt); the parent relays the exit code. Every "purge `sys.modules`" /
-  "reload this list of modules" / "isolate this one step" fix was a symptom of the old shape and is
-  gone — do not reintroduce one: a phase that needs new code runs in the child, full stop. Mocked
-  updater tests run the tail in-process via the `_inline_post_swap_handoff` autouse fixture
-  (`@pytest.mark.real_post_swap_handoff` opts out). Live A/B:
-  `evals/update_pipeline/post_swap_handoff_ab.sh`. Post-update steps still isolate their own
-  failures (a crashed notice must not abort the fleet matrix and receipt finalize that follow).
+  Before a source swap, the parent captures plan/snapshots/receipt and its Windows pause token.
+  `update_completion.py` runs new-code PM preparation with site initialization disabled, then
+  selected-Python builds, maintenance, scans/restarts and verification. Git/current/ZIP share
+  this owner; never reload or purge modules to continue in the old interpreter. The parent keeps
+  the lock, waits, and accepts only a correlated terminal result. `cmd_update` still finalizes
+  early failures and missing/killed-child outcomes; PM refusal data survives the handoff.
+  See `docs/source-update-completion.md`. A begun-but-unwritten receipt is a bug.
+- **Nothing runs pulled code in the pre-pull interpreter.** This tree finishes updates through
+  `update_completion.run_completion` / `_update_takeover.py`.
+  `hermes_cli/update_handoff.py` and `hermes_cli/update_serve_obligations.py` are the
+  FROZEN COMPAT SURFACE for releases that lazily import those module
+  names from the NEW tree after the checkout swap.
+  Keep their public names importable and behavior-preserving. They call into
+  `_old_updater.stop_for_relaunch` → `_run_child`. Removing a name
+  bricks every release mid-update. see `tests/compat/old_updater_surface.json`.
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read

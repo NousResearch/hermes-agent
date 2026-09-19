@@ -26,7 +26,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Generous deadlines: xdist-loaded CI boxes stall; correctness never depends
+# Generous deadlines: heavily-loaded CI boxes stall; correctness never depends
 # on these being tight, they only bound a hung child.
 CHILD_DEADLINE = 60.0
 POLL_INTERVAL = 0.02

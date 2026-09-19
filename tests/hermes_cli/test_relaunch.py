@@ -114,7 +114,7 @@ class TestRelaunch:
 
         assert calls == [("/usr/bin/hermes", ["/usr/bin/hermes", "--resume", "abc"])]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_uses_subprocess_not_execvp(self, monkeypatch):
         """On Windows, os.execvp raises OSError "Exec format error" when the
         target is a .cmd shim or console-script wrapper (both common for
@@ -163,7 +163,7 @@ class TestRelaunch:
         assert execvp_calls == []
         assert captured_argv == [[r"C:\Users\test\hermes.exe", "chat"]]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_propagates_child_exit_code(self, monkeypatch):
         """A non-zero exit from the child should flow through to sys.exit."""
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: r"C:\hermes.exe")
@@ -195,7 +195,7 @@ class TestResolveHermesBinWindowsPyGuard:
     faked ``sys.platform`` could never reproduce the hazard.
     """
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_rejects_py_argv0_falls_through_to_path(self, monkeypatch, tmp_path):
         """On Windows, if sys.argv[0] is a .py file, we must skip the
         argv[0] fast-path and fall through to PATH / python -m."""
@@ -265,7 +265,7 @@ class TestResolveHermesBinWindowsPyGuard:
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(pinned), "chat"])
         assert relaunch_mod.resolve_hermes_bin() == str(pinned)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_py_argv0_with_no_hermes_on_path_returns_none(self, monkeypatch, tmp_path):
         """Bulletproof fallback: if argv0 is .py on Windows AND hermes.exe
         isn't on PATH, return None so the caller falls back to

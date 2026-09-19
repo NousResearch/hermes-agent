@@ -48,11 +48,11 @@ def current_instantiation_epoch() -> str:
     """
     boot_id = pid1_start = ""
     with contextlib.suppress(OSError):
-        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8-sig").strip()
     with contextlib.suppress(OSError, IndexError):
         # "<pid> (<comm>) <state> ...": comm may contain spaces/parens, so split on the
         # LAST ')'. starttime is field 22 (1-indexed) = tail index 19.
-        pid1_start = Path("/proc/1/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[19]
+        pid1_start = Path("/proc/1/stat").read_text(encoding="utf-8-sig").rsplit(")", 1)[1].split()[19]
     return f"{boot_id}:{pid1_start}" if (boot_id or pid1_start) else ""
 
 
@@ -164,7 +164,7 @@ def read_drain_request(*, home: Optional[Path] = None) -> Optional[dict[str, Any
     """Return the marker payload, ``{}`` if present but unparseable, ``None`` if absent. Never raises."""
     path = drain_request_path(home)
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as e:
         if not isinstance(e, FileNotFoundError):
             _log.warning("drain-control: failed to read %s: %s", path, e)

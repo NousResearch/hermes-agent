@@ -212,4 +212,3 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
     assert rc_config == 0
     assert rc_restart == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert rc_other == GATEWAY_FATAL_CONFIG_EXIT_CODE
-

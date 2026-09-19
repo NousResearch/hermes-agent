@@ -74,7 +74,7 @@ describe('scanGitRepos', () => {
   })
 })
 
-describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
+describe.runIf(process.platform !== 'win32')('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
   it('finds a normal repo but skips root-level media folders on darwin', async () => {
     const root = tempDir()
     const dev = makeRepoAt(root, 'dev', 'proj')

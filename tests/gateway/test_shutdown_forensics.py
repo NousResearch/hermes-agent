@@ -106,7 +106,7 @@ def child_with_secret_argv():
 
 class TestArgvFreePersistence:
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_snapshot_and_log_line_identify_process_without_argv(self, child_with_secret_argv):
         """/proc-backed summaries keep pid/name/ppid/state but never the command line, so neither
         the JSON snapshot nor the warning line can carry a credential from a parent's argv."""
@@ -132,7 +132,7 @@ class TestSpawnAsyncDiagnostic:
     # ``pstree``). On hosts without ``timeout`` (macOS) Popen raises and the
     # producer returns None by design (fail-soft), so the spawn can only be
     # observed on Linux.
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
@@ -158,7 +158,7 @@ class TestSpawnAsyncDiagnostic:
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_diagnostic_log_omits_child_argv_and_is_owner_only(self, tmp_path, child_with_secret_argv):
         """The detached ps/pstree walk must not write any process's argv to disk, and the log
         (even one created 0644 by an earlier release) ends up owner-only."""

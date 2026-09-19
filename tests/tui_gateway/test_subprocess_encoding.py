@@ -35,35 +35,23 @@ def _make_completed_process() -> MagicMock:
 
 # ── _SlashWorker.Popen path ──────────────────────────────────────────────
 
-def test_slash_worker_popen_uses_utf8_replace():
-    """The slash-worker subprocess.Popen must pass encoding="utf-8" and
-    errors="replace" so invalid bytes in child stdout/stderr don't raise
-    UnicodeDecodeError inside the drain threads (#53137).
-    """
-    with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(
-            get_hermes_home=MagicMock(return_value="/tmp/hermes_test")
-        ),
-    }):
-        with patch("subprocess.Popen") as mock_popen:
-            mock_popen.return_value.stdout = MagicMock()
-            mock_popen.return_value.stderr = MagicMock()
+def test_slash_worker_popen_uses_utf8_replace(monkeypatch):
+    """Observe the worker spawn, not process-wide background subprocess calls."""
+    from types import SimpleNamespace
 
-            from tui_gateway.server import _SlashWorker
-
-            _SlashWorker(
-                session_key="test_key",
-                model="test-model",
-            )
-
-            assert mock_popen.called, "Popen was not invoked"
-            kwargs = mock_popen.call_args[1]
-            assert kwargs.get("encoding") == "utf-8", (
-                f"slash-worker Popen must set encoding='utf-8' (got {kwargs.get('encoding')!r})"
-            )
-            assert kwargs.get("errors") == "replace", (
-                f"slash-worker Popen must set errors='replace' (got {kwargs.get('errors')!r})"
-            )
+    popen = MagicMock()
+    popen.return_value.stdout = ()
+    popen.return_value.stderr = ()
+    # Replace the module binding so unrelated spawns cannot overwrite this receipt.
+    monkeypatch.setattr(server, "subprocess", SimpleNamespace(Popen=popen, PIPE=subprocess.PIPE))
+    worker = server._SlashWorker(session_key="test_key", model="test-model")
+    try:
+        popen.assert_called_once()
+        kwargs = popen.call_args.kwargs
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+    finally:
+        worker.close()
 
 
 # ── cli.exec handler ─────────────────────────────────────────────────────

@@ -11,24 +11,25 @@ stale branch with none of main's new code. Two sessions burned time on
 The guard (``_assess_parked_branch_switch``):
 - clean tree + branch fully merged into origin/<target>  → safe to
   auto-switch back to the target (and STAY there — no switch-back).
-- dirty tree, unmerged commits, git failure, or the
-  ``updates.auto_switch_parked_branch: false`` opt-out → do NOT touch the
-  branch; warn loudly and mark the code update SKIPPED.
+- clean tree + unmerged commits → switch while preserving the old branch,
+  or merge in place when configured.
+- dirty tree, git failure, or the ``updates.auto_switch_parked_branch: false``
+  opt-out → do NOT touch the branch; warn and mark the code update SKIPPED.
 
 These tests run the guard against REAL git repositories (init, commit,
 branch, clone) — not mocked subprocess.run — so they exercise the actual
 ``git status`` / ``git cherry`` semantics the guard depends on.
 """
 
+from copy import deepcopy
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import main as hermes_main
-import hermes_cli.main_web_build as main_web_build
-import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+from hermes_cli.update_inventory import UpdatePlan
 
 
 GIT = ["git"]
@@ -240,38 +241,52 @@ def test_print_update_completion_carries_branch_and_sha(
 
 
 # ---------------------------------------------------------------------------
-# Full update flow: parked branch dirty/unmerged → SKIPPED, no false success
+# Full update flow: branch safety and verified checkout completion handoff
 # ---------------------------------------------------------------------------
 
-def _patch_update_flow(monkeypatch, repo, run_real_git=True):
-    """Point _cmd_update_impl at the real repo and neuter the long tail.
-
-    Matches the monkeypatch surface of test_update_head_moved_gate.py, but
-    keeps REAL subprocess.run so the git plumbing runs against the fixture
-    repo (the whole point of these regressions).
-    """
+def _patch_update_flow(monkeypatch, repo):
+    """Keep real Git, but capture completion instead of building the tiny clone."""
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
     )
     monkeypatch.setattr(update_cmd, "_is_fork", lambda *a, **k: False)
     monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
-    monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None)
-    monkeypatch.setattr(main_web_build, "_record_bytecode_fingerprint", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a: "pre-switch-snapshot")
     monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(
-        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a: None)
+    monkeypatch.setattr(hermes_main, "_install_hangup_protection", lambda **k: {"installed": False})
+    monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda *a: None)
+    plan = UpdatePlan(
+        install_method="git", expected_sha=_git(repo, "rev-parse", "HEAD").stdout.strip(),
+        profiles=["default"],
     )
-    monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
-    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: plan)
+    requests = []
+
+    def capture(request):
+        requests.append(deepcopy(request))
+        return {"exit_code": 0, "receipt": None}
+
+    monkeypatch.setattr(update_cmd, "run_completion", capture)
+    return requests, plan
+
+
+def _assert_completion(requests, plan, repo, *, current=False):
+    request, = requests
+    assert request["source"] == str(repo.resolve())
+    assert request["branch"] == "main"
+    assert request["plan"] == plan.to_dict()
+    assert request["receipt"]["plan"] == plan.to_dict()
+    assert request["snapshot_id"] == "pre-switch-snapshot"
+    if current:
+        assert request["completion_message"] == "✓ Already up to date!"
+        assert request["plan"]["expected_sha"] == _git(repo, "rev-parse", "HEAD").stdout.strip()
+    else:
+        assert request["expected_sha"] == _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
 def test_update_skips_and_warns_on_dirty_parked_branch(
@@ -281,13 +296,15 @@ def test_update_skips_and_warns_on_dirty_parked_branch(
     NOT print '✓ Code updated!', must warn loudly, and must exit non-zero
     with the branch named in the summary."""
     (repo_pair / "a.txt").write_text("local edit\n")
-    _patch_update_flow(monkeypatch, repo_pair)
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main.cmd_update(args)
 
     assert exc_info.value.code == 1
+    assert requests == []
+    assert (repo_pair / "a.txt").read_text() == "local edit\n"
     out = capsys.readouterr().out
     assert "CODE UPDATE SKIPPED" in out
     assert "old-feature" in out
@@ -314,20 +331,12 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
     _git(repo_pair, "add", "feature.txt")
     _git(repo_pair, "commit", "-qm", "feature work")
     feature_sha = _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
-    _patch_update_flow(monkeypatch, repo_pair)
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
 
-    class _StopFlow(Exception):
-        pass
-
-    monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, repo_pair)
 
     out = capsys.readouterr().out
     assert "1 commit(s) not merged into origin/main" in out
@@ -367,21 +376,12 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     (repo_pair / "feature.txt").write_text("unmerged work\n")
     _git(repo_pair, "add", "feature.txt")
     _git(repo_pair, "commit", "-qm", "feature work")
-    _patch_update_flow(monkeypatch, repo_pair)
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
 
-    # Stop right after the pull/branch logic, before dependency install.
-    class _StopFlow(Exception):
-        pass
-
-    monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, repo_pair)
 
     out = capsys.readouterr().out
     assert "updating it in place" in out
@@ -423,23 +423,15 @@ def test_switch_branch_flag_overrides_in_place_strategy(
     branch_tip_before = _git(
         repo_pair, "rev-parse", "old-feature"
     ).stdout.strip()
-    _patch_update_flow(monkeypatch, repo_pair)
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
 
-    class _StopFlow(Exception):
-        pass
-
-    monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
     args = SimpleNamespace(
         branch=None, yes=False, force=False, force_venv=False,
         switch_branch=True,
     )
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, repo_pair)
 
     out = capsys.readouterr().out
     assert "1 commit(s) not merged into origin/main" in out
@@ -473,23 +465,15 @@ def test_unmerged_branch_still_updates_in_place_without_the_flag(
     (repo_pair / "feature.txt").write_text("unmerged work\n")
     _git(repo_pair, "add", "feature.txt")
     _git(repo_pair, "commit", "-qm", "feature work")
-    _patch_update_flow(monkeypatch, repo_pair)
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
 
-    class _StopFlow(Exception):
-        pass
-
-    monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
     args = SimpleNamespace(
         branch=None, yes=False, force=False, force_venv=False,
         switch_branch=False,
     )
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, repo_pair)
 
     out = capsys.readouterr().out
     assert "updating it in place" in out
@@ -506,21 +490,11 @@ def test_update_auto_switches_clean_merged_parked_branch(
     """Clean + fully merged parked branch → auto-switch back to main, pull,
     say so, and STAY on main afterwards (sabotage-proven: reverting the
     guard re-parks the checkout and this test fails on the branch assert)."""
-    _patch_update_flow(monkeypatch, repo_pair)
-    # Stop the flow right after the pull/branch logic: the dependency
-    # install phase begins with _abort_dependency_sync_if_self_locked.
-    class _StopFlow(Exception):
-        pass
-
-    monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, repo_pair)
 
     out = capsys.readouterr().out
     assert "parked on 'old-feature'" in out
@@ -561,22 +535,12 @@ def test_update_up_to_date_path_does_not_repark_merged_branch(
     _git(clone, "checkout", "-qb", "old-feature")
     # No new upstream commits: local main == origin/main == old-feature tip.
 
-    _patch_update_flow(monkeypatch, clone)
+    requests, plan = _patch_update_flow(monkeypatch, clone)
 
-    class _StopFlow(Exception):
-        pass
-
-    import hermes_cli.managed_uv as managed_uv
-
-    monkeypatch.setattr(
-        managed_uv,
-        "update_managed_uv",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, clone, current=True)
 
     out = capsys.readouterr().out
     assert "switched back to main" in out
@@ -590,20 +554,12 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     """On the target branch already: no guard prints, normal pull flow."""
     _git(repo_pair, "checkout", "-q", "main")
 
-    _patch_update_flow(monkeypatch, repo_pair)
+    requests, plan = _patch_update_flow(monkeypatch, repo_pair)
 
-    class _StopFlow(Exception):
-        pass
-
-    monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
 
-    with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args)
+    _assert_completion(requests, plan, repo_pair)
 
     out = capsys.readouterr().out
     assert "parked on" not in out

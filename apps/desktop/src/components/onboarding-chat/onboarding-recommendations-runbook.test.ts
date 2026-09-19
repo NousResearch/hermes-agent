@@ -29,7 +29,7 @@ it('offers connector-based work without displacing the existing fresh-machine an
     { platform: 'darwin', arch: 'arm64', nvidia: false, model: 'Mac', ageDays: 1 },
     { platform: 'win32', arch: 'arm64', nvidia: true, model: '', ageDays: null },
     { platform: 'linux', arch: 'arm64', nvidia: true, model: 'NVIDIA_DGX_Spark', ageDays: null }
-  ]) {
+  ] as const) {
     $machine.set({ ...profile, release: '', username: '', locale: 'en-US' })
     expect(forkOptions()).toEqual([machineForkOption(), 'Something else'])
 

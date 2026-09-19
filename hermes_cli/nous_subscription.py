@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.config import get_env_value, load_config
@@ -182,38 +181,14 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
 
 
 def _has_agent_browser() -> bool:
-    import shutil
-
-    from hermes_constants import agent_browser_runnable
-
-    # agent-browser resolves lazily via npx for most installs, which a bare PATH + node_modules
-    # probe can't see. Mirror the local-CLI tail of tools.browser_tool_install.check_browser_requirements
-    # (same cascade, same Termux carve-out) so setup/status can't diverge from runtime;
-    # validate=False keeps this a cheap existence check with no subprocess spawn.
+    # Read the runtime's choice; a broken resolver is not permission to
+    # advertise an unchecked binary through a second discovery ladder.
     try:
-        from tools.browser_tool_install import _find_agent_browser, _requires_real_termux_browser_install
-    except Exception:
-        # Runtime probe unavailable: fall back to binary presence rather than crashing. Rungs: PATH;
-        # Hermes-managed Node dirs ($HERMES_HOME/node, prepended to PATH at runtime but usually absent
-        # from the *probe* process's PATH); local node_modules/.bin (PATHEXT-aware ``shutil.which`` so
-        # Windows picks the ``.cmd`` shim). The hit must also run: a dangling symlink is reported by
-        # ``which`` but fails at exec.
-        # See #48521.
-        from hermes_constants import with_hermes_node_path
-
-        local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
-        search_paths = [None, with_hermes_node_path().get("PATH", ""), str(local_bin_dir) if local_bin_dir.is_dir() else ""]
-        return any(
-            (hit := shutil.which("agent-browser", **({} if path is None else {"path": path}))) and agent_browser_runnable(hit)
-            for path in search_paths if path != ""
-        )
-
-    try:
-        browser_cmd = _find_agent_browser(validate=False)
-    except FileNotFoundError:
+        from tools.browser_tool_install import _find_agent_browser
+        _find_agent_browser(validate=False)
+    except (ImportError, OSError):
         return False
-    # On Termux, the bare npx fallback is too fragile to advertise as ready.
-    return not _requires_real_termux_browser_install(browser_cmd)
+    return True
 
 
 def _local_browser_runnable() -> bool:

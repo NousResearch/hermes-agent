@@ -299,11 +299,11 @@ def _assert_retired_rows_recoverable_after_exit(tmp_path, *, rename):
         live.close()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_retired_rows_recoverable_after_process_exit(tmp_path):
     _assert_retired_rows_recoverable_after_exit(tmp_path, rename=False)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_retired_rows_recoverable_after_process_exit_with_renamed_sidecars(tmp_path):
     _assert_retired_rows_recoverable_after_exit(tmp_path, rename=True)

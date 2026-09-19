@@ -23,7 +23,7 @@
 #                            target sha, marker cleanup, result JSON (when
 #                            the script path wrote one), working hermes,
 #                            and the relaunched app window.
-#                 update     run `hermes update` from the installed venv
+#                 update     run `hermes update` from the installed command
 #                            (the CLI route a GUI user might take).
 #                 installer  re-run the bootstrap installer over the
 #                            existing install (download Hermes-Setup.exe
@@ -98,6 +98,10 @@ param(
     # swallows an empty-string argument ('Missing an argument for
     # parameter'), so the workflow cannot pass "".
     [string]$InstallRef = "auto",
+    # Update target ref (default HEAD). A stable-to-stable leg passes the
+    # next release tag here; only label the leg stable-to-stable when BOTH
+    # refs are release tags.
+    [string]$UpdateRef = "HEAD",
 
     # Repo checkout whose HEAD is the update target.
     [string]$RepoRoot = "",
@@ -106,11 +110,8 @@ param(
 
     [string]$SetupExeUrl = "https://hermes-assets.nousresearch.com/Hermes-Setup.exe",
 
-    # Pinned @playwright/test for the update-gui driver. Installed fresh
-    # into a scratch dir every run -- never resolved from the installed
-    # tree -- so the driver behaves identically for every OLD ref. Bump
-    # deliberately; keep roughly in step with the repo's own lockfile.
-    [string]$PlaywrightVersion = "1.58.2"
+    # Driver dependencies come from the current checkout lockfile.
+    [string]$DriverNode = $env:HERMES_E2E_NODE
 )
 
 $ErrorActionPreference = "Stop"
@@ -132,6 +133,40 @@ $StatePath   = Join-Path $WorkRoot "shas.json"
 $ProofRoot   = Join-Path $WorkRoot "proof"
 $AhkDir      = Join-Path $WorkRoot "ahk"
 $AssetsDir   = Join-Path $PSScriptRoot "e2e-assets"
+if (-not $DriverNode) { $DriverNode = (Get-Command node.exe -ErrorAction Stop).Source }
+$env:HERMES_E2E_NODE = $DriverNode
+$env:HERMES_DESKTOP_USER_DATA_DIR = Join-Path $WorkRoot 'electron-user-data'
+$script:ChatMock = $null
+$script:ChatFailure = $false
+. (Join-Path $AssetsDir 'desktop-smoke-windows.ps1')
+
+function Start-JourneyChat {
+    if (-not $script:ChatMock) {
+        $script:ChatFailure = $true
+        $script:ChatMock = Start-DesktopJourneyMock $DriverNode $AssetsDir $WorkRoot $HermesHome $ProofRoot
+        $script:ChatFailure = $false
+    }
+}
+
+function Invoke-DesktopCheckpoint([string]$ChatPhase, [string]$Commit, [string]$Method) {
+    $script:ChatFailure = $true
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $DriverNode (Join-Path $AssetsDir 'source-desktop-smoke.mjs') `
+            --root $InstallDir --home $HermesHome --user-data $env:HERMES_DESKTOP_USER_DATA_DIR `
+            --out $ProofRoot --phase $ChatPhase --expect-commit $Commit --desktop $script:ExpectedDesktop --method $Method
+        $chatExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prevEap }
+    if ($chatExit -ne 0) { throw "Mandatory desktop chat $ChatPhase failed (exit $chatExit)" }
+    $script:ChatFailure = $false
+}
+
+function Confirm-OldChat([string]$Out) {
+    $receipt = Get-Content -LiteralPath (Join-Path $Out 'desktop-chat-old.json') -Raw | ConvertFrom-Json
+    if ($receipt.status -ne 'passed') { throw 'Mandatory OLD update-window chat failed' }
+    $script:ChatFailure = $false
+}
 
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $RepoUrlSsh   = "git@github.com:NousResearch/hermes-agent.git"
@@ -189,7 +224,7 @@ function Set-GitRedirect {
     }
     # first, get the set origin url
     $actualGitUrl = Invoke-Git @("-C", $RepoRoot, "remote", "get-url", "origin")
-    # then override it 
+    # then override it
     @"
 [url "$fileUrl"]
 	insteadOf = $actualGitUrl
@@ -214,7 +249,12 @@ function Set-GitRedirect {
     # official repo as upstream?" prompt would hang a headless run. But we don't anymore :D
 
     $realGit = (Get-Command git.exe -ErrorAction Stop).Source
-    $shimDir = Join-Path $WorkRoot "shim"
+        # Export the real git so later checks can observe the TRANSPORT url. Once
+        # the shim below is on PATH, `git` reports the official origin for
+        # `remote get-url origin` (so fork detection sees it); any check that must
+        # see the file:// redirect instead has to bypass the shim via this path.
+        $env:HERMES_E2E_REAL_GIT = $realGit
+        $shimDir = Join-Path $WorkRoot "shim"
     New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
     $shimPath = Join-Path $shimDir "git.bat"
     @"
@@ -317,10 +357,54 @@ function Save-InstallSideState([string]$Label) {
 
 function Test-HermesRuns([string]$Label) {
     Save-InstallSideState $Label
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
-    Assert-True (Test-Path -LiteralPath $hermesExe) "$Label -- venv\Scripts\hermes.exe exists"
-    & $hermesExe --version 2>&1 | ForEach-Object { Write-Host "    hermes --version| $_" }
-    Assert-True ($LASTEXITCODE -eq 0) "$Label -- hermes --version exits 0"
+    $hermesExe = $null
+    try {
+        $hermesExe = Get-SourceHermes $InstallDir
+    } catch {
+        # A pre-handoff release cannot complete inside `hermes update`: its
+        # update path reaches no retired-hook seam, so the update ends with the
+        # tree at HEAD and no published launcher. The NEXT ordinary startup
+        # completes it (hermes_bootstrap -> prepare_launch -> sync PM, publish
+        # launchers, re-exec). Drive that startup here, WITHOUT the lazy-install
+        # ban, and only when the launcher is missing -- so a healthy update is
+        # still judged by the strict checks below, and `--version` probes keep
+        # their ban: a probe must never complete an unfinished update.
+        Write-Host "  no published launcher yet; running the next ordinary startup (this is what completes a pre-handoff release)"
+        $startupHermes = Get-SourceHermesForStartup $InstallDir
+        $startupLog = Join-Path $WorkRoot 'logs\post-update-startup.log'
+        New-Item -ItemType Directory -Force -Path (Split-Path $startupLog) | Out-Null
+        # prepare_launch reports its progress on stderr, and a native command's
+        # stderr becomes a terminating NativeCommandError under the wrong
+        # preference -- which killed this step before the heal could finish.
+        # Same idiom the --version probe below already uses.
+        $prevStartupEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $startupHermes status 2>&1 | Out-File -Encoding UTF8 $startupLog
+            $startupExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevStartupEap
+        }
+        Write-Host "  first startup after the update ran (exit $startupExit); the checks below assert the launcher it must have published"
+        $hermesExe = Get-SourceHermes $InstallDir
+    }
+    & python -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
+    Assert-True ($LASTEXITCODE -eq 0) "$Label -- read-only install verification (no repair)"
+    $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
+    $prevBytecode = $env:PYTHONDONTWRITEBYTECODE
+    $prevEap = $ErrorActionPreference
+    try {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = '1'
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        $ErrorActionPreference = 'Continue'
+        & $hermesExe --version 2>&1 | ForEach-Object { Write-Host "    hermes --version| $_" }
+        $versionExit = $LASTEXITCODE
+    } finally {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = $prevLazy
+        $env:PYTHONDONTWRITEBYTECODE = $prevBytecode
+        $ErrorActionPreference = $prevEap
+    }
+    Assert-True ($versionExit -eq 0) "$Label -- hermes --version exits 0"
 }
 
 # ----------------------------------------------------------------------------
@@ -330,6 +414,8 @@ function Test-HermesRuns([string]$Label) {
 # ----------------------------------------------------------------------------
 # shellcheck source=../e2e-assets/ts-prefix.ps1
 . (Join-Path $PSScriptRoot "e2e-assets\ts-prefix.ps1")
+. (Join-Path $PSScriptRoot "e2e-assets\source-driver.ps1")
+. (Join-Path $AssetsDir 'source-build-env.ps1')
 
 function Write-LogGroup([string]$Title, [string]$LogPath) {
     Write-Host "::group::$Title"
@@ -355,9 +441,21 @@ function Invoke-RefInstaller {
     }
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\install-$Label.log"
+    # uv reads the CURRENT DIRECTORY's project metadata. Run from inside this
+    # checkout and every interpreter probe in a ref's installer is resolved
+    # against HEAD's requires-python (3.14), so it refuses the version that ref
+    # pins and the install fails. A user runs the script from their own
+    # directory, so give it one that is not a project.
+    $runDir = Join-Path $WorkRoot "install-cwd"
+    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script @flags 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
-    $installExit = $LASTEXITCODE
+    Push-Location $runDir
+    try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $script @flags 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        $installExit = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
     $ErrorActionPreference = $prevEap
     Write-LogGroup "install.ps1 ($Label) transcript" $log
     Assert-True ($installExit -eq 0) "install.ps1 ($Label) exited 0"
@@ -368,12 +466,17 @@ function Assert-DesktopArtifact([string]$Label) {
 }
 
 function Invoke-HermesUpdate {
-    # The venv updater. --yes reaches the update subcommand only in later
+    # --yes reaches the update subcommand only in later
     # releases; ask the installed binary, never parse its source.
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
+    $hermesExe = Get-SourceHermes $InstallDir
     $updateArgs = @("update")
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     $helpText = & $hermesExe update --help 2>&1 | Out-String
+    $helpExit = $LASTEXITCODE
+    if ($helpExit -ne 0) {
+        $ErrorActionPreference = $prevEap
+        throw "Installed update --help failed: $helpText"
+    }
     if ($helpText -match '--yes') { $updateArgs += "--yes" }
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\update.log"
@@ -394,7 +497,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     # real pipeline; the driver intercepts the product's final spawn
     # (argv/cwd/env captured by e2e-assets/launch-capture/sitecustomize.py)
     # and re-executes it under Playwright, which clicks Update now.
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
+    $hermesExe = Get-SourceHermes $InstallDir
     $spec = Join-Path $WorkRoot "launch-spec.json"
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\desktop-launch-capture.log"
@@ -419,27 +522,15 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Assert-True ($capExit -eq 0) "hermes desktop exited 0 during launch capture"
     Assert-True (Test-Path -LiteralPath "$spec.captured") "a launch was actually captured (exit 0 without a launch must not pass)"
 
-    $node = Get-ManagedNode
-    $driverDir = Join-Path $WorkRoot "pw-driver"
-    New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
-    $npmCli = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-    Assert-True (Test-Path -LiteralPath $npmCli) "managed npm exists beside the managed node"
-    Push-Location $driverDir
-    try {
-        & $node $npmCli install --no-save --no-audit --no-fund "@playwright/test@$PlaywrightVersion" 2>&1 |
-            Select-Object -Last 5 | ForEach-Object { Write-Host "  npm| $_" }
-        $npmExit = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    Assert-True ($npmExit -eq 0) "npm install @playwright/test@$PlaywrightVersion into the driver dir"
-
-    Copy-Item (Join-Path $AssetsDir "launch-from-spec.mjs") (Join-Path $driverDir "launch-from-spec.mjs") -Force
-    Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
+    $node = $DriverNode
+    $chatOut = Join-Path $ProofRoot 'update-window'
+    Remove-Item -LiteralPath (Join-Path $chatOut 'desktop-chat-old.json') -Force -ErrorAction SilentlyContinue
+    $script:ChatFailure = $true
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    Push-Location $driverDir
+    Push-Location $WorkRoot
     try {
-        & $node "launch-from-spec.mjs" --spec $spec `
+        & $node (Join-Path $AssetsDir "launch-from-spec.mjs") --spec $spec `
+            --old-sha (Read-State).old --chat-out $chatOut --mock-url $env:HERMES_E2E_MOCK_URL `
             --result (Join-Path $HermesHome ".hermes-update-result.json") `
             --expect-sha $TargetSha --repo-dir $InstallDir 2>&1 |
             ForEach-Object { Write-Host "  pw| $_" }
@@ -448,6 +539,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
         Pop-Location
         $ErrorActionPreference = $prevEap
     }
+    Confirm-OldChat $chatOut
     Assert-True ($driveExit -eq 0) "app driven via captured hermes desktop spec; update completed"
 }
 
@@ -516,22 +608,6 @@ function Stop-HermesAppProcesses([string]$Label) {
     }
 }
 
-function Get-ManagedNode {
-    # `hermes update`/desktop builds use the Hermes-managed Node; use the same
-    # one to run the Playwright driver so no system Node is required.
-    $candidates = @(
-        (Join-Path $HermesHome "node\node.exe"),
-        (Join-Path $HermesHome "bin\node\node.exe"),
-        (Join-Path $InstallDir "node\node.exe")
-    )
-    foreach ($c in $candidates) {
-        if (Test-Path -LiteralPath $c) { return $c }
-    }
-    $fromPath = Get-Command node -ErrorAction SilentlyContinue
-    if ($fromPath) { return $fromPath.Source }
-    throw "No node.exe found (managed or on PATH)"
-}
-
 # ----------------------------------------------------------------------------
 # Phase: stage -- serve.git with `main` at OLD (advanced to HEAD by update-gui)
 # ----------------------------------------------------------------------------
@@ -546,7 +622,8 @@ function Invoke-PhaseStage {
     # bare-clone below (and everything after) sees the redirect file.
     Set-GitRedirect
 
-    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "HEAD")
+    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "${UpdateRef}^{commit}")
+    $targetLabel = if ($UpdateRef -eq "HEAD") { "HEAD" } else { $UpdateRef }
     Write-Host "  HEAD (update target): $current"
 
     # OLD: explicit -InstallRef, or the newest release tag -- the version a
@@ -580,7 +657,7 @@ function Invoke-PhaseStage {
     Invoke-Git @("-C", $ServeRepo, "config", "uploadpack.allowAnySHA1InWant", "true") | Out-Null
     Write-Host "  serve.git: uploadpack.allowAnySHA1InWant=true (installer commit pin, if any)"
 
-    @{ old = $old; old_ref = $oldRef; current = $current } |
+    @{ old = $old; old_ref = $oldRef; current = $current; target_label = $targetLabel } |
         ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding UTF8
     Write-Host "  state written: $StatePath"
     New-Item -ItemType Directory -Path $ProofRoot -Force | Out-Null
@@ -686,9 +763,6 @@ function Invoke-PhaseInstallGui {
         }
     }
 
-    # Close the freshly launched app (user quits after first look).
-    Stop-HermesAppProcesses "post-install"
-
     # The installer cloned/updated from serve.git's `main`; the phase's
     # expected sha says where that must land (install: OLD; update: HEAD).
     $installedSha = Get-InstalledHead
@@ -700,13 +774,13 @@ function Invoke-PhaseInstallGui {
     Test-HermesRuns "post-$Mode-gui"
     Assert-True ($null -ne (Get-DesktopExe)) "packaged Desktop Hermes.exe exists"
 
-    # Seed a provider so the update leg meets the ready app shell, not the
-    # onboarding overlay (an updating user has a configured provider).
-    $envFile = Join-Path $HermesHome ".env"
-    if (-not (Test-Path -LiteralPath $envFile) -or -not ((Get-Content $envFile -Raw -ErrorAction SilentlyContinue) -match "OPENROUTER_API_KEY")) {
-        Add-Content -LiteralPath $envFile -Value "OPENROUTER_API_KEY=sk-or-...-key"
-    }
-    Write-Host "  seeded placeholder provider key for the update leg"
+    # The installer Launch proof above must pass before a test-owned launch.
+    $script:ChatFailure = $true
+    Close-VerifiedDesktop (Get-DesktopExe)
+    $chatPhase = if ($Mode -eq 'install') { 'old' } else { 'new' }
+    @{ phase=$chatPhase; launch='post-installer-launch'; handoffProof=$proof } | ConvertTo-Json |
+        Set-Content (Join-Path $ProofRoot "desktop-chat-$chatPhase-launch.json")
+    Invoke-DesktopCheckpoint $chatPhase $ExpectedSha 'desktop-installer@latest'
 }
 
 # ----------------------------------------------------------------------------
@@ -731,51 +805,27 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
     $markerPath = Join-Path $HermesHome ".hermes-update-in-progress"
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
 
-    $node = Get-ManagedNode
-    # The Playwright driver gets its OWN pinned @playwright/test in a
-    # scratch dir -- NEVER the installed tree's copy. The driver talks to
-    # the app over Playwright's inspection pipe, so its Playwright version
-    # is independent of the app under test; installing it ourselves makes
-    # the leg identical for every OLD ref (older releases predate the
-    # dependency entirely, and hoisting moves it around in newer ones).
-    $driverDir = Join-Path $WorkRoot "pw-driver"
-    New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
-    $npmCli = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-    Assert-True (Test-Path -LiteralPath $npmCli) "managed npm exists beside the managed node"
-    Push-Location $driverDir
-    try {
-        & $node $npmCli install --no-save --no-audit --no-fund "@playwright/test@$PlaywrightVersion" 2>&1 |
-            Select-Object -Last 5 | ForEach-Object { Write-Host "  npm| $_" }
-        $npmExit = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    Assert-True ($npmExit -eq 0) "npm install @playwright/test@$PlaywrightVersion into the driver dir"
+    $node = $DriverNode
 
     $recorder = Start-DesktopRecorder (Join-Path $proof "desktop-frames")
     try {
         # Launch the installed app and click through Settings -> About ->
         # Update now. Exit 0 = the app quit for the updater hand-off.
-        # Copy the driver INTO $driverDir first: Node resolves
-        # require('@playwright/test') from the SCRIPT's own directory upward,
-        # so running it from the CI checkout would resolve the wrong (or no)
-        # node_modules.
-        $driver = Join-Path $driverDir "e2e-drive-update.cjs"
-        Copy-Item (Join-Path $AssetsDir "drive-update.cjs") $driver -Force
-        Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
-        Copy-Item (Join-Path $AssetsDir "process-close.cjs") (Join-Path $driverDir "process-close.cjs") -Force
-        Push-Location $driverDir
+        $driver = Join-Path $AssetsDir 'drive-update.cjs'
+        Remove-Item -LiteralPath (Join-Path $proof 'desktop-chat-old.json') -Force -ErrorAction SilentlyContinue
+        $script:ChatFailure = $true
+        Push-Location $WorkRoot
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $node $driver $desktopExe $proof 2>&1 |
+            & $node $driver $desktopExe $proof (Read-State).old 2>&1 |
                 ForEach-Object { Write-Host "  $_" }
             $driveExit = $LASTEXITCODE
         } finally {
             Pop-Location
             $ErrorActionPreference = $prevEap
-            Remove-Item -LiteralPath $driver -Force -ErrorAction SilentlyContinue
         }
+        Confirm-OldChat $proof
         Assert-True ($driveExit -eq 0) "GUI driver clicked Update now and the app quit for hand-off"
 
         # The detached updater (spawned by the app, NOT by us) now runs
@@ -865,6 +915,12 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
             }
         } catch {}
         Save-DesktopScreenshot (Join-Path $proof "99-relaunched-desktop.png")
+        # Native relaunch and read-only product verification already passed.
+        $script:ChatFailure = $true
+        Close-VerifiedDesktop (Get-DesktopExe)
+        @{ phase='new'; launch='post-update-launch'; automaticRelaunch=$true } | ConvertTo-Json |
+            Set-Content (Join-Path $ProofRoot 'desktop-chat-new-launch.json')
+        Invoke-DesktopCheckpoint 'new' $TargetSha $Route
     }
     finally {
         Stop-DesktopRecorder $recorder (Join-Path $proof "desktop-frames")
@@ -881,11 +937,239 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
     }
 }
 
+# --- plugin upgrade-preservation hooks -------------------------------------
+# A tagged upgrade must not delete or modify anything under the active
+# home's plugins/** or any profile's plugins/** tree: wrapper markers
+# (mnemosyne-wrapper.json), symlinked runtimes, and the externally-owned
+# sidecar witness outside the home. Fixtures are directory-only (no
+# pyproject in the scanned root, nothing downloaded). Snapshot is taken
+# after install, verified after update.
+function Seed-PreservationFixtures {
+    $external = Join-Path $WorkRoot "external-mnemosyne-runtime"
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") seed --home $HermesHome --external $external
+    if ($LASTEXITCODE -ne 0) { throw "could not seed fresh preservation fixtures (exit $LASTEXITCODE)" }
+}
+
+function Invoke-PreserveSnapshot {
+    $out = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    if (Test-Path -LiteralPath $out) { throw "refusing to overwrite an existing preservation snapshot" }
+    Seed-PreservationFixtures
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") snapshot --home $HermesHome --out $out
+    if ($LASTEXITCODE -ne 0) { throw "plugin preservation snapshot failed (exit $LASTEXITCODE)" }
+
+    Write-Host "  pre-upgrade plugin snapshot: $out"
+}
+
+function Invoke-PreserveVerify {
+    $snap = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    if (-not (Test-Path -LiteralPath $snap)) { throw "no pre-upgrade plugin snapshot at $snap; cannot verify preservation" }
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") verify --home $HermesHome --snapshot $snap `
+        --report (Join-Path $WorkRoot "logs\plugin-preservation-report.json")
+    if ($LASTEXITCODE -ne 0) { throw "plugin preservation violated by the upgrade (exit $LASTEXITCODE); see the report for deleted/modified entries" }
+    Write-Host "  plugins/** and profile plugin trees survived the upgrade intact"
+}
+
+# ----------------------------------------------------------------------------
+# User-state preservation: the user's OWN durable state, produced through the
+# ordinary CLI (never seeded by us), snapshotted before the upgrade and
+# verified after it. Complements the plugin-tree contract above, which owns
+# plugins/** only.
+# ----------------------------------------------------------------------------
+
+function Get-UserStateSessionCount {
+    # A real chat turn must actually create a session; if it silently does not,
+    # the preservation check below would be testing nothing.
+    $probe = Join-Path $WorkRoot 'user-state-session-count.py'
+    if (-not (Test-Path -LiteralPath $probe)) {
+        @'
+import sqlite3, sys
+try:
+    con = sqlite3.connect("file:" + sys.argv[1].replace("\\", "/") + "?mode=ro", uri=True)
+    print(con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+except Exception:
+    print(-1)
+'@ | Set-Content -LiteralPath $probe -Encoding ASCII
+    }
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $value = (& python $probe (Join-Path $HermesHome 'state.db') 2>$null | Out-String).Trim() }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($value -match '^-?\d+$') { return [int]$value }
+    return -1
+}
+
+function Invoke-UserStateActions {
+    # Everything here is a command a user would run against the real installed
+    # CLI with a real (mocked-inference) provider configured.
+    $hermes = Get-SourceHermes $InstallDir
+    if (-not $script:ChatMock) {
+        # Same mock + config writer the desktop chat checkpoints use, so the
+        # leg has a genuinely configured provider rather than a dummy key.
+        $script:ChatMock = Start-DesktopJourneyMock $DriverNode $AssetsDir $WorkRoot $HermesHome $ProofRoot
+    }
+    $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
+    $prevEap = $ErrorActionPreference
+    try {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = '1'
+        $ErrorActionPreference = 'Continue'
+
+        # Probe, do not assume (the harness rule for old refs).
+        $chatHelp = (& $hermes chat --help 2>&1 | Out-String)
+        if (-not ($chatHelp -match '(^|\s)-q(\s|,|$)' -or $chatHelp -match '--quiet')) {
+            throw 'the installed CLI has no one-shot chat flag; this leg cannot produce a session through the user path'
+        }
+        $before = Get-UserStateSessionCount
+        $log = Join-Path $WorkRoot 'logs\user-state-chat.log'
+        # A released tag prints through prompt_toolkit, whose Windows output object needs
+        # a console screen buffer: piping the CLI's stdout into the log takes that away
+        # and the turn dies with NoConsoleScreenBufferError. Run it under a real
+        # pseudoconsole (pty-run.py) and keep the capture.
+        & python -B (Join-Path $AssetsDir 'pty-run.py') --out $log --timeout 900 -- $hermes chat -q "Reply with the single word: ok"
+        $chatExit = $LASTEXITCODE
+        Write-LogGroup 'first real chat turn' $log
+        if ($chatExit -ne 0) { throw "the first chat turn failed (exit $chatExit); see $log" }
+        $after = Get-UserStateSessionCount
+        # A fresh install has no state.db until the first turn: -1 means "no
+        # readable db yet", the expected starting point, not a failure.
+        if ($before -lt 0) { $before = 0 }
+        if ($after -lt 0) { $after = 0 }
+        if (-not ($after -gt $before)) {
+            throw "the chat turn produced no session row (state.db sessions $before -> $after)"
+        }
+        Write-Host "  a real turn created a session (state.db sessions $before -> $after)"
+
+        if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
+            # A starting tag may not have this subcommand yet: a harness
+            # limitation, not a preservation failure.
+            & $hermes auth add --help *> $null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host '  SKIP hermes auth add does not exist on this ref; auth.json is not covered by this leg'
+            }
+            else {
+            # The provider id and the flags are vintage surfaces, so probe them
+            # like the rest of this harness does. v2026.8.31 answers "Unknown
+            # provider: openai" -- _is_known_provider accepts a registry provider,
+            # 'openrouter', or a custom pool -- and HEAD prompts for an optional
+            # label unless --label is given, which EOFs with no tty. Take the
+            # first provider the installed CLI accepts.
+            $authLog = Join-Path $WorkRoot 'logs\user-state-auth.log'
+            $labelFlags = @()
+            if ((& $hermes auth add --help 2>&1 | Out-String) -match '--label') {
+                $labelFlags = @('--label', 'e2e-preservation')
+            }
+            $added = $false
+            foreach ($provider in @('openrouter', 'anthropic')) {
+                Add-Content -LiteralPath $authLog -Value "=== hermes auth add $provider ==="
+                & $hermes auth add $provider --type api-key `
+                    --api-key 'e2e-preservation-not-a-real-key' @labelFlags 2>&1 |
+                    Out-File -Encoding UTF8 -Append $authLog
+                if (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json')) {
+                    $added = $true
+                    break
+                }
+            }
+            if (-not $added) {
+                throw "hermes auth add failed for openrouter and anthropic; see $authLog"
+            }
+            Write-Host '  a pooled credential exists (auth.json)'
+            }
+        }
+
+        if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {
+            # Same vintage surface as auth add above: a starting tag may predate
+            # the profile command entirely, and that is a harness limitation,
+            # not a preservation failure.
+            & $hermes profile create --help *> $null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host '  SKIP hermes profile create does not exist on this ref; profiles/e2e-second is not covered by this leg'
+            }
+            else {
+            & $hermes profile create e2e-second 2>&1 |
+                Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-profile.log')
+            if ($LASTEXITCODE -ne 0) { throw 'hermes profile create failed' }
+            if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {
+                throw 'hermes profile create produced no profile dir'
+            }
+            Write-Host '  a second profile exists (profiles/e2e-second)'
+            }
+        }
+    }
+    finally {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = $prevLazy
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+function Invoke-UserStateSnapshot {
+    $snap = Join-Path $WorkRoot 'user-state-snapshot.json'
+    if (Test-Path -LiteralPath $snap) { throw 'refusing to overwrite an existing user-state snapshot' }
+    & python (Join-Path $AssetsDir 'verify-user-state.py') snapshot --home $HermesHome --out $snap
+    if ($LASTEXITCODE -ne 0) { throw "user-state snapshot failed (exit $LASTEXITCODE)" }
+    Write-Host "  pre-upgrade user-state snapshot: $snap"
+}
+
+function Invoke-UserStateVerify {
+    $snap = Join-Path $WorkRoot 'user-state-snapshot.json'
+    if (-not (Test-Path -LiteralPath $snap)) {
+        throw 'no pre-upgrade user-state snapshot; cannot claim preservation'
+    }
+    $report = Join-Path $WorkRoot 'logs\user-state-report.json'
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        & python (Join-Path $AssetsDir 'verify-user-state.py') verify --home $HermesHome `
+            --snapshot $snap --report $report
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($code -ne 0) {
+        throw "the upgrade changed the user's own state (exit $code); report at $report"
+    }
+    Write-Host "  the user's own durable state survived the upgrade"
+}
+
+function Assert-RedirectIsTransportOnly {
+    # The redirect must stay at TRANSPORT level: `hermes update` resolves its
+    # channel from the release archive and validates the record against
+    # `git config --get remote.origin.url`. If the configured URL ever looked
+    # like the rehearsal source, channel resolution would fail and this leg
+    # would be testing a fork install rather than the real user path.
+    $official = @('https://github.com/NousResearch/hermes-agent.git',
+                  'git@github.com:NousResearch/hermes-agent.git')
+    $configured = (Invoke-Git @('-C', $InstallDir, 'config', '--get', 'remote.origin.url') | Out-String).Trim()
+    Assert-True ($official -contains $configured) "origin stays configured as an official URL (got '$configured')"
+    $real = if ($env:HERMES_E2E_REAL_GIT) { $env:HERMES_E2E_REAL_GIT } else { 'git' }
+    $observed = (& $real -C $InstallDir remote get-url origin 2>$null | Out-String).Trim()
+    Assert-True ($observed -match 'serve\.git|^file://') "git transport is redirected to the staged repo (got '$observed')"
+}
+
+function Assert-UserShims {
+    # A launcher left pointing at a vanished tree is the "update lost
+    # something" shape a checkout-hash assertion cannot see.
+    $hermes = Get-SourceHermes $InstallDir
+    Assert-True (Test-Path -LiteralPath $hermes) "a usable launcher still exists after the upgrade ($hermes)"
+    $userShim = Join-Path $HermesHome 'bin\hermes.exe'
+    if (-not (Test-Path -LiteralPath $userShim)) { $userShim = Join-Path $HermesHome 'bin\hermes.cmd' }
+    if (Test-Path -LiteralPath $userShim) {
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try {
+            & $userShim --version 2>&1 | Out-Null
+            $shimExit = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert-True ($shimExit -eq 0) "the $HermesHome\bin launcher still runs after the upgrade"
+    }
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath) {
+        Assert-True ($userPath -like "*$(Join-Path $HermesHome 'bin')*") `
+            "the USER PATH still exposes $(Join-Path $HermesHome 'bin')"
+    }
+}
+
 function Invoke-PhaseInstall {
     # Dispatch on the install axis. Each arm ends with the same contract:
     # checkout at OLD, hermes runs, and state carries how OLD landed so any
     # update arm can follow any install arm.
     $state = Read-State
+    $script:ExpectedDesktop = if ($InstallMethod -eq 'installer-script') { 'absent' } else { 'present' }
     # Isolated install target for every arm; serve.git's file:// origin
     # looks like a fork to the updater, whose "add the official repo as
     # upstream?" prompt would hang a headless run - the marker is the
@@ -910,10 +1194,18 @@ function Invoke-PhaseInstall {
             Assert-DesktopArtifact "OLD"
         }
     }
+    if ($InstallMethod -ne 'desktop-installer@latest') {
+        Invoke-DesktopCheckpoint 'old' $state.old $InstallMethod
+    }
+    Assert-RedirectIsTransportOnly
+    Invoke-UserStateActions
 }
 
 function Invoke-PhaseUpdate {
     $state = Read-State
+    $script:ExpectedDesktop = if ($InstallMethod -ne 'installer-script' -or $Route -in @(
+        'installer-script+desktop', 'desktop-installer@latest', 'open-app-update', 'hermes-desktop-app-update'
+    )) { 'present' } else { 'absent' }
     $env:HERMES_HOME = $HermesHome
     # Match the POSIX driver's explicit opt-out when a detached updater bypasses
     # the PATH shim and sees our local transport as a fork.
@@ -923,9 +1215,15 @@ function Invoke-PhaseUpdate {
     # remote's main moves forward. The GUI route re-advances harmlessly
     # (same sha); script routes need it here because only the GUI arm's
     # helper used to own this step.
+    # Snapshot every plugin tree BEFORE the upgrade moves anything.
+    Invoke-PreserveSnapshot
+    # ... and the user's own durable state, produced by the install phase
+    # through the ordinary CLI.
+    Invoke-UserStateSnapshot
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $state.current) | Out-Null
     Write-Host "  serve.git main advanced to $($state.current)"
 
+    if ($Route -in @('open-app-update', 'hermes-desktop-app-update')) { Start-JourneyChat }
     switch ($Route) {
         "open-app-update" {
             # Meaningful only where an OS entry point exists - install.ps1
@@ -968,6 +1266,12 @@ function Invoke-PhaseUpdate {
 
     Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on HEAD"
     Test-HermesRuns "post-update"
+    Assert-UserShims
+    Invoke-PreserveVerify
+    Invoke-UserStateVerify
+    if ($Route -notin @('open-app-update', 'desktop-installer@latest')) {
+        Invoke-DesktopCheckpoint 'new' $state.current $Route
+    }
 }
 
 function Invoke-CheckedPhaseUpdate {
@@ -980,7 +1284,8 @@ function Invoke-CheckedPhaseUpdate {
         Invoke-PhaseUpdate
     } catch {
         $failure = $_
-        $node = Get-ManagedNode
+        if ($script:ChatFailure) { throw $failure }
+        $node = $DriverNode
         $classification = & $node (Join-Path $AssetsDir "known-failures.cjs") $WorkRoot $InstallMethod $Route $failure.Exception.Message
         $classificationExit = $LASTEXITCODE
         if ($classificationExit -ne 0) { throw $failure }
@@ -1010,16 +1315,22 @@ $script:RealGitExe = (Get-Command git.exe -ErrorAction Stop).Source
 
 Set-GitRedirect
 
+try {
 switch ($Phase) {
     "stage"   { Invoke-PhaseStage }
-    "install" { Invoke-PhaseInstall }
-    "update"  { Invoke-CheckedPhaseUpdate }
+    "install" { Invoke-SourceBuild { Invoke-PhaseInstall } }
+    "update"  { Invoke-SourceBuild { Invoke-CheckedPhaseUpdate } }
     "all" {
         Invoke-PhaseStage
-        Invoke-PhaseInstall
-        Invoke-CheckedPhaseUpdate
+        Invoke-SourceBuild { Invoke-PhaseInstall }
+        Invoke-SourceBuild { Invoke-CheckedPhaseUpdate }
     }
 }
 
+} finally {
+    if ($script:ChatMock -and -not $script:ChatMock.HasExited) {
+        Stop-Process -Id $script:ChatMock.Id -ErrorAction SilentlyContinue
+    }
+}
 Write-Host ""
 Write-Host "Phase '$Phase' completed successfully."

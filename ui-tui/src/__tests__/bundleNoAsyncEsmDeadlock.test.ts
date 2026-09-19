@@ -60,7 +60,7 @@ beforeAll(() => {
   if (!bundleIsFresh()) {
     // Refresh the bundle so the regression test runs against current
     // sources, not whatever was last committed by hand.
-    execFileSync(process.execPath, [resolve(uiTuiRoot, 'scripts/build.mjs')], {
+    execFileSync(process.execPath, [resolve(uiTuiRoot, '../scripts/build/tui.mjs')], {
       cwd: uiTuiRoot,
       stdio: ['ignore', 'ignore', 'inherit'],
       timeout: 120_000

@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import profiles
 from hermes_cli.profiles import (
@@ -126,6 +126,7 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
 
+    @pytest.mark.platforms("linux")
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through
@@ -283,7 +284,7 @@ class TestCreateProfile:
         from tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_clone_keeps_real_ntfs_junction(self, profile_env):
         import _winapi
         default_home, external = self._home_with_linked_skill(profile_env)
@@ -405,6 +406,7 @@ class TestBackfillProfileEnvs:
     gives pre-#44792 profiles (created before .env seeding) their own
     .env, copied from the default install so credentials don't break."""
 
+    @pytest.mark.platforms("linux")
     def test_copies_default_env_into_envless_profiles(self, profile_env):
         import stat
         tmp_path = profile_env
@@ -923,7 +925,7 @@ class TestAliasCollision:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -952,6 +954,7 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
+    @pytest.mark.platforms("linux")
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
@@ -963,7 +966,7 @@ class TestWrapperScript:
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_remove_finds_bat_on_windows(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
         wrapper = create_wrapper_script("mybot")
@@ -1026,6 +1029,7 @@ class TestFindAliasForProfile:
         assert find_alias_for_profile("steve") is None
 
 
+    @pytest.mark.platforms("linux")
     def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
             create_profile,
@@ -1301,6 +1305,7 @@ class TestExportImport:
         assert "default/memories/MEMORY.md" in names
 
 
+    @pytest.mark.require_symlinks
     def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
         """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
 
@@ -1425,10 +1430,8 @@ class TestWriteProfileMetaDurability:
     def _interrupted_write(profile_dir):
         """Run a ``write_profile_meta`` whose serialization fails mid-call.
 
-        The pre-fix code called ``yaml.safe_dump``; ``utils.atomic_yaml_write``
-        calls ``yaml.dump``.  Breaking both keeps this serializer-agnostic, so
-        it measures durability rather than the choice of entry point.  A
-        scoped ``MonkeyPatch.context`` is used instead of the fixture so the
+        Interrupt the shared serializer used by ``utils.atomic_yaml_write``.
+        A scoped ``MonkeyPatch.context`` is used instead of the fixture so the
         patch is reverted immediately, without touching the session-wide env
         isolation that shares the function-scoped ``monkeypatch`` instance.
         """
@@ -1437,7 +1440,6 @@ class TestWriteProfileMetaDurability:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(yaml, "safe_dump", _boom)
-            mp.setattr(yaml, "dump", _boom)
             with pytest.raises(RuntimeError):
                 profiles.write_profile_meta(profile_dir, description_auto=True)
 
@@ -1479,6 +1481,7 @@ class TestWriteProfileMetaDurability:
         assert "🧙" in raw
         assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
 
+    @pytest.mark.require_symlinks
     def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
         """Guard on the conversion, not a behavior change.
 
@@ -1699,11 +1702,12 @@ class TestCloneAllExcludesRuntimeTrees:
 
     def test_runtime_trio_is_one_constant_shared_with_backup(self):
         """backup's exclusion list and the clone-all root gate must be built from the same
-        constant; two literals drifting apart is how the models/ copy of #111718 crept in."""
+        constant; two literals drifting apart is how the models/ copy of #111718 crept in.
+        backup additionally drops PM's regenerable trees; it never drops less."""
         from hermes_cli import backup, profiles
         from hermes_constants import LOCAL_RUNTIME_ROOT_DIRS
         assert LOCAL_RUNTIME_ROOT_DIRS == frozenset(self.RUNTIME_TREES)
-        assert backup._EXCLUDED_ROOT_DIRS is LOCAL_RUNTIME_ROOT_DIRS
+        assert LOCAL_RUNTIME_ROOT_DIRS <= backup._EXCLUDED_ROOT_DIRS
         assert LOCAL_RUNTIME_ROOT_DIRS <= profiles._CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
     def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):

@@ -215,6 +215,7 @@ def test_every_candidate_inside_a_checkout_fails_closed(
         profiles.get_profile_export_path("default")
 
 
+@pytest.mark.platforms("posix")
 def test_export_dir_symlink_is_rejected(tmp_path, monkeypatch, profiles):
     """A pre-created symlink at the managed export path (predictable-path
     attack on shared hosts) must be refused, not silently followed."""

@@ -65,7 +65,7 @@ def _is_memory_provider_dir(path: Path) -> bool:
     try:
         if not init_file.exists():
             return False
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)

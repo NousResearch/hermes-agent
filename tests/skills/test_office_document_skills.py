@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 REPO = Path(__file__).resolve().parent.parent.parent
 SKILLS = REPO / "skills"

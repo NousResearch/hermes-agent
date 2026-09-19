@@ -2,7 +2,12 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { type MockBackendFixture, setupMockBackend, waitForAppReady, writeEnvFile } from './fixtures'
+import { writeEnvFile } from '../../../tests-js/scripts/mock-provider-config'
+import {
+  type MockBackendFixture,
+  setupMockBackend,
+  waitForAppReady
+} from './fixtures'
 import { expect, test } from './test'
 
 /**

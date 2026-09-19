@@ -55,7 +55,7 @@ class ProcessCheckpointMixin:
         if not checkpoint_path.exists():
             return 0
         try:
-            entries = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            entries = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return 0
         recovered = 0

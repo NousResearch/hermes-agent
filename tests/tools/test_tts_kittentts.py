@@ -120,7 +120,7 @@ class TestDispatcherBranch:
         from tools.tts_tool import text_to_speech_tool
 
         # Write a config telling it to use kittentts
-        import yaml
+        import hermes_yaml as yaml
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"tts": {"provider": "kittentts"}})
         )

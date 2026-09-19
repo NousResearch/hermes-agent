@@ -294,7 +294,7 @@ class TestSetupWizardSkipsConfiguredSections:
 
         # _platform_status (called by the gateway summary path) reads env
         # vars via hermes_cli.gateway.get_env_value, NOT setup_mod's. Patch
-        # both so xdist sibling tests can't leak a TELEGRAM_BOT_TOKEN /
+        # both so sibling tests can't leak a TELEGRAM_BOT_TOKEN /
         # WHATSAPP_* / etc. through and trick the wizard into thinking the
         # gateway section is already configured (which would skip it).
         import hermes_cli.gateway as gateway_mod

@@ -656,9 +656,10 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("stdin_file", [False, True])
-def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file, encoding):
     dm_file = tmp_path / "message with spaces.txt"
-    dm_file.write_text("secret $(not shell)", encoding="utf-8")
+    dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
     observed = tmp_path / "observed.txt"
     child = tmp_path / "child.py"
     child.write_text(
@@ -667,7 +668,7 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file)
             import pathlib
             import sys
 
-            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8")
+            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8-sig")
             with source:
                 pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
             """
@@ -683,7 +684,7 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file)
     )
 
     assert returncode == 0
-    assert observed.read_text(encoding="utf-8") == "secret $(not shell)"
+    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
     assert not dm_file.exists()
 
 
@@ -894,6 +895,21 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
     assert not dm_file.exists()
 
 
+def test_local_turn_decodes_utf8_reply_without_locale_default(tmp_path, monkeypatch, capsys):
+    child = tmp_path / "reply.py"
+    child.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('réponse 世界'.encode('utf-8'))\n"
+        "sys.stderr.buffer.write('diagnostic café'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child)], str(tmp_path / "unused")) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "réponse 世界"
+    assert captured.err == "diagnostic café"
+
+
 @pytest.mark.parametrize("stdin_file", [False, True])
 def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     dm_file = tmp_path / "message with spaces.txt"
@@ -921,7 +937,7 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     assert not dm_file.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     """Native runner paths must survive the Git Bash process boundary."""
     from tools.environments.local import _find_shell
@@ -1054,6 +1070,7 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
     assert unrelated.exists()
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -1066,6 +1083,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None

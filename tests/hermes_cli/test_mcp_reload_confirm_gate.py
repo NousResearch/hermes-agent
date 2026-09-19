@@ -40,7 +40,7 @@ class TestUserConfigMerge:
     """
 
     def test_existing_user_config_without_key_gets_default(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
 
         # Simulate a legacy user config without the new key.
         home = tmp_path / ".hermes"

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginManager
 
@@ -44,7 +44,7 @@ def _write_plugin(
     }
     if manifest_extra:
         manifest.update(manifest_extra)
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )

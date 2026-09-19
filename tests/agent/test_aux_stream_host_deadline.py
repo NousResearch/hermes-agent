@@ -112,7 +112,9 @@ def test_stream_ceiling_structurally_outlives_the_default_host_ceiling():
 # ── The fence must publish the deadline it already owns ──────────────────
 
 
-def test_commit_fence_publishes_its_shared_deadline():
+def test_commit_fence_publishes_its_shared_deadline(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
     fence = CompressionCommitFence()
     assert fence.deadline_monotonic is None
 
@@ -123,7 +125,7 @@ def test_commit_fence_publishes_its_shared_deadline():
     assert not fence.deadline_exceeded
 
     fence.set_total_ceiling_seconds(0.001)
-    time.sleep(0.01)
+    now[0] += 1.0
     assert fence.deadline_exceeded
     assert fence.deadline_monotonic <= time.monotonic()
 

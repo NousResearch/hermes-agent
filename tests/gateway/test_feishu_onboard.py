@@ -244,8 +244,8 @@ class TestQrRegister:
 
         output = capsys.readouterr().out
         assert "https://example.com/qr" in output
-        assert f"uv pip install --python {sys.executable} qrcode" in output
-        assert "Tip: pip install qrcode" not in output
+        assert "sync_venv(['messaging'], explicit=True)" in output
+        assert "pip install" not in output
 
     # -- Contract: expected errors → None, unexpected errors → propagate --
 

@@ -1,9 +1,9 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { readKey, writeKey } from '@/lib/storage'
 
-import { hasSeenIntroReveal, markIntroRevealSeen } from './intro-reveal'
+import { $introReveal, hasSeenIntroReveal, markIntroRevealSeen } from './intro-reveal'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
@@ -19,6 +19,7 @@ function isOnboardingPhase(value: string | null): value is OnboardingPhase {
 export interface OnboardingGateState {
   phase: OnboardingPhase
   guideQueued: boolean
+  guideKickoff: 'idle' | 'starting' | 'started'
 }
 
 type GuideKickoff = { status: 'idle' } | { status: 'starting'; promise: Promise<boolean> } | { status: 'started' }
@@ -34,16 +35,33 @@ function loadGate(): OnboardingGateState {
   // connected splash, the stock composer and model picker, a small window
   // whose sidebars cannot open) while the gate still says the guide is on.
   // The kickoff adopts the existing guide chat by title, so nothing is lost.
-  return { phase, guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided' }
+  return {
+    phase,
+    guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided',
+    guideKickoff: 'idle'
+  }
 }
 
 export const $onboardingGate = atom<OnboardingGateState>(loadGate())
 
 let guideKickoff: GuideKickoff = { status: 'idle' }
+export const $guideOpening = computed(
+  [$onboardingGate, $introReveal],
+  (gate, intro) =>
+    isOnboardingEnabled() &&
+    (gate.phase === 'cinematic' || gate.phase === 'guided') &&
+    intro.phase === 'hidden' &&
+    gate.guideKickoff !== 'started'
+)
+
+function setGuideKickoff(state: GuideKickoff): void {
+  guideKickoff = state
+  $onboardingGate.set({ ...$onboardingGate.get(), guideKickoff: state.status })
+}
 
 function setPhase(phase: OnboardingPhase): void {
   writeKey(PHASE_KEY, phase === 'idle' ? null : phase)
-  $onboardingGate.set({ phase, guideQueued: false })
+  $onboardingGate.set({ ...$onboardingGate.get(), phase, guideQueued: false })
 }
 
 /** The guided first launch is on screen or mid-handoff. Ambient chrome that
@@ -116,7 +134,7 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
     .then(kickoff)
     .then(
       started => {
-        guideKickoff = { status: started ? 'started' : 'idle' }
+        setGuideKickoff({ status: started ? 'started' : 'idle' })
 
         if (started && $onboardingGate.get().phase === 'cinematic') {
           setPhase('guided')
@@ -125,13 +143,13 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
         return started
       },
       error => {
-        guideKickoff = { status: 'idle' }
+        setGuideKickoff({ status: 'idle' })
 
         throw error
       }
     )
 
-  guideKickoff = { status: 'starting', promise }
+  setGuideKickoff({ status: 'starting', promise })
 
   return promise
 }
@@ -164,7 +182,7 @@ export function devResetOnboardingFlow(): void {
     return
   }
 
-  guideKickoff = { status: 'idle' }
+  setGuideKickoff({ status: 'idle' })
   setPhase('idle')
   setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [...DEFAULT_ANSWERS.connectors] })
 }

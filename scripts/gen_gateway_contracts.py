@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     check = "--check" in args
     stale = []
     for path, text in render_all().items():
-        current = path.read_text(encoding="utf-8") if path.exists() else None
+        current = path.read_text(encoding="utf-8-sig") if path.exists() else None
         if current == text:
             continue
         if check:

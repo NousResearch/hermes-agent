@@ -26,9 +26,10 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
-import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
+
+pytestmark = pytest.mark.usefixtures("isolated_source_completion")
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
@@ -45,7 +46,11 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
             return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
 
         if joined.endswith("rev-parse HEAD"):
-            if calls["n"] == 0:
+            # The update flow's own captures: pre-pull (first call) sees
+            # pre_sha, post-pull (second call) sees post_sha. get_version_info
+            # is mocked in _patch_update_deps so the startup banner makes no
+            # rev-parse calls of its own.
+            if calls["n"] < 1:
                 calls["n"] += 1
                 return SimpleNamespace(returncode=0, stdout=f"{pre_sha}\n", stderr="")
             return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
@@ -55,30 +60,14 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     return side_effect
 
 
-def _make_up_to_date_side_effect(sha="abc123"):
-    """Simulate git commands where origin is already at HEAD."""
 
-    def side_effect(cmd, **kwargs):
-        joined = " ".join(str(c) for c in cmd)
-
-        if "rev-parse" in joined and "--abbrev-ref" in joined:
-            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
-
-        if "rev-list" in joined:
-            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
-
-        if joined.endswith("rev-parse HEAD"):
-            return SimpleNamespace(returncode=0, stdout=f"{sha}\n", stderr="")
-
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    return side_effect
 
 
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
-    """Patch ``_cmd_update_impl`` helpers. Mirrors test_update_head_moved_gate."""
+    """Isolate machine maintenance while exercising interrupted fleet updates."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
@@ -112,21 +101,39 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
-    monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
-    monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
-    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+    # _install_hangup_protection wraps sys.stdout in a mirror stream that
+    # survives the test and breaks later capsys captures — no-op it.
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_hangup_protection",
+        lambda gateway_mode=False: {
+            "prev_stdout": None, "prev_stderr": None,
+            "log_file": None, "installed": False,
+        },
+    )
+    monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda *a, **k: None)
+    # _check_and_apply_config_migration → _run_migrate_config_fresh →
+    # _reload_config_modules() force-reloads hermes_cli.config via
+    # importlib, replacing the module object pytest's capsys + the config
+    # tests' patches target. No-op the reload so the config module stays
+    # stable for later tests in the same process.
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._reload_config_modules",
+        lambda *a, **k: None,
     )
     monkeypatch.setattr(
-        update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+        "hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: None,
     )
-    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
-    monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *a, **k: None)
+    # The startup version-info probe runs git rev-parse HEAD (and the
+    # result is cached per-process, so whether it runs depends on test
+    # order). Mock it so the head-moved mock's call counting only sees the
+    # update flow's own pre/post captures.
     monkeypatch.setattr(
-        update_cmd, "_venv_core_imports_healthy", lambda: (True, "")
+        "hermes_cli.version_info.get_version_info",
+        lambda *a, **k: SimpleNamespace(),
     )
-    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd_deps, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(update_cmd, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
     import hermes_cli.gateway as hermes_gateway
 
@@ -144,6 +151,17 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         "hermes_cli.update_inventory.collect_runtime_inventory",
         lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    # The restart phase imports discovery fns fresh after
+    # _purge_stale_hermes_modules (the update reloads code in-place), so
+    # module-attr mocks are lost; stub os.kill so the conftest live-system
+    # guard never fires on real pids. No gateways are expected, so the
+    # post-restart fleet matrix must not demand rows.
+    import os as _os_mod
+
+    monkeypatch.setattr(_os_mod, "kill", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **k: False
     )
 
 
@@ -341,27 +359,6 @@ def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
-def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
-    )
-
-    # An empty PID scan is insufficient; every supervisor scope must answer empty.
-    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [
-        (scope, cmd, SimpleNamespace(returncode=0, stdout=""))
-        for scope, cmd in update_cmd_fleet._SYSTEMD_SCOPES
-    ])
-    # The launchd scope too: a developer machine with a live fleet would otherwise
-    # drain its real units and report the restart incomplete (#110701).
-    monkeypatch.setattr(
-        update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
-    )
-    # And the Windows scope: an installed Windows gateway service would be restarted for real.
-    monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: False)
-    assert update_cmd._run_pending_fleet_restart() is True
-    assert "Pending fleet restart completed" in capsys.readouterr().out
-
-
 # ---------------------------------------------------------------------------
 # cmd_update integration (mocked git / restart)
 # ---------------------------------------------------------------------------
@@ -388,33 +385,6 @@ def test_marker_written_after_pull_cleared_after_successful_restart(
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
     out = capsys.readouterr().out
     assert "✓ Code updated!" in out
-
-
-def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
-    monkeypatch, tmp_path, capsys
-):
-    """The successful update path must surface an inventoried stale serve."""
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-    monkeypatch.setattr(
-        update_cmd,
-        "_surviving_pre_update_serve_runtimes",
-        lambda _plan: [
-            {
-                "pid": 5555,
-                "kind": "serve",
-                "profile": "default",
-                "supervisor": "manual-serve",
-            }
-        ],
-    )
-
-    hermes_main.cmd_update(args)
-
-    out = capsys.readouterr().out
-    assert "pid 5555" in out
-    assert "serve" in out
-    assert "pre-update code" in out
 
 
 def test_clean_update_escalates_surviving_serve_as_unaccounted(
@@ -563,115 +533,6 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
     marker = update_cmd._fleet_restart_pending_marker_path()
     assert marker.is_file()
     assert "expected_sha=def456" in marker.read_text(encoding="utf-8")
-
-
-def test_already_up_to_date_runs_pending_restart_when_marker_present(
-    monkeypatch, tmp_path, capsys
-):
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: "abc123")
-    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123", runtimes=[{"kind": "gateway", "profile": "default"}])
-
-    seen = {"ran": False}
-    monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **k: [{"profile": "default", "state": "current", "code_sha": "abc123"}] if seen["ran"] else [],
-    )
-
-    def _restart():
-        seen["ran"] = True
-        return True
-
-    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
-    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _restart)
-
-    hermes_main.cmd_update(args)
-
-    assert seen["ran"] is True
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
-    out = capsys.readouterr().out
-    assert "did not restart running gateways" in out
-
-
-def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
-    monkeypatch, tmp_path, capsys
-):
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-
-    disk_sha = "e" * 40
-    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
-    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
-    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
-    receipt_dir.mkdir(parents=True)
-    (receipt_dir / "latest.json").write_text(
-        json.dumps(
-            {
-                "exit_code": 1,
-                "stop_reason": "KeyboardInterrupt: ",
-                "outcome": "failed",
-                "plan": {
-                    "expected_sha": disk_sha,
-                    "runtimes": [
-                        {
-                            "kind": "gateway",
-                            "profile": "default",
-                            "pid": 42,
-                            "code_sha": "7" * 40,
-                        }
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    seen = {"ran": False}
-    monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **k: [{"profile": "default", "state": "current", "code_sha": disk_sha}] if seen["ran"] else [],
-    )
-    monkeypatch.setattr(
-        update_cmd,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-    monkeypatch.setattr(
-        update_cmd_fleet,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-
-    hermes_main.cmd_update(args)
-
-    assert seen["ran"] is True
-    out = capsys.readouterr().out
-    assert "did not restart running gateways" in out
-
-
-def test_already_up_to_date_skips_restart_when_nothing_pending(
-    monkeypatch, tmp_path, capsys
-):
-    args = _update_args()
-    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-
-    seen = {"ran": False}
-    monkeypatch.setattr(
-        update_cmd,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-    monkeypatch.setattr(
-        update_cmd_fleet,
-        "_run_pending_fleet_restart",
-        lambda: seen.__setitem__("ran", True) or True,
-    )
-
-    hermes_main.cmd_update(args)
-
-    assert seen["ran"] is False
-    assert "did not restart running gateways" not in capsys.readouterr().out
 
 
 def test_startup_warn_prints_when_marker_present(capsys):

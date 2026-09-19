@@ -115,7 +115,7 @@ def reason_of(response: dict):
 def registry(home: Path):
     path = home / "runtime" / "active_sessions.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("entries", [])
+        return json.loads(path.read_text(encoding="utf-8-sig")).get("entries", [])
     except Exception:
         return []
 

@@ -13,7 +13,7 @@ import time
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_list_reconciles_real_exit_without_consuming_owned_result(tmp_path):
     # A disposable subreaper owns even the orphaned writer; no global pytest
     # process state is changed, and every fixture child is reaped on failure.

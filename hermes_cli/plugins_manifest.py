@@ -19,7 +19,7 @@ from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
 try:
-    import yaml
+    import hermes_yaml as yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
@@ -266,7 +266,7 @@ def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
             origin = importlib.util.source_from_cache(origin)
         if not origin or not origin.endswith(".py"):
             return ""
-        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+        return Path(origin).read_text(encoding="utf-8-sig", errors="replace")[:limit]
     except Exception:
         return ""
 
@@ -411,12 +411,13 @@ def version_satisfies(spec: str, current: str) -> bool:
 
 def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
-    if not manifest.requires_hermes:
+    spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
+    if not spec:
         return None
     current = running_hermes_version()
-    if version_satisfies(manifest.requires_hermes, current):
+    if version_satisfies(spec, current):
         return None
-    return f"requires hermes {manifest.requires_hermes}, running {current}"
+    return f"requires hermes {spec}, running {current}"
 
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
@@ -447,7 +448,7 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
     init_file = plugin_dir / "__init__.py"
     if kind == "standalone" and "kind" not in data and init_file.exists():
         with suppress(Exception):
-            source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+            source_text = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
             detected = _detect_kind_from_source(source_text)
             if detected:
                 kind = detected
@@ -461,9 +462,9 @@ def parse_manifest_file(
     """Parse one ``plugin.yaml`` into a :class:`PluginManifest`; ``None`` (warned) on failure."""
     try:
         if yaml is None:
-            logger.warning("PyYAML not installed – cannot load %s", manifest_file)
+            logger.warning("ruamel.yaml not installed – cannot load %s", manifest_file)
             return None
-        data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
         name = data.get("name", plugin_dir.name)
         key = f"{prefix}/{plugin_dir.name}" if prefix else name
         kind = _manifest_kind(data, key, plugin_dir)

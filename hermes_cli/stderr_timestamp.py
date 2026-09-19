@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import BinaryIO, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
+# gateway.restart.GATEWAY_FATAL_CONFIG_EXIT_CODE. This wrapper is a launcher boot
+# file: it runs from a source slice and stays stdlib-only.
+_GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
 
@@ -97,10 +100,8 @@ def _child_returncode_for_supervisor(command: Sequence[str], returncode: int) ->
     """
     if returncode < 0:
         return 128 + abs(returncode)
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, map_fatal_config_exit_for_launchd
-
-    if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
-        return map_fatal_config_exit_for_launchd(returncode)
+    if returncode == _GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
+        return 0
     return returncode
 
 

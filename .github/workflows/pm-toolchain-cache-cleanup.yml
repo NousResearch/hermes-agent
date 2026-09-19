@@ -1,0 +1,31 @@
+name: Clean PM toolchain smoke caches
+
+# workflow_run uses default-branch code, not the PR's checkout. Cleanup also
+# runs for failed/cancelled smoke workflows after all cache post steps finish.
+on:
+  workflow_run:
+    workflows: [PM Toolchain]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: pm-smoke-cleanup-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Remove only this completed run's isolated caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python3 scripts/ci/cleanup_pm_toolchain_caches.py "$SMOKE_RUN_ID"

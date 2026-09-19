@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# numpy ships only in the optional "voice" extra (not [all,dev]); the mixer
+# numpy ships only in the optional "audio-io" extra (not [all,dev]); the mixer
 # math needs it, so skip this whole module when it isn't installed.
 np = pytest.importorskip("numpy")
 

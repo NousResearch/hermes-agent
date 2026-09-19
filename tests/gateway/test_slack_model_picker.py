@@ -626,7 +626,7 @@ class TestSlackModelPickerGatewayIntegration:
     async def test_bare_model_triggers_picker(self, tmp_path, monkeypatch):
         import types
 
-        import yaml
+        import hermes_yaml as yaml
 
         from gateway.platforms.event import MessageEvent, MessageType
         from gateway.session import SessionSource
@@ -682,7 +682,7 @@ class TestSlackModelPickerGatewayIntegration:
 
     @pytest.mark.asyncio
     async def test_text_fallback_when_no_picker(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
 
         from gateway.platforms.event import MessageEvent, MessageType
         from gateway.session import SessionSource

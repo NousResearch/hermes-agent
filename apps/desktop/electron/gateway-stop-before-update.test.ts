@@ -4,7 +4,6 @@ import { test } from 'vitest'
 
 import {
   GATEWAY_STOP_TIMEOUT_MS,
-  startGatewaysAfterUpdateAbort,
   stopGatewayBeforeUpdate
 } from './gateway-stop-before-update'
 
@@ -96,35 +95,4 @@ test('passes a generous timeout with hidden console (taskkill window suppression
     stdio: 'ignore',
     encoding: 'utf8'
   })
-})
-
-test('abort-path counterpart invokes "gateway start --all" (drain-semantics restore)', () => {
-  let seenArgs: string[] = []
-
-  const ran = startGatewaysAfterUpdateAbort(CLI, {
-    isWindows: true,
-    existsSync: () => true,
-    execFileSync: ((_c: string, args: string[]) => {
-      seenArgs = args
-
-      return Buffer.from('')
-    }) as never
-  })
-
-  assert.equal(ran, true)
-  assert.deepEqual(seenArgs, ['gateway', 'start', '--all'])
-})
-
-test('abort-path counterpart is a no-op off Windows', () => {
-  const calls: Array<[string, string[]]> = []
-
-  const ran = startGatewaysAfterUpdateAbort(CLI, {
-    isWindows: false,
-    existsSync: () => true,
-    execFileSync: fakeExec(true) as never,
-    spy: (c, a) => calls.push([c, a])
-  })
-
-  assert.equal(ran, false)
-  assert.deepEqual(calls, [])
 })

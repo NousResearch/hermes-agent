@@ -1,14 +1,13 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
+  waitForAppReady
 } from './fixtures'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { expect, test } from './test'

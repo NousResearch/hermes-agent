@@ -40,8 +40,11 @@ def _state_path():
 
 def _load_boots() -> List[float]:
     try:
-        data = json.loads(_state_path().read_text(encoding="utf-8"))
-        return [float(t) for t in data.get("boots", []) if isinstance(t, (int, float))]
+        # utf-8-sig: our BOM-tolerant read fix for the persisted boot log.
+        raw = _state_path().read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
+        boots = data.get("boots", [])
+        return [float(t) for t in boots if isinstance(t, (int, float))]
     except (OSError, ValueError, TypeError):
         return []
 

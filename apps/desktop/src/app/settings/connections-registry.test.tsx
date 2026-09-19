@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
+import { deferred } from '@/test/deferred'
 
 import {
   ConnectionsRegistrySection,
@@ -69,6 +70,88 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
+  it('preserves, replaces and deletes stored headers through plaintext consent without selecting a source', async () => {
+    const active = $connection.get()
+
+    const withHeaders: DesktopConnectionsRegistry = {
+      ...registry,
+      secureTokenStorage: false,
+      connections: [registry.connections[0], { ...registry.connections[1], headerNames: ['Keep', 'Replace', 'Delete'] }]
+    }
+
+    list.mockResolvedValueOnce(withHeaders)
+    save.mockRejectedValueOnce(new Error('plaintext consent required'))
+    const applyConnectionConfig = vi.fn()
+    const select = vi.fn()
+    Object.assign(window.hermesDesktop, { applyConnectionConfig })
+    Object.assign(window.hermesDesktop.connections, { select })
+    render(<ConnectionsRegistrySection />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const values = screen.getAllByPlaceholderText('Saved — leave blank to keep')
+    fireEvent.change(values[1], { target: { value: 'new-header-secret' } })
+    fireEvent.click(within(screen.getByDisplayValue('Delete').parentElement!).getByRole('button', { name: 'Remove' }))
+    fireEvent.change(screen.getByPlaceholderText('Existing token ...abc123'), { target: { value: 'new-token' } })
+    fireEvent.click(screen.getByText('Save connection'))
+    await screen.findByText('Store the gateway token in plain text?')
+
+    const expected = {
+      id: 'homelab',
+      kind: 'remote',
+      label: 'Homelab',
+      url: 'http://homelab.lan:9119',
+      authMode: 'token',
+      token: 'new-token',
+      headers: { Keep: null, Replace: 'new-header-secret' }
+    }
+
+    expect(save).toHaveBeenCalledExactlyOnceWith(expected)
+    fireEvent.click(screen.getByRole('button', { name: 'Save as plain text' }))
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith({ ...expected, allowPlainTextToken: true }))
+    expect(applyConnectionConfig).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+    expect($connection.get()).toBe(active)
+  })
+
+  it('keeps stale browser sign-in out of a storage-only edit for a different URL', async () => {
+    const active = $connection.get()
+    const applyConnectionConfig = vi.fn()
+    const saveConnectionConfig = vi.fn()
+    const probeConnectionConfig = vi.fn().mockResolvedValue({ reachable: true, authMode: 'oauth', providers: [] })
+    const pendingLogin = deferred<{ connected: boolean }>()
+    const oauthLoginConnectionConfig = vi.fn().mockReturnValue(pendingLogin.promise)
+
+    Object.assign(window.hermesDesktop, {
+      applyConnectionConfig,
+      saveConnectionConfig,
+      probeConnectionConfig,
+      oauthLoginConnectionConfig
+    })
+    render(<ConnectionsRegistrySection />)
+    fireEvent.click(await screen.findByText('Add connection'))
+    fireEvent.change(screen.getByPlaceholderText('Homelab'), { target: { value: 'New gateway' } })
+    const url = screen.getByPlaceholderText('http://homelab.lan:9119')
+    fireEvent.change(url, { target: { value: 'https://a.example' } })
+    fireEvent.click(screen.getByRole('button', { name: /^(OAuth|Sign in)$/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Sign in with/ }))
+    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example'))
+    fireEvent.change(url, { target: { value: 'https://b.example' } })
+    await act(async (): Promise<void> => pendingLogin.resolve({ connected: true }))
+    expect(screen.queryByText('Signed in')).toBeNull()
+    fireEvent.click(screen.getByText('Save connection'))
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        kind: 'remote',
+        label: 'New gateway',
+        url: 'https://b.example',
+        authMode: 'oauth',
+        headers: {}
+      })
+    )
+    expect(applyConnectionConfig).not.toHaveBeenCalled()
+    expect(saveConnectionConfig).not.toHaveBeenCalled()
+    expect($connection.get()).toBe(active)
+  })
+
   it('refreshes a cached roster immediately after a successful connection test', async () => {
     _resetFleetRosterForTests()
     const getAgentRoster = vi.fn().mockResolvedValue({ agents: [], sources: [] })

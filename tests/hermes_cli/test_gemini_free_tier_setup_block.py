@@ -55,7 +55,7 @@ class TestGeminiSetupFreeTierBlock:
         assert "Not saving Gemini as the default provider" in output
 
         # Config must NOT show gemini as the provider
-        import yaml
+        import hermes_yaml as yaml
         cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = cfg.get("model")
         if isinstance(model, dict):
@@ -86,7 +86,7 @@ class TestGeminiSetupFreeTierBlock:
         assert "paid" in output.lower()
         assert "Not saving Gemini" not in output
 
-        import yaml
+        import hermes_yaml as yaml
         cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = cfg.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"

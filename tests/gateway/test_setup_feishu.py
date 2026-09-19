@@ -7,6 +7,9 @@ Feishu adapter: credentials, connection mode, DM policy, and group policy.
 import os
 from unittest.mock import patch
 
+import os as _os
+_SYS_ENV = {k: _os.environ[k] for k in ("SYSTEMROOT", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME") if k in _os.environ}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -211,12 +214,12 @@ class TestSetupFeishuAdapterIntegration:
         )
         return env
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SYS_ENV, clear=True)
     def test_qr_env_produces_valid_adapter_settings(self):
         """QR setup → adapter initializes with websocket mode."""
         env = self._make_env_from_setup()
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {**_SYS_ENV, **env}, clear=True):
             from gateway.config import PlatformConfig
             from plugins.platforms.feishu.adapter import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())

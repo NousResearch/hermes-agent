@@ -600,7 +600,7 @@ class TestVoiceFullDuplexListener:
             lambda path, model=None: {"success": True, "transcript": "stop"},
         )
         monkeypatch.setattr(
-            "tools.voice_mode.is_voice_stop_phrase",
+            "tools.voice_mode_transcript.is_voice_stop_phrase",
             lambda text: text.strip().lower() == "stop",
         )
 

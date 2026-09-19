@@ -18,22 +18,22 @@ from hermes_cli._subprocess_compat import split_command_line
 class TestSplitCommandLine:
     """#83934 / #78293 — backslashes in Windows paths must survive splitting."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_path_backslashes_preserved(self):
         argv = split_command_line(r"sessions export C:\Users\me\Desktop\out.jsonl")
         assert argv == ["sessions", "export", r"C:\Users\me\Desktop\out.jsonl"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_quoted_path_with_spaces(self):
         argv = split_command_line(r'run "C:\Program Files\App\tool.exe" --flag')
         assert argv == ["run", r"C:\Program Files\App\tool.exe", "--flag"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_bare_hook_command_path(self):
         argv = split_command_line(r"C:\Users\u\.local\bin\dcg.exe --hook pre")
         assert argv[0] == r"C:\Users\u\.local\bin\dcg.exe"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_posix_behavior_unchanged(self):
         assert split_command_line("echo 'a b' c") == ["echo", "a b", "c"]
 
@@ -45,14 +45,14 @@ class TestSplitCommandLine:
 class TestShellHooksWindowsPaths:
     """#78293 — hook script paths with backslashes resolve correctly."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_command_script_path_keeps_backslashes(self):
         from agent.shell_hooks import _command_script_path
 
         path = _command_script_path(r"C:\hooks\guard.py --strict")
         assert path == r"C:\hooks\guard.py"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_script_is_executable_finds_real_file(self, tmp_path):
         from agent.shell_hooks import script_is_executable
 
@@ -68,7 +68,7 @@ class TestShellHooksWindowsPaths:
 class TestWindowsMarketingVersion:
     """#51755 — Windows 11 must not be reported as Windows 10."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_matches_build_number(self):
         from agent.prompt_builder import _windows_marketing_version
 

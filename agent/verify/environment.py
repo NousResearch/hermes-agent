@@ -27,7 +27,7 @@ def load_manifest(root: Path) -> Recipe | None:
     corrupt manifest degrades to fresh detection. Accepts the wrapped
     ``{version, recipe}`` shape and a bare recipe."""
     try:
-        manifest = json.loads(manifest_path(root).read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path(root).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):  # ValueError includes JSONDecodeError
         return None
     return Recipe.from_dict(manifest.get("recipe", manifest)) if isinstance(manifest, dict) else None

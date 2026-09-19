@@ -16,7 +16,7 @@ from hermes_cli import main_dashboard
 
 # ``_loaded_launchd_backend_jobs`` reads ``sys.platform`` directly (no host seam), so
 # the scan runs only on a real macOS host — never by faking the platform.
-pytestmark = pytest.mark.macos_only
+pytestmark = pytest.mark.platforms("macos")
 
 
 # A plist that is not well-formed XML yet launchd itself tolerates: a raw `&&`

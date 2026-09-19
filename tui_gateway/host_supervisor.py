@@ -50,6 +50,22 @@ def append_log_record(path: str | Path, record: str) -> None:
     """Append one log record using O_APPEND and exactly one os.write call."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     text = record if record.endswith("\n") else f"{record}\n"
+    if os.name == "nt":
+        # CRT O_APPEND is seek+write, not an atomic append across handles.
+        # FILE_APPEND_DATA without FILE_WRITE_DATA makes the kernel append.
+        import win32con
+        import win32file
+        from ntsecuritycon import FILE_APPEND_DATA
+        handle = win32file.CreateFile(
+            str(path), FILE_APPEND_DATA,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+            None, win32con.OPEN_ALWAYS, win32con.FILE_ATTRIBUTE_NORMAL, None,
+        )
+        try:
+            win32file.WriteFile(handle, text.encode("utf-8", errors="replace"))
+        finally:
+            handle.Close()
+        return
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         os.write(fd, text.encode("utf-8", errors="replace"))

@@ -15,13 +15,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# The Bitwarden backend pulls in ``cryptography`` at import time; on Windows that mapped native
-# module makes the ``hermes update`` self-lock preflight defer. This module is registered
-# parse-time from ``hermes_cli.main``, so the backend import stays lazy (nothing touches ``bw``
-# until a handler runs) and ``_BWS_VERSION`` is duplicated here for the ``install --help`` text.
-# ``agent.secret_sources.bitwarden._BWS_VERSION`` is the source of truth; bump both together.
-# See #86781.
-_BWS_VERSION = "2.0.0"
 
 from hermes_cli._secrets_common import (
     arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
@@ -91,8 +84,8 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
             flag("--apply", "Actually export the secrets into the current shell's env (default: dry-run)"),
         )),
         ("disable", "Turn off the Bitwarden integration", cmd_disable, ()),
-        ("install", f"Download and verify the pinned bws binary (v{_BWS_VERSION})", cmd_install, (
-            flag("--force", "Re-download even if a managed copy already exists"),
+        ("install", "Install the PM-pinned bws binary", cmd_install, (
+            flag("--force", "Verify and repair the managed copy"),
         )),
     ))
 

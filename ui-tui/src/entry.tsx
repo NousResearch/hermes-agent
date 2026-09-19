@@ -6,7 +6,7 @@ import './lib/forceTruecolor.js'
 import type { FrameEvent } from '@hermes/ink'
 
 import { setRpcErrorLogSink } from './app/userMessages.js'
-import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -40,14 +40,9 @@ process.on('exit', () => {
   resetTerminalModes()
 })
 
-// Desktop terminals benefit from a clean startup slate because the TUI usually
-// runs in AlternateScreen. On Termux we keep prior output intact so users can
-// review/copy earlier assistant replies after reopening the app.
-if (TERMUX_TUI_MODE) {
-  process.stdout.write('\n')
-} else {
-  process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
-}
+// Terminals benefit from a clean startup slate because the TUI usually runs
+// in AlternateScreen.
+process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 
 const gw = new GatewayClient()
 

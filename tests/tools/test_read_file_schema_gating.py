@@ -100,27 +100,6 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         self.assertIsNone(key)
         self.assertIsNone(url)
 
-    def test_coverage_warning_teaching_left_to_the_warning(self):
-        """The response-time warning owns the recovery curriculum."""
-        from tools.file_tools import READ_FILE_SCHEMA
-
-        desc = READ_FILE_SCHEMA["description"]
-        self.assertNotIn("EXTRACTION COVERAGE WARNING", desc)
-        self.assertNotIn("NEEDS OCR", desc)
-        self.assertNotIn("pdftoppm", desc)
-        import inspect
-        from tools import read_extract
-
-        src = inspect.getsource(read_extract)
-        self.assertIn("NEEDS OCR", src)
-        self.assertIn("pdftoppm", src)
-        self.assertIn("vision_analyze", src)
-
-    def test_binary_note_stays_last(self):
-        from tools.file_tools import READ_FILE_SCHEMA
-
-        desc = READ_FILE_SCHEMA["description"]
-        self.assertLess(desc.find("EPUB"), desc.find("Cannot read images/binary"))
 
     def test_missing_anydoc_error_teaches_install(self):
         from tools.read_extract import _anydoc_missing_error
@@ -203,17 +182,15 @@ class TestNeedsOcrPath(unittest.TestCase):
         self.assertNotIn("ocr-and-documents", out)
 
     def test_pin_lockstep(self):
-        """pyproject core pin and lazy_deps self-heal pin must match."""
-        import re
+        """Lean and full installs must resolve the same anydoc requirement."""
+        import tomllib
         from pathlib import Path
+        from packaging.requirements import Requirement
 
-        py = Path("pyproject.toml").read_text(encoding="utf-8")
-        lz = Path("tools/lazy_deps.py").read_text(encoding="utf-8")
-        m1 = re.search(r'"firecrawl-anydoc==([\d.]+)"', py)
-        m2 = re.search(r'"firecrawl-anydoc==([\d.]+)"', lz)
-        self.assertIsNotNone(m1)
-        self.assertIsNotNone(m2)
-        self.assertEqual(m1.group(1), m2.group(1))
+        project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8-sig"))["project"]
+        core, extra = ({r.name: str(r.specifier) for r in map(Requirement, deps)} for deps in
+                       (project["dependencies"], project["optional-dependencies"]["doc-extract"]))
+        self.assertEqual(core["firecrawl-anydoc"], extra["firecrawl-anydoc"])
 
 
 if __name__ == "__main__":

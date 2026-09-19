@@ -27,7 +27,7 @@ def render() -> str:
 
 def check(out: Path = OUT) -> int:
     """0 when ``out`` matches the registry byte-for-byte, else 1 with a hint on stderr."""
-    committed = out.read_text(encoding="utf-8") if out.exists() else ""
+    committed = out.read_text(encoding="utf-8-sig") if out.exists() else ""
     if committed == render():
         return 0
     rel = out.relative_to(ROOT) if out.is_relative_to(ROOT) else out

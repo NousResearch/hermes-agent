@@ -29,11 +29,10 @@ def _via_supermemory(p: Path, monkeypatch) -> dict:
     return _load_supermemory_config(str(p.parent))
 
 
-def _via_hindsight_runtime_deps(p: Path, monkeypatch) -> dict:
-    import hermes_cli.memory_setup as ms
-    monkeypatch.setattr(ms, "get_hermes_home", lambda: p.parent.parent)  # <home>/hindsight/config.json
-    deps = ms._provider_pip_dependencies("hindsight", ["hindsight-client"])
-    return {"workspace": "bom-ws" if "hindsight-all" in deps else None, "container_tag": None}
+def _via_hindsight_config(p: Path, monkeypatch) -> dict:
+    import plugins.memory.hindsight as hs
+    monkeypatch.setattr(hs, "get_hermes_home", lambda: p.parent.parent)  # <home>/hindsight/config.json
+    return hs._load_config()
 
 
 def _via_honcho_client(p: Path, monkeypatch) -> dict:
@@ -46,7 +45,7 @@ def _via_honcho_client(p: Path, monkeypatch) -> dict:
     ("mem0.json", _via_shared_reader),
     ("supermemory.json", _via_supermemory),
     ("honcho.json", _via_honcho_client),
-    ("hindsight/config.json", _via_hindsight_runtime_deps),
+    ("hindsight/config.json", _via_hindsight_config),
 ])
 def test_plugin_config_json_tolerates_bom(tmp_path, monkeypatch, filename, loader):
     target = tmp_path / filename

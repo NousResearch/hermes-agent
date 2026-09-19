@@ -77,7 +77,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
             _LAST_GOOD_USER_RAW.setdefault(path_key, copy.deepcopy(raw))
         elif user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     loaded = fast_safe_load(f)
             except Exception as exc:
                 if fail_closed:

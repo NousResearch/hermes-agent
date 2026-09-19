@@ -278,6 +278,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     return False
 
 
+
 class SessionPersistenceMixin:
     """Session DB flush and trajectory persistence (see module docstring)."""
 

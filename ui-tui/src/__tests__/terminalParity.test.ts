@@ -19,7 +19,8 @@ describe('terminalParityHints', () => {
 
     const hints = await terminalParityHints({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv, {
       fileOps: { readFile },
-      homeDir: '/tmp/fake-home'
+      homeDir: '/tmp/fake-home',
+      platform: 'darwin'
     })
 
     expect(hints.some(h => h.key === 'ide-setup')).toBe(true)
@@ -69,7 +70,8 @@ describe('terminalParityHints', () => {
 
     const hints = await terminalParityHints({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv, {
       fileOps: { readFile },
-      homeDir: '/tmp/fake-home'
+      homeDir: '/tmp/fake-home',
+      platform: 'darwin'
     })
 
     expect(hints.some(h => h.key === 'ide-setup')).toBe(false)
@@ -119,7 +121,8 @@ describe('terminalParityHints', () => {
 
     const hints = await terminalParityHints({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv, {
       fileOps: { readFile },
-      homeDir: '/tmp/fake-home'
+      homeDir: '/tmp/fake-home',
+      platform: 'darwin'
     })
 
     // Legacy bindings don't match current CSI u targets, so setup is still needed

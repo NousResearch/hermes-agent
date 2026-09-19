@@ -18,7 +18,7 @@ import threading
 import time
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture

@@ -68,7 +68,7 @@ def write_turn_report(path: str | None, *, exit_code: int, error: str = "") -> N
 def read_turn_report(path: str, pid: int) -> dict | None:
     """The child's turn report, or None while absent, unreadable, or written by another process."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             record = json.load(fh)
     except (OSError, ValueError):
         return None

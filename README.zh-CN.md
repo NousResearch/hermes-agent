@@ -35,9 +35,9 @@
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-支持 Linux、macOS、WSL2 和 Android (Termux)。安装程序会自动处理平台特定的配置。
+支持 Linux、macOS 和 WSL2。安装程序会自动处理平台特定的配置。
 
-> **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
+> **Android / Termux：** aarch64 设备可使用预发布的 APT 软件包，其中包含 Python、Node.js 和 TUI。请按照 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)安装，不要使用桌面和服务器的安装脚本。
 >
 > **Windows：** 在 PowerShell 中运行：
 > ```powershell
@@ -168,26 +168,8 @@ hermes claw migrate --overwrite  # 覆盖已有冲突
 
 欢迎贡献！请参阅 [贡献指南](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) 了解开发设置、代码风格和 PR 流程。
 
-贡献者快速开始——使用标准安装器，然后在它创建的完整 git checkout 中开发：
-`$HERMES_HOME/hermes-agent`（通常是 `~/.hermes/hermes-agent`）。这会匹配
-`hermes update`、托管 venv、lazy dependencies、gateway 和 docs tooling 使用的布局。
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
-手动克隆备用路径（用于一次性 clone / CI，或你明确不想使用 managed install layout 时）：
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv venv --python 3.11
-source venv/bin/activate
-uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
-```
+PM 引导、Python 3.14 测试环境和规范验证命令见
+[开发环境配置](CONTRIBUTING.md#development-setup)。
 
 ---
 

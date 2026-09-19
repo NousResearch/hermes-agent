@@ -144,7 +144,6 @@ def test_missing_key_banner_is_classified_without_hiding_initialization(tmp_path
     monkeypatch.setattr(agent_init, "_explicit_client_kwargs",
                         lambda *a: {"api_key": "dummy-key", "base_url": agent.base_url})
     monkeypatch.setattr(agent_init, "_apply_openai_header_policy", lambda *a: None)
-    monkeypatch.setattr("agent.ssl_guard.verify_ca_bundle", lambda: None)
     agent_init._init_openai_client(agent, "dummy-key", agent.base_url, None, 30)
     output = capsys.readouterr().out
     assert ("API key appears invalid or missing" in output) is (suppress is not True)

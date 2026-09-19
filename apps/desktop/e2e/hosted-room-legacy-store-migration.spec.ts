@@ -2,14 +2,13 @@ import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
+  waitForAppReady
 } from './fixtures'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { expect, test } from './test'

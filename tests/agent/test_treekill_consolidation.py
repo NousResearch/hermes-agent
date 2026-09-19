@@ -128,6 +128,7 @@ class TestCodeExecutionDelegation:
         code_execution_tool._kill_process_group(proc)
         assert calls == [(5555, _signal.SIGTERM)]
 
+    @pytest.mark.platforms("linux")
     def test_escalate_waits_then_sigkills_tree(self, monkeypatch):
         import signal as _signal
 

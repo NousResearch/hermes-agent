@@ -87,6 +87,7 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["container_path"] == "/home/user/.hermes/skills"
 
+    @pytest.mark.require_symlinks
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""
         hermes_home = tmp_path / ".hermes"
@@ -112,6 +113,7 @@ class TestSkillsDirectoryMount:
         # Symlink should NOT be present
         assert not (safe_path / "evil_link").exists()
 
+    @pytest.mark.require_symlinks
     def test_sanitized_copy_skips_bookkeeping_dirs(self, tmp_path):
         """The symlink-safe copy is what gets mounted, so it must apply the
         same EXCLUDED_SKILL_DIRS rule as the per-file sync path."""
@@ -154,13 +156,14 @@ class TestSkillsDirectoryMount:
 
 
 class TestIterSkillsFiles:
+    @pytest.mark.require_symlinks
     def test_returns_files_skipping_symlinks(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         skills_dir = hermes_home / "skills"
         (skills_dir / "cat" / "myskill").mkdir(parents=True)
         (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
         (skills_dir / "cat" / "myskill" / "scripts").mkdir()
-        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/bin/bash")
+        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/usr/bin/env bash")
         # Add a symlink that should be filtered
         secret = tmp_path / "secret"
         secret.write_text("nope")
@@ -325,9 +328,9 @@ class TestConfigPathTraversal:
     """terminal.credential_files in config.yaml must also reject traversal."""
 
     def _write_config(self, hermes_home: Path, cred_files: list):
-        import yaml
+        import hermes_yaml as yaml
         config_path = hermes_home / "config.yaml"
-        config_path.write_text(yaml.dump({"terminal": {"credential_files": cred_files}}))
+        config_path.write_text(yaml.safe_dump({"terminal": {"credential_files": cred_files}}))
 
     def test_config_traversal_rejected(self, tmp_path, monkeypatch):
         """'../secret' in config.yaml must not escape HERMES_HOME."""
@@ -558,6 +561,7 @@ class TestIterCacheFiles:
         assert "upload.zip" in names
         assert "report.pdf" in names
 
+    @pytest.mark.require_symlinks
     def test_skips_symlinks(self, tmp_path, monkeypatch):
         """Symlinks inside cache dirs are skipped."""
         hermes_home = tmp_path / ".hermes"

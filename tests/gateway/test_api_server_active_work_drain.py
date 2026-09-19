@@ -611,7 +611,7 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.write_runtime_status"), \
+             patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"):
             await runner.stop()
 
@@ -663,7 +663,7 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(type(loop), "time", _fast_time)
         try:
             with patch("gateway.status.remove_pid_file"), \
-                 patch("gateway.status.write_runtime_status"), \
+                 patch("gateway.status.publish_runtime_status"), \
                  patch("cron.scheduler.mark_job_run"):
                 await runner.stop()
         finally:
@@ -675,5 +675,4 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
-
 

@@ -246,7 +246,7 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         adapter.disconnect = _tracking_disconnect
 
         with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.write_runtime_status"), \
+             patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"), \
              patch("cron.jobs.get_job", return_value=_telegram_job()), \
              patch("cron.scheduler._resolve_delivery_targets",

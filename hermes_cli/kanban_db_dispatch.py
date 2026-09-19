@@ -147,6 +147,26 @@ class DispatchResult:
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
 
+    budget_blocked: Optional[str] = None
+    """Why this tick spawned nothing: the shared spawn budget was already full.
+    ``"max_in_progress"`` (host-wide cap, other boards' workers included) or
+    ``"max_spawn"`` (this board's own concurrency cap); ``None`` when the tick
+    was not refused. Distinct from :attr:`memory_pressure` (a host state, not a
+    cap) and from the ``skipped_*`` buckets (work that was enumerated and
+    declined). The refusal returns before either lane is enumerated, so this
+    field and the four below are the only trace a refused board leaves."""
+    budget_blocked_cap: Optional[int] = None
+    """The cap that refused this tick."""
+    budget_blocked_own: Optional[int] = None
+    """This board's own ``running`` count at refusal time."""
+    budget_blocked_other: Optional[int] = None
+    """``running`` count across the OTHER boards — always 0 for ``max_spawn``,
+    which does not count them."""
+    budget_blocked_pending: Optional[int] = None
+    """Unclaimed ``ready``+``review`` rows waiting on this board at refusal
+    time (``None`` if the count failed). Tells a starved board — work queued,
+    no slot — from an idle one, which the reason alone cannot."""
+
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
@@ -2147,6 +2167,48 @@ def _run_reclaim_phase(
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
+def _record_budget_refusal(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    *,
+    reason: str,
+    cap: int,
+    own: int,
+    other: int,
+) -> None:
+    """Record why this tick was refused the shared spawn budget.
+
+    Observability only: the caller returns exactly the refusal it returned
+    before. The refusal short-circuits before either lane is enumerated, so
+    without this a refused board's tick is indistinguishable from one on a
+    board with nothing to do — no ``skipped_*`` bucket and no spawn, and the
+    only warning is host-wide and names no board. ``memory_pressure`` is kept
+    separate: that is a host state, not a cap, and it already logs.
+
+    The waiting-work count is taken here because this is the only path that
+    needs it: the lanes are never enumerated on a refused tick.
+    """
+    result.budget_blocked = reason
+    result.budget_blocked_cap = cap
+    result.budget_blocked_own = own
+    result.budget_blocked_other = other
+    result.budget_blocked_pending = _count_unclaimed_tasks(conn)
+
+
+def _count_unclaimed_tasks(conn: sqlite3.Connection) -> Optional[int]:
+    """Unclaimed ``ready``+``review`` rows — the queue a refused tick never got
+    to enumerate. ``None`` on a query failure: observability must never be able
+    to break a tick."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('ready', 'review') "
+            "AND claim_lock IS NULL"
+        ).fetchone()
+    except Exception:
+        return None
+    return int(row[0]) if row else 0
+
+
 def _tick_spawn_budget(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2174,12 +2236,24 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            _record_budget_refusal(
+                conn, result, reason="max_spawn", cap=max_spawn, own=running_count, other=0
+            )
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
-        total_running = running_count + count_running_tasks_other_boards(board)
+        other_running = count_running_tasks_other_boards(board)
+        total_running = running_count + other_running
         if total_running >= max_in_progress:
+            _record_budget_refusal(
+                conn,
+                result,
+                reason="max_in_progress",
+                cap=max_in_progress,
+                own=running_count,
+                other=other_running,
+            )
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:

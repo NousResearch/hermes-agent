@@ -1,0 +1,16 @@
+name: sidebar-manager
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: c7e84597ecc12d3dff9fde4984033fc912b9aa87
+subdir: plugins/sidebar-manager
+description: "Reorder and hide sidebar nav rows and session sections from a dim glyph next to New session."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/sidebar-manager
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

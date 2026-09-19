@@ -399,6 +399,86 @@ class TestConfig:
         assert captured["llm_provider"] == "openai"
 
 
+class TestReflectTagFilter:
+    """Reflect tag scoping (#115499).
+
+    The reflect call path must honor the same opt-in tag-filter contract as
+    recall: default empty sends NO tags (byte-identical bank-wide reflect),
+    a configured reflect_tags forwards tags + tags_match to areflect, and both
+    entry points (the hindsight_reflect tool and recall_prefetch_method=reflect)
+    go through the same scoped call.
+    """
+
+    def test_default_reflect_sends_no_tags(self, provider):
+        """Default (no reflect_tags) -> areflect called with NO tags/tags_match."""
+        assert provider._reflect_tags is None
+        provider._tool_reflect({"query": "what do we know about acme"})
+        kwargs = provider._client.areflect.call_args.kwargs
+        assert kwargs["bank_id"] == "test-bank"
+        assert "tags" not in kwargs
+        assert "tags_match" not in kwargs
+
+    def test_configured_reflect_tags_forwarded(self, provider_with_config):
+        """Configured reflect_tags/tags_match land on the areflect call."""
+        p = provider_with_config(
+            reflect_tags=["scope-a", "scope-b"],
+            reflect_tags_match="all_strict",
+        )
+        assert p._reflect_tags == ["scope-a", "scope-b"]
+        assert p._reflect_tags_match == "all_strict"
+        p._tool_reflect({"query": "summarize acme decisions"})
+        kwargs = p._client.areflect.call_args.kwargs
+        assert kwargs["tags"] == ["scope-a", "scope-b"]
+        assert kwargs["tags_match"] == "all_strict"
+
+    def test_reflect_tags_normalize_like_recall_tags(self, provider_with_config):
+        """Same normalizer as the recall pair: CSV string, strip, dedupe."""
+        p = provider_with_config(reflect_tags="scope-a, scope-b ,scope-a")
+        assert p._reflect_tags == ["scope-a", "scope-b"]
+
+    def test_reflect_tags_empty_config_stays_unfiltered(self, provider_with_config):
+        p = provider_with_config(reflect_tags="")
+        assert p._reflect_tags is None
+
+    def test_reflect_and_recall_tags_are_independent(self, provider_with_config):
+        """Reflect scope is chosen independently of the recall scope."""
+        p = provider_with_config(
+            recall_tags=["recall-scope"],
+            recall_tags_match="any_strict",
+            reflect_tags=["reflect-scope"],
+            reflect_tags_match="all",
+        )
+        assert p._recall_tags == ["recall-scope"]
+        assert p._reflect_tags == ["reflect-scope"]
+        p._tool_reflect({"query": "q"})
+        kwargs = p._client.areflect.call_args.kwargs
+        assert kwargs["tags"] == ["reflect-scope"]
+        assert kwargs["tags_match"] == "all"
+
+    def test_reflect_tags_apply_to_prefetch_reflect_path(self, provider_with_config):
+        """recall_prefetch_method=reflect flows through the same scoped _reflect()."""
+        p = provider_with_config(
+            recall_prefetch_method="reflect",
+            reflect_tags=["prefetch-scope"],
+        )
+        p._prefetch_method = "reflect"
+        p._prefetch_waits_for_retain = False
+        text, count = p._do_recall("what changed in acme")
+        assert count == 0  # reflect synthesis reports no memory count
+        assert text == "Synthesized answer"
+        kwargs = p._client.areflect.call_args.kwargs
+        assert kwargs["tags"] == ["prefetch-scope"]
+        assert kwargs["tags_match"] == "any"
+
+    def test_reflect_tags_apply_to_tool_path(self, provider_with_config):
+        """The hindsight_reflect tool flows through the same scoped _reflect()."""
+        p = provider_with_config(reflect_tags=["tool-scope"])
+        outcome = json.loads(p.handle_tool_call("hindsight_reflect", {"query": "q"}))
+        assert outcome["result"] == "Synthesized answer"
+        kwargs = p._client.areflect.call_args.kwargs
+        assert kwargs["tags"] == ["tool-scope"]
+
+
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
@@ -1353,6 +1433,7 @@ class TestConfigSchema:
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",
+            "reflect_tags", "reflect_tags_match",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",

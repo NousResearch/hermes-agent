@@ -91,25 +91,51 @@ export interface ScriptedTurn {
   }>
 }
 
+// Scripted tool calls must name a tool the model-facing schema exposes:
+// `todo_list` is a deferred core tool by default (tools/tool_search.py
+// `_DEFAULT_DEFERRED_TOOLS`), reachable only through the resident `tool_call`
+// bridge — the same path a real model takes. A direct `todo` / `todo_list`
+// call is rejected at validation ("Model generated invalid tool call"), which
+// stalled the turn and failed this spec on the error banner.
 const INTERIM_SCRIPT: ScriptedTurn[] = [
   {
     text: 'Let me start by planning the approach.',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Plan', status: 'in_progress' }] } }],
+    toolCalls: [
+      {
+        name: 'tool_call',
+        args: { calls: [{ name: 'todo_list', arguments: { todos: [{ id: '1', content: 'Plan', status: 'in_progress' }] } }] },
+      },
+    ],
   },
   {
     text: 'Now checking the details before answering.',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '2', content: 'Check details', status: 'in_progress' }] } }],
+    toolCalls: [
+      {
+        name: 'tool_call',
+        args: { calls: [{ name: 'todo_list', arguments: { todos: [{ id: '2', content: 'Check details', status: 'in_progress' }] } }] },
+      },
+    ],
   },
   {
     // No visible text alongside this tool call — should NOT produce an
     // interim message. The agent fires _emit_interim_assistant_message
     // but _interim_assistant_visible_text returns "" so it's a no-op.
     text: '',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '3', content: 'Silent step', status: 'completed' }] } }],
+    toolCalls: [
+      {
+        name: 'tool_call',
+        args: { calls: [{ name: 'todo_list', arguments: { todos: [{ id: '3', content: 'Silent step', status: 'completed' }] } }] },
+      },
+    ],
   },
   {
     text: 'Found something interesting worth noting.',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '4', content: 'Note finding', status: 'completed' }] } }],
+    toolCalls: [
+      {
+        name: 'tool_call',
+        args: { calls: [{ name: 'todo_list', arguments: { todos: [{ id: '4', content: 'Note finding', status: 'completed' }] } }] },
+      },
+    ],
   },
   {
     // Final answer — different from all interim texts.
@@ -332,14 +358,21 @@ const TASK_PANEL_RESUME_SCRIPT: ScriptedTurn[] = [
     text: TASK_PANEL_RESUME_TEXT,
     toolCalls: [
       {
-        name: 'todo',
+        name: 'tool_call',
         args: {
-          todos: [
-            { id: 'design', content: 'Design the restored layout', status: 'completed' },
-            { id: 'implement', content: 'Implement the measured clearance', status: 'in_progress' },
-            { id: 'verify', content: 'Verify the latest message stays visible', status: 'pending' },
-            { id: 'review', content: 'Review the visual regression', status: 'pending' },
-            { id: 'ship', content: 'Ship the focused fix', status: 'pending' },
+          calls: [
+            {
+              name: 'todo_list',
+              arguments: {
+                todos: [
+                  { id: 'design', content: 'Design the restored layout', status: 'completed' },
+                  { id: 'implement', content: 'Implement the measured clearance', status: 'in_progress' },
+                  { id: 'verify', content: 'Verify the latest message stays visible', status: 'pending' },
+                  { id: 'review', content: 'Review the visual regression', status: 'pending' },
+                  { id: 'ship', content: 'Ship the focused fix', status: 'pending' },
+                ],
+              },
+            },
           ],
         },
       },

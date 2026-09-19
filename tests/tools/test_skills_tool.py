@@ -327,6 +327,17 @@ class TestSkillsList:
 
 
 class TestSkillView:
+    def test_repository_context_path_has_read_file_guidance(self, tmp_path):
+        """Regression for repository AGENTS.md paths accidentally sent to skill_view."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            result = json.loads(skill_view("cron/AGENTS.md"))
+
+        assert result["success"] is False
+        assert result["error"] == "Skill 'cron/AGENTS.md' not found."
+        assert result["hint"] == (
+            "'cron/AGENTS.md' looks like a repository instruction file, not an installed skill. "
+            "Use read_file(path='cron/AGENTS.md') to read it.")
+
     def test_view_resolves_by_dir_name_and_frontmatter_name(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(

@@ -356,6 +356,43 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     return await asyncio.to_thread(_run)
 
 
+@router.post("/api/chat/file-upload")
+async def upload_chat_file(payload: ChatImageUpload, profile: Optional[str] = None):
+    """Persist a browser drag/drop or pasted non-image file where the embedded
+    TUI can read it.
+
+    Unlike ``upload_chat_image``, there's no dedicated attach command for a
+    generic file — the caller types the returned path into the prompt itself,
+    unsent, so the dashboard chat pane stops silently dropping non-image
+    attachments (issue #115451).
+    """
+    def _run():
+        data, mime_type = _decode_data_url(payload.data_url)
+        with _profile_scope(profile) as scoped_home:
+            upload_dir = Path(scoped_home or get_hermes_home()) / "uploads"
+            with _io_errors("Upload directory is not writable", "Could not create upload directory"):
+                upload_dir.mkdir(parents=True, exist_ok=True)
+
+            sanitized = _sanitize_chat_image_filename(payload.filename)
+            ext = Path(sanitized).suffix
+            stem = Path(sanitized).stem or "upload"
+            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "upload"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = upload_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+            with _io_errors("Upload directory is not writable", "Could not write file"):
+                target.write_bytes(data)
+
+        return {
+            "ok": True,
+            "path": str(target),
+            "name": target.name,
+            "bytes": len(data),
+            "mime_type": mime_type,
+        }
+
+    return await asyncio.to_thread(_run)
+
+
 @router.get("/api/files")
 async def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)

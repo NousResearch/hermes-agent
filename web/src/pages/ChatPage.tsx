@@ -77,7 +77,9 @@ import {
 } from "@/lib/pty-scroll";
 import {
   imageFilesFromTransfer,
-  transferMayContainImage,
+  nonImageFilesFromTransfer,
+  transferMayContainFile,
+  uploadChatFile,
   uploadChatImage,
 } from "@/lib/chatImagePaste";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
@@ -707,24 +709,59 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         await driveImageAttach(paths);
       })().catch(reportImageUploadError);
     };
-    const handleBrowserPaste = (ev: ClipboardEvent) => {
-      const files = imageFilesFromTransfer(ev.clipboardData);
+    // Non-image drops/pastes (PDF, CSV, text, ...): the agent can already read
+    // an arbitrary file once it knows the path, so upload it and type the
+    // path into the prompt WITHOUT sending — unlike images, there's no
+    // dedicated attach command, and the user may want to add context first.
+    const reportFileUploadError = (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[dashboard chat] file upload failed:", message);
+      setBanner(`File upload failed: ${message}`);
+    };
+    const insertUploadedPaths = (paths: string[]) => {
+      if (!paths.length) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setBanner("File uploaded, but chat is not connected — try again.");
+        return;
+      }
+      ws.send(`${paths.join(" ")} `);
+      term.focus();
+    };
+    const uploadAndInsertFiles = (files: File[]) => {
       if (!files.length) return;
+      void (async () => {
+        const paths: string[] = [];
+        for (const file of files) {
+          const uploaded = await uploadChatFile(file, scopedProfile);
+          if (imageUploadDisposed) return;
+          paths.push(uploaded.path);
+        }
+        insertUploadedPaths(paths);
+      })().catch(reportFileUploadError);
+    };
+    const handleBrowserPaste = (ev: ClipboardEvent) => {
+      const images = imageFilesFromTransfer(ev.clipboardData);
+      const files = nonImageFilesFromTransfer(ev.clipboardData);
+      if (!images.length && !files.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      uploadAndAttachImages(images);
+      uploadAndInsertFiles(files);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
-      if (!transferMayContainImage(ev.dataTransfer)) return;
+      if (!transferMayContainFile(ev.dataTransfer)) return;
       ev.preventDefault();
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
     };
     const handleBrowserDrop = (ev: DragEvent) => {
-      const files = imageFilesFromTransfer(ev.dataTransfer);
-      if (!files.length) return;
+      const images = imageFilesFromTransfer(ev.dataTransfer);
+      const files = nonImageFilesFromTransfer(ev.dataTransfer);
+      if (!images.length && !files.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      uploadAndAttachImages(images);
+      uploadAndInsertFiles(files);
     };
     host.addEventListener("paste", handleBrowserPaste, { capture: true });
     host.addEventListener("dragover", handleBrowserDragOver, { capture: true });

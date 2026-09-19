@@ -1139,6 +1139,39 @@ class TestWebServerEndpoints:
 
 
 
+    # ── POST /api/chat/file-upload (browser drag/drop or paste, non-image) ──
+
+    def test_upload_chat_file_writes_under_uploads_dir(self):
+        import base64
+
+        from hermes_constants import get_hermes_home
+
+        data = b"col_a,col_b\n1,2\n"
+        data_url = "data:text/csv;base64," + base64.b64encode(data).decode()
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={"data_url": data_url, "filename": "notes.csv"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["bytes"] == len(data)
+        assert body["name"].endswith("_notes.csv")
+
+        target = Path(body["path"])
+        assert target.parent == get_hermes_home() / "uploads"
+        assert target.read_bytes() == data
+
+    def test_upload_chat_file_rejects_non_data_url_payload(self):
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={"data_url": "not-a-data-url", "filename": "notes.csv"},
+        )
+        assert resp.status_code == 400
+
+
 
     # ── Dashboard font override ─────────────────────────────────────────
 

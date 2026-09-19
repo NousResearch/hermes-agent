@@ -296,6 +296,18 @@ class CLIStatusBarMixin:
         if not agent:
             return snapshot
 
+        # Display the existing accounting result; never reprice tokens during repaint.
+        from cli import CLI_CONFIG
+        display = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
+        if isinstance(display, dict) and display.get("show_cost", False):
+            amount = _finite(getattr(agent, "session_estimated_cost_usd", None))
+            status = getattr(agent, "session_cost_status", "unknown")
+            if status in ("estimated", "included") and amount is not None and amount >= 0:
+                snapshot["cost_label"] = (
+                    "cost included" if status == "included" and amount == 0 else f"~${amount:.4f}")
+            else:
+                snapshot["cost_label"] = "cost unknown"
+
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
 
@@ -1035,6 +1047,9 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+        cost_label = snapshot.get("cost_label")
+        if cost_label:
+            add("cost", _DIM, cost_label)
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

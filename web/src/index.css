@@ -1,4 +1,8 @@
 @import 'tailwindcss';
+
+/* Keep dashboard sources discoverable when an enclosing repository ignores this path. */
+@source './';
+
 /* `fonts.css` must come BEFORE `globals.css`: as of @nous-research/ui 0.14.x,
    `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
    Compressed/Expanded, Mondwest). The `@font-face` registrations live in

@@ -82,8 +82,11 @@ def redact_registered_vault_values(text: str) -> str:
 _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key", "apikey",
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
-    "code", "signature", "x-amz-signature",
+    "code", "signature", "x_amz_signature",
 })
+# Canonical names only (casefolded, "-" folded to "_"): every consumer compares
+# _canonical_url_param_name(name) against this set, so one spelling covers
+# X-Amz-Signature, x_amz_signature and their percent-encoded forms alike.
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
 # `export HERMES_REDACT_SECRETS=false`) cannot disable redaction mid-session.
@@ -718,7 +721,7 @@ def _redact_query_string(query: str) -> str:
     if not query:
         return query
     return "&".join(
-        f"{key}=***" if sep and key.lower() in _SENSITIVE_QUERY_PARAMS else pair
+        f"{key}=***" if sep and _canonical_url_param_name(key) in _SENSITIVE_QUERY_PARAMS else pair
         for pair in query.split("&") for key, sep, _ in (pair.partition("="),)
     )
 

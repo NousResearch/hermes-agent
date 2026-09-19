@@ -27,6 +27,9 @@ from hermes_constants import (
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
+
+from .methods_voice import _release_gateway_wake_owner
+from .session_reaper import _flush_sessions_before_exit
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import canonicalize_replay_history

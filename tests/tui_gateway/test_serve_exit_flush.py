@@ -133,7 +133,7 @@ def test_shutdown_sessions_flushes_before_teardown(monkeypatch):
     order: list[str] = []
 
     monkeypatch.setattr(
-        server, "_release_gateway_wake_owner", lambda: None, raising=False
+        server, "_release_gateway_wake_owner", lambda: None
     )
     monkeypatch.setattr(
         server,

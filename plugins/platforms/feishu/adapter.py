@@ -1973,17 +1973,46 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Inbound event handlers ---
     def _on_message_event(self, data: Any) -> None:
         """SDK dispatcher callback (background thread); queues for replay while the loop isn't ready."""
-        loop = self._loop
+        loop = self._callback_loop()
         if not self._loop_accepts_callbacks(loop):
             if self._enqueue_pending_inbound_event(data):
-                # Replayed events hop onto the loop from THIS thread's context; keep the WS thread's
-                # profile scope (see _connect_websocket) rather than starting from an empty one.
-                threading.Thread(
-                    target=contextvars.copy_context().run, args=(self._drain_pending_inbound_events,),
-                    name="feishu-pending-inbound-drainer", daemon=True,
-                ).start()
+                self._start_pending_inbound_drainer()
             return
-        self._submit_on_loop(loop, self._handle_message_event_data(data))
+        if not self._submit_on_loop(loop, self._handle_message_event_data(data)):
+            # The loop can close after the readiness check but before
+            # run_coroutine_threadsafe() accepts the coroutine. Keep the event
+            # on the same replay path instead of dropping it at this race.
+            if self._enqueue_pending_inbound_event(data):
+                self._start_pending_inbound_drainer()
+
+    def _callback_loop(self) -> Any:
+        """Return the live loop that owns this adapter's gateway callbacks.
+
+        ``connect()`` normally captures the runner loop in ``self._loop``. A
+        reconnect or an externally managed adapter can leave that reference
+        closed or stopped while the runner still has its current loop; use the runner's
+        canonical owner in that case. Never create a replacement loop here:
+        gateway tasks and locks must stay on their owning loop.
+        """
+        loop = getattr(self, "_loop", None)
+        if loop is None or self._loop_accepts_callbacks(loop):
+            return loop
+        gateway_loop = getattr(getattr(self, "gateway_runner", None), "_gateway_loop", None)
+        if gateway_loop is None or gateway_loop is loop or not self._loop_accepts_callbacks(gateway_loop):
+            return loop
+        self._loop = gateway_loop
+        logger.warning("[Feishu] Adapter callback loop closed or stopped; rebinding to the live gateway loop")
+        return gateway_loop
+
+    def _start_pending_inbound_drainer(self) -> None:
+        """Start the single pending-event drainer with the callback context."""
+        # Replayed events hop onto the loop from THIS thread's context; keep the
+        # WS thread's profile scope (see _connect_websocket) rather than starting
+        # from an empty one.
+        threading.Thread(
+            target=contextvars.copy_context().run, args=(self._drain_pending_inbound_events,),
+            name="feishu-pending-inbound-drainer", daemon=True,
+        ).start()
 
     def _enqueue_pending_inbound_event(self, data: Any) -> bool:
         """Queue an event for replay; True when the caller should spawn the (single) drainer thread."""
@@ -2031,7 +2060,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     if dropped:
                         logger.warning("[Feishu] Dropped %d queued inbound event(s) during shutdown", dropped)
                     return
-                loop = self._loop
+                loop = self._callback_loop()
                 if self._loop_accepts_callbacks(loop):
                     batch = _take_all()
                     if not batch:
@@ -2107,7 +2136,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _submit_if_ready(self, label: str, make_coro: Any) -> None:
         """Schedule ``make_coro()`` on the adapter loop, or log-and-drop when the loop isn't ready."""
-        loop = self._loop
+        loop = self._callback_loop()
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping %s before adapter loop is ready", label)
             return
@@ -2140,7 +2169,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         # Drop bot/app-origin reactions to break the feedback loop from our own lifecycle
         # reactions; a human clicking the same emoji is still routed through.
-        loop = self._loop
+        loop = self._callback_loop()
         if operator_type in {"bot", "app"} or not message_id or not self._loop_accepts_callbacks(loop):
             return
         self._submit_on_loop(loop, self._handle_reaction_event(event_type, data))
@@ -2152,7 +2181,7 @@ class FeishuAdapter(BasePlatformAdapter):
         to sync all clients) and schedule the async resolution; other clicks are routed as
         synthetic commands via ``_handle_card_action_event``.
         """
-        loop = self._loop
+        loop = self._callback_loop()
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
             return self._card_response()
@@ -2170,7 +2199,11 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:
         """Return True when the adapter loop can accept thread-safe submissions."""
-        return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
+        return (
+            loop is not None
+            and not bool(getattr(loop, "is_closed", lambda: False)())
+            and bool(getattr(loop, "is_running", lambda: True)())
+        )
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> bool:
         """Schedule background work on the adapter loop with shared failure logging."""

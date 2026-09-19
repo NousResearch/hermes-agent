@@ -19,6 +19,34 @@ from hermes_cli import main_web_build
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_node_path(tmp_path, monkeypatch):
+    """Keep user-managed Node runtimes on the dev machine out of these tests.
+
+    ``find_node_executable()`` / ``with_hermes_node_path()`` honour a suitable
+    user-managed Node on PATH; on a dev box with one installed the gui flow
+    takes a different subprocess path and the strict ``side_effect`` lists
+    here underflow. Pin PATH to a purpose-built directory rather than
+    system dirs: /usr/bin or /bin can contain a real node on some hosts, which
+    would make the tests host-dependent all over again. The only entries are
+    wrapper scripts that exec the macOS signing tools by absolute path (see
+    below).
+    """
+    if sys.platform == "win32":
+        return
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir(exist_ok=True)
+    # The macOS relaunchable-fixup tests really do shell out (codesign, xattr,
+    # openssl, security). Reach them by absolute path through wrapper scripts
+    # so PATH stays guaranteed Node-free without copying system binaries
+    # (relocated macOS binaries die with SIGKILL when copied).
+    for tool in ("codesign", "xattr", "openssl", "security"):
+        wrapper = empty_bin / tool
+        wrapper.write_text(f"#!/bin/sh\nexec /usr/bin/{tool} \"$@\"\n")
+        wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_xdg_data_home(tmp_path, monkeypatch):
     """Keep desktop-entry writes out of the developer's real home directory.
 

@@ -9,6 +9,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
+from hermes_cli import kanban_pr_acceptance as acceptance
 
 
 @pytest.fixture
@@ -25,7 +26,8 @@ def github(tmp_path, monkeypatch):
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
-                value = [[]]
+                value = [{"type": "required_status_checks", "parameters": {
+                    "required_status_checks": [{"context": "required", "integration_id": 1}]}}]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
@@ -33,15 +35,15 @@ def github(tmp_path, monkeypatch):
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
                 runs = [] if state.get("missing") else [run]
-                value = [{"total_count": 100 + len(runs), "check_runs": [
+                value = {"total_count": 100 + len(runs), "check_runs": [
                     {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
-                    for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
+                    for i in range(100)] + runs}
                 if state.get("race"):
                     state["race"]()
                 if state.get("head_change"):
                     state["head"] = "b" * 40
             elif "/statuses" in self.path:
-                value = [[]]
+                value = []
             elif "/pulls/" in self.path:
                 value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
             else:
@@ -129,3 +131,184 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+def test_paginated_api_does_not_require_slurp(monkeypatch):
+    calls = []
+
+    class Result:
+        stdout = '{"page": 1}\n{"page": 2}\n'
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr(acceptance.subprocess, "run", run)
+    assert acceptance._api("repos/acme/repo/rules", paginate=True) == [{"page": 1}, {"page": 2}]
+    assert "--paginate" in calls[0]
+    assert "--slurp" not in calls[0]
+
+
+def test_paginated_api_preserves_single_page_documents(monkeypatch):
+    payloads = [
+        "[{\"type\": \"required_status_checks\"}]\n",
+        "{\"total_count\": 1, \"check_runs\": []}\n",
+        "[{\"context\": \"required\"}]\n",
+    ]
+
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def run(command, **kwargs):
+        return Result(payloads.pop(0))
+
+    monkeypatch.setattr(acceptance.subprocess, "run", run)
+    assert acceptance._api("rules", paginate=True) == [[{"type": "required_status_checks"}]]
+    assert acceptance._api("check-runs", paginate=True) == [{"total_count": 1, "check_runs": []}]
+    assert acceptance._api("statuses", paginate=True) == [[{"context": "required"}]]
+
+
+def test_single_page_rest_payloads_are_classified_correctly(monkeypatch):
+    sha = "a" * 40
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        [[{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "required", "integration_id": 1}]}}]],
+        [{"total_count": 1, "check_runs": [{
+            "id": 42, "name": "required", "head_sha": sha, "app": {"id": 1},
+            "status": "completed", "conclusion": "success"}]}],
+        [[{"context": "required", "id": 7, "sha": sha, "state": "success"}]],
+        {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"},
+    ])
+    monkeypatch.setattr(acceptance, "_api", lambda *args, **kwargs: next(responses))
+
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is True
+    assert receipt["checks"][0]["classification"] == "success"
+
+
+@pytest.mark.parametrize("merge_sha", [None, "not-a-sha", "b" * 39, "B" * 40])
+def test_no_required_checks_requires_immutable_merge_sha(monkeypatch, merge_sha):
+    sha = "a" * 40
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        [],
+        {"head": {"sha": sha}, "base": {"ref": "main"},
+         "state": "closed", "merged": True, "merge_commit_sha": merge_sha},
+    ])
+    monkeypatch.setattr(acceptance, "_api", lambda *args, **kwargs: next(responses))
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is (merge_sha == "b" * 40)
+    assert receipt["classification"] == "no_required_checks"
+    assert receipt["merge_sha"] == (merge_sha if merge_sha == "b" * 40 else None)
+
+
+def test_no_required_checks_is_distinct_from_api_failure(monkeypatch):
+    sha = "a" * 40
+
+    def denied(*args, **kwargs):
+        if "rules/branches" in args[0]:
+            raise acceptance.subprocess.CalledProcessError(
+                1, "gh", stderr="HTTP 403: Resource not accessible")
+        return {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}}
+
+    monkeypatch.setattr(acceptance, "_api", denied)
+    denied_receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert denied_receipt["ok"] is False
+    assert denied_receipt["classification"] == "infra"
+
+
+def test_plan_gated_rules_endpoint_falls_back_to_no_required_checks(monkeypatch):
+    sha = "a" * 40
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        {"head": {"sha": sha}, "base": {"ref": "main"},
+         "state": "closed", "merged": True, "merge_commit_sha": "b" * 40},
+    ])
+
+    def plan_gated(*args, **kwargs):
+        if "rules/branches" in args[0]:
+            raise acceptance.subprocess.CalledProcessError(
+                1, "gh", stderr="HTTP 403: Upgrade to GitHub Pro to enable this feature")
+        return next(responses)
+
+    monkeypatch.setattr(acceptance, "_api", plan_gated)
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "no_required_checks"
+    assert receipt["merge_sha"] == "b" * 40
+
+
+@pytest.mark.parametrize(
+    ("message", "is_no_rules"),
+    [("HTTP 404: Branch not protected", True),
+     ("HTTP 404: Not Found", False),
+     ("HTTP 404: Repository not found", False)],
+)
+def test_rules_404_requires_explicit_unprotected_branch_response(message, is_no_rules):
+    error = acceptance.subprocess.CalledProcessError(1, "gh", stderr=message)
+    assert acceptance._rules_endpoint_reports_unprotected_branch(error) is is_no_rules
+
+
+def test_inaccessible_rules_404_cannot_false_success(monkeypatch):
+    sha = "a" * 40
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        {"head": {"sha": sha}, "base": {"ref": "main"},
+         "state": "closed", "merged": True, "merge_commit_sha": "b" * 40},
+    ])
+
+    def inaccessible(*args, **kwargs):
+        if "rules/branches" in args[0]:
+            raise acceptance.subprocess.CalledProcessError(
+                1, "gh", stderr="HTTP 404: Repository not found")
+        return next(responses)
+
+    monkeypatch.setattr(acceptance, "_api", inaccessible)
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is False
+    assert receipt["classification"] == "infra"
+
+
+@pytest.mark.parametrize("mismatch", ["head", "base"])
+def test_no_required_checks_rejects_head_or_base_race(monkeypatch, mismatch):
+    sha = "a" * 40
+    current = {"head": {"sha": sha}, "base": {"ref": "main"},
+               "state": "closed", "merged": True,
+               "merge_commit_sha": "b" * 40}
+    current[mismatch] = {"sha": "c" * 40} if mismatch == "head" else {"ref": "release"}
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        [],
+        current,
+    ])
+    monkeypatch.setattr(acceptance, "_api", lambda *args, **kwargs: next(responses))
+
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is False
+    assert receipt["classification"] == "stale"

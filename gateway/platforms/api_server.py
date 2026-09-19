@@ -2922,7 +2922,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        payload = {"object": "hermes.session", "session": self._session_response(session)}
+        if _coerce_request_bool(request.query.get("include_usage"), default=False):
+            from gateway.platforms.api_server_session_usage import session_usage_page
+            limit = self._parse_nonnegative_int(request.query.get("usage_limit"), default=100, maximum=500)
+            offset = self._parse_nonnegative_int(request.query.get("usage_offset"), default=0, maximum=1_000_000)
+            db = await self._ensure_session_db_async()
+            payload["model_usage"] = await session_usage_page(db, session["id"], limit=max(1, limit), offset=offset)
+
+        return web.json_response(payload)
 
     @_require_auth
     async def _handle_patch_session(self, request: "web.Request") -> "web.Response":

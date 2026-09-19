@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from gateway.session_context import declare_stateless_channel
+from gateway.session_context import declare_hidden_session, declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
@@ -284,6 +284,10 @@ def run_oneshot(
     # gateway watchers do), so left unbound delegate_task would be forced background and every
     # subagent result discarded. Stateless routes it to the inline/synchronous path.
     declare_stateless_channel()
+    # Machine-only session: born hidden so a scripted probe/batch run never lands in a
+    # human's session list (hidden rows stay searchable and resumable — nothing is lost).
+    # Applied where the row is minted, run_agent.AIAgent._ensure_db_session.
+    declare_hidden_session()
 
     # Redirect stderr AND stdout for the entire call tree; the final response goes to the real
     # stdout at the end.

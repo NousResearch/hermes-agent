@@ -207,6 +207,28 @@ def declare_stateless_channel() -> None:
     _SESSION_ASYNC_DELIVERY.set(False)
 
 
+# Machine-only channels.  Session visibility is opt-out today: a machine-invoked run mints a
+# normal visible row and each new automated entry point has to be patched out of the session list
+# downstream (a2a in Aug 2026, one-shot `-z` next).  Entry points instead declare themselves here and
+# the row is BORN hidden — still searchable and resumable, like every other hidden row.
+HIDDEN_SESSION_ENV = "HERMES_HIDDEN_SESSION"
+
+
+def declare_hidden_session() -> None:
+    """Declare that sessions minted under this channel are machine-only → born hidden.
+
+    Env-var backed rather than a ContextVar: the row is written on whichever thread/task the agent
+    happens to build it on, and the declaration must survive that hop (same reasoning as the
+    ``HERMES_YOLO_MODE`` the one-shot entry point sets right next to this call).
+    """
+    os.environ[HIDDEN_SESSION_ENV] = "1"
+
+
+def hidden_session_declared() -> bool:
+    """Whether this process declared machine-only sessions (:func:`declare_hidden_session`)."""
+    return os.getenv(HIDDEN_SESSION_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.  False for
     stateless channels (:func:`declare_stateless_channel`) and Kanban workers

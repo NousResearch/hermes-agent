@@ -1887,20 +1887,23 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
-    """Classify system memory pressure: ok/elevated/critical/unknown.
+    """Classify memory pressure for OUR subject: ok/elevated/critical/unknown.
 
-    Reuses :func:`gateway.memory_status.classify_pressure` so "critical" matches
-    the dashboard banner and lifecycle-ledger OOM heuristics. ``unknown``
-    (non-Linux, read failure) imposes no restriction — never brick dispatch
-    where /proc is unavailable.
+    Reuses :func:`gateway.memory_status.classify_pressure_sample` so "critical"
+    matches the dashboard banner and lifecycle-ledger OOM heuristics, and so the
+    reading is cgroup-aware: inside a pod the guard must judge the container's
+    own budget, not the shared node's MemAvailable (#1012 — node-sized pressure
+    starved a well-fed gateway's dispatch for hours). ``unknown`` (non-Linux,
+    read failure) imposes no restriction — never brick dispatch where /proc is
+    unavailable.
     """
     if sample is None:
         sample = _system_memory_sample()
     if not sample:
         return "unknown"
     try:
-        from gateway.memory_status import classify_pressure
-        return classify_pressure(sample.get("mem_available_kib"), sample.get("mem_total_kib"))
+        from gateway.memory_status import classify_pressure_sample
+        return classify_pressure_sample(sample)
     except Exception:
         return "unknown"
 

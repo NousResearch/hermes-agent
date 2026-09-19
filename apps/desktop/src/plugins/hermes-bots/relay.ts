@@ -9,6 +9,7 @@
 
 import { host, LruCache } from '@hermes/plugin-sdk'
 
+import { isPrivateFlag } from './bot-flags'
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
 import type { ProfileRoute, RosterRow } from './types'
 
@@ -226,12 +227,18 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
     const label = String(connection.route?.connectionLabel || connection.route?.label || connection.id)
 
     return profiles
+      // A private bot is never advertised (enforced here and in the gateway consumer, so an
+      // older peer cannot put it back); `hidden` is this desktop's display concern only.
+      .filter(profile => !isPrivateFlag(profile?.ui_meta?.['hermes-bots']?.private))
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),
         connection_id: connection.id,
         connection_label: label,
         title: String(profile?.ui_meta?.['hermes-bots']?.title || profile?.display_name || ''),
+        // Mesh circle ("" = shared). The gateway filters remote rows by the reader's circle, and
+        // names are case-insensitive, so both sides must compare the same normalised string.
+        circle: String(profile?.ui_meta?.['hermes-bots']?.circle || '').trim().toLowerCase().slice(0, 64),
         description: String(profile?.description || '')
       }))
       .filter(row => row.profile)

@@ -265,3 +265,71 @@ describe('a group row', () => {
     act(() => $groupChats.set({}))
   })
 })
+
+describe('the menu toggles mesh visibility (private/public)', () => {
+  // The menu reads the i18n catalog, and the locale tests above leave another language behind.
+  beforeEach(() => {
+    locale.current = 'en'
+  })
+
+  // The LABEL reads local meta; the TOGGLE reads the hydrated backend row. When they disagree
+  // the write must flip the backend truth, never the locally-assumed value: a bot whose state
+  // lives elsewhere must not be flipped against a stale local copy.
+  it.each([
+    [false, true],
+    [true, false]
+  ])('backend private=%s: "Make public" writes private=%s through profiles.configure', async (backendPrivate, written) => {
+    ensureBotMetadata.mockResolvedValue({ private: backendPrivate })
+
+    const bot = {
+      connectionId: 'remote-a',
+      name: 'lucky',
+      remoteSource: true,
+      route: { connectionId: 'remote-a', mode: 'remote', profile: 'lucky', targetProfile: 'backend-lucky' },
+      sourceScoped: true
+    } as RosterRow
+
+    const { $botMeta, botMetaKey } = await import('./data')
+
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: { private: true } })
+
+    fireEvent.contextMenu(renderRow(bot))
+    fireEvent.click(await screen.findByText('Make public'))
+    await vi.waitFor(() =>
+      expect(requestProfile.mock.calls.some(([, method]) => method === 'profiles.configure')).toBe(true)
+    )
+
+    expect(ensureBotMetadata).toHaveBeenCalledWith(bot)
+
+    const [route, , params] = requestProfile.mock.calls.find(([, method]) => method === 'profiles.configure')!
+
+    expect(route.profile).toBe('lucky')
+    expect(params).toMatchObject({ name: 'backend-lucky', ui_meta: { 'hermes-bots': { private: written } } })
+  })
+})
+
+describe('the row shows the bot\'s circle beside its handle', () => {
+  const bot = { connectionId: 'local', name: 'lucky', route: { connectionId: 'local', mode: 'local', profile: 'lucky' } } as RosterRow
+
+  // showHandle is only on when two bots share a title, so it is a disambiguator, not a general
+  // "details" switch: the circle is a membership fact and must show without it. A value that
+  // arrived outside the dialog (hand-edited meta, an older client's sync) renders in the case the
+  // mesh actually matches it in, never as a different-looking circle.
+  it.each([
+    [{ circle: 'hobby' }, true, 'hobby'],
+    [{ circle: 'hobby' }, false, 'hobby'],
+    [{ circle: '  Work  ' }, false, 'work'],
+    [{}, true, null]
+  ])('meta %o with showHandle=%s renders %s', async (meta, showHandle, expected) => {
+    const { $botMeta, botMetaKey } = await import('./data')
+
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: meta })
+
+    const { container } = render(
+      <BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} showHandle={showHandle} />
+    )
+
+    expect(container.querySelector('[data-slot="bot-circle"]')?.textContent ?? null).toBe(expected)
+  })
+})
+

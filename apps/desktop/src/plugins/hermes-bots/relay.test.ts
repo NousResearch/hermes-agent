@@ -399,6 +399,82 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it('never publishes a private bot, however YAML spelled the flag, and never confuses it with hidden', async () => {
+    // `private` takes a bot out of the agent-to-agent mesh, so no other machine may learn it
+    // exists; `hidden` only hides a row in this desktop's own pane. The gateway reads the flag
+    // with `_boolish` (true / 1 / "yes" / "on"), and both relay sides must agree on it: a strict
+    // `!== true` here published `private: 1`, leaving the invariant to a filter an older peer
+    // does not have. Unrecognised values fail open so a typo cannot remove a working teammate.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return call.connectionId === 'a'
+          ? { profiles: [{ name: 'default' }] }
+          : {
+              profiles: [
+                { name: 'ops' },
+                { name: 'shy', ui_meta: { 'hermes-bots': { hidden: true } } },
+                { name: 'lucky', ui_meta: { 'hermes-bots': { private: true } } },
+                { name: 'one', ui_meta: { 'hermes-bots': { private: 1 } } },
+                { name: 'yes', ui_meta: { 'hermes-bots': { private: 'yes' } } },
+                { name: 'onn', ui_meta: { 'hermes-bots': { private: ' ON ' } } },
+                { name: 'nope', ui_meta: { 'hermes-bots': { private: 'no' } } },
+                { name: 'zero', ui_meta: { 'hermes-bots': { private: 0 } } }
+              ]
+            }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const toA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')!
+    const handles = (toA.params as { agents: { handle: string }[] }).agents.map(row => row.handle).sort()
+
+    expect(handles).toEqual(['nope', 'ops', 'shy', 'zero'])
+
+    stopBotRelay()
+  })
+
+  it('publishes each bot\'s circle, trimmed, lower-cased and capped, and "" when unset', async () => {
+    // The gateway filters remote rows by the READER's circle, so the publisher must carry
+    // the field faithfully: a trimmed, lower-cased name (circle names are case-insensitive),
+    // a 64-char cap, and "" for the shared circle.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return call.connectionId === 'a'
+          ? { profiles: [{ name: 'default' }] }
+          : {
+              profiles: [
+                { name: 'plain' },
+                { name: 'lucky', ui_meta: { 'hermes-bots': { circle: '  Hobby  ' } } },
+                { name: 'longname', ui_meta: { 'hermes-bots': { circle: 'x'.repeat(100) } } }
+              ]
+            }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const toA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')!
+    const rows = (toA.params as { agents: { handle: string; circle: string }[] }).agents
+    const circleOf = (handle: string) => rows.find(row => row.handle === handle)?.circle
+
+    expect(circleOf('plain')).toBe('')
+    expect(circleOf('lucky')).toBe('hobby')
+    expect(circleOf('longname')).toHaveLength(64)
+
+    stopBotRelay()
+  })
+
   it('never conflates a transient fetch failure with an empty connection', async () => {
     // A live machine whose profiles.list blips must not be pushed as absent:
     // the gateway-side liveness check reads "absent from a fresh roster" as

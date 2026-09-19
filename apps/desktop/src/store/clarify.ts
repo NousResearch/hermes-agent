@@ -37,6 +37,44 @@ export const bareChoice = (choice: string): string =>
   choice.endsWith(RECOMMENDED_LABEL) ? choice.slice(0, -RECOMMENDED_LABEL.length).trim() : choice
 
 /**
+ * Flatten one wire-format choice entry to a presentation string.
+ *
+ * Two shapes are accepted:
+ *
+ *   - a plain string (the canonical wire shape — server already ran
+ *     `tools/clarify_tool.py::_clean_choices`, so this is what the gateway
+ *     normally sends).
+ *   - a `{key?, description?, label?}` dict that some LLM tool-calls still
+ *     emit. We keep the key for keyboard-shortcut readability ("A: …") and
+ *     fall back to `label` when `description` is missing.
+ *
+ * Returns `null` for anything that can't be flattened to a usable string —
+ * the caller drops it instead of dead-buttoning the user.
+ */
+function flattenChoice(entry: unknown): string | null {
+  if (typeof entry === 'string') {
+    return entry
+  }
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null
+  }
+
+  const row = entry as Record<string, unknown>
+  const key = typeof row.key === 'string' ? row.key.trim() : ''
+  const description = typeof row.description === 'string' ? row.description.trim() : ''
+  const label = typeof row.label === 'string' ? row.label.trim() : ''
+
+  const text = description || label
+
+  if (!text) {
+    return null
+  }
+
+  return key ? `${key}: ${text}` : text
+}
+
+/**
  * Validate and normalize a choices array.
  *
  * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
@@ -48,9 +86,31 @@ export function normalizeChoices(choices: unknown): string[] {
     return []
   }
 
-  return choices.filter(
-    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
-  )
+  const out: string[] = []
+
+  for (const raw of choices) {
+    const flat = flattenChoice(raw)
+
+    if (flat === null) {
+      continue
+    }
+
+    const trimmed = flat.trim()
+
+    if (!trimmed) {
+      continue
+    }
+
+    const bare = bareChoice(trimmed)
+
+    if (bare.length === 0 || bare.length > 200 || trimmed.includes('\n')) {
+      continue
+    }
+
+    out.push(trimmed)
+  }
+
+  return out
 }
 
 /**

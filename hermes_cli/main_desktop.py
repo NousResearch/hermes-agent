@@ -1293,8 +1293,13 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
         return False
 
-    print("→ Configuring Electron Linux sandbox helper (sudo required)...")
-    for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
+    # ``-n``: Hyprland/uwsm autostart has no TTY. Interactive sudo hangs or
+    # ``conversation failed`` and used to hard-exit the launcher (~3s).
+    print("→ Configuring Electron Linux sandbox helper (passwordless sudo)...")
+    for command in (
+        [sudo, "-n", "chown", "root:root", str(sandbox)],
+        [sudo, "-n", "chmod", "4755", str(sandbox)],
+    ):
         if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False

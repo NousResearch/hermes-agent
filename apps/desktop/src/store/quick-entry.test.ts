@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  createInitialQuickComposerState,
   initialQuickComposerState,
+  loadPersistedQuickEntryTarget,
+  persistQuickEntryTarget,
+  QUICK_ENTRY_TARGET_STORAGE_KEY,
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
@@ -212,5 +216,49 @@ describe('quickComposerReducer', () => {
 
     expect(first.sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'one' }])
     expect(second.sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'two' }])
+  })
+
+  describe('persisted target preference', () => {
+    afterEach(() => {
+      window.localStorage.removeItem(QUICK_ENTRY_TARGET_STORAGE_KEY)
+    })
+
+    it('a fresh composer honors a persisted "new session" choice', () => {
+      window.localStorage.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, QUICK_TARGET_NEW)
+
+      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_NEW)
+    })
+
+    it('a fresh composer stays on the current chat when nothing was persisted', () => {
+      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_CURRENT)
+    })
+
+    it('a garbage persisted value falls back to the current chat', () => {
+      window.localStorage.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, '   ')
+
+      expect(loadPersistedQuickEntryTarget()).toBe(QUICK_TARGET_CURRENT)
+    })
+
+    it('persisting a choice makes it the next summon default', () => {
+      persistQuickEntryTarget(QUICK_TARGET_NEW)
+
+      expect(window.localStorage.getItem(QUICK_ENTRY_TARGET_STORAGE_KEY)).toBe(QUICK_TARGET_NEW)
+      expect(loadPersistedQuickEntryTarget()).toBe(QUICK_TARGET_NEW)
+    })
+
+    it('re-summoning resets to the persisted target, not always the current chat', () => {
+      window.localStorage.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, QUICK_TARGET_NEW)
+
+      const { state } = run([connect, { draft: 'x', type: 'edit' }, { type: 'shown', resetTarget: loadPersistedQuickEntryTarget() }])
+
+      expect(state.target).toBe(QUICK_TARGET_NEW)
+      expect(state.draft).toBe('')
+    })
+
+    it('a plain summon with no persisted reset keeps the shipped default', () => {
+      const { state } = run([connect, { target: 's1', type: 'target' }, { type: 'shown' }])
+
+      expect(state.target).toBe(QUICK_TARGET_CURRENT)
+    })
   })
 })

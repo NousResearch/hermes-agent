@@ -152,15 +152,18 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        # No -f: a sibling may have restarted the container between the ps snapshot
+        # and now (FinishedAt still reports the previous exit), and the daemon refuses
+        # a plain rm on a running container, which is the atomic recheck this sweep needs.
         result = _docker_query(
-            [docker, "rm", "-f", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
+            [docker, "rm", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
         if result is None:
             continue
         if result.returncode == 0:
             removed += 1
             logger.info("Reaped orphan container %s (exited %d seconds ago)", cid[:12], int(age))
         else:
-            logger.debug("docker rm -f %s failed: %s", cid[:12], result.stderr.strip())
+            logger.debug("docker rm %s failed: %s", cid[:12], result.stderr.strip())
     return removed
 
 

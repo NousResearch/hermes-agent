@@ -111,7 +111,8 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
     # and is venv-scoped on normal installs.
     from tools.lazy_deps import install_specs
 
-    manual_cmd = f"uv pip install {' '.join(missing)}"
+    from hermes_cli.managed_uv import managed_pip_install_command
+    manual_cmd = managed_pip_install_command(*missing)
     try:
         outcome = install_specs(missing, timeout=120)
         if outcome.ok:

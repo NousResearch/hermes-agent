@@ -59,15 +59,19 @@ def _install_neutts_deps() -> bool:
 
     _setup._info(None, "Installing neutts Python package...",
           "This will also download the TTS model (~300MB) on first use.", None)
-    return _pip_install_tts_package("neutts", ["-U", "neutts[all]", "--quiet"], "uv pip install -U 'neutts[all]'")
+    from hermes_cli.managed_uv import managed_pip_install_command
+    return _pip_install_tts_package("neutts", ["-U", "neutts[all]", "--quiet"],
+                                    managed_pip_install_command("-U", "'neutts[all]'"))
 
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
     wheel_url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
     _setup._info(None, "Installing kittentts Python package (~25-80MB model downloaded on first use)...", None)
+    from hermes_cli.managed_uv import managed_pip_install_command
     return _pip_install_tts_package(
-        "kittentts", ["-U", wheel_url, "soundfile", "--quiet"], f"uv pip install -U '{wheel_url}' soundfile")
+        "kittentts", ["-U", wheel_url, "soundfile", "--quiet"],
+        managed_pip_install_command("-U", f"'{wheel_url}'", "soundfile"))
 
 
 def _xai_oauth_logged_in_for_setup() -> bool:

@@ -327,18 +327,24 @@ class DepsOutcome:
 
     @property
     def message(self) -> str:
+        from hermes_cli.managed_uv import managed_pip_install_prefix
         text = _OUTCOME_MESSAGES[self.status](self)
         if self.skipped:
             text += (f"\nNot installed (direct URL requirements are left to you): "
-                     f"uv pip install {' '.join(repr(s) for s in self.skipped)}")
+                     f"{managed_pip_install_prefix()} {' '.join(repr(s) for s in self.skipped)}")
         return text.strip()
+
+
+def _failed_message(o: DepsOutcome) -> str:
+    from hermes_cli.managed_uv import managed_pip_install_prefix
+    return (f"Python dependencies not installed ({o.detail}). Run manually: "
+            f"{managed_pip_install_prefix()} {' '.join(o.specs)}")
 
 
 _OUTCOME_MESSAGES: dict[str, Callable[[DepsOutcome], str]] = {
     "none": lambda o: "",
     "installed": lambda o: f"Installed Python dependencies: {', '.join(o.specs)}",
-    "failed": lambda o: (f"Python dependencies not installed ({o.detail}). Run manually: "
-                         f"uv pip install {' '.join(o.specs)}"),
+    "failed": _failed_message,
     "invalid": lambda o: f"Python dependency declaration ignored: {o.detail}",
 }
 

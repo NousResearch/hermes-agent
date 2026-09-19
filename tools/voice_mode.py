@@ -1460,6 +1460,7 @@ def check_voice_requirements() -> Dict[str, Any]:
     missing_packages, details, environment}``."""
     from tools.transcription_tools import (
         _get_provider, _load_stt_config, _resolve_command_stt_provider_config, is_stt_enabled)
+    from hermes_cli.managed_uv import managed_pip_install_command
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
@@ -1481,8 +1482,7 @@ def check_voice_requirements() -> Dict[str, Any]:
         else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
-        else ("STT provider: MISSING (uv pip install faster-whisper — "
-              "`pip install faster-whisper` also works if pip is on PATH, "
+        else (f"STT provider: MISSING ({managed_pip_install_command('faster-whisper')}; "
               "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"),
     ]
     details += [f"Environment: {w}" for w in env_check["warnings"]]

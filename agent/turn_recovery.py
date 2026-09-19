@@ -990,14 +990,16 @@ def nonretryable_client_error_result(
         )
     # TLS certificate failures are environment problems — name the knobs for each cause.
     if classified.reason == FailoverReason.ssl_cert_verification:
+        from hermes_cli.managed_uv import managed_pip_install_command
         _vlines(
             agent,
             "   💡 Hermes couldn't verify the provider's security certificate. This fails the same",
             "      way on every retry — fix the environment, then try again:",
             "      • Corporate TLS-inspecting proxy? Point Python at its CA bundle:",
             "        export SSL_CERT_FILE=/path/to/corp-ca.pem  (also REQUESTS_CA_BUNDLE)",
-            "      • Missing/stale system CA store? Refresh it (in Hermes's venv: `uv pip install",
-            "        --upgrade certifi`; macOS: run 'Install Certificates.command').",
+            "      • Missing/stale system CA store? Refresh it in Hermes's venv:",
+            f"        {managed_pip_install_command('--upgrade', 'certifi')}"
+            "  (macOS: run 'Install Certificates.command').",
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )

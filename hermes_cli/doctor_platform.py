@@ -18,7 +18,10 @@ from hermes_constants import is_termux as _is_termux
 
 
 def _python_install_cmd() -> str:
-    return "python -m pip install" if _is_termux() else "uv pip install"
+    if _is_termux():
+        return "python -m pip install"
+    from hermes_cli.managed_uv import managed_pip_install_prefix
+    return managed_pip_install_prefix()
 
 
 def _system_package_install_cmd(pkg: str) -> str:

@@ -84,10 +84,10 @@ class CLIVoiceMixin:
                 "Voice mode requires sounddevice and numpy.\n"
                 f"Install with: {sys.executable} -m pip install sounddevice numpy")
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
+            from hermes_cli.managed_uv import managed_pip_install_command
             raise RuntimeError(
                 "Voice mode requires an STT provider for transcription.\n"
-                "Option 1: uv pip install faster-whisper  "
-                "(free, local; `pip install faster-whisper` also works if pip is on PATH)\n"
+                f"Option 1: {managed_pip_install_command('faster-whisper')}  (free, local)\n"
                 "Option 2: Set GROQ_API_KEY (free tier)\n"
                 "Option 3: Set VOICE_TOOLS_OPENAI_KEY (paid)")
 

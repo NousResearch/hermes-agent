@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,8 +44,17 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
     else:
         for line in str(message).splitlines():
             _print_warning(f"    {line[:200]}")
-        _print_info("    Falling back to zero-install runs via `uvx browser-use`" if shutil.which("uvx")
-                    else "    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+        # The managed uvx (private dir) is the zero-install runner of record; a user uvx on PATH
+        # would need their tool store to hold browser-use, which isolation must not assume.
+        # Without it, say what the session does INSTEAD of retrying this same flow — the shell
+        # installers already promise the same fallback.
+        from hermes_cli.managed_uv import managed_uvx_path
+
+        managed_uvx = managed_uvx_path()
+        if managed_uvx.is_file() and os.access(managed_uvx, os.X_OK):
+            _print_info("    Falling back to zero-install runs via `uvx browser-use`")
+        else:
+            _print_info("    Browser automation falls back to the built-in browser tools.")
     if verbose_hints:
         _info_lines("Local Chrome needs remote debugging: chrome://inspect/#remote-debugging",
                     "Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
@@ -182,7 +190,15 @@ _KITTENTTS_WHEEL_URL = "https://github.com/KittenML/KittenTTS/releases/download/
 
 # pip-only post-setup hooks: module (import probe), label, installing (progress line), args, manual
 # (fallback command), on_install (fresh-install notes), always. Also feeds _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.
+def _manual_pip(*args: str) -> str:
+    """Managed-only-safe copy-pasteable install command for a hook's fallback."""
+    from hermes_cli.managed_uv import managed_pip_install_command
+    return managed_pip_install_command(*args)
+
+
 def _pip_hook(module, label, installing, args, manual, on_install=(), always=()) -> dict:
+    # ``manual`` is a zero-arg callable so the managed-only command is resolved
+    # at display time (never import-time filesystem I/O).
     return {"module": module, "label": label, "installing": installing, "args": args, "manual": manual,
             "on_install": on_install, "always": always}
 
@@ -190,23 +206,24 @@ def _pip_hook(module, label, installing, args, manual, on_install=(), always=())
 _PIP_POST_SETUP_HOOKS: dict = {
     "faster_whisper": _pip_hook(
         "faster_whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
-        ["-U", "faster-whisper", "--quiet"], "uv pip install -U faster-whisper",
+        ["-U", "faster-whisper", "--quiet"], lambda: _manual_pip("-U", "faster-whisper"),
         on_install=("Model sizes: tiny, base (default), small, medium, large-v3",
                     "Change via stt.local.model in ~/.hermes/config.yaml")),
     "kittentts": _pip_hook(
         "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
-        ["-U", _KITTENTTS_WHEEL_URL, "soundfile", "--quiet"], f"uv pip install -U '{_KITTENTTS_WHEEL_URL}' soundfile",
+        ["-U", _KITTENTTS_WHEEL_URL, "soundfile", "--quiet"],
+        lambda: _manual_pip("-U", f"'{_KITTENTTS_WHEEL_URL}'", "soundfile"),
         on_install=("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo",
                     "Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")),
     "piper": _pip_hook(
         "piper", "piper-tts", "Installing piper-tts (~14MB wheel, voices downloaded on first use)...",
-        ["-U", "piper-tts", "--quiet"], "uv pip install -U piper-tts",
+        ["-U", "piper-tts", "--quiet"], lambda: _manual_pip("-U", "piper-tts"),
         always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",
                 "Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md",
                 "Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")),
     "ddgs": _pip_hook(
         "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...", ["-U", "ddgs", "--quiet"],
-        "uv pip install -U ddgs",
+        lambda: _manual_pip("-U", "ddgs"),
         always=("No API key required. DuckDuckGo enforces server-side rate limits.",
                 "Pair with an extract provider if you also need web_extract."))}
 
@@ -231,11 +248,11 @@ def _post_setup_pip(spec: dict) -> None:
             result = _pip_install(spec["args"], timeout=300)
         except subprocess.TimeoutExpired:
             _print_warning(f"    {label} install timed out (>5min)")
-            _info_lines(f"Run manually: {spec['manual']}")
+            _info_lines(f"Run manually: {spec['manual']()}")
             return
         if result.returncode != 0:
             _print_warning(f"    {label} install failed:")
-            _info_lines(f"  {(result.stderr or '').strip()[:300]}", f"Run manually: {spec['manual']}")
+            _info_lines(f"  {(result.stderr or '').strip()[:300]}", f"Run manually: {spec['manual']()}")
             return
         _print_success(f"    {label} installed")
         lines = list(spec["on_install"]) + lines
@@ -275,7 +292,7 @@ def _post_setup_langfuse() -> None:
         if result.returncode == 0:
             _print_success("    langfuse SDK installed")
         else:
-            _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+            _print_warning(f"    langfuse SDK install failed — run manually: {_manual_pip('langfuse')}")
     # The bundled observability/langfuse plugin is opt-in (standalone plugins don't load until enabled).
     try:
         from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set

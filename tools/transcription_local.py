@@ -67,14 +67,15 @@ def _try_lazy_install_stt() -> bool:
             return True
         logger.warning("faster-whisper was installed but importlib still cannot find it (may require Python restart)")
     except Exception as exc:
+        # Name the managed uv / interpreter pip explicitly: the managed uv is
+        # deliberately off PATH, and the venv may have no pip module, so a bare
+        # `uv`/`pip` recipe fails for exactly the installs this message targets.
+        from hermes_cli.managed_uv import managed_pip_install_command
         logger.warning(
-            "Lazy install of faster-whisper failed: %s. "
-            "This is often a permission issue: the Hermes process user cannot "
-            "write to the virtual environment. Try running manually as the "
-            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
-            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
-            "uv pip install faster-whisper==1.2.1'`",
-            exc)
+            "Lazy install of faster-whisper failed: %s. This is often a permission "
+            "issue: the Hermes process user cannot write to its virtual environment. "
+            "Run the install as the venv owner, e.g. `sudo -u <owner> %s`",
+            exc, managed_pip_install_command("faster-whisper==1.2.1"))
     return False
 
 

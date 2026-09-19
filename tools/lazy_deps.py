@@ -229,10 +229,10 @@ class FeatureUnavailable(RuntimeError):
 
     def __init__(self, feature: str, missing: tuple[str, ...], reason: str):
         self.feature, self.missing, self.reason = feature, missing, reason
-        spec_list = " ".join(repr(s) for s in missing)
+        from hermes_cli.managed_uv import managed_pip_install_command
         super().__init__(
             f"Feature {feature!r} unavailable: {reason}. "
-            f"To enable manually: uv pip install {spec_list}  (or: pip install {spec_list}).")
+            f"To enable manually: {managed_pip_install_command(*(repr(s) for s in missing))}.")
 
 
 @dataclass(frozen=True)
@@ -555,14 +555,16 @@ def _uv_policy_args(policy: str) -> tuple[list[str], Optional[str]]:
 
 
 def _uv_binary() -> Optional[str]:
-    """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
-    downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
+    """Hermes-managed uv only (``resolve_uv`` — the private ``$HERMES_HOME/uv`` dir is never on
+    PATH). Deliberately NOT a PATH fallback: Hermes must never drive the user's own uv. And a
+    lookup, not ``ensure_uv()``: downloading uv + migrating the Python runtime mid-turn is a far
+    bigger action than the caller asked for. ``None`` → the pip tier covers it."""
     try:
         from hermes_cli.managed_uv import resolve_uv
 
-        return resolve_uv() or shutil.which("uv")
+        return resolve_uv()
     except Exception:
-        return shutil.which("uv")
+        return None
 
 
 def _write_constraints_file(lines: tuple[str, ...]) -> Path:
@@ -616,10 +618,13 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         from tools.environments.local import hermes_subprocess_env
         uv_env = hermes_subprocess_env(inherit_credentials=False)
         uv_env["VIRTUAL_ENV"] = str(Path(sys.executable).parent.parent)
-        # Tier 1: uv. --compile-bytecode because uv writes no __pycache__ by default, so the first
-        # import would recompile the backend AND its transitives (_warm_installed_bytecode is the
-        # belt-and-braces pass for the spec's own roots on any tier).
+        # uv is fast and does not need pip in the venv; managed-only (see _uv_binary) so Hermes
+        # never drives the user's own uv. Pin every uv write dir into Hermes' own tree so this
+        # install cannot touch the user's uv tool store / cache / python store either.
         if uv_bin := _uv_binary():
+            from hermes_cli.managed_uv import managed_uv_env
+
+            uv_env.update(managed_uv_env(base_env=uv_env))
             # Bridge pip's index unless any uv index knob is set; PIP_INDEX_URL beats pip.conf, as in
             # pip (see _pip_conf_index_url for why uv needs this at all).
             if not any(uv_env.get(k) for k in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")):
@@ -747,7 +752,10 @@ def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional
     if feature not in LAZY_DEPS:
         return None
     joined = " ".join(repr(s) for s in LAZY_DEPS[feature])
-    return f"{sys.executable} -m pip install {joined}" if venv_pip else "uv pip install " + joined
+    if venv_pip:
+        return f"{sys.executable} -m pip install {joined}"
+    from hermes_cli.managed_uv import managed_pip_install_prefix
+    return f"{managed_pip_install_prefix()} {joined}"
 
 
 @dataclass
@@ -787,7 +795,9 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
                   "and no writable install target is configured (HERMES_LAZY_INSTALL_TARGET)"
                   ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
         return InstallSpecsResult(ok=False, blocked=True, reason=reason)
-    display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
+    from hermes_cli.managed_uv import managed_pip_install_prefix
+    display = (managed_pip_install_prefix() + " "
+               + (f"--target {target} " if target is not None else "") + " ".join(cleaned))
     logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
     try:
         result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run,

@@ -273,16 +273,81 @@ def _probe_broken_packages() -> list[str]:
     return broken
 
 
+def _hermes_home() -> Path:
+    """Resolve the Hermes home without importing hermes_constants.
+
+    This module is stdlib-only on purpose — it runs when the checkout is
+    already broken enough that importing a Hermes module may fail. Mirrors
+    hermes_constants._get_platform_default_hermes_home (LOCALAPPDATA on
+    Windows, ~/.hermes elsewhere); if that logic ever changes, keep the two
+    in sync.
+    """
+    hermes_env = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_env:
+        return Path(hermes_env)
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _hermes_root() -> Path:
+    """Resolve the default Hermes root without importing hermes_constants.
+
+    Mirrors :func:`hermes_constants.get_default_hermes_root`: the shared,
+    per-machine managed uv lives here, so ``HERMES_HOME=<root>/profiles/<name>``
+    must map back to ``<root>`` (a named profile shares the one uv binary).
+    """
+    home = _hermes_home()
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return home
+
+
+def _uv_isolation_env(base_env: dict | None = None) -> dict:
+    """Stdlib-only twin of ``hermes_cli.managed_uv.managed_uv_env()`` (user layout).
+
+    This module runs when the checkout is broken enough that importing
+    ``managed_uv`` may fail, so it cannot reuse the runtime helper — it hand-
+    rolls the same pins, OVERRIDING any inherited ``UV_*`` so a repair never
+    writes the user's own uv state.  The two are kept in agreement by
+    ``tests/scripts/install/test_uv_isolation_contract.py``.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    home = _hermes_home()
+    env.update({
+        "UV_CACHE_DIR": str(home / "cache" / "uv"),
+        "UV_TOOL_DIR": str(home / "uv" / "tools"),
+        "UV_TOOL_BIN_DIR": str(home / "bin"),
+        "UV_PYTHON_INSTALL_DIR": str(home / "python"),
+        "UV_PYTHON_INSTALL_BIN": "0",
+        "UV_PYTHON_INSTALL_REGISTRY": "0",
+    })
+    return env
+
+
 def _find_uv_binary() -> str | None:
     """Locate a ``uv`` binary without importing third-party modules.
 
-    uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so the stdlib ``pip``
-    fallback refuses to touch them; the only sanctioned installer is then uv itself, which Hermes
-    vendors (``~/.hermes/bin/uv.exe``) or the user has on PATH.
+    uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so
+    the stdlib ``pip`` fallback below refuses to touch them.  In that state
+    the only sanctioned installer is uv itself, which Hermes already vendors
+    (``~/.hermes/uv/uv.exe``) or the user has on PATH.  Stdlib-only.
     """
     exe = "uv.exe" if sys.platform == "win32" else "uv"
-    for sub in ((".hermes", "bin"), (".local", "bin"), (".cargo", "bin")):
-        path = Path.home().joinpath(*sub, exe)
+    hermes_root = _hermes_root()
+
+    candidates = [
+        # Shared private uv under the default root (%LOCALAPPDATA%/hermes on
+        # Windows, ~/.hermes on POSIX, or a custom root under HERMES_HOME).
+        hermes_root / "uv" / exe,
+        # Legacy pre-isolation layout; migrated to the private dir on use.
+        hermes_root / "bin" / exe,
+        Path.home() / ".local" / "bin" / exe,
+        Path.home() / ".cargo" / "bin" / exe,
+    ]
+    for path in candidates:
         if path.is_file():
             return str(path)
     return shutil.which(exe)
@@ -334,7 +399,10 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
     if externally_managed:
         uv = _find_uv_binary()
         if uv:
-            env = {**os.environ, "VIRTUAL_ENV": str(project_root / "venv")}
+            # stdlib-only repair: pin uv's write dirs by hand (no managed_uv), or
+            # these writes land in the user's own uv cache / tool store / python
+            # store — the pollution the uv isolation removes.
+            env = _uv_isolation_env({**os.environ, "VIRTUAL_ENV": str(project_root / "venv")})
             env.pop("PYTHONHOME", None)
             env.pop("PYTHONPATH", None)
             return _run_installer("uv", [uv, "pip", "install", "--force-reinstall", *specs],

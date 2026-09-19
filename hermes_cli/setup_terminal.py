@@ -101,14 +101,15 @@ def _existing_secret_keeps(env_var: str, label: str, question: str) -> bool:
 
 
 def _pip_install_vercel(package):
-    """uv when Hermes has one ($HERMES_HOME/bin is never on PATH, so which() misses it and
+    """uv when Hermes has one ($HERMES_HOME/uv is never on PATH, so which() misses it and
     bootstrapping mid-wizard is fine), else pip — a `uv venv` venv may not even have pip."""
     import subprocess
-    from hermes_cli.managed_uv import ensure_uv
+    from hermes_cli.managed_uv import ensure_uv, managed_uv_env
     uv_bin = ensure_uv()
     cmd = ([uv_bin, "pip", "install", "--python", sys.executable, package] if uv_bin
            else [sys.executable, "-m", "pip", "install", package])
-    return subprocess.run(cmd, **_RUN_KW)
+    env = managed_uv_env() if uv_bin else None
+    return subprocess.run(cmd, env=env, **_RUN_KW)
 
 
 def _ensure_sdk(package: str, manual_hint: str, *, show_stderr: bool = False, install=None) -> None:
@@ -202,7 +203,8 @@ def _setup_backend_modal(config: dict) -> None:
         return
     config["terminal"]["modal_mode"] = "direct"
     _setup.print_info("Requires a Modal account: https://modal.com")
-    _ensure_sdk("modal", "uv pip install modal")
+    from hermes_cli.managed_uv import managed_pip_install_command
+    _ensure_sdk("modal", managed_pip_install_command("modal"))
     _setup._info(None, "Modal authentication:", "  Get your token at: https://modal.com/settings")
     if _existing_secret_keeps("MODAL_TOKEN_ID", "Modal token", "  Update Modal credentials?"):
         return
@@ -215,7 +217,8 @@ def _setup_backend_daytona(config: dict) -> None:
     _setup._info("Persistent cloud development environments.",
                  "Each session gets a dedicated sandbox with filesystem persistence.",
                  "Sign up at: https://daytona.io")
-    _ensure_sdk("daytona", "uv pip install daytona", show_stderr=True)
+    from hermes_cli.managed_uv import managed_pip_install_command
+    _ensure_sdk("daytona", managed_pip_install_command("daytona"), show_stderr=True)
     print()
     had_key = bool(_setup.get_env_value("DAYTONA_API_KEY"))
     if not _existing_secret_keeps("DAYTONA_API_KEY", "Daytona API key", "  Update API key?"):

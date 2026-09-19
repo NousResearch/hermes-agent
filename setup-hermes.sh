@@ -29,6 +29,14 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Keep this developer bootstrap on the same private-toolchain contract as the
+# production installers.  The checkout's venv is local to this tree, while
+# the managed uv binaries live under HERMES_HOME and are never added to the
+# user's shell PATH.
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+MANAGED_UV_DIR="$HERMES_HOME/uv"
+mkdir -p "$MANAGED_UV_DIR"
+
 # Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
 # wrong user's home directory when running under sudo -u <user>.  See #21269.
 export UV_NO_CONFIG=1
@@ -37,6 +45,54 @@ PYTHON_VERSION="3.11"
 
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
+}
+
+# Migrate pre-isolation managed uv/uvx from $HERMES_HOME/bin into the private
+# $HERMES_HOME/uv (never on PATH). Same contract as scripts/install.sh's
+# migrate_managed_uv_binaries(): the astral installer drops BOTH uv and uvx
+# into the target dir, so a legacy install leaves both in bin; on Windows bin
+# is a persisted User PATH entry, so a stale bin/uvx keeps shadowing the
+# user's own uvx exactly like bin/uv did. Best effort and pure — a behavior
+# test lifts it into a bash harness against a fake $HERMES_HOME (see
+# tests/scripts/install/test_setup_hermes_uv_isolation.py).
+migrate_managed_uv_binaries() {
+    for _legacy_name in uv uvx; do
+        _legacy_uv="$HERMES_HOME/bin/$_legacy_name"
+        _priv_uv="$HERMES_HOME/uv/$_legacy_name"
+        if [ -f "$_legacy_uv" ] && [ ! -e "$_priv_uv" ]; then
+            mkdir -p "$HERMES_HOME/uv"
+            mv "$_legacy_uv" "$_priv_uv" 2>/dev/null || true
+        elif [ -f "$_legacy_uv" ] && [ -e "$_priv_uv" ]; then
+            rm -f "$_legacy_uv" 2>/dev/null || true
+        fi
+    done
+}
+
+# The POSIX uv isolation contract, user-scoped layout. Byte-for-byte the same
+# body as scripts/install.sh's uv_isolated_state_env() (user branch) — a
+# behavior test runs both against a hostile inherited UV_* environment and
+# against Python's hermes_cli.managed_uv.managed_uv_env() and asserts they
+# agree (tests/scripts/install/test_uv_isolation_contract.py). install.sh is delivered
+# standalone via `curl | bash`, so it cannot share a sourced file; the
+# conformance test is what keeps the copies from drifting.
+uv_isolated_state_env() {
+    local _layout="${1:-user}"
+    if [ "$_layout" = "fhs-root" ]; then
+        export UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+        export UV_PYTHON_BIN_DIR="/usr/local/share/uv/bin"
+        export UV_CACHE_DIR="/var/cache/hermes/uv"
+        export UV_TOOL_DIR="/usr/local/share/hermes/uv/tools"
+    else
+        export UV_PYTHON_INSTALL_DIR="$HERMES_HOME/python"
+        export UV_CACHE_DIR="$HERMES_HOME/cache/uv"
+        export UV_TOOL_DIR="$HERMES_HOME/uv/tools"
+        # User-scoped installs suppress python shims via UV_PYTHON_INSTALL_BIN=0
+        # below, so no shim dir is needed — clear any inherited value so a uv
+        # that ignored the switch could never fall back to a caller's dir.
+        unset UV_PYTHON_BIN_DIR
+    fi
+    export UV_PYTHON_INSTALL_BIN=0
+    export UV_PYTHON_INSTALL_REGISTRY=0
 }
 
 get_command_link_dir() {
@@ -69,12 +125,10 @@ UV_CMD=""
 if is_termux; then
     echo -e "${CYAN}→${NC} Termux detected — using Python's stdlib venv + pip instead of uv"
 else
-    if command -v uv &> /dev/null; then
-        UV_CMD="uv"
-    elif [ -x "$HOME/.local/bin/uv" ]; then
-        UV_CMD="$HOME/.local/bin/uv"
-    elif [ -x "$HOME/.cargo/bin/uv" ]; then
-        UV_CMD="$HOME/.cargo/bin/uv"
+    migrate_managed_uv_binaries
+
+    if [ -x "$MANAGED_UV_DIR/uv" ]; then
+        UV_CMD="$MANAGED_UV_DIR/uv"
     fi
 
     if [ -n "$UV_CMD" ]; then
@@ -96,12 +150,10 @@ else
             rm -f "$_uv_log" "$_uv_installer"
             exit 1
         fi
-        if sh "$_uv_installer" >>"$_uv_log" 2>&1; then
+        if UV_UNMANAGED_INSTALL="$MANAGED_UV_DIR" sh "$_uv_installer" >>"$_uv_log" 2>&1; then
             rm -f "$_uv_installer"
-            if [ -x "$HOME/.local/bin/uv" ]; then
-                UV_CMD="$HOME/.local/bin/uv"
-            elif [ -x "$HOME/.cargo/bin/uv" ]; then
-                UV_CMD="$HOME/.cargo/bin/uv"
+            if [ -x "$MANAGED_UV_DIR/uv" ]; then
+                UV_CMD="$MANAGED_UV_DIR/uv"
             fi
 
             if [ -n "$UV_CMD" ]; then
@@ -109,7 +161,7 @@ else
                 UV_VERSION=$($UV_CMD --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
             else
-                echo -e "${RED}✗${NC} uv installer reported success but binary not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${RED}✗${NC} uv installer reported success but binary not found at $MANAGED_UV_DIR/uv."
                 echo -e "${CYAN}→${NC} Installer output:"
                 sed 's/^/    /' "$_uv_log" >&2
                 rm -f "$_uv_log"
@@ -124,6 +176,14 @@ else
             exit 1
         fi
     fi
+fi
+
+# Keep uv's Python acquisition inside Hermes as well.  Overridden even when
+# the private uv already existed, because this script may be re-run with a
+# user's UV_* environment inherited.  One function, shared with install.sh by
+# contract (see tests/scripts/install/test_uv_isolation_contract.py).
+if ! is_termux; then
+    uv_isolated_state_env user
 fi
 
 # ============================================================================

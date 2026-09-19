@@ -1345,15 +1345,30 @@ def _board_counts(slug: str) -> dict[str, int]:
         return {}
 
 
+_WORKSPACE_KIND_CACHE_TTL_SECONDS = 300.0
+_workspace_kind_cache: dict[str, tuple[float, str]] = {}
+
+
 def _default_workspace_kind(board: dict[str, Any]) -> str:
-    """Recommend a non-destructive task workspace from board metadata."""
+    """Recommend a non-destructive task workspace from board metadata.
+
+    Resolving a Git root launches ``git rev-parse``. Cache the recommendation
+    briefly because the board switcher polls this endpoint and otherwise runs
+    one subprocess per configured board on every request.
+    """
     workdir = str(board.get("default_workdir") or "").strip()
     if not workdir:
         return "scratch"
+    now = time.monotonic()
+    cached = _workspace_kind_cache.get(workdir)
+    if cached is not None and now - cached[0] < _WORKSPACE_KIND_CACHE_TTL_SECONDS:
+        return cached[1]
     try:
-        return "worktree" if kbw._git_toplevel(Path(workdir)) else "dir"
+        kind = "worktree" if kbw._git_toplevel(Path(workdir)) else "dir"
     except (OSError, ValueError):
-        return "dir"
+        kind = "dir"
+    _workspace_kind_cache[workdir] = (now, kind)
+    return kind
 
 
 def _annotate_board_meta(meta: dict) -> dict:

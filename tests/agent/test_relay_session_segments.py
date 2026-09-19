@@ -76,11 +76,17 @@ class _FakeScopeType:
     Agent = "agent"
 
 
+class _FakePluginModule:
+    def report(self) -> None:
+        return None
+
+
 class _FakeRelay:
     def __init__(self, wedge_pop: threading.Event | None = None) -> None:
         self.scope = _FakeScopeModule(wedge_pop)
         self.subscribers = _FakeSubscribers()
         self.ScopeType = _FakeScopeType()
+        self.plugin = _FakePluginModule()
 
     def get_scope_stack(self) -> None:
         return None
@@ -141,6 +147,81 @@ def _set_segments(monkeypatch, *, on_compaction=False, max_turns=0):
 @pytest.fixture()
 def coordinator() -> RelaySessionCoordinator:
     return RelaySessionCoordinator()
+
+
+class TestSessionScopeFallback:
+    def test_push_runtime_error_does_not_double_push(self):
+        """A RuntimeError raised by relay.scope.push inside the future is re-raised
+        by future.result(); it must not be mistaken for executor refusal and retried."""
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        original_push = fake.scope.push
+        calls: list = []
+
+        def failing_push(*args, **kwargs):
+            calls.append(args)
+            raise RuntimeError("scope push failed")
+
+        fake.scope.push = failing_push
+
+        with pytest.raises(RuntimeError, match="scope push failed"):
+            runtime.ensure_session({"session_id": "sess-rt"})
+        assert len(calls) == 1
+        # The failed open leaves no half-populated scope state: the session stays
+        # registered with handle/context unset so a later ensure_session retries cleanly.
+        session = runtime._sessions["sess-rt"]
+        assert session.handle is None
+        assert session.context is None
+
+        fake.scope.push = original_push
+        runtime.ensure_session({"session_id": "sess-rt"})
+        assert len(_session_pushes(fake)) == 1
+        assert session.handle is not None
+
+    def test_executor_refusal_still_uses_sync_fallback(self, monkeypatch):
+        """The intended lane: submit() refusing at interpreter shutdown pushes once,
+        synchronously, via exit_fallback."""
+
+        class _RefusingExecutor:
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("cannot schedule new futures after shutdown")
+
+        monkeypatch.setattr(
+            relay_runtime, "_scope_op_executor", lambda: _RefusingExecutor()
+        )
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+
+        runtime.ensure_session({"session_id": "sess-ref"})
+        assert len(_session_pushes(fake)) == 1
+
+    def test_push_failure_degrades_to_uninstrumented_lease_e2e(self, coordinator):
+        """End to end through the coordinator: a failing session push invokes push
+        once, the conversation degrades to an uninstrumented lease, and the next
+        acquire opens a working scope once the Relay recovers."""
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        original_push = fake.scope.push
+        calls: list = []
+
+        def failing_push(*args, **kwargs):
+            calls.append(args)
+            raise RuntimeError("scope push failed")
+
+        fake.scope.push = failing_push
+
+        lease = _acquire(coordinator, runtime, session_id="sess-e2e")
+        assert lease.session is None
+        assert len(calls) == 1
+
+        turn = _run_turn(coordinator, lease, "t1")
+        assert turn.handle is None
+
+        fake.scope.push = original_push
+        lease2 = _acquire(coordinator, runtime, session_id="sess-e2e")
+        assert lease2.session is not None
+        assert lease2.session.handle is not None
+        assert len(_session_pushes(fake)) == 1
 
 
 def _acquire(coordinator, runtime, session_id="sess-1"):

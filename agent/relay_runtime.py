@@ -390,11 +390,14 @@ class RelayRuntime:
         push_kwargs.update(handle=parent_handle, metadata=scope_metadata, input={})
         try:
             future = _scope_op_executor().submit(context.run, *args, **push_kwargs)
-            session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
         except RuntimeError:
             if not exit_fallback:
                 raise
             session.handle = context.run(*args, **push_kwargs)
+        else:
+            # future.result() re-raises push's own RuntimeError; keeping it outside the
+            # except prevents a real push failure from retrying via the exit fallback.
+            session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
         session.context = context
 
     def ensure_session(

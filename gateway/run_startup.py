@@ -85,7 +85,7 @@ class GatewayStartupMixin:
         while queue:
             event = queue.pop(0)
             source = getattr(event, "source", None)
-            adapter = self._adapter_for_source(source)
+            adapter = self._intake_adapter_for(source)
             if adapter is None:
                 logger.debug(
                     "Dropping startup-restore queued message: adapter unavailable for %s",
@@ -567,7 +567,7 @@ class GatewayStartupMixin:
             if self._is_session_running(entry.session_key):
                 continue
             source = entry.origin
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s", entry.session_key,

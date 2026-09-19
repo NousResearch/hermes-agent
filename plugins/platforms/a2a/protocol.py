@@ -182,6 +182,16 @@ def extract_context_id(params: dict) -> str:
     return (str(msg.get("contextId") or "") if isinstance(msg, dict) else "") or str(params.get("contextId") or "")
 
 
+def extract_message_id(params: dict) -> str:
+    """v1.0 puts messageId inside the Message; tolerate legacy top-level."""
+    msg = params.get("message") or {}
+    if isinstance(msg, dict):
+        mid = str(msg.get("messageId") or "")
+        if mid:
+            return mid
+    return str(params.get("messageId") or "")
+
+
 def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *, created_at: str = "") -> dict:
     """A2A v1.0 Task. ``created_at`` is accepted but NOT serialized: the v1.0 Task proto has no
     createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields."""
@@ -321,9 +331,11 @@ class TaskStore:
         return {"configId": rec.get("push_config_id") or "", "taskId": rec["task_id"],
                 "createdAt": rec.get("created_iso", ""), "pushNotificationConfig": {"url": rec.get("push_url") or ""}}
 
-    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "") -> dict:
+    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "",
+               *, message_id: str = "") -> dict:
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
-               "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+               "message_id": message_id or "", "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(),
+               "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
@@ -366,6 +378,16 @@ class TaskStore:
     def get(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         with self._lock:
             return dict(rec) if (rec := self._scoped(task_id, agent_slug, tenant)) else None
+
+    def get_by_message_id(self, message_id: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+        """Return the task already created for a caller messageId, or None (idempotency)."""
+        if not message_id:
+            return None
+        with self._lock:
+            for rec in self._tasks.values():
+                if rec.get("message_id") == message_id and self._in_scope(rec, agent_slug, tenant):
+                    return dict(rec)
+        return None
 
     def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
         """Transition a task to a terminal state. Idempotent."""

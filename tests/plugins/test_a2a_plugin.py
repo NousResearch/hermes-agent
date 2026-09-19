@@ -62,7 +62,7 @@ class TestBindSafety:
 
     def test_host_widens_with_peer_tokens(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
-        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok1")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice=tok1")
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         assert security.localhost_only() is False
         assert security.A2ASecurityContext.capture().resolve_bind_host() == "0.0.0.0"
@@ -86,12 +86,12 @@ class TestPeerIdentity:
 
     def test_peer_token_maps_to_name(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
-        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a, bob:tok-b")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice=tok-a, bob=tok-b")
         assert security.A2ASecurityContext.capture().authenticate("Bearer tok-a", "1.2.3.4") == "alice"
         assert security.A2ASecurityContext.capture().authenticate("Bearer tok-b", "1.2.3.4") == "bob"
 
     def test_wrong_or_missing_token_rejected(self, monkeypatch):
-        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice=tok-a")
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         assert security.A2ASecurityContext.capture().authenticate("Bearer nope", "1.2.3.4") is None
         assert security.A2ASecurityContext.capture().authenticate(None, "1.2.3.4") is None
@@ -105,7 +105,7 @@ class TestPeerIdentity:
 
     def test_peer_tokens_beat_shared(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
-        monkeypatch.setenv("A2A_PEER_TOKENS", "carol:tok-c")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "carol=tok-c")
         assert security.A2ASecurityContext.capture().authenticate("Bearer tok-c", "1.1.1.1") == "carol"
         assert security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "1.1.1.1") == "ip:1.1.1.1"
 
@@ -1170,7 +1170,7 @@ class TestInboundRoundTrip:
     def test_peer_token_identity_used_for_framing(self, monkeypatch):
         """The authenticated peer-token name (not anything in the body) is the
         identity the agent sees in the privacy frame."""
-        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-alice")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice=tok-alice")
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.setenv("A2A_HOST", "127.0.0.1")
 
@@ -1206,13 +1206,13 @@ class TestInboundRoundTrip:
             set_secret_scope,
         )
 
-        monkeypatch.setenv("A2A_PEER_TOKENS", "default:default-token")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "default=default-token")
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.setenv("A2A_HOST", "127.0.0.1")
 
         set_multiplex_active(True)
         scope_token = set_secret_scope(
-            {"A2A_PEER_TOKENS": "secondary:secondary-token"}
+            {"A2A_PEER_TOKENS": "secondary=secondary-token"}
         )
         try:
             adapter, base = _make_live_adapter(monkeypatch)
@@ -1400,10 +1400,17 @@ class TestMultiAgentRouting:
             "peer-x",
             agent=agent,
         )
-        assert pending is None
-        assert terminal["status"]["state"] == protocol.STATE_COMPLETED
-        assert protocol.extract_text(terminal["artifacts"][0]) == "dev reply"
-        assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
+        # Forwarded tasks are async: _prepare_task returns a WORKING pending task that resolves
+        # off the HTTP thread; the caller (_rpc_message_send's background worker) finalizes the store.
+        assert terminal is None
+        assert pending is not None
+        pend: dict = pending
+        assert adapter.tasks.get(pend["task_id"])["state"] == protocol.STATE_WORKING
+        state, reply = pend["future"].result(timeout=5)
+        assert state == protocol.STATE_COMPLETED
+        assert reply == "dev reply"
+        adapter._finalize_task(pend, state, reply)
+        assert adapter.tasks.get(pend["task_id"])["state"] == protocol.STATE_COMPLETED
 
 
 class TestClientTenantAndDiscovery:
@@ -1466,13 +1473,25 @@ class TestV1SpecRegressionFixes:
             assert resp["id"] == "1"
             assert set(resp["result"].keys()) == {"task"}
             task = resp["result"]["task"]
-            assert task["status"]["state"] == protocol.STATE_COMPLETED
-            assert "hello v1" in protocol.extract_text(task["artifacts"][0])
-            get_resp = await asyncio.to_thread(_post_json, base + "/", {
-                "jsonrpc": "2.0", "id": "2", "method": "GetTask",
-                "params": {"id": task["id"]},
-            }, {"A2A-Version": "1.0"})
-            assert get_resp["result"]["id"] == task["id"]
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            task_id = task["id"]
+            # Async lifecycle: message/send returns WORKING immediately; the agent finishes in
+            # the background and tasks/get observes the SAME task id reaching COMPLETED.
+            async def poll_get():
+                r = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "2", "method": "GetTask",
+                    "params": {"id": task_id},
+                }, {"A2A-Version": "1.0"})
+                return r["result"]
+            got = await poll_get()
+            for _ in range(100):
+                if got["status"]["state"] == protocol.STATE_COMPLETED:
+                    break
+                await asyncio.sleep(0.05)
+                got = await poll_get()
+            assert got["status"]["state"] == protocol.STATE_COMPLETED
+            assert got["id"] == task_id
+            assert "hello v1" in protocol.extract_text(got["artifacts"][0])
             list_resp = await asyncio.to_thread(_post_json, base + "/", {
                 "jsonrpc": "2.0", "id": "3", "method": "ListTasks",
                 "params": {"contextId": task["contextId"], "pageSize": 10},

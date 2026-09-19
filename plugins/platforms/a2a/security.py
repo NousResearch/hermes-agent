@@ -31,8 +31,8 @@ def _startup_env(name: str) -> str:
 
 
 def _parse_peer_tokens(raw: str) -> dict[str, str]:
-    """"alice:tok1,bob:tok2" -> {token: peer_name}."""
-    pairs = [tuple(s.strip() for s in pair.split(":", 1)) for pair in raw.split(",") if ":" in pair]
+    """``alice=tok1,bob=tok2`` -> {token: peer_name}."""
+    pairs = [tuple(s.strip() for s in pair.split("=", 1)) for pair in raw.split(",") if "=" in pair]
     return {token: name for name, token in pairs if name and token}
 
 

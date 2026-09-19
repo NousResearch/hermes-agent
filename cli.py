@@ -2750,7 +2750,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # MCP server names only resolve after discover_mcp_tools runs; skip them here.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            # Same for plugin toolsets: the registry is only walked later (_get_platform_tools),
+            # so validate_toolset() still says no for a plugin the user explicitly enabled.
+            plugin_names = set(parse_config_string_list((CLI_CONFIG.get("plugins") or {}).get("enabled")) or [])
+            invalid = [t for t in toolsets
+                       if not validate_toolset(t) and t not in mcp_names and t not in plugin_names]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
 

@@ -3156,11 +3156,12 @@ class _StreamingCall(StreamingWaitMonitor):
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
             # This is the physical native-Anthropic send.  Earlier planning may be mutated by
             # adapters, so check the final wire model and endpoint immediately before opening it.
-            from hermes_cli.routing_policy import check_outbound_route
+            from hermes_cli.routing_policy import check_outbound_route, profile_home_for_session_db
             check_outbound_route(
                 provider=str(getattr(self.agent, "provider", "") or ""),
                 model=str(final_kwargs.get("model") or getattr(self.agent, "model", "") or ""),
                 base_url=str(getattr(request_client, "base_url", None) or getattr(self.agent, "base_url", "") or ""),
+                profile_home=profile_home_for_session_db(getattr(self.agent, "_session_db", None)),
             )
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager

@@ -1441,12 +1441,7 @@ class GatewayAdapterLifecycleMixin:
         """
         from gateway.profile_routing import ProfileRouteRejected
         try:
-            routed_profile = (
-                self._profile_name_for_source(source, adapter_profile=adapter_profile)
-                if adapter_profile is not None
-                else self._profile_name_for_source(source)
-            )
-            source.profile = routed_profile or adapter_profile
+            source.profile = self._profile_name_for_source(source, adapter_profile=adapter_profile) or adapter_profile
         except ProfileRouteRejected:
             return False
         return True

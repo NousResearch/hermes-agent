@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from agent import verification_evidence as evidence
 from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
@@ -356,3 +357,35 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
     )
+
+
+def test_pruning_preserves_event_referenced_by_state_pointer():
+    conn = sqlite3.connect(":memory:")
+    for ddl in evidence._SCHEMA_DDL:
+        conn.execute(ddl)
+
+    session_id, root = "session", "/workspace"
+    for index in range(evidence._MAX_EVENTS_PER_SESSION_ROOT + 1):
+        conn.execute(
+            "INSERT INTO verification_events("
+            " created_at, session_id, cwd, root, command, canonical_command,"
+            " kind, scope, status, exit_code, output_summary"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                evidence._utc_now(), session_id, root, root, f"pytest {index}", "pytest",
+                "test", "full", "passed", 0, "",
+            ),
+        )
+    conn.execute(
+        "INSERT INTO verification_state(session_id, root, last_event_id, changed_paths_json)"
+        " VALUES (?, ?, ?, '[]')",
+        (session_id, root, 1),
+    )
+    conn.commit()
+
+    evidence._prune_old_events(conn, session_id=session_id, root=root)
+
+    assert conn.execute(
+        "SELECT 1 FROM verification_events WHERE id = 1"
+    ).fetchone() is not None
+    assert conn.execute("SELECT COUNT(*) FROM verification_events").fetchone()[0] == 101

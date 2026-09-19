@@ -236,7 +236,10 @@ hermes peer stop spark run_abc123
 `hermes peer dm` delivers into the remote agent's canonical Bot Chat over the peer's existing API server, runs one agent turn there, and prints the reply on stdout — the exact cross-machine twin of the local `hermes -p <bot> chat` command.
 
 Use `peer dm` only for short queries and receipts because it holds one HTTP
-connection until the turn finishes. For a long turn, `peer run` returns a
+connection until the turn finishes. When the peer's Bot Chat is open in its Desktop, the message is
+handed to that open chat and runs there as its next turn — whoever is watching sees it, and the reply
+still comes back on the call; if that turn is still going after five minutes, `peer dm` reports the
+message as queued in that chat rather than lost. For a long turn, `peer run` returns a
 `run_id` immediately; poll it with `peer status`. The run inherits the
 canonical Bot Chat transcript, and a stable `--idempotency-key` makes a retry
 return the original run instead of starting duplicate work. Use `peer stop`

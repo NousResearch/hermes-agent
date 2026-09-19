@@ -620,3 +620,59 @@ def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp
         assert not other_done.wait(timeout=0.2), "second thread acquired a held lock"
     t.join(timeout=2)
     assert entered.is_set() and other_done.is_set()
+
+
+def test_archive_resolves_the_skill_dir_once(skills_home, monkeypatch):
+    """Archiving must resolve the directory ONCE: the eligibility guard and the state write reuse the
+    path the caller already has instead of re-scanning the library by name (was 3 lookups: locate,
+    eligibility, then a guard lookup that had to miss because the dir was already moved)."""
+    from tools import skill_usage as su
+    skills_dir = Path(skills_home) / "skills"
+    _write_skill(skills_dir, "shortcut-sample")
+    calls = []
+    real = su._find_skill_dir
+    monkeypatch.setattr(su, "_find_skill_dir", lambda name: (calls.append(name), real(name))[1])
+    ok, msg = su.archive_skill("shortcut-sample")
+    assert ok and "archived" in msg
+    assert calls == ["shortcut-sample"], f"expected one by-name lookup, got {calls}"
+    assert su.get_record("shortcut-sample")["state"] == "archived"
+
+
+def test_is_curation_eligible_short_circuits_on_a_known_path(skills_home, monkeypatch):
+    """A resolved path answers the question without touching the library index."""
+    from tools import skill_usage as su
+    skills_dir = Path(skills_home) / "skills"
+    _write_skill(skills_dir, "known-path-sample")
+    resolved = su._find_skill_dir("known-path-sample")
+    assert resolved is not None
+    calls = []
+    monkeypatch.setattr(su, "_find_skill_dir", lambda name: (calls.append(name), None)[1])
+    assert su.is_curation_eligible("known-path-sample", resolved) is True
+    assert calls == [], f"known path must not trigger a by-name scan, got {calls}"
+
+
+def test_set_state_uses_the_path_the_caller_moved(skills_home, monkeypatch):
+    """After a move the by-name lookup can only miss; the caller's path carries the answer instead,
+    so the state write still lands (previously it could be refused by the miss)."""
+    from tools import skill_usage as su
+    skills_dir = Path(skills_home) / "skills"
+    _write_skill(skills_dir, "moved-sample")
+    moved_from = skills_dir / "moved-sample"
+    scanned = []
+    monkeypatch.setattr(su, "_find_skill_dir", lambda name: (scanned.append(name), None)[1])
+    su.set_state("moved-sample", su.STATE_ARCHIVED, skill_path=moved_from)
+    assert scanned == [], f"no by-name scan expected, got {scanned}"
+    assert su.get_record("moved-sample")["state"] == "archived"
+
+
+def test_set_state_without_a_path_still_resolves_by_name(skills_home, monkeypatch):
+    """Regression: callers that do not know the path keep the old by-name resolution."""
+    from tools import skill_usage as su
+    skills_dir = Path(skills_home) / "skills"
+    _write_skill(skills_dir, "name-resolved-sample")
+    scanned = []
+    real = su._find_skill_dir
+    monkeypatch.setattr(su, "_find_skill_dir", lambda name: (scanned.append(name), real(name))[1])
+    su.set_state("name-resolved-sample", su.STATE_ARCHIVED)
+    assert scanned == ["name-resolved-sample"]
+    assert su.get_record("name-resolved-sample")["state"] == "archived"

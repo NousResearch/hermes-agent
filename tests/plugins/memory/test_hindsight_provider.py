@@ -1140,6 +1140,35 @@ class TestTurnAuthor:
         assert BOT_DM in bot_jobs[0] and "hello" not in bot_jobs[0]
         assert "hello" in human_jobs[0] and BOT_DM not in human_jobs[0]
 
+    def test_append_retain_keeps_turn_tags_aligned_after_trim(self, provider, monkeypatch):
+        """Append-mode retains drop shipped turns from ``_session_turns`` (upstream #62950);
+        the parallel tag list must go with them. Otherwise the next batch pairs a turn with an
+        earlier turn's tag — a peer bot's turn ships untagged (into the user's recall) while a
+        human turn ships as agent-to-agent traffic."""
+        monkeypatch.setattr(provider, "_resolve_retain_target", lambda doc: ("doc", "append"))
+
+        provider.sync_turn("hello", "hi", turn_author=HUMAN_AUTHOR)   # retain + trim
+        provider._retain_queue.join()
+        provider.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)     # must keep its own tag
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args_list[-1].kwargs["items"][0]
+        assert item["tags"] == ["session:test-session", "source:bot"]
+        assert BOT_DM in item["content"]
+
+    def test_append_retain_human_turn_after_bot_is_not_labelled_a2a(self, provider, monkeypatch):
+        """Mirror case: after a bot turn is trimmed, a human turn must not inherit its tag."""
+        monkeypatch.setattr(provider, "_resolve_retain_target", lambda doc: ("doc", "append"))
+
+        provider.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)     # retain + trim
+        provider._retain_queue.join()
+        provider.sync_turn("hello", "hi", turn_author=HUMAN_AUTHOR)
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args_list[-1].kwargs["items"][0]
+        assert item["tags"] == ["session:test-session"]
+        assert "hello" in item["content"]
+
     def test_signature_accepts_turn_author_for_core_dispatch(self, provider):
         """MemoryManager only forwards turn_author to sync_turn signatures that
         name it, so dropping the kwarg silently re-opens this bug — pin it."""

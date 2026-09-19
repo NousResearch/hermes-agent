@@ -1138,6 +1138,10 @@ class HindsightMemoryProvider(MemoryProvider):
             # of a never-ending session (#62950). Overwrite mode resends the whole session and
             # must keep them all.
             self._session_turns.clear()
+            # The per-turn tag list is parallel by index and must be dropped in lockstep, or the
+            # next batch pairs a turn with an earlier turn's tag: a peer bot's turn would ship
+            # untagged (and land in the user's recall) while a human turn shipped as bot traffic.
+            self._session_turn_tags.clear()
             self._last_retained_turn_count = 0
 
     def _enqueue_retain(self, job: Callable[[], None]) -> None:

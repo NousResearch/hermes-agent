@@ -821,26 +821,44 @@ def _set_nested(config, dotted_key: str, value):
     """
     parts = _split_key_path(dotted_key)
     current = config
+    parent_keys = []
     i = 0
     while i < len(parts):
         remaining = parts[i:]
         at_leaf = len(remaining) == 1
         if isinstance(current, list):
             part = remaining[0]
-            if at_leaf:
-                current[int(part)] = value
-                return
             try:
-                current = current[int(part)]
+                idx = int(part)
             except (TypeError, ValueError):
                 raise TypeError(
-                    f"Cannot navigate into list at key {dotted_key!r}: "
-                    f"segment {part!r} is not a numeric index")
+                    f"Cannot set {dotted_key!r}: {part!r} is not a numeric list index"
+                )
+            try:
+                if at_leaf:
+                    current[idx] = value
+                    return
+                current = current[idx]
+            except IndexError:
+                raise TypeError(
+                    f"Cannot set {dotted_key!r}: list index {idx} is out of range "
+                    "(the referenced entry must already exist — indexes are never created implicitly)"
+                )
+            parent_keys.append(part)
             i += 1
         elif isinstance(current, dict):
             match = _greedy_literal_match(current, remaining)
+            key, consumed = match or (remaining[0], 1)
+            if i + consumed < len(parts):
+                parent = ".".join(part.replace(".", "\\.") for part in [*parent_keys, key])
+                # Use the known shape, not digits: channel IDs are valid mapping keys.
+                if (_expected_container_type(parent, {}) == "list"
+                        and not isinstance(current.get(key), list)):
+                    raise TypeError(
+                        f"Cannot set {dotted_key!r}: {parent!r} is not an existing list. "
+                        "Create the list in config.yaml first (indexes are never created implicitly)."
+                    )
             if match is not None:
-                key, consumed = match
                 if i + consumed == len(parts):
                     current[key] = value
                     return
@@ -848,6 +866,7 @@ def _set_nested(config, dotted_key: str, value):
                 if not isinstance(current.get(key), (dict, list)):
                     current[key] = {}
                 current = current[key]
+                parent_keys.append(key)
                 i += consumed
                 continue
             part = remaining[0]
@@ -862,6 +881,7 @@ def _set_nested(config, dotted_key: str, value):
                     f"already contains a literal key {shadowed!r} that contains a dot. If you "
                     f"meant that key, escape its dots with a backslash (e.g. {escaped}).")
             current = current.setdefault(part, {})
+            parent_keys.append(part)
             i += 1
         else:
             raise TypeError(f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}")
@@ -3704,7 +3724,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
     try:
         _set_nested(user_config, key, value)
-    except ValueError as e:
+    except (TypeError, ValueError) as e:
         _exit_invalid(f"✗ {e}")
     # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
     # state of the OLD provider, and the runtime honours them for whatever provider the block now

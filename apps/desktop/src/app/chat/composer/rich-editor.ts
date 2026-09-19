@@ -123,7 +123,7 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
 
   const label = displayLabel || refChipLabel(kind, id)
 
-  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
+  return `<span contenteditable="false" dir="ltr" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -132,6 +132,8 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const chip = document.createElement('span')
 
   chip.contentEditable = 'false'
+  // LTR paths/URLs: excluded from the composer's dir="auto" vote.
+  chip.dir = 'ltr'
   chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
@@ -150,6 +152,8 @@ export function slashChipElement(command: string, kind: SlashChipKind, label?: s
   const chip = document.createElement('span')
 
   chip.contentEditable = 'false'
+  // LTR command text: excluded from the composer's dir="auto" vote.
+  chip.dir = 'ltr'
   chip.dataset.refText = command
   chip.dataset.slashKind = kind
   chip.className = 'ref'

@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -17,7 +17,6 @@ import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
-import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -46,6 +45,7 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+import { voteDirection, voteDirectionFromNodes } from '@/lib/bidi'
 
 const onboardingEnabled = isOnboardingEnabled()
 
@@ -463,11 +463,6 @@ interface MarkdownTextSurfaceProps {
   disableArtifacts?: boolean
   /** Foreign history must not load images or mount live transcript directives. */
   previewOnly?: boolean
-  /** Re-render the direct text nodes of paragraph-level containers (p / li /
-   *  td) — a transcript surface styles its own inline tokens (a Bot Mode room's
-   *  routed @mentions) without owning the Markdown pipeline. Nested inline
-   *  markup and code are left as rendered. */
-  decorateText?: (children: ReactNode) => ReactNode
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -506,6 +501,9 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
         'aui-md w-full max-w-none overflow-hidden rounded-[0.625rem] border border-(--ui-stroke-tertiary) font-mono text-[0.7rem] leading-relaxed text-foreground/90',
         containerClassName
       )}
+      // Giant dumps resolve by first strong char; voted per-block direction
+      // isn't worth the walk over 200k chars.
+      dir="auto"
     >
       <ExpandableBlock className="p-2">
         {chunks.map((chunk, index) => (
@@ -545,6 +543,8 @@ function MarkdownParagraph({
 
   // A paragraph that is one directive renders as the card alone; one that
   // ends in a directive renders as its sentence followed by the card.
+  // dir comes from a whole-string majority vote (lib/bidi), not the first
+  // word: a Persian sentence opening with an English term stays RTL.
   if (resolved) {
     return (
       <>
@@ -552,7 +552,7 @@ function MarkdownParagraph({
           segment.kind === 'directive' ? (
             <TranscriptDirectiveLeaf key={index} streaming={streaming} text={segment.source} />
           ) : (
-            <p className={paragraphClass} key={index} {...props}>
+            <p className={paragraphClass} dir={voteDirection(segment.text)} key={index} {...props}>
               {segment.text.trim()}
             </p>
           )
@@ -574,7 +574,7 @@ function MarkdownParagraph({
   }
 
   return (
-    <p className={paragraphClass} {...props}>
+    <p className={paragraphClass} dir={plain !== null ? voteDirection(plain) : voteDirectionFromNodes(children)} {...props}>
       {children}
     </p>
   )
@@ -583,7 +583,6 @@ function MarkdownParagraph({
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
-  decorateText,
   defer,
   disableArtifacts,
   previewOnly,
@@ -602,25 +601,31 @@ function MarkdownTextSurface({
   const components = useMemo(
     () =>
       ({
-        h1: ({ className, ...props }: ComponentProps<'h1'>) => (
-          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
+        h1: ({ children, className, ...props }: ComponentProps<'h1'>) => (
+          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
+          </h1>
         ),
-        h2: ({ className, ...props }: ComponentProps<'h2'>) => (
-          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} />
+        h2: ({ children, className, ...props }: ComponentProps<'h2'>) => (
+          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
+          </h2>
         ),
-        h3: ({ className, ...props }: ComponentProps<'h3'>) => (
-          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} />
+        h3: ({ children, className, ...props }: ComponentProps<'h3'>) => (
+          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
+          </h3>
         ),
-        h4: ({ className, ...props }: ComponentProps<'h4'>) => (
-          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
+        h4: ({ children, className, ...props }: ComponentProps<'h4'>) => (
+          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
+          </h4>
         ),
-        p: ({ children, ...props }: ComponentProps<'p'>) =>
+        p: (props: ComponentProps<'p'>) =>
           previewOnly ? (
-            <p {...props}>{decorateText ? decorateText(children) : children}</p>
+            <p dir={voteDirectionFromNodes(props.children)} {...props} />
           ) : (
-            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
-              {decorateText ? decorateText(children) : children}
-            </MarkdownParagraph>
+            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming} />
           ),
         a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
@@ -637,11 +642,13 @@ function MarkdownTextSurface({
         // (markers, the quote border), and that side is driven by the CSS
         // `direction` of the box, which `unicode-bidi: plaintext` never
         // touches — an RTL list otherwise renders its numbers stranded at
-        // the far left. `dir="auto"` lets the browser resolve the box
-        // direction from content; the plaintext rules in styles.css keep
-        // owning per-line text direction. Inline code carries `dir="ltr"`
-        // (see the `code` override) so it doesn't vote here either, same
-        // contract as the CSS isolate.
+        // the far left. dir comes from a whole-content majority vote
+        // (lib/bidi), which also fixes lists whose first item starts with
+        // a minority-script word; the plaintext rules in styles.css keep
+        // owning per-line text direction for unvoted descendants, and the
+        // isolate override lets a voted dir win. Inline code carries
+        // `dir="ltr"` (see the `code` override) so it doesn't vote here
+        // either, same contract as the CSS isolate.
         // A `> [!NOTE]`/`[!WARNING]`/... blockquote renders as a GFM alert
         // callout; everything else stays a plain quote.
         blockquote: ({ children, className, ...props }: ComponentProps<'blockquote'>) => {
@@ -654,22 +661,26 @@ function MarkdownTextSurface({
           return (
             <blockquote
               className={cn('border-s-2 border-(--ui-stroke-tertiary) ps-3 text-muted-foreground italic', className)}
-              dir="auto"
+              dir={voteDirectionFromNodes(children)}
               {...props}
             >
               {children}
             </blockquote>
           )
         },
-        ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} dir="auto" {...props} />
+        ul: ({ children, className, ...props }: ComponentProps<'ul'>) => (
+          <ul className={cn('my-1 gap-0', className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
+          </ul>
         ),
-        ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
+        ol: ({ children, className, ...props }: ComponentProps<'ol'>) => (
+          <ol className={cn('my-1 gap-0', className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
+          </ol>
         ),
         li: ({ children, className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
-            {decorateText ? decorateText(children) : children}
+          <li className={cn('leading-(--dt-line-height)', className)} dir={voteDirectionFromNodes(children)} {...props}>
+            {children}
           </li>
         ),
         // Columns are drag-resizable; the widths live outside the transcript
@@ -681,8 +692,12 @@ function MarkdownTextSurface({
         ),
         th: ResizableMarkdownTh,
         td: ({ children, className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
-            {decorateText ? decorateText(children) : children}
+          <td
+            className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)}
+            dir={voteDirectionFromNodes(children)}
+            {...props}
+          >
+            {children}
           </td>
         ),
         img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
@@ -708,7 +723,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
+    [disableArtifacts, isStreaming, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -762,30 +777,6 @@ function MarkdownTextSurface({
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   isRunning: boolean
   text: string
-}
-
-/** Render raw assistant-style message text through the complete Desktop text
- * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
- * so the canonical link component can route them to inline players/previews.
- * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
- * outside a session — a Bot Mode group room — has no session to own artifact
- * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
- * against the ACTIVE gateway, so a message written on another machine (a
- * Connections Bot in a cross-machine room) must not have its path read here —
- * that is a broken image at best and a same-path local file at worst. */
-export function MessageTextContent({
-  decorateText,
-  media = true,
-  text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
-  return (
-    <MarkdownTextContent
-      decorateText={decorateText}
-      disableArtifacts
-      isRunning={false}
-      text={media ? renderMediaTags(text) : text}
-    />
-  )
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {

@@ -230,9 +230,11 @@ export function SidebarRowLead({ className, ...props }: React.ComponentProps<'sp
   return <span className={cn(SIDEBAR_ROW_LEAD, className)} {...props} />
 }
 
-/** Standard row label typography. */
+/** Standard row label typography. dir="auto" so Persian session/project titles
+ *  resolve RTL (ellipsis + alignment on the correct side) while English ones
+ *  stay exactly as before. The marquee CSS keys its RTL travel off :dir(). */
 export function SidebarRowLabel({ className, ...props }: React.ComponentProps<'span'>) {
-  return <span className={cn(SIDEBAR_ROW_LABEL, className)} {...props} />
+  return <span className={cn(SIDEBAR_ROW_LABEL, className)} dir="auto" {...props} />
 }
 
 /** What a group's sessions add up to, for the Show options that count something. */

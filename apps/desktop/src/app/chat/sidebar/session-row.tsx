@@ -14,6 +14,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { voteDirection } from '@/lib/bidi'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
@@ -110,8 +111,8 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
 // and is never narrower than the button that has to cover it. A PR chip is the
 // exception while the pointer is on it: it's a link, and the kebab sits
 // absolute over this space, so it has to stop taking clicks too, not just fade.
-const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity group-hover:opacity-0'
-const KEBAB_YIELDS = 'session-row-kebab'
+const TAIL_HIDES = 'min-w-5 transition-opacity group-hover:opacity-0 group-has-[[data-pr-link]:hover]:opacity-100'
+const KEBAB_YIELDS = 'group-has-[[data-pr-link]:hover]:pointer-events-none group-has-[[data-pr-link]:hover]:opacity-0'
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
@@ -376,9 +377,8 @@ function SidebarSessionRowImpl({
         // steal the other's gesture. Over the sidebar only the reorder has a
         // target (the session drop denies: side chrome hosts no main tile);
         // over the tree only the session drop does (no sortable row there).
-        // Whichever one the release lands on is the one that commits. Pointer
-        // activator only; the full handle stays on the grabber (see
-        // useSortableBindings).
+        // Whichever one the release lands on is the one that commits.
+        {...dragHandleProps}
         onPointerDown={event => {
           // The grabber already carries these same listeners, and the ⋯
           // cluster keeps its own gestures.
@@ -494,9 +494,10 @@ function SidebarSessionRowImpl({
                   {leadNode}
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
-                    <OverflowTip label={title} placement="row">
+                    <OverflowTip label={title}>
                       <SidebarRowLabel
                         className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                        dir={voteDirection(title)}
                         onPointerEnter={armMarquee}
                         onPointerLeave={disarmMarquee}
                       >
@@ -512,6 +513,7 @@ function SidebarSessionRowImpl({
                           'mt-0.5 block truncate text-[0.625rem] text-(--ui-text-tertiary)',
                           SIDEBAR_TRUNCATED_LEADING
                         )}
+                        dir={voteDirection(details.metadata)}
                       >
                         {details.metadata}
                       </span>
@@ -522,6 +524,7 @@ function SidebarSessionRowImpl({
                           'mt-1 block truncate text-[0.625rem] text-(--ui-text-quaternary)',
                           SIDEBAR_TRUNCATED_LEADING
                         )}
+                        dir={voteDirection(details.preview)}
                       >
                         {details.preview}
                       </span>
@@ -545,6 +548,7 @@ function SidebarSessionRowImpl({
                       'min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-tertiary)',
                       SIDEBAR_TRUNCATED_LEADING
                     )}
+                    dir={voteDirection(context ?? '')}
                   >
                     {context}
                   </span>
@@ -554,12 +558,13 @@ function SidebarSessionRowImpl({
                 {/* Title + preview: ONE grouped cell with its own tight
                     internal gap — it does not inherit the card's rhythm. */}
                 <div className="flex min-w-0 flex-col gap-[0.15rem]">
-                  <OverflowTip label={title} placement="row">
+                  <OverflowTip label={title}>
                     <SidebarRowLabel
                       className={cn(
                         'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
                         SIDEBAR_TRUNCATED_LEADING
                       )}
+                      dir={voteDirection(title)}
                       onPointerEnter={armMarquee}
                       onPointerLeave={disarmMarquee}
                     >
@@ -572,6 +577,7 @@ function SidebarSessionRowImpl({
                         'min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)',
                         SIDEBAR_TRUNCATED_LEADING
                       )}
+                      dir={voteDirection(session.preview ?? '')}
                     >
                       {session.preview}
                     </span>

@@ -9,6 +9,7 @@ import {
 } from 'react'
 
 import { clearTableWidths, markdownTableKey, readTableWidths, writeTableWidths } from '@/lib/markdown-table-widths'
+import { voteDirectionFromNodes } from '@/lib/bidi'
 import { cn } from '@/lib/utils'
 
 /**
@@ -161,6 +162,13 @@ export function ResizableMarkdownTable({ children, className, ...props }: Compon
           widths && 'table-fixed [&_td]:wrap-anywhere',
           className
         )}
+        // Box direction follows content by majority vote (lib/bidi): a Persian
+        // table's first column docks right, an English one left — even when
+        // the first header cell starts with a minority-script word. Cell
+        // *text* direction stays per-cell via voted dirs below. Drag math
+        // already reads computed direction (rtl branch in onPointerDown),
+        // so resizing keeps working.
+        dir={voteDirectionFromNodes(children)}
         onDoubleClick={onDoubleClick}
         onPointerDown={onPointerDown}
         ref={tableRef}
@@ -183,12 +191,13 @@ export function ResizableMarkdownTh({ children, className, ...props }: Component
   return (
     <th
       className={cn(
-        'relative px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+        'relative px-2.5 py-1.5 text-start align-middle text-[0.75rem] font-medium text-muted-foreground',
         // The trailing column has no seam: its right edge is the table's edge,
         // and there is nothing on the far side to trade width with.
         '[&:last-child_[data-md-col-handle]]:hidden',
         className
       )}
+      dir={voteDirectionFromNodes(children)}
       {...props}
     >
       {/* Truncation lives on an inner box, not the cell: the grab band straddles

@@ -1,11 +1,12 @@
-// Lists and blockquotes have chrome beside the text (markers, the quote
-// border) whose side is driven by the box's CSS direction, which the
-// unicode-bidi:plaintext rules never touch. These tests pin the split of
-// responsibilities: ul/ol/blockquote carry dir="auto" so the browser
-// resolves their box direction from content, inline code carries dir="ltr"
-// so it neither votes in that resolution nor reorders, and plain prose
-// blocks stay attribute-free (the plaintext CSS owns them). jsdom does not
-// resolve dir="auto", so the contract is asserted at the attribute level.
+// Direction contract (lib/bidi): every content block carries an explicit dir
+// from a whole-string majority vote, so a Persian block that OPENS with an
+// English word still resolves RTL (first-strong resolution flipped such lines
+// LTR and made them unreadable). ul/ol/blockquote/table vote over their whole
+// subtree (markers, quote border, and column order follow the box), p/h/li
+// and td/th vote per block (the CSS isolate override lets a voted dir beat
+// the plaintext fallback), and inline code + directive chips carry dir="ltr"
+// so they neither vote nor reorder. jsdom does not resolve direction, so the
+// contract is asserted at the attribute level.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
 import { Thread } from '.'
+import { UserMessageText } from './user-message-text'
 
 const createdAt = new Date('2026-06-01T00:00:00.000Z')
 stubThreadEnvironment()
@@ -62,41 +64,127 @@ function Harness({ text }: { text: string }) {
 }
 
 describe('block-level direction chrome', () => {
-  it('lists carry dir="auto" so markers follow the resolved direction', async () => {
+  it('lists carry the voted direction so markers follow the content', async () => {
     render(<Harness text={'מקומות:\n\n1. חוף גורדון\n2. שוק הכרמל\n\n- פריט\n- item'} />)
 
     const item = await screen.findByText(/חוף גורדון/)
 
-    expect(item.closest('ol')?.getAttribute('dir')).toBe('auto')
+    expect(item.closest('ol')?.getAttribute('dir')).toBe('rtl')
 
     const bullet = await screen.findByText(/פריט/)
 
-    expect(bullet.closest('ul')?.getAttribute('dir')).toBe('auto')
+    expect(bullet.closest('ul')?.getAttribute('dir')).toBe('rtl')
   })
 
-  it('blockquotes carry dir="auto" so the border follows the resolved direction', async () => {
+  it('blockquotes carry the voted direction so the border follows the content', async () => {
     render(<Harness text={'> ציטוט קצר בעברית'} />)
 
     const quote = await screen.findByText(/ציטוט קצר/)
 
-    expect(quote.closest('blockquote')?.getAttribute('dir')).toBe('auto')
+    expect(quote.closest('blockquote')?.getAttribute('dir')).toBe('rtl')
   })
 
-  it('inline code carries dir="ltr" so it does not vote in dir="auto" resolution', async () => {
+  it('inline code carries dir="ltr" so it does not vote in the resolution', async () => {
     render(<Harness text={'1. `npm install` מתקין תלויות'} />)
 
     const code = await screen.findByText('npm install')
 
     expect(code.tagName).toBe('CODE')
     expect(code.getAttribute('dir')).toBe('ltr')
-    expect(code.closest('ol')?.getAttribute('dir')).toBe('auto')
+    expect(code.closest('ol')?.getAttribute('dir')).toBe('rtl')
   })
 
-  it('plain prose blocks stay attribute-free (plaintext CSS owns them)', async () => {
+  it('plain prose blocks carry the voted direction (not first-strong)', async () => {
     render(<Harness text={'שלום לכולם'} />)
 
     const paragraph = await screen.findByText(/שלום לכולם/)
 
-    expect(paragraph.closest('p')?.hasAttribute('dir')).toBe(false)
+    expect(paragraph.closest('p')?.getAttribute('dir')).toBe('rtl')
+  })
+
+  it('tables carry the voted direction so column order follows the content', async () => {
+    render(<Harness text={'| نام | سن |\n| --- | --- |\n| سارا | ۱۹ |\n'} />)
+
+    const cell = await screen.findByText(/سارا/)
+
+    expect(cell.closest('table')?.getAttribute('dir')).toBe('rtl')
+    expect(cell.closest('td')?.getAttribute('dir')).toBe('rtl')
+  })
+
+  it('header cells align to start instead of pinning left', async () => {
+    render(<Harness text={'| نام | سن |\n| --- | --- |\n| سارا | ۱۹ |\n'} />)
+
+    await screen.findByText(/سارا/)
+
+    const th = document.querySelector('th')
+
+    expect(th?.className).toMatch(/text-start/)
+    expect(th?.className).not.toMatch(/text-left/)
+  })
+})
+
+describe('user-bubble direction chrome', () => {
+  it('inline code carries dir="ltr" so it does not vote or reorder', async () => {
+    render(<UserMessageText text={'`npm install` را اجرا کن'} />)
+
+    const code = await screen.findByText('npm install')
+
+    expect(code.tagName).toBe('CODE')
+    expect(code.getAttribute('dir')).toBe('ltr')
+  })
+
+  it('directive chips carry dir="ltr" so paths never vote', async () => {
+    render(<UserMessageText text={'see @file:`apps/desktop/a b.ts` please'} />)
+
+    const chip = document.querySelector('[data-slot="aui_directive-chip"]')
+
+    expect(chip?.getAttribute('dir')).toBe('ltr')
+  })
+})
+
+describe('majority vote beats first-strong', () => {
+  it('a Persian paragraph opening with English stays rtl (the reported bug)', async () => {
+    render(<Harness text={'Task Manager را باز کن و ادامه بده'} />)
+
+    const paragraph = await screen.findByText(/ادامه بده/)
+
+    expect(paragraph.closest('p')?.getAttribute('dir')).toBe('rtl')
+  })
+
+  it('an English paragraph opening with Persian stays ltr', async () => {
+    render(<Harness text={'را بزن End task to see all the details here'} />)
+
+    const paragraph = await screen.findByText(/details here/)
+
+    expect(paragraph.closest('p')?.getAttribute('dir')).toBe('ltr')
+  })
+
+  it('headings vote over their whole text', async () => {
+    render(<Harness text={'## Task Manager را باز کن و ادامه بده'} />)
+
+    const heading = await screen.findByText(/ادامه بده/)
+
+    expect(heading.closest('h2')?.getAttribute('dir')).toBe('rtl')
+  })
+
+  it('each list item votes for itself', async () => {
+    render(<Harness text={'- Task Manager را باز کن و ادامه بده\n- Just an English item here'} />)
+
+    const persianItem = await screen.findByText(/ادامه بده/)
+    const englishItem = await screen.findByText('Just an English item here')
+
+    expect(persianItem.closest('li')?.getAttribute('dir')).toBe('rtl')
+    expect(englishItem.closest('li')?.getAttribute('dir')).toBe('ltr')
+  })
+
+  it('each user-bubble line votes for itself', async () => {
+    render(<UserMessageText text={'See the details here\nTask Manager را باز کن و ادامه بده'} />)
+
+    await screen.findByText(/ادامه بده/)
+
+    const container = document.querySelector('[data-slot="aui_user-inline-text"]')
+    const dirs = Array.from(container?.children ?? []).map(el => el.getAttribute('dir'))
+
+    expect(dirs).toEqual(['ltr', 'rtl'])
   })
 })

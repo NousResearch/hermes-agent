@@ -3,6 +3,7 @@ import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { referenceRe } from '@/components/assistant-ui/reference-kinds'
+import { voteDirection } from '@/lib/bidi'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -148,28 +149,80 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
 
 const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
   const nodes = useMemo(() => splitInlineCode(text), [text])
+  const lines = useMemo(() => splitRenderLines(nodes), [nodes])
 
   return (
-    // styles.css bidi hook (#44150); whitespace-pre-line makes each line its own
-    // UAX#9 paragraph so it resolves direction independently.
-    <span className="wrap-anywhere block whitespace-pre-line" data-slot="aui_user-inline-text">
-      {nodes.map((node, nodeIndex) =>
-        node.kind === 'inline-code' ? (
-          <code
-            className="mx-px rounded bg-[color-mix(in_srgb,currentColor_8%,transparent)] px-1 py-px font-mono text-[0.92em]"
-            data-slot="aui_user-inline-code"
-            key={`code-${nodeIndex}`}
-          >
-            {node.code}
-          </code>
-        ) : (
-          // Pass plain-text bits through DirectiveContent so @file:/@url: chips
-          // still render. DirectiveContent already preserves whitespace.
-          <Fragment key={`text-${nodeIndex}`}>
-            <DirectiveContent text={node.text} />
-          </Fragment>
-        )
-      )}
+    // Per-line voted direction (lib/bidi): each line resolves Persian vs
+    // English by whole-line majority, so a Persian line opening with an
+    // English term stays RTL instead of flipping the line LTR. min-h keeps
+    // blank lines tall without NBSP polluting copy-paste.
+    <span className="wrap-anywhere block" data-slot="aui_user-inline-text">
+      {lines.map((line, lineIndex) => (
+        <span className="block min-h-[1.3em]" dir={voteDirection(line.voteText)} key={`line-${lineIndex}`}>
+          {line.nodes.map((node, nodeIndex) =>
+            node.kind === 'inline-code' ? (
+              <code
+                className="mx-px rounded bg-[color-mix(in_srgb,currentColor_8%,transparent)] px-1 py-px font-mono text-[0.92em]"
+                data-slot="aui_user-inline-code"
+                // Same contract as the assistant pipeline's inlineCode override:
+                // code never votes in an ancestor's dir resolution and its
+                // neutrals (dots/slashes) aren't reordered by an RTL run.
+                dir="ltr"
+                key={`code-${nodeIndex}`}
+              >
+                {node.code}
+              </code>
+            ) : (
+              // Pass plain-text bits through DirectiveContent so @file:/@url: chips
+              // still render. DirectiveContent already preserves whitespace.
+              <Fragment key={`text-${nodeIndex}`}>
+                <DirectiveContent text={node.text} />
+              </Fragment>
+            )
+          )}
+        </span>
+      ))}
     </span>
   )
+}
+
+// A rendered line: its inline nodes plus the voting text (plain-text parts
+// only — code spans carry their own dir and never vote, and directive source
+// text is stripped so a long LTR path can't flip a Persian line).
+interface RenderLine {
+  nodes: InlineNode[]
+  voteText: string
+}
+
+function splitRenderLines(nodes: InlineNode[]): RenderLine[] {
+  const lines: RenderLine[] = [{ nodes: [], voteText: '' }]
+
+  const pushText = (text: string) => {
+    const parts = text.split('\n')
+
+    parts.forEach((part, index) => {
+      if (index > 0) {
+        lines.push({ nodes: [], voteText: '' })
+      }
+
+      if (part) {
+        const current = lines[lines.length - 1]
+
+        current.nodes.push({ kind: 'inline-text', text: part })
+        current.voteText += ` ${part.replace(referenceRe(), ' ')}`
+      }
+    })
+  }
+
+  for (const node of nodes) {
+    // Inline code never contains a newline (INLINE_CODE_RE excludes it),
+    // so it always rides the current line.
+    if (node.kind === 'inline-code') {
+      lines[lines.length - 1].nodes.push(node)
+    } else {
+      pushText(node.text)
+    }
+  }
+
+  return lines
 }

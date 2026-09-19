@@ -79,12 +79,13 @@ import {
   PROFILES_KEY
 } from './api'
 import { BoardSwitcher } from './board-switcher'
-import { cardFace } from './card-face'
+import { cardFace, isFleetBoard } from './card-face'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
+  $boardRequest,
   $newTaskLane,
   ago,
   type ArcState,
@@ -137,37 +138,6 @@ function removeCard(board: KanbanBoard, id: string): KanbanBoard {
 
 /** The governed way OFF a board. Never a drop target, never a delete. */
 const ARCHIVED = 'archived'
-
-// ── fleet-scoped entry ───────────────────────────────────────────────────────
-
-/** Slug of the board the fleet sync adapter mirrors (`fleet_kanban_sqlite.FLEET_BOARD`). */
-export const FLEET_BOARD = 'fleet'
-
-/** Route that enters the board page scoped to one board. */
-export const boardRoute = (slug: string) => `/kanban?board=${encodeURIComponent(slug)}`
-
-/** The `board` query of a hash route (`#/kanban?board=fleet`); '' when absent. */
-function readRequestedBoard(hash = window.location.hash): string {
-  const query = hash.indexOf('?')
-
-  return query === -1 ? '' : (new URLSearchParams(hash.slice(query + 1)).get('board') ?? '').trim()
-}
-
-/** Live `board` query of the current route. Plugins can't reach the app
- *  router, and the hash IS its location — so read it, and follow it. */
-function useRequestedBoard(): string {
-  const [requested, setRequested] = useState(readRequestedBoard)
-
-  useEffect(() => {
-    const onChange = () => setRequested(readRequestedBoard())
-
-    window.addEventListener('hashchange', onChange)
-
-    return () => window.removeEventListener('hashchange', onChange)
-  }, [])
-
-  return requested
-}
 
 // ── card ─────────────────────────────────────────────────────────────────────
 
@@ -282,7 +252,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
  *  lives on (`tenant` — the sync adapter's current_node). The lane header says
  *  the status too, but a card is read on its own as well: in a per-profile
  *  lane, a search hit, a screenshot pasted into a thread. */
-function CardFacts({ task }: { task: KanbanTask }) {
+function CardFacts({ fleet, task }: { fleet: boolean; task: KanbanTask }) {
   const k = useKanban()
   const meta = columnMeta(task.status)
 
@@ -295,7 +265,7 @@ function CardFacts({ task }: { task: KanbanTask }) {
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
         {columnLabel(k, task.status)}
       </span>
-      {task.tenant && (
+      {fleet && task.tenant && (
         <Tip label={k.node}>
           <span className="inline-flex min-w-0 cursor-help items-center gap-1">
             <Codicon name="vm" size="0.7rem" />
@@ -309,6 +279,7 @@ function CardFacts({ task }: { task: KanbanTask }) {
 
 function Card({
   columns,
+  fleet,
   onDelete,
   onMove,
   onOpen,
@@ -317,6 +288,8 @@ function Card({
   task
 }: {
   columns: string[]
+  /** Verified fleet context — read through the sync decoration, show the node. */
+  fleet: boolean
   onDelete: (id: string) => void
   onMove: (id: string, status: string) => void
   onOpen: (id: string) => void
@@ -327,10 +300,11 @@ function Card({
   const k = useKanban()
   const [dragging, setDragging] = useState(false)
   const meta = columnMeta(task.status)
-  // Read THROUGH the fleet sync adapter's title/body decoration (card-face.ts):
-  // the face carries the readable card, the drawer keeps the bookkeeping.
-  const face = cardFace(task)
-  const summary = task.latest_summary || face.body
+  // On the fleet board, read THROUGH the sync adapter's title/body decoration
+  // (card-face.ts): the face carries the readable card, the drawer keeps the
+  // bookkeeping. Elsewhere the task is shown literally.
+  const face = cardFace(task, fleet)
+  const summary = face.summary
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
 
@@ -373,7 +347,7 @@ function Card({
           {summary && (
             <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
           )}
-          <CardFacts task={task} />
+          <CardFacts fleet={fleet} task={task} />
           <CardFooter arc={arc} task={task} />
         </div>
       </ContextMenuTrigger>
@@ -420,6 +394,7 @@ function Column({
   collapsed,
   column,
   columns,
+  fleet,
   onAdd,
   onDelete,
   onDropTask,
@@ -432,6 +407,7 @@ function Column({
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  fleet: boolean
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -556,6 +532,7 @@ function Column({
                 {tasks.map(task => (
                   <Card
                     columns={columns}
+                    fleet={fleet}
                     key={task.id}
                     onDelete={onDelete}
                     onMove={onMove}
@@ -570,6 +547,7 @@ function Column({
           : column.tasks.map(task => (
               <Card
                 columns={columns}
+                fleet={fleet}
                 key={task.id}
                 onDelete={onDelete}
                 onMove={onMove}
@@ -1168,38 +1146,67 @@ export function KanbanBoardPage() {
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
 
-  // A scoped entry — `/kanban?board=fleet`, the palette's "Open Fleet board" —
-  // names the board the operator is meant to land on. Honor it once the board
-  // list confirms the slug exists on this backend; an unknown slug leaves the
-  // operator's own selection alone, so every other board keeps working. Mirrors
-  // the switcher's convention ('' = the server's current board). Applied once
-  // per request, so a later manual switch isn't undone by a list refresh.
-  const requestedBoard = useRequestedBoard()
-  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
-  const requestedKnown = Boolean(requestedBoard && boards?.boards.some(meta => meta.slug === requestedBoard))
-  const serverCurrent = boards?.current ?? ''
-  const [appliedRequest, setAppliedRequest] = useState('')
+  // A scoped entry — the palette's "Open Fleet board" — parks a one-shot
+  // request in $boardRequest and navigates here. Until the board list has
+  // confirmed the slug, the page shows NOTHING actionable — not the previously
+  // selected board, whose cards would take the drags, drops and edits meant
+  // for the requested one — and issues no board fetch. Known slug: selected
+  // (the switcher's '' = server-current convention), request consumed. Unknown
+  // slug: the operator's own selection stands, with a toast. Board list
+  // unreachable: the selection stands, silently — the page's own error state
+  // says what is wrong. Consumed once, so a later manual switch is never
+  // undone; a fresh request per command, so re-running it after that switch
+  // enters again.
+  const request = useValue($boardRequest)
+
+  const { data: boards, isError: boardsUnavailable } = useQuery({
+    queryKey: BOARDS_KEY,
+    queryFn: fetchBoards,
+    staleTime: 30_000
+  })
+
+  const resolving = request !== null
 
   useEffect(() => {
-    if (!requestedKnown || appliedRequest === requestedBoard) {
+    if (!request || (!boards && !boardsUnavailable)) {
       return
     }
 
-    setAppliedRequest(requestedBoard)
-    const next = requestedBoard === serverCurrent ? '' : requestedBoard
+    if (boards) {
+      if (boards.boards.some(meta => meta.slug === request.slug)) {
+        const next = request.slug === boards.current ? '' : request.slug
 
-    if ($boardSlug.get() !== next) {
-      $boardSlug.set(next)
+        if ($boardSlug.get() !== next) {
+          $boardSlug.set(next)
+        }
+      } else {
+        host.notify({ kind: 'warning', message: k.boardMissing(request.slug) })
+      }
     }
-  }, [appliedRequest, requestedBoard, requestedKnown, serverCurrent])
+
+    $boardRequest.set(null)
+  }, [request, boards, boardsUnavailable, k])
+
+  // Verified fleet context: the selected slug, or — with nothing selected —
+  // the server's current board as the board list reports it. Until that list
+  // has answered (or failed) for an empty selection the board is not painted:
+  // a fleet card shown literally for a beat and then re-read is a flicker that
+  // reads as a bug. An explicit selection needs no wait.
+  const contextPending = !slug && !boards && !boardsUnavailable
+  const fleet = isFleetBoard(slug || boards?.current)
 
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
-  const { data: board, error } = useQuery({
-    queryFn: () => fetchBoard(archived),
+  // The fetch is bound to the slug this render keyed it by — never to whatever
+  // the selection has become by the time it fires.
+  const { data: fetched, error } = useQuery({
+    enabled: !resolving,
+    queryFn: () => fetchBoard(archived, slug),
     queryKey: boardKey(slug, archived),
     refetchInterval: 60_000
   })
+
+  const board = resolving || contextPending ? undefined : fetched
 
   const [openId, setOpenId] = useState<null | string>(null)
   const [addStatus, setAddStatus] = useState<null | string>(null)
@@ -1356,7 +1363,7 @@ export function KanbanBoardPage() {
     moveMut.mutate({ id, status })
   }
 
-  const errorMessage = error ? errText(error) : null
+  const errorMessage = error && !resolving && !contextPending ? errText(error) : null
 
   // Grab-to-scrub the lane strip (shared primitive, same as the dashboard's pan).
   const lanesRef = useRef<HTMLDivElement>(null)
@@ -1464,7 +1471,7 @@ export function KanbanBoardPage() {
               <Codicon name="organization" size="0.85rem" />
             </Button>
           </Tip>
-          <Button onClick={() => setAddStatus('triage')} size="sm">
+          <Button disabled={resolving} onClick={() => setAddStatus('triage')} size="sm">
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
@@ -1508,6 +1515,7 @@ export function KanbanBoardPage() {
                 collapsed={laneOverrides[col.name] ?? auto}
                 column={col}
                 columns={columnNames}
+                fleet={fleet}
                 key={col.name}
                 onAdd={setAddStatus}
                 onDelete={id => deleteMut.mutate(id)}
@@ -1523,7 +1531,7 @@ export function KanbanBoardPage() {
         </div>
       )}
 
-      {selected.size > 0 && (
+      {selected.size > 0 && !resolving && (
         <SelectionBar
           columns={columnNames}
           onClear={() => setSelected(new Set())}
@@ -1532,8 +1540,14 @@ export function KanbanBoardPage() {
         />
       )}
 
-      <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
-      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+      <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={resolving ? null : addStatus} />
+      <TaskDrawer
+        columns={columnNames}
+        fleet={fleet}
+        id={resolving ? null : openId}
+        onClose={() => setOpenId(null)}
+        onOpen={setOpenId}
+      />
     </div>
   )
 }

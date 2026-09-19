@@ -46,7 +46,7 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
-import { cardFace } from './card-face'
+import { cardFace, workSummary } from './card-face'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -407,10 +407,6 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
   )
 }
 
-// `latest_summary` is just the newest non-null run summary. A reclaim writes an
-// administrative note into that slot; hide those (Runs still shows them).
-const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
-
 function AttachmentsSection({
   attachments,
   onUpload,
@@ -541,11 +537,14 @@ function EstimateSection({ id }: { id: string }) {
 
 export function TaskDrawer({
   columns,
+  fleet,
   id,
   onClose,
   onOpen
 }: {
   columns: string[]
+  /** Verified fleet context — read through the sync decoration (card-face.ts). */
+  fleet: boolean
   id: null | string
   onClose: () => void
   onOpen: (id: string) => void
@@ -557,20 +556,21 @@ export function TaskDrawer({
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
     enabled: !!id,
-    queryFn: () => fetchTask(id!),
+    queryFn: () => fetchTask(id!, slug),
     queryKey: taskKey(slug, id ?? ''),
     refetchInterval: 30_000
   })
 
   const task = detail?.task
-  // The readable card behind the fleet sync adapter's decoration (card-face.ts).
-  const face = task ? cardFace(task) : null
+  // The readable card behind the fleet sync adapter's decoration (card-face.ts);
+  // literal off the fleet board.
+  const face = task ? cardFace(task, fleet) : null
   const running = task?.status === 'running'
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
     enabled: !!id,
-    queryFn: () => fetchLog(id!),
+    queryFn: () => fetchLog(id!, slug),
     queryKey: logKey(slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
@@ -832,7 +832,7 @@ export function TaskDrawer({
               </Section>
             )}
 
-            {task.latest_summary && !isAdminSummary(task.latest_summary) && (
+            {workSummary(task.latest_summary) && (
               <Section label={k.latestSummary}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
               </Section>

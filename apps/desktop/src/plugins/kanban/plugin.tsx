@@ -31,9 +31,10 @@ import {
 } from '@hermes/plugin-sdk'
 
 import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
-import { boardRoute, FLEET_BOARD, KanbanBoardPage } from './board'
+import { KanbanBoardPage } from './board'
+import { FLEET_BOARD } from './card-face'
 import { KANBAN_LOCALES } from './i18n'
-import { $newTaskLane, useKanban } from './ui'
+import { $newTaskLane, enterBoard, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
 // clicks through to the board. Shares the board query (one cache, one poll with
@@ -44,7 +45,7 @@ function KanbanCount() {
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
-    queryFn: () => fetchBoard(false),
+    queryFn: () => fetchBoard(false, slug),
     queryKey: boardKey(slug, false),
     refetchInterval: 60_000
   })
@@ -133,15 +134,16 @@ const plugin: HermesPlugin = {
         } satisfies PaletteContribution
       },
       {
-        // The fleet-scoped entry: lands on the fleet board (when this backend
-        // has one) without touching the operator's selection otherwise.
+        // The fleet-scoped entry: a fresh one-shot request per run (see
+        // enterBoard) — lands on the fleet board when this backend has one,
+        // leaves the operator's selection alone otherwise.
         id: 'open-fleet',
         area: PALETTE_AREA,
         data: {
           id: 'kanban.openFleet',
           label: ctx.i18n.t('openFleetBoard'),
           keywords: ['kanban', 'board', 'fleet', 'stallion'],
-          run: () => host.navigate(boardRoute(FLEET_BOARD))
+          run: () => enterBoard(FLEET_BOARD)
         } satisfies PaletteContribution
       },
       {

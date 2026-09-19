@@ -10,6 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   FadeScroll,
+  host,
   profileColor,
   profileColorSoft,
   relativeTime,
@@ -31,6 +32,28 @@ export { columnHelp, columnLabel, type KanbanText, lockedReason, useKanban } fro
  *  page consumes it on arrival and clears it. Ephemeral by design — never
  *  persisted, so a remount can't reopen a dialog the user already dismissed. */
 export const $newTaskLane = atom<null | string>(null)
+
+/** One-shot "land on this board" request — the scoped entry. Same shape as
+ *  `$newTaskLane`: a command fires from ANYWHERE, drops the request here and
+ *  navigates; the page resolves it against the board list on arrival, applies
+ *  it and clears it. A fresh object per command, so re-running the command
+ *  after a manual switch enters again; consumed once, so a manual switch
+ *  AFTER it stands. Ephemeral by design — never persisted. */
+export interface BoardRequest {
+  /** Monotonic per command — two requests for the same slug are two requests. */
+  seq: number
+  slug: string
+}
+
+export const $boardRequest = atom<BoardRequest | null>(null)
+
+let boardRequestSeq = 0
+
+/** Enter the board page scoped to `slug`, from anywhere. */
+export function enterBoard(slug: string): void {
+  $boardRequest.set({ seq: ++boardRequestSeq, slug })
+  host.navigate('/kanban')
+}
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {

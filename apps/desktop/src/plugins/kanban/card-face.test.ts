@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { cardFace, splitMetaBlock, splitSyncTitle } from './card-face'
+import { cardFace, splitMetaBlock, splitSyncTitle, workSummary } from './card-face'
 
 // The exact presentation the fleet sync adapter stamps onto a local task
 // (conductors/scripts/fleet_kanban_remote.py: SYNC_PREFIXES + render_meta_block).
@@ -60,12 +60,36 @@ describe('splitMetaBlock', () => {
 })
 
 describe('cardFace', () => {
-  it('reads title and body through both decorations at once', () => {
-    expect(cardFace({ body: `${BLOCK}\n\nReadable body`, title: '[Sync conflict] Readable title' })).toEqual({
+  const task = { body: `${BLOCK}\n\nReadable body`, title: '[Sync conflict] Readable title' }
+
+  it('reads title and body through both decorations at once on the fleet board', () => {
+    expect(cardFace(task, true)).toEqual({
       body: 'Readable body',
       meta: [META_LINE],
+      summary: 'Readable body',
       syncState: 'conflict',
       title: 'Readable title'
     })
+  })
+
+  it('shows the same task literally off the fleet board', () => {
+    expect(cardFace(task, false)).toEqual({
+      body: task.body,
+      meta: [],
+      summary: task.body,
+      syncState: null,
+      title: task.title
+    })
+  })
+
+  it('prefers a real work summary over the body, never the administrative note', () => {
+    expect(cardFace({ ...task, latest_summary: 'Rotated the canary; PR #12 opened.' }, true).summary).toBe(
+      'Rotated the canary; PR #12 opened.'
+    )
+    expect(cardFace({ ...task, latest_summary: 'status changed to todo (dashboard/direct)' }, true).summary).toBe(
+      'Readable body'
+    )
+    expect(workSummary('status changed to ready (dashboard/direct)')).toBeNull()
+    expect(workSummary(null)).toBeNull()
   })
 })

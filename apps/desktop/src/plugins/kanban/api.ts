@@ -143,10 +143,12 @@ function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   return rest ? rest<T>(path, opts) : Promise.reject(new Error('kanban api not ready'))
 }
 
-/** Append the selected board (and other params) to a path. */
-function withBoard(path: string, params: Record<string, string> = {}): string {
+/** Append the board (and other params) to a path. `slug` defaults to the
+ *  selection at call time; a read keyed by a slug at render time passes it
+ *  explicitly, so a selection change in between can never mislabel the
+ *  response under the wrong board's cache key. */
+function withBoard(path: string, params: Record<string, string> = {}, slug = $boardSlug.get()): string {
   const search = new URLSearchParams(params)
-  const slug = $boardSlug.get()
 
   if (slug) {
     search.set('board', slug)
@@ -169,13 +171,14 @@ export const ORCHESTRATION_KEY = ['kanban', 'orchestration'] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
-export const fetchBoard = (archived: boolean) =>
-  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+export const fetchBoard = (archived: boolean, slug?: string) =>
+  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}, slug))
 
-export const fetchTask = (id: string) => call<KanbanTaskDetail>(withBoard(`/tasks/${id}`))
+export const fetchTask = (id: string, slug?: string) => call<KanbanTaskDetail>(withBoard(`/tasks/${id}`, {}, slug))
 
 /** Worker stdout/stderr tail (last 16 KiB — plenty for the drawer). */
-export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))
+export const fetchLog = (id: string, slug?: string) =>
+  call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }, slug))
 
 export const fetchBoards = () => call<BoardsResponse>('/boards')
 

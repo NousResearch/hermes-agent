@@ -2,6 +2,7 @@ import { host } from '@hermes/plugin-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import plugin from './plugin'
+import { $boardRequest } from './ui'
 
 vi.mock('@/hermes', () => ({ getGlobalModelOptions: vi.fn(), setApiRequestProfile: vi.fn() }))
 
@@ -27,10 +28,13 @@ function fakeContext() {
   return { contributions, ctx: ctx as unknown as Ctx, dispose: () => disposers.forEach(fn => fn()) }
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  $boardRequest.set(null)
+})
 
 describe('fleet-scoped entry command', () => {
-  it('offers a palette row that enters the board page scoped to the fleet board', () => {
+  it('parks a fresh fleet-board request on every run and navigates to the board page', () => {
     const navigate = vi.spyOn(host, 'navigate').mockImplementation(() => undefined)
     const { contributions, ctx, dispose } = fakeContext()
 
@@ -39,8 +43,19 @@ describe('fleet-scoped entry command', () => {
     const row = contributions.find(c => c.id === 'open-fleet')?.data as { id: string; run: () => void } | undefined
 
     expect(row?.id).toBe('kanban.openFleet')
+
     row!.run()
-    expect(navigate).toHaveBeenCalledWith('/kanban?board=fleet')
+    const first = $boardRequest.get()
+
+    expect(first).toMatchObject({ slug: 'fleet' })
+    expect(navigate).toHaveBeenCalledWith('/kanban')
+
+    // Running it again is a NEW request — even with nothing else changed — so
+    // the page re-enters after a manual switch instead of ignoring the command.
+    row!.run()
+
+    expect($boardRequest.get()).toMatchObject({ slug: 'fleet' })
+    expect($boardRequest.get()).not.toBe(first)
 
     dispose()
   })

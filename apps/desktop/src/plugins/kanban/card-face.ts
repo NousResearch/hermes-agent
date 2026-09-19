@@ -1,7 +1,10 @@
 /**
- * Fleet card presentation. The fleet sync adapter (conductors' scripts/
+ * Card presentation — what the face (and the drawer's header and description)
+ * reads for a task.
+ *
+ * On the FLEET board, the sync adapter (conductors' scripts/
  * fleet_kanban_remote.py, `refresh_local_presentation`) projects its own
- * bookkeeping INTO a local task's title and body, so every Hermes surface sees
+ * bookkeeping INTO a task's local title and body, so every Hermes surface sees
  * it without a schema change:
  *
  *   title: `[Sync pending] Real title`               (also conflict / error)
@@ -10,14 +13,30 @@
  *          `<!-- /fleet-kanban:meta -->` ⏎⏎ `Real body`
  *
  * That is internal synchronization state, not what an operator scans a board
- * for. The card face reads THROUGH the decoration (readable title, readable
- * body); the drawer keeps the lifted lines as its detail surface. Recognition
- * is exact-match on the adapter's own markers, mirroring its strip rules: a
- * title that merely mentions "[Sync pending]" mid-sentence, or a body whose
- * marker is never closed, is left byte-for-byte alone.
+ * for, so THERE the face reads through the decoration and the drawer keeps the
+ * lifted lines. The adapter only ever installs on the board whose slug is
+ * `fleet` (`fleet_kanban_sqlite.FLEET_BOARD`), and that slug is the only
+ * verified context: every other board is shown literally — a title that
+ * happens to start with "[Sync pending]" there is just a title, and its
+ * `tenant` is a tenant, not a fleet node. Recognition on the fleet board is
+ * exact-match on the adapter's own markers, mirroring its strip rules: a title
+ * that merely mentions "[Sync pending]" mid-sentence, or a body whose marker is
+ * never closed, is left byte-for-byte alone.
+ *
+ * Board-independent: `latest_summary` is only the newest run summary, and a
+ * manual status change (drawer, dashboard) writes the backend's administrative
+ * note into that slot. It says nothing about the work, so it never stands in
+ * for a summary.
  */
 
 import type { KanbanTask } from './types'
+
+/** Slug of the one board the fleet sync adapter mirrors. */
+export const FLEET_BOARD = 'fleet'
+
+/** Whether `slug` names the fleet board — the verified context for reading
+ *  through the adapter's decoration. */
+export const isFleetBoard = (slug: null | string | undefined): boolean => slug === FLEET_BOARD
 
 export type SyncState = 'conflict' | 'error' | 'pending'
 
@@ -35,10 +54,23 @@ export interface CardFace {
   body: null | string
   /** The meta block's content lines, for the drawer's detail surface. */
   meta: string[]
+  /** What the face shows under the title: the latest real work summary, else the body. */
+  summary: null | string
   /** Outbox state the title prefix encoded, when decorated. */
   syncState: null | SyncState
   /** Title with the sync prefix lifted off. */
   title: string
+}
+
+/** The backend's note for a manual status change (`plugin_api.py`,
+ *  `status changed to <status> (dashboard/direct)`). */
+export const isAdminSummary = (summary: string): boolean =>
+  /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
+
+/** `latest_summary` when it is a real work summary; null for the
+ *  administrative note or nothing. */
+export function workSummary(summary: null | string | undefined): null | string {
+  return summary && !isAdminSummary(summary) ? summary : null
 }
 
 /** Split a sync prefix off the title — only at the very start, only exact. */
@@ -87,10 +119,12 @@ export function splitMetaBlock(body: null | string | undefined): { body: null | 
   return { body: rest || null, meta }
 }
 
-/** What the card face (and the drawer's header/description) should read. */
-export function cardFace(task: Pick<KanbanTask, 'body' | 'title'>): CardFace {
-  const { syncState, title } = splitSyncTitle(task.title)
-  const { body, meta } = splitMetaBlock(task.body)
+/** What the card face (and the drawer's header/description) should read.
+ *  `fleet` is the verified context (see `isFleetBoard`); off the fleet board
+ *  the title and body are literal. */
+export function cardFace(task: Pick<KanbanTask, 'body' | 'latest_summary' | 'title'>, fleet: boolean): CardFace {
+  const { syncState, title } = fleet ? splitSyncTitle(task.title) : { syncState: null, title: task.title }
+  const { body, meta } = fleet ? splitMetaBlock(task.body) : { body: task.body || null, meta: [] }
 
-  return { body, meta, syncState, title }
+  return { body, meta, summary: workSummary(task.latest_summary) ?? body, syncState, title }
 }

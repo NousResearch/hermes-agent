@@ -75,10 +75,10 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function openDrawer() {
+function openDrawer(fleet = false) {
   return render(
     <QueryClientProvider client={client}>
-      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      <TaskDrawer columns={['todo', 'ready', 'done']} fleet={fleet} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
     </QueryClientProvider>
   )
 }
@@ -144,7 +144,7 @@ describe('fleet detail surface', () => {
         title: '[Sync pending] Example task'
       }
     }
-    openDrawer()
+    openDrawer(true)
 
     expect(await screen.findByRole('heading', { name: 'Example task' })).toBeTruthy()
     expect(screen.getByText('Keep this description readable.')).toBeTruthy()
@@ -152,5 +152,24 @@ describe('fleet detail surface', () => {
     expect(screen.getByText(en.fleetSync)).toBeTruthy()
     expect(screen.getByText(META_LINE)).toBeTruthy()
     expect(screen.queryByText(/fleet-kanban:meta/)).toBeNull()
+  })
+
+  it('shows the same task literally on an ordinary board', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: {
+        ...legacyDetail.task,
+        body: `<!-- fleet-kanban:meta -->\n${META_LINE}\n<!-- /fleet-kanban:meta -->\n\nKeep this description readable.`,
+        tenant: 'turnerbook',
+        title: '[Sync pending] Example task'
+      }
+    }
+    openDrawer(false)
+
+    expect(await screen.findByRole('heading', { name: '[Sync pending] Example task' })).toBeTruthy()
+    expect(screen.getByText(/fleet-kanban:meta/)).toBeTruthy()
+    expect(screen.queryByText(en.sync.pending)).toBeNull()
+    expect(screen.queryByText(en.fleetSync)).toBeNull()
   })
 })

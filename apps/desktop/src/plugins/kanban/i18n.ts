@@ -13,6 +13,8 @@ type KanbanMessages = {
   openBoard: string
   /** Palette row that enters the board page scoped to the fleet board. */
   openFleetBoard: string
+  /** Toast when a scoped entry names a board this backend doesn't have. */
+  boardMissing: (slug: string) => string
   /** Command label — shows in the ⌘K palette AND as the keybind panel row,
    *  so it carries the "Kanban: " prefix the palette convention wants. */
   newTaskCommand: string
@@ -227,6 +229,7 @@ export const en: KanbanMessages = {
   nav: 'Kanban',
   openBoard: 'Kanban: Open board',
   openFleetBoard: 'Kanban: Open Fleet board',
+  boardMissing: slug => `Board “${slug}” isn’t on this backend.`,
   newTaskCommand: 'Kanban: New task',
   countTip: (running, ready) => `Kanban — ${running} running, ${ready} ready`,
   col: {
@@ -445,6 +448,7 @@ const ja: KanbanMessages = {
   nav: 'カンバン',
   openBoard: 'カンバン: ボードを開く',
   openFleetBoard: 'カンバン: Fleet ボードを開く',
+  boardMissing: slug => `ボード「${slug}」はこのバックエンドにありません。`,
   newTaskCommand: 'カンバン: 新しいタスク',
   countTip: (running, ready) => `カンバン — 実行中 ${running}、待機 ${ready}`,
   col: {
@@ -662,6 +666,7 @@ const zh: KanbanMessages = {
   nav: '看板',
   openBoard: '看板：打开面板',
   openFleetBoard: '看板：打开 Fleet 面板',
+  boardMissing: slug => `此后端没有“${slug}”看板。`,
   newTaskCommand: '看板：新建任务',
   countTip: (running, ready) => `看板 — 运行中 ${running}、就绪 ${ready}`,
   col: {
@@ -876,6 +881,7 @@ const zhHant: KanbanMessages = {
   nav: '看板',
   openBoard: '看板：開啟面板',
   openFleetBoard: '看板：開啟 Fleet 面板',
+  boardMissing: slug => `此後端沒有「${slug}」看板。`,
   newTaskCommand: '看板：新增任務',
   countTip: (running, ready) => `看板 — 執行中 ${running}、就緒 ${ready}`,
   col: {

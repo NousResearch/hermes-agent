@@ -1,0 +1,30 @@
+{
+  "updated": "<YYYY-MM-DD>",
+  "hot": [
+    {
+      "rule": "terminal('date') before every response",
+      "reason": "Most frequent error — speaking without checking time",
+      "days_active": 1,
+      "last_correction": "<YYYY-MM-DD>"
+    },
+    {
+      "rule": "Update error DB after every fix",
+      "reason": "Fixes without rule updates leave no trace",
+      "days_active": 1,
+      "last_correction": "<YYYY-MM-DD>"
+    },
+    {
+      "rule": "Check gateway on session start",
+      "reason": "Gateway runs cron scheduler — offline = missed tasks",
+      "days_active": 1,
+      "last_correction": "<YYYY-MM-DD>"
+    }
+  ],
+  "warm": [],
+  "meta": {
+    "hot_promote_if": "New correction within last 3 days",
+    "warm_cooldown": "No recurrence for 7 days → warm → cold",
+    "retire_after_days": 30,
+    "retire_reentry": "Retired rule that recurs → direct to hot (penalty bounce)"
+  }
+}

@@ -567,6 +567,13 @@ Migration for the held catalog plugins:
   row's status dot (the durable id it needed from `_lineage_root_id` is the
   slot's `sessionId`).
 
+`COMPOSER_AREAS.modelPill` overrides the model pill's **label** — a provider
+(`{ label: (ctx: ComposerModelPillContext) => string | null }`) receives
+`{ model, reasoningEffort, compact }` and returns the text to show, or `null` to
+let the next provider (then the core label) win. The pill keeps its chrome, pin
+dot, and menu; only the label changes — the sanctioned replacement for the
+MutationObserver text-rewriting plugins do today.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

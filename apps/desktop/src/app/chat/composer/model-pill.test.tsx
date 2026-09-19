@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
+import { registry } from '@/contrib/registry'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
+import { COMPOSER_AREAS, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
 import { ModelPill } from './model-pill'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -162,5 +164,61 @@ describe('ModelPill per-surface model label', () => {
 
     expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
+  })
+})
+
+// The `composer.modelPill` slot: a provider may override the pill's LABEL
+// (compact reasoning label, custom naming) while the pill keeps its chrome,
+// pin dot, and menu. A declining provider leaves the core label untouched.
+describe('ModelPill label providers', () => {
+  const disposers: Array<() => void> = []
+
+  afterEach(() => {
+    disposers.splice(0).forEach(dispose => dispose())
+  })
+
+  const register = (label: ComposerModelPillProvider['label'], id = 'pill-label') =>
+    disposers.push(
+      registry.register({
+        area: COMPOSER_AREAS.modelPill,
+        data: { label } satisfies ComposerModelPillProvider,
+        id,
+        source: 'disk'
+      })
+    )
+
+  it('renders a provider-supplied label, and the core label once the provider declines', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+
+    register(({ model, reasoningEffort }) => `${model} · ${reasoningEffort || 'none'}`)
+
+    const { unmount } = render(
+      <ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
+    )
+
+    expect(screen.getByText('deepseek/deepseek-v4-flash · none')).toBeTruthy()
+    unmount()
+
+    // Declining provider: the override text is gone, the core label is back.
+    disposers.splice(0).forEach(dispose => dispose())
+    register(() => null)
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    expect(screen.queryByText(/· none/)).toBeNull()
+  })
+
+  it('treats a throwing provider as declining and lets the next provider win', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+
+    register(() => {
+      throw new Error('broken provider')
+    }, 'broken')
+    register(() => 'next wins', 'working')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    // The broken provider declined; the next one's label renders.
+    expect(screen.getByText('next wins')).toBeTruthy()
   })
 })

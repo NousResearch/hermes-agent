@@ -83,7 +83,7 @@ export function renderRosterDialogs({
         }}
         onSubmit={name => {
           if (sectionDialog?.mode === 'rename') {
-            renameBotSection(sectionDialog.id, name)
+            renameBotSection(sectionDialog.id, name, roster)
           } else {
             createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
           }

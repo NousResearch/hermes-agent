@@ -4,6 +4,8 @@ import io
 import logging
 import os
 import signal
+import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -28,6 +30,13 @@ from tools.environments.file_sync import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _dead_pid() -> int:
+    """PID of a child that has already been reaped."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+    proc.wait()
+    return proc.pid
 
 def _make_tar(files: dict[str, bytes], dest: Path):
     """Write a tar archive containing the given arcname->content pairs."""
@@ -137,9 +146,28 @@ class TestStaleSyncBackTempCleanup:
         mgr = _make_manager(tmp_path, bulk_download_fn=download)
         mgr.sync_back()
 
-        assert seen["tar"].name.startswith(_SYNC_BACK_TEMP_PREFIX)
+        assert seen["tar"].name.startswith(f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-")
         assert not leaked.exists()
         assert list(tmp_root.iterdir()) == []
+
+    def test_owner_liveness_decides_before_age(self, tmp_path):
+        """A hard-killed owner's fresh entry is reclaimed at once; a live owner's fresh entry and
+        a legacy (no-PID) fresh entry are kept; a live owner's entry past the cutoff still goes
+        (a recycled PID must not pin a leak forever)."""
+        dead_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{_dead_pid()}-a.tar"
+        live_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-b"
+        legacy_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}legacy.tar"
+        live_old = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-c.tar"
+        for path in (dead_fresh, legacy_fresh, live_old):
+            path.write_bytes(b"x")
+        live_fresh.mkdir()
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(live_old, (old, old))
+
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
+
+        assert not dead_fresh.exists() and not live_old.exists()
+        assert live_fresh.exists() and legacy_fresh.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +500,8 @@ class TestSyncBackSizeCap:
     """The size cap refuses to extract tars above the configured limit."""
 
     def test_sync_back_refuses_oversized_tar(self, tmp_path, caplog):
-        """A tar larger than _SYNC_BACK_MAX_BYTES should be skipped with a warning."""
-        # Build a download_fn that writes a small tar, but patch the cap
+        """A tar larger than terminal.sync_back_max_bytes should be skipped with a warning."""
+        # Build a download_fn that writes a small tar, but lower the configured cap
         # so the test doesn't need to produce a 2 GiB file.
         skill_host = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
@@ -487,7 +515,7 @@ class TestSyncBackSizeCap:
 
         # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
-            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
+            with patch("hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
                 mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Host file should be untouched because extraction was skipped
@@ -510,6 +538,31 @@ class TestSyncBackSizeCap:
         # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
+
+    def test_cap_override_config_key_raises_the_cap(self, tmp_path, monkeypatch, caplog):
+        """config.yaml ``terminal.sync_back_max_bytes`` overrides the 2 GiB default; a
+        non-integer value is ignored with a warning and the default applies. The env var
+        the first cut used is gone — non-secret settings live in config.yaml."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["terminal"]["sync_back_max_bytes"] == 2 * 1024 * 1024 * 1024
+
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+        files = {"root/.hermes/skill.md": b"remote_version"}
+        mgr = _make_manager(tmp_path, file_mapping=[(host_file, "/root/.hermes/skill.md")],
+                            bulk_download_fn=_make_download_fn(files))
+
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")  # the first cut's env var: must be ignored
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": 1}})
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"original"  # 1-byte cap: skipped
+
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": "lots"}})
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"remote_version"  # default cap applies
+        assert any("sync_back_max_bytes" in r.message for r in caplog.records)
 
 
 class TestSyncBackWindowsHost:

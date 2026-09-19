@@ -93,40 +93,96 @@ function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof Toolt
   )
 }
 
-function TooltipContent({
+interface TooltipContentProps extends React.ComponentProps<typeof TooltipPrimitive.Content> {
+  placement?: TooltipPlacement
+  /** Row descriptions may extend beyond a pane; local controls stay inside. */
+  boundary?: 'pane' | 'viewport'
+}
+
+/** `display: contents` (and detached) elements report an all-zero rect. */
+function hasLayout(element: Element | null): boolean {
+  const rect = element?.getBoundingClientRect()
+
+  return !!rect && (rect.width > 0 || rect.height > 0)
+}
+
+function TooltipContent(props: TooltipContentProps) {
+  return (
+    <TooltipPrimitive.Portal>
+      <PaneClippedContent {...props} />
+    </TooltipPrimitive.Portal>
+  )
+}
+
+// Rendered inside the Portal, which Radix mounts only while the tip is open —
+// so the pane is resolved at OPEN time, on every open. Resolving it once at
+// `Tip` mount clipped composer tips against the zero-rect floating host for
+// good: the trigger had no layout yet when the effect ran, the host was kept
+// "as before", and nothing ever re-resolved it (#114602, live pass).
+function PaneClippedContent({
+  align,
+  arrowPadding = 6,
+  children,
   className,
   sideOffset = 6,
   children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: TooltipContentProps) {
+  const preferred = TOOLTIP_PLACEMENTS[placement]
+  const anchor = React.useContext(TooltipAnchor)
+  const [pane, setPane] = React.useState<Element | null>(null)
+
+  React.useLayoutEffect(() => {
+    if (boundary !== 'pane') {
+      setPane(null)
+
+      return
+    }
+
+    // A boundary without geometry (a `display: contents` host, e.g. the
+    // floating-composer tree-group) zeroes every clipping rect, so `hide()`
+    // detaches a fully visible trigger and the tip mounts straight into
+    // `visibility: hidden`. Only a pane that has layout of its own may clip:
+    // skip layout-less hosts up to the enclosing pane, or the viewport when
+    // none has layout. A trigger without geometry cannot be judged (jsdom),
+    // so the nearest pane stands as before.
+    const trigger = anchor?.current ?? null
+    let candidate = trigger?.closest('[data-tree-group]') ?? null
+
+    if (hasLayout(trigger)) {
+      while (candidate && !hasLayout(candidate)) {
+        candidate = candidate.parentElement?.closest('[data-tree-group]') ?? null
+      }
+    }
+
+    setPane(candidate)
+  }, [anchor, boundary])
+
   return (
-    <TooltipPrimitive.Portal>
-      <TooltipPrimitive.Content
-        // Transparent, width-capped wrapper. The visible chip is the inner inline
-        // span so `box-decoration-break: clone` gives a marker-style background
-        // that hugs EACH wrapped line (bg only on the text, ragged right — no
-        // rectangular dead space). No fade transition — once the hover delay
-        // elapses the chip appears at once.
-        // pointer-events-none: the tip must never steal hover/clicks from the
-        // chrome underneath (titlebar tools, adjacent tabs, etc.).
-        className={cn('pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none', className)}
-        data-slot="tooltip-content"
-        sideOffset={sideOffset}
-        {...props}
-      >
-        {/* bg-foreground/text-background auto-inverts per theme. leading-normal
-            keeps lines readable; py-1 makes the cloned line-boxes overlap just
-            enough to read as one continuous fill (no gaps between lines). */}
-        {/* [&>*]:!inline: this decoration only paints inline FLOW. A block child
-            collapses it to zero and Radix parks an empty chip in the corner
-            (#62022); an atomic inline child (`inline-flex`) sits on the baseline
-            and hangs its extra lines below the background, dark-on-dark. Force
-            direct children inline; break lines with `<br />`. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline">
-          {children}
-        </span>
-      </TooltipPrimitive.Content>
-    </TooltipPrimitive.Portal>
+    <TooltipPrimitive.Content
+      align={align ?? preferred.align}
+      arrowPadding={arrowPadding}
+      className={cn(
+        'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none bg-foreground px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-background',
+        className
+      )}
+      collisionBoundary={collisionBoundary ?? pane ?? undefined}
+      collisionPadding={collisionPadding}
+      data-slot="tooltip-content"
+      hideWhenDetached={hideWhenDetached}
+      side={side ?? preferred.side}
+      sideOffset={sideOffset}
+      {...props}
+    >
+      <div className="tooltip-bubble-label" data-slot="tooltip-label">
+        {children}
+      </div>
+      <TooltipPrimitive.Arrow asChild height={5} width={10}>
+        <svg aria-hidden data-slot="tooltip-arrow" viewBox="0 0 10 5">
+          <path d="M0 0h10L5.7 4.3a1 1 0 0 1-1.4 0Z" />
+        </svg>
+      </TooltipPrimitive.Arrow>
+    </TooltipPrimitive.Content>
   )
 }
 

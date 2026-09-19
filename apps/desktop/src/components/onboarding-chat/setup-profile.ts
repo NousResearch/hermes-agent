@@ -20,7 +20,8 @@ import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
-import { PLAIN_SPEECH } from '@/store/onboarding-script'
+import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
+import { FIRST_USE_GUIDANCE, PLAIN_SPEECH } from '@/store/onboarding-script'
 import { getSessionOwnerHint } from '@/store/session'
 
 /** Profile name of the onboarding guide. Prefixed so it cannot collide with a profile the user named "setup". */
@@ -167,8 +168,10 @@ export function buildFirstTaskRunbook(
       ? 'Their next message is the go signal. Before any plan and before any other tool, connect their apps as the CONNECT FIRST section says; the work itself starts the moment the wait returns or they tell you to start.'
       : 'Their next message is the go signal: really begin the work — plan briefly, then build (scaffold, research, first artifact).',
     "As you start, tell them in one short sentence: you'll ask for permissions as you go, and they can say no to anything or redirect you.",
-    ...planRunbook(plan, pluginRoot, connectFirst),
-    ...(connectFirst ? connectFirstRunbook(tools) : []),
+    capabilities,
+    FIRST_USE_GUIDANCE,
+    ...planRunbook(plan, pluginRoot),
+    ...(plan === 'machine-setup' ? [] : CONNECT_FOR_TASK_RUNBOOK),
     'While the work runs, place ::onboarding{step="progress" title="what you\'re doing"} as its own paragraph at the start of each status turn — the card shows the build breathing live. Keep the titles short and present-tense ("Scaffolding the project", "Wiring the reminder"). Emit each exactly like that, alone on its own line.',
     'When the first pass of the build is DONE: end that turn with ::ask{question="Does this match what you wanted?" options="Looks right|Change something|Take it further"} alone as its own paragraph, emitted EXACTLY as written. Act on their pick immediately. One unreviewed first output is how a build reads as broken; the ask is how it reads as a collaboration.',
     PLAIN_SPEECH
@@ -203,6 +206,7 @@ function connectFirstRunbook(picks: string[]): string[] {
 const MACHINE_SETUP_RUNBOOK = [
   'THIS IS A MACHINE SETUP JOB: get this computer genuinely ready to use, end to end, with the terminal. It is the one first task that does not need an account anywhere — never send them to a sign-in to complete it.',
   'START BY LOOKING, NOT PLANNING. Before proposing anything, use the terminal to find out what is actually here: OS name and version, architecture, pending system updates, free disk, which package manager exists (Homebrew / winget / apt / dnf), and which everyday things are already installed (a browser, an editor, git, python, node, docker, and whatever tools they mentioned earlier). On an NVIDIA machine also check the GPU and driver (nvidia-smi) and whether a container runtime and CUDA toolchain are present. Report what you found in a few short lines — plainly, no tables.',
+  'MATCH THE PLAN TO THEIR USE. Email, calendars, documents and meetings do not require a developer stack. WSL runs Linux tools on Windows; CUDA lets compatible software compute on an NVIDIA GPU. Recommend either only for a verified prerequisite of their chosen task, explain that concrete benefit before asking, and omit it otherwise. Prefer native or already-working tools. Do not suggest WSL on Linux or macOS, or reinstall CUDA just because this is a Spark.',
   'THEN PROPOSE, THEN ASK. Turn the gaps into a short numbered plan, cheapest and most obviously useful first: system updates, a package manager if missing, their everyday tools, sane defaults, and only then anything exotic. End that turn with ::ask{question="Want me to run this?" options="Go ahead|Change the list|Just the essentials"} alone as its own paragraph, emitted EXACTLY as written.',
   'THEN WORK IT ONE STEP AT A TIME, saying in one short line what each step is for before you run it. Prefer the official package manager over downloading installers. Never install something they did not agree to, never overwrite existing config without asking first, never disable security settings, and stop and ask the moment anything looks destructive or wants a password you were not given.',
   'Hardware and drivers: on Windows, check for missing/unknown devices and vendor GPU drivers, and say plainly when the OS already has it handled. On macOS, system updates and the App Store cover drivers — say so instead of inventing work. On Linux, check the kernel/driver pairing for the GPU before touching it.',
@@ -247,7 +251,7 @@ function machineSetupRunbook(): string[] {
   const description = machineDescription()
 
   return description
-    ? [`What the app can already see about it: ${description}.`, ...MACHINE_SETUP_RUNBOOK]
+    ? [`App-reported setup and hardware signals, not proof of device age: ${description}.`, ...MACHINE_SETUP_RUNBOOK]
     : MACHINE_SETUP_RUNBOOK
 }
 

@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -164,8 +166,35 @@ def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     return bool(is_dm or user_id)
 
 
+def _redact_cron_payload(text: str, what: str) -> str:
+    """Fail-closed secret redaction for anything a cron job emits outward.
+
+    Every outward lane — chat message, session mirror, bot-chat turn — must apply the same policy,
+    so the policy lives in one place. ``force=True`` because this is a safety boundary, not
+    logging: the ``security.redact_secrets`` preference governs how much is scrubbed from the
+    user's own logs and must not be able to turn scrubbing off on the way out to a chat (same
+    reasoning as ``tools/delegation_live_log.py``). Empty input is returned as-is; any failure
+    inside the redactor replaces the payload entirely rather than letting an unscanned value out.
+    """
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
+    except Exception as e:
+        logger.warning("Failed to redact secrets from cron %s: %s", what, e)
+        return "[REDACTED - redaction failed]"
+
+
+def _cron_display_name(job: dict) -> str:
+    """Job name/id as it appears in outward-facing text. The mirror sinks and the thread title
+    splice the job *name* around the redacted payload, and the name is user-controlled config — a
+    name embedding a credential would re-leak it next to the scrubbed body."""
+    return _redact_cron_payload(job.get("name") or job.get("id", "cron"), "job name")
+
+
 def _cron_mirror_message(job: dict, text: str) -> str:
-    return f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
+    return f"[Cron delivery: {_cron_display_name(job)}]\n{text}"
 
 
 def _maybe_mirror_cron_delivery(
@@ -223,7 +252,7 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    thread_name = f"Hermes — {job.get('name') or job.get('id', 'cron')}"
+    thread_name = f"Hermes — {_cron_display_name(job)}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)
@@ -667,6 +696,48 @@ _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
 _BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
+# After the child reports its turn, a child with nothing to linger for exits at once; give it
+# that long so its real exit code and stream tails are booked instead of the report's summary.
+_BOT_CHAT_EXIT_GRACE_SECONDS = 2.0
+
+
+def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) -> subprocess.CompletedProcess:
+    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process.
+
+    The child records its turn outcome at *report_path* (``hermes_cli.quiet_single_query``)
+    the moment the turn ends, then runs the one-shot exit linger for nested
+    ``notify_on_complete`` replies — bounded by ``terminal.oneshot_completion_wait_seconds``,
+    whose default equals this lane's cap, so waiting for process exit booked every delivered
+    turn that left a reply pending as a timeout and killed the linger (#113608). Once the
+    report exists the delivery is booked from it and the still-lingering child is left
+    running (a daemon thread drains and reaps it); only a turn that never ends is killed.
+    """
+    from hermes_cli.quiet_single_query import read_turn_report
+
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=env, creationflags=windows_hide_flags())
+    streams: dict = {}
+
+    def _drain() -> None:
+        streams["out"], streams["err"] = proc.communicate()
+
+    drain = threading.Thread(target=_drain, name=f"bot-chat-delivery-{proc.pid}", daemon=True)
+    drain.start()
+    deadline = time.monotonic() + timeout
+    report = None
+    while True:
+        drain.join(timeout=0.25 if report is None else _BOT_CHAT_EXIT_GRACE_SECONDS)
+        if not drain.is_alive():
+            return subprocess.CompletedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
+        if report is not None:
+            # Turn over, child still lingering for a nested reply: not this lane's wait.
+            return subprocess.CompletedProcess(argv, int(report["exit_code"]), "", report.get("error") or "")
+        report = read_turn_report(report_path, proc.pid)
+        if report is None and time.monotonic() >= deadline:
+            proc.kill()
+            drain.join(timeout=5.0)
+            raise subprocess.TimeoutExpired(argv, timeout)
 
 
 def _format_failure_streams(result) -> str:
@@ -697,12 +768,15 @@ def _format_failure_streams(result) -> str:
     return redact_sensitive_text(" | ".join(parts), force=True, redact_url_credentials=True)
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None,
+                         for_failure: bool = False) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
     string so existing Optional[str] callers cannot misreport admission as delivery.
-    ``profile`` is ``""`` for the job's own profile.
+    ``profile`` is ``""`` for the job's own profile. A ``for_failure`` notice whose target
+    profile hides warning notifications is recorded as ``suppressed`` (a durable
+    disposition, never a send) and flagged on the job.
     """
     import hashlib
     import json
@@ -716,16 +790,26 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
 
     job_id = job.get("id", "?")
     profile_label = profile or "(own)"
+    # Outward lane: this text becomes an inbound turn in another profile's Bot Chat — via the
+    # live owner, the CLI fallback, or a deferred record replayed later — so it gets the same
+    # fail-closed scrub as the chat message and the session mirror. Rebind ``content`` itself so
+    # the durable deferred record below also carries the scrubbed copy, not the raw output.
+    content = _redact_cron_payload(content, "bot-chat payload")
     message = (
-        f'[Cronjob "{job.get("name", job_id)}" output — scheduled job, not the user. '
-        f"Review it, act on anything that needs action, and summarize "
-        f"for the chat.]\n\n{content}"
+        f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
+        f"scheduled job, not the user. Review it, act on anything that needs action, and "
+        f"summarize for the chat.]\n\n{content}"
     )
     try:
         source_home = get_hermes_home().resolve()
         from pathlib import Path
         home = (Path(deferred["home"]) if deferred is not None else
                 get_profile_dir(profile) if profile else source_home).resolve()
+        for_failure = for_failure or bool((deferred or {}).get("for_failure"))
+        from gateway.warning_notifications import warning_notifications_enabled
+        from hermes_cli.config_effective import load_user_config_effective
+        suppress_notification = for_failure and not warning_notifications_enabled(
+            BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))
         if deferred is not None and not (home / "state.db").is_file():
             return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
@@ -748,22 +832,28 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             from tools.bot_live_delivery import find_canonical_owner
 
             pending = read_pending(key)
-            if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
-                pending = defer(key, dict(job), content, profile, home)
+            # Suppression is a durable disposition, not a send: record it under the producer
+            # lock even when a live owner exists, so the deferred lane never replays it.
+            if (pending is not None or suppress_notification
+                    or (find_canonical_live_owner(home) is None and find_canonical_owner(home))):
+                pending = defer(key, dict(job), content, profile, home,
+                                for_failure=for_failure, suppressed=suppress_notification)
             if pending is not None:
-                if pending["content"] != content or pending["home"] != str(home):
-                    raise ValueError("delivery id already belongs to a different payload")
                 status = pending["status"]
                 target = f"bot-chat:{profile_label}"
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
                     "status": status, "delivery_id": key}
-                return None if status == "settled" else f"{target} {status} (receipt {key}): completion unverified; do not resend"
+                if status == "suppressed":
+                    job["_notification_all_targets_suppressed"] = True
+                return None if status in ("settled", "suppressed") else f"{target} {status} (receipt {key}): completion unverified; do not resend"
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:
-                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key)
+                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
+                    **({"notification_category": "diagnostic"} if for_failure else {}))
         if receipt is not None:
-            if receipt["message"] != message:
+            if (receipt["message"] != message
+                    or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
                 raise ValueError("delivery id already belongs to a different payload")
             status = receipt["status"]
             target = f"bot-chat:{profile_label}"
@@ -824,9 +914,10 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
             "-Q", "--query-file", query_file,
         ]
-        result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
-            creationflags=windows_hide_flags())
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
+        report_file = f"{query_file}.turn.json"
+        env[TURN_REPORT_FILE_ENV] = report_file
+        result = _run_bot_chat_turn(argv, env, report_file, _get_bot_chat_delivery_timeout())
         if result.returncode != 0:
             tail = _format_failure_streams(result)
             logger.warning(
@@ -853,8 +944,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
     finally:
         if query_file:
-            with contextlib.suppress(OSError):
-                os.unlink(query_file)
+            for path in (query_file, f"{query_file}.turn.json"):
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
 
 
 def _normalize_deliver_value(deliver) -> str:
@@ -876,6 +968,8 @@ _ROUTING_TOKENS = frozenset({"all"})
 # Pseudo-platform: deliver output as a real inbound turn into a profile's "Bot Chat" (not a mirror).
 # ``bot-chat`` = own profile; ``bot-chat:<name>`` = named profile on THIS machine.
 BOT_CHAT_PLATFORM = "bot-chat"
+# Bot Chat is the TUI/Desktop transcript, so its warning policy is display.platforms.tui.
+BOT_CHAT_POLICY_PLATFORM = "tui"
 
 
 def parse_bot_chat_deliver_token(part: str) -> Optional[str]:
@@ -1762,6 +1856,7 @@ def _deliver_result(
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
+    job.pop("_notification_all_targets_suppressed", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1780,6 +1875,10 @@ def _deliver_result(
 
         _record_delivery_verification(job, [])
         error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
+        from cron.delivery_queue import get_status
+        delivery_status = get_status(external_execution)
+        if delivery_status and delivery_status["status"] == "suppressed":
+            job["_notification_all_targets_suppressed"] = True
         from cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
@@ -1817,6 +1916,11 @@ def _deliver_result(
     from gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    # Redact at this single chokepoint, BEFORE the live-adapter / standalone send lanes below.
+    # Shell-job stdout/stderr is already redacted where it is captured, but an LLM cron job's
+    # response text reaches delivery unscanned — so a job that surfaced a credential (echoed a
+    # failing curl with an API key, summarised a config file) sent it verbatim to the chat.
+    cleaned_delivery_content = _redact_cron_payload(cleaned_delivery_content, "delivery content")
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
@@ -1836,7 +1940,10 @@ def _deliver_result(
     # Independent of the mirror knob: continuable surfaces (in_channel) must seed even when
     # attach_to_session=false and cron.mirror_delivery=false, else the seed gets "" and fails.
     _, mirror_text = BasePlatformAdapter.extract_media(content)
-    mirror_text = (mirror_text or "").strip()
+    # Derived from the raw `content`, so it does NOT inherit the redaction above. Without this,
+    # enabling the mirror writes an unredacted credential into the session transcript even though
+    # the chat message itself was clean — and a transcript outlives the message.
+    mirror_text = _redact_cron_payload((mirror_text or "").strip(), "mirror payload")
 
     try:
         config = load_gateway_config()
@@ -1846,10 +1953,19 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
     for target in targets:
+        # A failure notice for a platform that hides warning notifications is a suppressed
+        # disposition, not a send; requested (non-failure) results are never gated.
+        from gateway.warning_notifications import warning_notifications_enabled
+        if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
+                and not warning_notifications_enabled(target["platform"], user_cfg)):
+            suppressed_targets += 1
+            continue
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:
-            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"])
+            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"], for_failure=for_failure)
+            suppressed_targets += job.pop("_notification_all_targets_suppressed", False)
             if bot_chat_error:
                 receipt_target = f"bot-chat:{target['chat_id'] or '(own)'}"
                 receipt = job.get("_bot_chat_delivery_receipts", {}).get(receipt_target)
@@ -1875,8 +1991,12 @@ def _deliver_result(
             _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
 
-    # Filter-time drops apply to every target; report them once.
-    delivery_errors.extend(policy_drop_errors)
+    # Filter-time drops apply to every target; report them once. A run whose every target was
+    # suppressed sent nothing, so there is no drop to report.
+    if suppressed_targets == len(targets):
+        job["_notification_all_targets_suppressed"] = True
+    else:
+        delivery_errors.extend(policy_drop_errors)
     _record_delivery_verification(job, unverified_targets)
     return "; ".join(delivery_errors) if delivery_errors else None
 

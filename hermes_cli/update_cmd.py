@@ -154,6 +154,35 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 NETWORK_GIT_TIMEOUT_SECONDS = 300
 
 
+def _record_update_skip(step: str, reason: str) -> None:
+    """Best-effort ``update_receipt.record_skip``; the receipt must never break an update."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip(step, reason)
+
+
+def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
+    """Record the pre-update backup as a skip when it was disabled, else as a step.
+
+    ``snapshot_id`` is None both when the backup was deliberately turned off (config
+    ``updates.pre_update_backup: off``/``false``, or ``--no-backup``) and when a requested backup
+    produced nothing. Recording both as ``ok=false, "disabled or failed"`` made an opt-out
+    indistinguishable from a real failure in the receipt, so a disabled safety net read as a
+    broken one (#94944 is the shipped-opt-out case). A deliberate opt-out is a SKIP WITH its
+    reason; only a requested-but-empty backup is a failed step.
+    """
+    if snapshot_id:
+        _record_update_step("pre_update_backup", True, f"snapshot={snapshot_id}")
+        return
+    if _resolve_pre_update_backup_mode(args) == "off":
+        reason = ("disabled by --no-backup" if getattr(args, "no_backup", False)
+                  else "disabled by updates.pre_update_backup (mode: off)")
+        _record_update_skip("pre_update_backup", reason)
+        return
+    _record_update_step("pre_update_backup", False, "no snapshot captured")
+
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
     terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
@@ -621,6 +650,9 @@ def _repair_venv_on_current_checkout(
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
+    # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
+    # active memory provider's bridge packages (hindsight-embed, torch, ...).
+    _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
     # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
@@ -712,6 +744,8 @@ def _repair_current_checkout(
                       "to finish import-based venv repair.")
             _m()._restore_active_tool_dependencies(
                 active_tool_dependencies, repair_prefix, env=repair_env)
+            # Same order as the pull path: the swapped-in venv was built from uv.lock alone.
+            _m()._refresh_active_memory_provider_dependencies()
             _m()._reapply_plugin_python_dependencies()
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
@@ -1269,7 +1303,10 @@ def _apply_pulled_update(
     # completed restart leaves this marker so the next update catches up even when git is
     # current. Distinct from ``.update-incomplete`` (venv/install repair).
     # See #95294.
-    _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
+    _write_fleet_restart_pending_marker(
+        expected_sha=post_pull_sha or "",
+        runtimes=_pre_update_plan.to_dict().get("runtimes") if _pre_update_plan is not None else None,
+    )
     # Stale .pyc would ImportError on gateway restart when new source references new names.
     _sweep_bytecode_after_update(branch)
 
@@ -1508,11 +1545,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net.
+    # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
+    # reason, not as a failed step (see _record_pre_update_backup_outcome).
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-    _record_update_step(
-        "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+    _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:

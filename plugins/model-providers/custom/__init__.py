@@ -29,37 +29,18 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
-    def sanitize_request_kwargs(
-        self,
-        api_kwargs: dict[str, Any],
-        *,
-        supports_reasoning: bool = False,
-        base_url: str | None = None,
-        **context: Any,
-    ) -> dict[str, Any]:
-        """Prevent stale overrides from enabling thinking on non-thinking Ollama.
+    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...]:
+        """The OpenAI-compat wire set, mirroring this profile's own chat-completions clamp.
 
-        The profile hook runs before request overrides, so a persisted
-        ``extra_body`` override can otherwise reintroduce ``think`` or
-        ``reasoning`` after capability detection correctly omitted them.  A
-        non-thinking Ollama model rejects those fields with HTTP 400; remove
-        only the reasoning controls while preserving unrelated overrides.
+        Without this declaration the Responses transport clamps onto the OpenAI
+        per-model ladder (``codex_supported_efforts``), where ``max`` is gpt-5.6-only —
+        so a custom relay's model had a configured ``max`` silently demoted to
+        ``xhigh`` while the same provider over chat-completions forwarded ``max``
+        unchanged (#114249). A custom endpoint's vocabulary is undiscoverable, so
+        the widest OpenAI-compat set is the honest ceiling; ``ultra`` still clamps
+        to ``max`` via the shared ``clamp_effort`` policy.
         """
-        if not (_looks_like_ollama_endpoint(base_url) and not supports_reasoning):
-            return api_kwargs
-
-        api_kwargs.pop("reasoning_effort", None)
-        extra_body = api_kwargs.get("extra_body")
-        if isinstance(extra_body, dict):
-            # Preserve think=False — it's an explicit disable signal, not a stale enable.
-            # Strip think=True, think=None, and the other reasoning fields.
-            if extra_body.get("think") is not False:
-                extra_body.pop("think", None)
-            for key in ("thinking", "reasoning", "enable_thinking"):
-                extra_body.pop(key, None)
-            if not extra_body:
-                api_kwargs.pop("extra_body", None)
-        return api_kwargs
+        return OPENAI_COMPAT_WIRE_EFFORTS
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None,

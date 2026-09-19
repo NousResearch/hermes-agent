@@ -147,8 +147,11 @@ def _set_model(rid, params, key, value, session):
         if parse_model_switch_args(str(value)).is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
         else:
-            return _err(rid, 4001, "config.set model requires a live session; "
-                        "use Settings -> Models to change the profile default")
+            # One string for every client: the Ink TUI (dashboard /chat, `hermes --tui`) has no
+            # Settings; the dashboard has a Models page; only the Desktop has Settings -> Models.
+            return _err(rid, 4001, "config.set model requires a live session; to change the "
+                        "profile default run /setup, or use the Models page (dashboard) / "
+                        "Settings -> Models (Desktop)")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))
@@ -411,7 +414,10 @@ def _set_cwd(rid, params, key, value, session):
     if not os.path.isdir(cwd):
         return _err(rid, 4002, f"working directory does not exist: {raw}")
     _write_config_key("terminal.cwd", cwd)
-    os.environ["TERMINAL_CWD"] = cwd
+    # ``TERMINAL_CWD`` is the LAUNCH process's; a profile-bound session persists its cwd through its
+    # own config.yaml (written above under the session scope) and must not leak it into other profiles.
+    if not (isinstance(session, dict) and session.get("profile_home")):
+        os.environ["TERMINAL_CWD"] = cwd
     return _kv(rid, "terminal.cwd", cwd, cwd=cwd, branch=git_probe.branch(cwd))
 
 

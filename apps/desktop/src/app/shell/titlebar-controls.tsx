@@ -150,7 +150,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const titleBarLeft = useContributions('titleBar.left')
   const titleBarCenter = useContributions('titleBar.center')
   const titleBarRight = useContributions('titleBar.right')
-  const pageOwnsTitlebar = titleBarLeft.length + titleBarCenter.length + titleBarRight.length > 0
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they

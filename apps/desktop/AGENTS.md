@@ -56,6 +56,28 @@ that must outlive compression keys off the lineage root. Keep the mapping betwee
 them explicit and translate at the boundary rather than passing the wrong id
 inward.
 
+Two guarantees follow from this (#111868). The user's message is durable at
+send: `prompt.submit` writes the session row AND the user row before the agent
+build starts, and the turn adopts that row (`_adopt_submit_user_row` →
+`agent._pending_cli_user_message`) instead of appending a second one, so a
+freeze or force-quit during a slow first build leaves a resumable transcript
+(user message present, no reply). And renderer state keyed by profile name —
+persisted tabs (`tilesByProfile`), Bot tile owner routes, cached transcript
+tails, remembered session/route, session owner hints — follows a profile
+rename via `migrateTilesForProfile(old, new)` (`store/session-states.ts`), the
+rename sibling of `dropTilesForProfile`. Add any new profile-keyed localStorage
+family to BOTH, or a rename leaves it pointing at a backend that no longer
+exists ("Couldn't open this session" on every restore).
+
+When an id is verifiably gone anyway (`goneSessionVerdict` → `'draft'`), the
+window drops to a fresh draft without toasting or looping — and the unsent
+text stashed under the dead key follows it: the verdict calls
+`announceGoneSessionDraft(id)` and the composer's swap onto the fresh scope
+consumes it once (`adoptGoneSessionDraft`, `store/composer.ts`), seeding the
+composer and publishing the inline, undoable `$restoredDraftNotice`. Offer,
+don't hijack: no navigation beyond the drop itself, no focus steal, no toast,
+and an already non-empty fresh draft is never clobbered.
+
 ## Server truth is cached, not owned
 
 The renderer paints from a cache of backend truth, so it must reconcile, not

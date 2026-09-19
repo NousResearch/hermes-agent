@@ -38,7 +38,7 @@ class SummaryDispatchMixin:
         if take_deterministic_summary_pin():
             # Surfaces through the fallback summary's reason line and the host's one-shot user warning.
             self._last_summary_error = (
-                "summary model stalled again after a stall backoff; deterministic fallback summary inserted"
+                "summary model stalled on every route; deterministic fallback summary inserted"
             )
             telemetry = getattr(self, "_active_compression_telemetry", None)
             if isinstance(telemetry, dict):

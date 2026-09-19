@@ -9,10 +9,10 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { PROFILE_SESSION_LIST_LIMIT } from './canonical-chat'
-import { cachedUnionRoster } from './data'
-import { $groupChats } from './group-chat'
-import { groupMemberKey } from './group-membership'
-import { backendTargetProfile, botConnectionRoute } from './routing'
+import { $lastRoster } from './data'
+import { $groupChats, updateGroupChat } from './group-chat'
+import { groupMemberKey, groupSessionMemberKey } from './group-membership'
+import { backendTargetProfile, botConnectionRoute, requestForBot } from './routing'
 import type { GroupMember, RosterRow } from './types'
 
 /** The slice of the plugin context the scheduler needs to park its timer. */
@@ -20,9 +20,17 @@ interface HideSweepContext {
   onDispose?: (fn: () => void) => void
 }
 
-/** Repair only Bot Mode session ids already known from group-room state.
- *  This is safe on load/reconnect because it performs no profile listing and
- *  therefore cannot fan out across an idle profile fleet. */
+/** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
+ *  and Bot Chats created before this policy (or while the old pref was off)
+ *  left visible rows behind. On every plugin load, sweep the session ids we
+ *  own by id (each group room's member sessions) through the source
+ *  primary's REST PATCH /api/sessions/{id} (a 404 prunes the seat), then
+ *  run the TITLE-based ownership sweep for
+ *  everything else — canonical Bot Chats are identified by name (the
+ *  registry row titled "Bot Chat"), so the title sweep is what hides them;
+ *  no stored-id pointer is consulted. Idempotent (the DB setter is a no-op
+ *  on already-hidden rows) and feature-detected: older Desktop hosts defer
+ *  reconciliation rather than activating an absent profile backend. */
 export function startHideSweepScheduler(ctx: HideSweepContext) {
   let timer: ReturnType<typeof setTimeout> | null = null
   let inflight: Promise<unknown> | null = null
@@ -117,14 +125,16 @@ function reconcileAllBotProfileSessions() {
  *  on when the same member session is seated in several rooms. */
 interface RoomSessionEntry {
   dedupe: string
+  group: string
   id: string
+  key: string
   owner: RosterRow
 }
 
 function hideOwnedBotSessions() {
   // `.filter(Boolean)` doesn't narrow away the nulls the map returns, so the
   // element type is restated here rather than at every read below.
-  const roomEntries = Object.values($groupChats.get()).flatMap(room =>
+  const roomEntries = Object.entries($groupChats.get()).flatMap(([group, room]) =>
     Object.entries(room?.sessions || {})
       .map(([key, id]) => {
         if (!id || id === true) {
@@ -159,7 +169,9 @@ function hideOwnedBotSessions() {
           ? {
               owner,
               id,
-              dedupe: `${key}\u0000${id}`
+              dedupe: `${key}\u0000${id}`,
+              group,
+              key
             }
           : null
       })
@@ -169,9 +181,54 @@ function hideOwnedBotSessions() {
   // The same member session can appear in several rooms (and legacy rooms can
   // share ids) — hide each (owner, id) pair exactly once.
   const rooms = [...new Map(roomEntries.map(entry => [entry.dedupe, entry])).values()]
-  const known = Promise.all(rooms.map(({ owner, id }) => hidePersistedBotSession(owner, id).catch(() => undefined)))
+
+  const known = Promise.all(
+    rooms.map(entry =>
+      hidePersistedBotSession(entry.owner, entry.id).catch(error => {
+        if (isMissingPersistedSessionError(error)) {
+          pruneMissingRoomSession(entry)
+        }
+      })
+    )
+  )
 
   return known
+}
+
+/** A 404 from the persisted-session endpoint is an authoritative absence.
+ *  Other errors can be transient (or come from older Desktop hosts), so they
+ *  intentionally leave the room reference intact for a later reconciliation. */
+function isMissingPersistedSessionError(error: unknown) {
+  const message = typeof error === 'string' ? error : (error as { message?: unknown })?.message
+
+  return typeof message === 'string' && /\b404\b/.test(message) && /session not found/i.test(message)
+}
+
+/** Remove only the exact rejected room seat. A replacement written while the
+ *  REST request was in flight must survive, and an unrelated transport error
+ *  must not erase a session reference. */
+function pruneMissingRoomSession({ group, id, key }: RoomSessionEntry) {
+  if (!$groupChats.get()[group]) {
+    return
+  }
+
+  updateGroupChat(group, room => {
+    if (room.sessions?.[key] !== id) {
+      return room
+    }
+
+    const sessions = { ...room.sessions }
+    const sessionOwners = { ...room.sessionOwners }
+
+    delete sessions[key]
+    delete sessionOwners[key]
+
+    return {
+      ...room,
+      sessionOwners,
+      sessions
+    }
+  })
 }
 
 /** Reconcile durable visibility through the source's primary REST backend.

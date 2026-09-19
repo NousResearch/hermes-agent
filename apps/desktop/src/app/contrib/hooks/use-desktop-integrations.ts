@@ -6,6 +6,7 @@ import { openSession } from '@/app/open-session'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { announceNewSessionDraftKey } from '@/store/composer'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -20,6 +21,7 @@ import {
   $selectedStoredSessionId,
   getRememberedRoute,
   getRememberedSessionId,
+  resolveComposerSessionKey,
   sessionBelongsToProfile,
   setRememberedRoute,
   setRememberedSessionId
@@ -152,6 +154,10 @@ export function useDesktopIntegrations({
           !isOverlayView(appViewForPath(route)) &&
           (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
         ) {
+          // The user may have started typing on the fresh chat while the
+          // backend was still coming up; the composer moves that draft onto
+          // the restored session when its scope swaps (#114122).
+          announceNewSessionDraftKey(routeSession && resolveComposerSessionKey(routeSession, sessions))
           navigate(route, { replace: true })
 
           return
@@ -164,6 +170,7 @@ export function useDesktopIntegrations({
         }
 
         if (last && sessionBelongsToProfile(sessions, last, activeProfile)) {
+          announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
           navigate(sessionRoute(last), { replace: true })
 
           return

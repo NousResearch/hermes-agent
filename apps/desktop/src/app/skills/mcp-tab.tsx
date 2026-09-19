@@ -1345,7 +1345,6 @@ function ServerConfig({
                 disabled={!saved}
                 key={tool.name}
                 onClick={() => onToggleTool(tool.name)}
-                title={on ? m.disableTool(tool.name) : m.enableTool(tool.name)}
                 type="button"
               >
                 {tool.name}

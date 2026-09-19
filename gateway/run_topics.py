@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import re
 import time
@@ -434,12 +433,10 @@ class GatewayTopicThreadsMixin:
             return
         copied_source = source
         with suppress(Exception):
-            copied_source = dataclasses.replace(source)
-            # Keep the live transport owner; multiplex routes may run under a
+            # Keep the live transport owner and identity; multiplex routes may run under a
             # profile that does not own the Discord adapter/token.
-            transport_ref = getattr(source, "_transport_adapter_ref", None)
-            if transport_ref is not None:
-                setattr(copied_source, "_transport_adapter_ref", transport_ref)
+            from gateway.session_identity import replace_source
+            copied_source = replace_source(source)
         future = safe_schedule_threadsafe(
             make_coro(copied_source), loop, logger=logger, log_message=f"{label} failed to schedule",
         )

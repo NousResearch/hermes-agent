@@ -761,9 +761,9 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
 def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
     """#111741: a bare ``custom`` placeholder that falls through to the OpenRouter default with no
     key must raise a typed AuthError naming the request at resolve time, instead of returning a
-    dead runtime that dies later as "No LLM provider configured". A local alias (``ollama``) in the
-    same state keeps resolving tolerantly: ``/model`` direct-alias switching supplies its endpoint
-    after this call. With an OpenRouter key present the bare request resolves exactly as before."""
+    dead runtime that dies later as "No LLM provider configured". Local aliases also need an
+    endpoint: without one they must not adopt a cloud credential through OpenRouter. With an
+    OpenRouter key present, the bare custom request resolves exactly as before."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
@@ -787,13 +787,59 @@ def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypa
     assert error.value.provider == "custom"
     assert error.value.code == "missing_api_key"
 
-    alias = rp.resolve_runtime_provider(requested="ollama")
-    assert alias["provider"] == "custom" and not alias["api_key"]
+    with pytest.raises(rp.AuthError, match="provider 'ollama' has no endpoint") as alias_error:
+        rp.resolve_runtime_provider(requested="ollama")
+    assert alias_error.value.provider == "ollama"
+    assert alias_error.value.code == "missing_base_url"
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-usable-key")
     resolved = rp.resolve_runtime_provider(requested="custom")
     assert resolved["provider"] == "custom"
     assert resolved["api_key"] == "sk-or-v1-usable-key"
+
+
+@pytest.mark.parametrize("alias", ("ollama", "vllm"))
+def test_local_alias_without_any_endpoint_never_reaches_openrouter(monkeypatch, alias):
+    """#113703: a local alias with no endpoint configured anywhere must raise a typed AuthError
+    naming the alias instead of walking the ladder to the OpenRouter fallback with a cloud key.
+    Neither ``OPENROUTER_BASE_URL`` (a mirror, not the alias endpoint) nor an explicit api_key
+    (meant for the alias's own server) lifts the guard; bare ``custom`` keeps its own contract."""
+    for name in ("OPENAI_API_KEY", "CUSTOM_BASE_URL", "OPENROUTER_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
+    monkeypatch.setattr(rp, "load_config", lambda: {"model": {"provider": alias}})
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    with pytest.raises(rp.AuthError, match=rf"provider '{alias}' has no endpoint.*providers\.{alias}\.base_url") as error:
+        rp.resolve_runtime_provider(requested=alias)
+    assert (error.value.provider, error.value.code) == (alias, "missing_base_url")
+
+    bare = rp.resolve_runtime_provider(requested="custom")
+    assert bare["provider"] == "custom" and bare["api_key"] == "sk-or-v1-cloud-key"
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example/api/v1")
+    with pytest.raises(rp.AuthError, match="has no endpoint"):
+        rp.resolve_runtime_provider(requested=alias, explicit_api_key="key-for-my-local-server")
+
+
+@pytest.mark.parametrize("configured", ("providers", "model", "explicit"))
+def test_local_alias_with_an_endpoint_anywhere_still_resolves_to_it(monkeypatch, configured):
+    """#113703 control: every place an ollama endpoint can be configured keeps resolving to that
+    URL with the local placeholder key — the guard keys on the absence of an endpoint, not on the
+    alias name (the name-keyed version broke ``/model <direct-alias>``; see a9fabe43c4)."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
+    url = "http://192.168.1.5:11434/v1"
+    config = {
+        "providers": {"providers": {"ollama": {"base_url": url}}},
+        "model": {"model": {"provider": "ollama", "base_url": url}},
+        "explicit": {"model": {"provider": "ollama"}},
+    }[configured]
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    resolved = rp.resolve_runtime_provider(requested="ollama", explicit_base_url=url if configured == "explicit" else None)
+
+    assert (resolved["provider"], resolved["base_url"], resolved["api_key"]) == ("custom", url, "no-key-required")
 
 
 def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
@@ -1842,61 +1888,6 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["requested_provider"] == "custom:lmstudio"
 
 
-def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(monkeypatch):
-    """OpenCode Free is keyless: an exhausted credential pool must not raise
-    a missing-credential error. The provider resolves with the keyless
-    placeholder + empty-Authorization headers so the request goes out
-    anonymously."""
-    class _ExhaustedPool:
-        def has_credentials(self):
-            return True
-
-        def select(self, **_kwargs):
-            return None
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
-    )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _ExhaustedPool())
-
-    resolved = rp.resolve_runtime_provider(
-        requested="opencode-free", target_model="x-preview-f-free"
-    )
-
-    assert resolved["provider"] == "opencode-free"
-    assert resolved["api_key"] == "opencode-zen-free-keyless"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["default_headers"]["Authorization"] == ""
-
-
-def test_resolve_runtime_provider_opencode_free_missing_env_still_resolves(monkeypatch):
-    """OpenCode Free resolves keylessly with no env var configured at all —
-    the provider declares no credentials."""
-    class _NoPool:
-        def has_credentials(self):
-            return False
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
-    )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _NoPool())
-
-    resolved = rp.resolve_runtime_provider(
-        requested="opencode-free", target_model="x-preview-f-free"
-    )
-
-    assert resolved["provider"] == "opencode-free"
-    assert resolved["api_key"] == "opencode-zen-free-keyless"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-
-
 def test_custom_provider_explicit_target_model_wins(monkeypatch):
     """An explicit target_model must not be silently replaced by the custom
     provider's configured default model (regression: auxiliary slots such as
@@ -1965,3 +1956,18 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+@pytest.mark.parametrize("name", ["opencode-free", "free", "opencode_free"])
+def test_removed_keyless_free_provider_points_at_its_replacements(name):
+    """The keyless OpenCode free tier is gone (the relay 403s anonymous traffic), so a persisted
+    ``model.provider`` — or ``--provider`` — still naming it must fail with the removal hint
+    naming both surviving OpenCode providers, not a bare "Unknown provider"."""
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    with pytest.raises(AuthError) as excinfo:
+        resolve_provider(name)
+
+    assert excinfo.value.code == "invalid_provider"
+    message = str(excinfo.value)
+    assert "opencode-zen" in message and "opencode-go" in message

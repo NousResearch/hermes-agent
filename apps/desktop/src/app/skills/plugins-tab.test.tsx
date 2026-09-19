@@ -5,10 +5,79 @@ import { $pluginRecords } from '@/contrib/plugins-store'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
+import { $connection } from '@/store/session'
 
 import { PluginsTab } from './plugins-tab'
 
-const requestGateway = vi.fn(async () => ({ plugins: [] }))
+import { CapabilityTabs } from './capability-tabs'
+import { parseCatalog } from './catalog-data'
+import { PluginActions, PluginsTab } from './plugins-tab'
+import { $catalogCardView } from './store'
+
+const requestGateway = vi.fn(async () => ({ plugins: $agentPlugins.get() }))
+
+const connectionFixture = {
+  baseUrl: 'http://localhost',
+  isFullscreen: false,
+  logs: [],
+  nativeOverlayWidth: 0,
+  token: '',
+  windowButtonPosition: null,
+  wsUrl: ''
+}
+
+// SkillsView owns navigation and search; exercise that controlled contract
+// with the same primitives instead of giving PluginsTab private controls.
+function PluginsHarness({
+  view: initialView = 'installed',
+  query: initialQuery = '',
+  ...props
+}: ComponentProps<typeof PluginsTab>) {
+  const [view, setView] = useState(initialView)
+  const [query, setQuery] = useState(initialQuery)
+
+  return (
+    <PageSearchShell onSearchChange={setQuery} searchPlaceholder="Search plugins" searchValue={query}>
+      <CapabilityTabs actions={<PluginActions profile={props.profile} />} onChange={setView} value={view} />
+      <PluginsTab {...props} onQueryChange={setQuery} query={query} view={view} />
+    </PageSearchShell>
+  )
+}
+
+function renderPlugins(props: ComponentProps<typeof PluginsTab>) {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <PluginsHarness {...props} />
+    </QueryClientProvider>
+  )
+}
+
+const weatherEntry = {
+  name: 'weather-plugin',
+  repo: 'https://github.com/example/weather-plugin',
+  sha: 'a'.repeat(40),
+  subdir: '',
+  tier: 'community',
+  category: 'weather',
+  description: 'Local weather forecasts'
+}
+
+function seedCatalog(entries = [weatherEntry]) {
+  queryClient.setQueryData(['public-catalog', 'plugins'], parseCatalog('plugins', entries))
+}
+
+async function selectCatalogEntry(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+  fireEvent.click(await screen.findByRole('button', { name: text => text.startsWith(name) }))
+  expect(screen.getByRole('heading', { name })).toBeTruthy()
+}
+
+afterEach(() => {
+  cleanup()
+  $connection.set(null)
+  queryClient.clear()
+  vi.unstubAllGlobals()
+})
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
@@ -59,6 +128,50 @@ describe('PluginsTab', () => {
 
     expect(screen.queryByText('fal')).toBeNull()
     expect(screen.getByText(/No plugins yet/)).toBeTruthy()
+  })
+
+  // A desktop half can only be copied out of a backend that runs on THIS
+  // machine; against a remote one the reconcile is a structural no-op, so the
+  // row must say so instead of pending forever (#114079).
+  it('marks a remote-backend desktop half unavailable instead of forever copying', () => {
+    $connection.set({ ...connectionFixture, mode: 'remote' })
+    $agentPlugins.set([
+      {
+        description: '',
+        has_desktop_half: true,
+        key: 'nous-prices',
+        name: 'nous-prices',
+        source: 'catalog',
+        status: 'enabled',
+        version: '1'
+      }
+    ])
+
+    renderPlugins({ profile: null })
+
+    const detail = within(screen.getByRole('row', { name: /^nous-prices/ }))
+    expect(detail.getByText('unavailable (remote backend)')).toBeTruthy()
+    expect(detail.queryByText('copying…')).toBeNull()
+  })
+
+  it('keeps the pending desktop-half state on a local backend', () => {
+    $agentPlugins.set([
+      {
+        description: '',
+        has_desktop_half: true,
+        key: 'nous-prices',
+        name: 'nous-prices',
+        source: 'catalog',
+        status: 'enabled',
+        version: '1'
+      }
+    ])
+
+    renderPlugins({ profile: null })
+
+    const detail = within(screen.getByRole('row', { name: /^nous-prices/ }))
+    expect(detail.getByText('copying…')).toBeTruthy()
+    expect(detail.queryByText('unavailable (remote backend)')).toBeNull()
   })
 
   it('renders a unified package as ONE row with a Desktop switch and an Agent switch', () => {

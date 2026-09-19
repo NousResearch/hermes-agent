@@ -10,6 +10,7 @@ estimators that tests patch on the loop module are imported lazily inside the ha
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +33,11 @@ from utils import base_url_host_matches
 logger = logging.getLogger("agent.conversation_loop")
 
 _RETRY_HINT = "   💡 Try /new to start a fresh conversation, or /compress to retry compression."
+
+# A provider "context exceeded" whose request (incl. the output reservation) is under this share
+# of the known window is not explained by the transcript; the rough estimator is ±30%, so a real
+# overflow (request ≈ window) never lands below half.
+_UNEXPLAINED_REJECTION_FRACTION = 0.5
 
 _GITHUB_MODELS_HINT = (
     "   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
@@ -88,7 +94,8 @@ class _Recovery(OverflowVerdict):
 
     def fail_turn(
         self, final_response: str, *, notices: tuple = (), log: Optional[tuple] = None,
-        compression_exhausted: bool = True, **extra: Any,
+        compression_exhausted: bool = True, reason: str = "context_overflow",
+        retryable: bool = False, **extra: Any,
     ) -> OverflowVerdict:
         """End the turn as failed/partial. ``notices`` flush the buffered retry trace
         first so the user sees what compression attempts were made."""
@@ -96,7 +103,7 @@ class _Recovery(OverflowVerdict):
         if notices:
             agent._flush_status_buffer()
             for line in notices:
-                agent._vprint(f"{agent.log_prefix}{line}", force=True)
+                agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         if log:
             logger.error(*log)
         agent._persist_session(self.messages, self.conversation_history)
@@ -108,7 +115,7 @@ class _Recovery(OverflowVerdict):
             "error": final_response,
             "partial": True,
             "failed": True,
-        }, "context_overflow", False)
+        }, reason, retryable)
         if compression_exhausted:
             # Reuse the gateway's existing context-recovery contract (#98722, salvaged from #98741). The
             # bloated transcript remains intact while future input can move to a clean session instead of
@@ -203,9 +210,9 @@ class _Recovery(OverflowVerdict):
         new_tokens = estimate_messages_tokens_rough(messages)
         shrank_tokens = new_tokens > 0 and new_tokens < original_tokens * 0.95
         if len(messages) < original_len:
-            self.agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            self.agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         elif shrank_tokens:
-            self.agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+            self.agent._buffer_diagnostic_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
         return None, len(messages) < original_len or shrank_tokens, new_tokens
 
     def request_tokens(self) -> int:
@@ -226,7 +233,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted
-    agent._buffer_status(
+    agent._buffer_diagnostic_status(
         f"⚠️  Request payload too large (413) — compression attempt "
         f"{st.compression_attempts}/{st.max_compression_attempts}..."
     )
@@ -252,9 +259,9 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     new_bytes = serialized_messages_bytes(messages)
     if len(messages) < original_len or (new_bytes > 0 and new_bytes < original_bytes * 0.95):
         if len(messages) < original_len:
-            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         else:
-            agent._buffer_status(
+            agent._buffer_diagnostic_status(
                 f"🗜️ Compressed {original_bytes:,} → {new_bytes:,} " f"payload bytes, retrying..."
             )
         time.sleep(2)  # Brief pause between compression retries
@@ -262,7 +269,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
         return st.done("break")
 
     if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             "📐 Compression could not reduce the request further — "
             "removed retained vision payloads and retrying..."
         )
@@ -316,7 +323,7 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     """Shrink context_length only when the provider reports the real limit; else keep
     the window and compress. Guessed probe tiers can turn a configured 1M window into
     256K/128K/64K. Returns the provider-reported limit, or ``None``."""
-    from agent.model_metadata import save_context_length
+    from agent.model_metadata import save_provider_context_length
 
     agent = st.agent
     compressor = agent.context_compressor
@@ -330,7 +337,7 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
         # Persist the provider-reported limit BEFORE compression/retry: rate limit,
         # missing usage, or restart must not lose confirmed metadata. Probe flags
         # remain a fallback if this write fails.
-        save_context_length(agent.model, agent.base_url, new_ctx)
+        save_provider_context_length(agent.model, agent.base_url, new_ctx, agent.provider)
         # Probe flags only on the built-in compressor (plugin engines manage their
         # own); provider-sourced value, so safe to cache.
         if hasattr(compressor, "_context_probed"):
@@ -346,12 +353,12 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     if is_minimax_provider and "context window exceeds limit (" in error_msg:
         agent._buffer_vprint(
             f"Provider reported overflow amount only; "
-            f"keeping context_length at {old_ctx:,} tokens and compressing."
+            f"keeping context_length at {old_ctx:,} tokens."
         )
     else:
         agent._buffer_vprint(
             f"⚠️  Context length exceeded, but provider did not report a max context length; "
-            f"keeping context_length at {old_ctx:,} tokens and compressing."
+            f"keeping context_length at {old_ctx:,} tokens."
         )
     return None
 
@@ -387,10 +394,39 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
 
     new_ctx = _adopt_provider_context_limit(st, error_msg, old_ctx)
 
+    # A rejection the transcript cannot explain (#114644): the request sits far below the window
+    # Hermes knows for this model (after adopting any limit the server reported), so compressing
+    # would destroy history for nothing. Single-slot local servers reject like this while ANOTHER
+    # request — a background review from an earlier session — holds their context. Name that,
+    # keep the turn retryable and transient: no "conversation too long", no gateway auto-reset.
+    # Only when the server quoted NO measurement of its own: "prompt is too long: 233153 tokens
+    # > 200000" is the server's count and beats the local estimate.
+    window = agent.context_compressor.context_length
+    request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
+    if (
+        not re.search(r"\d{4,}", error_msg)
+        and isinstance(window, int) and window > 0
+        and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION
+    ):
+        return st.fail_turn(
+            site_copy("server_context_rejection", model=agent.model, tokens=request_tokens, window=window),
+            notices=(
+                f"❌ The server rejected the request as too large, but it is only ~{request_tokens:,} "
+                f"tokens against a {window:,}-token window — not compressing.",
+                "   💡 Wait a moment and /retry; another request on the same server (e.g. a background "
+                "review) may have been holding its context.",
+            ),
+            log=(
+                "%sProvider context rejection not explained by request size (~%s of %s tokens); "
+                "skipping compression: %s", agent.log_prefix, f"{request_tokens:,}", f"{window:,}", error_msg[:200],
+            ),
+            compression_exhausted=False, reason=FailoverReason.server_error.value, retryable=True,
+        )
+
     exhausted = st.count_attempt()
     if exhausted is not None:
         return exhausted
-    agent._buffer_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(
+    agent._buffer_diagnostic_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(
         tokens=st.approx_tokens, attempt=st.compression_attempts, cap=st.max_compression_attempts,
     ))
 
@@ -447,7 +483,7 @@ def recover_from_overflow(
         and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
     ):
         for line in _GITHUB_MODELS_HINT:
-            agent._vprint(f"{agent.log_prefix}{line}", force=True)
+            agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
 
     if classified.reason == FailoverReason.payload_too_large:
         return _recover_payload_too_large(st, _retry)

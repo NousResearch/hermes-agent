@@ -1,5 +1,7 @@
 """Tests for gateway session management."""
 import json
+import logging
+import time
 import pytest
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -507,6 +509,21 @@ class TestSessionStoreSwitchSession:
         assert resumed["ended_at"] is None
         assert resumed["end_reason"] is None
         db.close()
+
+    def test_switch_session_expected_session_id_refuses_moved_route(self, tmp_path):
+        """With ``expected_session_id`` the repoint is a CAS: a route that moved past the caller's
+        snapshot is left alone (None), while a matching snapshot still switches."""
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store._loaded = True
+        source = SessionSource(platform=Platform.FEISHU, chat_id="chat-2", chat_type="dm", user_id="user-2")
+        entry = store.get_or_create_session(source)
+
+        assert store.switch_session(entry.session_key, "target", expected_session_id="someone-else") is None
+        assert store.lookup_by_session_key(entry.session_key).session_id == entry.session_id
+
+        switched = store.switch_session(entry.session_key, "target", expected_session_id=entry.session_id)
+        assert switched is not None and switched.session_id == "target"
 
     def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
         from hermes_state import SessionDB
@@ -1435,7 +1452,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "parent", {"role": "assistant", "content": "routed to child"}
@@ -1474,7 +1491,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "root", {"role": "assistant", "content": "routed to tip"}
@@ -1510,7 +1527,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "root", {"role": "assistant", "content": "must not land"}
@@ -1546,8 +1563,10 @@ class TestGatewaySessionDbRecovery:
                 {"role": "assistant", "content": "old-2"},
             ]
         }
-        store._transcript_append_failures = {"parent": 2}
-        store._fts_rebuild_attempted = True
+        # One short of the escalation threshold: the migrated backlog must stay in memory here
+        # (at the threshold the stalled-session path spools it to disk instead).
+        store._transcript_append_failures = {"parent": 1}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
         child_attempts = []
         failed_old_2 = False
 
@@ -1620,6 +1639,125 @@ class TestGatewaySessionDbRecovery:
             RuntimeError("gifts received")
         )
 
+    def test_rebuild_fts_once_retries_after_cooldown(self, monkeypatch):
+        """A deferred/failed rebuild must not disable recovery for the process lifetime
+        (#114266): blocked inside the cooldown, retried once it elapses. A call with no usable
+        DB attempts nothing and so must not start the cooldown."""
+        from types import SimpleNamespace
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+        rebuild_calls = []
+        store = object.__new__(SessionStore)
+        store._fts_rebuild_last_attempt_at = None
+        store._db = None
+        assert store._rebuild_fts_once() is False
+        assert store._fts_rebuild_last_attempt_at is None  # no attempt, no cooldown
+
+        store._db = SimpleNamespace(rebuild_fts=lambda: rebuild_calls.append(clock["now"]) or 0)
+        assert store._rebuild_fts_once() is False  # deferred (0 indexes rebuilt)
+        clock["now"] += store._FTS_REBUILD_COOLDOWN_SECONDS - 1
+        assert store._rebuild_fts_once() is False
+        assert len(rebuild_calls) == 1  # still cooling down: no second attempt
+        clock["now"] += 2
+        store._db = SimpleNamespace(rebuild_fts=lambda: rebuild_calls.append(clock["now"]) or 1)
+        assert store._rebuild_fts_once() is True
+        assert len(rebuild_calls) == 2
+
+    def test_transcript_append_failures_escalate_to_error(self, caplog):
+        """Repeated append failures on one session escalate WARNING -> ERROR at the threshold so a
+        multi-day write outage is not a wall of identical warnings (#114266)."""
+        import threading
+        from types import SimpleNamespace
+
+        def _fail(**kwargs):
+            raise RuntimeError("database disk image is malformed")
+
+        store = object.__new__(SessionStore)
+        store._db = SimpleNamespace(append_message=_fail)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+            for i in range(threshold):
+                store.append_to_transcript("s-esc", {"role": "user", "content": f"m{i}"})
+        levels = [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()]
+        assert levels == [logging.WARNING] * (threshold - 1) + [logging.ERROR]
+        assert store._transcript_append_failures["s-esc"] == threshold
+
+    def test_no_usable_db_counts_failures_and_spools_backlog_before_cap(
+        self, caplog, tmp_path, monkeypatch
+    ):
+        """The reporter's outage shape (#114266): ``SessionStore._db is None`` used to early-return
+        silently — no counter, no log, turns held in memory until a crash. Now each append counts
+        toward the same ERROR escalation and, once the session is stalled, the backlog is spooled
+        to disk (long before the 200-message cap) and replayed in order on recovery."""
+        import threading
+        from types import SimpleNamespace
+        import hermes_constants
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        store = object.__new__(SessionStore)
+        store._db = None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+            for i in range(threshold):
+                store.append_to_transcript("s-dead", {"role": "user", "content": f"m{i}"})
+        assert store._transcript_append_failures["s-dead"] == threshold
+        assert [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()][-1] == logging.ERROR
+        spooled = sorted(json.loads(p.read_text())["data"]["message"]["content"]
+                         for p in (tmp_path / "pending_messages").glob("pending-*.json"))
+        assert spooled == [f"m{i}" for i in range(threshold)]  # durable before the cap
+        assert "s-dead" not in store._dirty_transcripts
+
+        rows = []
+        store._db = SimpleNamespace(append_message=lambda **kw: rows.append(kw["content"]))
+        store.append_to_transcript("s-dead", {"role": "assistant", "content": "recovered"})
+        assert rows == [f"m{i}" for i in range(threshold)] + ["recovered"]  # replayed in order
+        assert list((tmp_path / "pending_messages").glob("pending-*.json")) == []
+
+    def test_stalled_session_spool_replay_does_not_warn_per_append(self, caplog, tmp_path, monkeypatch):
+        """Live finding on #114266: once a stalled session's backlog is spooled, the pre-write
+        replay probe on a still-dead DB must not add a shutdown_flush WARNING per append — the
+        per-append ERROR escalation already covers the outage. Recovery still replays in order."""
+        import threading
+        from types import SimpleNamespace
+        import hermes_constants
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        def _fail(**kwargs):
+            raise RuntimeError("disk I/O error")
+
+        store = object.__new__(SessionStore)
+        store._db = SimpleNamespace(append_message=_fail)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        n_appends = threshold + 3
+        with caplog.at_level(logging.DEBUG):
+            for i in range(n_appends):
+                store.append_to_transcript("s-stall", {"role": "user", "content": f"m{i}"})
+        errors = [r for r in caplog.records if "session is stalled" in r.getMessage()]
+        assert len(errors) == n_appends - threshold + 1 and {r.levelno for r in errors} == {logging.ERROR}
+        replay_failed = [r for r in caplog.records if "Replay of spooled transcript message" in r.getMessage()]
+        assert replay_failed, "spool replay was attempted before each write"
+        assert [r.levelno for r in replay_failed if r.levelno >= logging.WARNING] == []
+
+        rows = []
+        store._db = SimpleNamespace(append_message=lambda **kw: rows.append(kw["content"]))
+        store.append_to_transcript("s-stall", {"role": "assistant", "content": "recovered"})
+        assert rows == [f"m{i}" for i in range(n_appends)] + ["recovered"]
+
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap
         to prevent unbounded memory growth on persistent DB failure."""
@@ -1641,7 +1779,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = True
+        store._fts_rebuild_last_attempt_at = time.monotonic()
 
         # Fill beyond the cap
         for i in range(store._MAX_PENDING_PER_SESSION + 10):

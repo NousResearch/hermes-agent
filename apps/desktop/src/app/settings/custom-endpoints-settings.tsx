@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -18,6 +18,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { ActiveProfileNote } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -76,6 +77,8 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const { t } = useI18n()
+  const mounted = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -87,11 +90,16 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   async function refresh() {
     const data = await getCustomEndpoints()
-    setEndpoints(data.endpoints)
+
+    if (mounted.current) {
+      setEndpoints(data.endpoints)
+    }
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle guard drops stale async completions; it does not mirror an atom
   useEffect(() => {
     let cancelled = false
+    mounted.current = true
 
     async function load() {
       try {
@@ -121,6 +129,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     return () => {
       cancelled = true
+      mounted.current = false
     }
   }, [])
 
@@ -128,6 +137,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     try {
       setSaving(true)
       const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+
+      if (!mounted.current) {
+        return
+      }
+
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -144,9 +158,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       onConfigSaved?.()
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      notifyError(err, 'Save failed')
+      if (mounted.current) {
+        notifyError(err, 'Save failed')
+      }
     } finally {
-      setSaving(false)
+      if (mounted.current) {
+        setSaving(false)
+      }
     }
   }
 
@@ -154,6 +172,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     try {
       setTesting(true)
       const response = await validateCustomEndpoint(toPayload(form))
+
+      if (!mounted.current) {
+        return
+      }
+
       setDiscoveredModels(response.models)
 
       if (response.ok) {
@@ -174,9 +197,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         })
       }
     } catch (err) {
-      notifyError(err, 'Validation failed')
+      if (mounted.current) {
+        notifyError(err, 'Validation failed')
+      }
     } finally {
-      setTesting(false)
+      if (mounted.current) {
+        setTesting(false)
+      }
     }
   }
 
@@ -184,14 +211,28 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     try {
       setActivating(endpoint.id)
       const response = await activateCustomEndpoint(endpoint.id)
+
+      if (!mounted.current) {
+        return
+      }
+
       await refresh()
+
+      if (!mounted.current) {
+        return
+      }
+
       onConfigSaved?.()
       onMainModelChanged?.(response.provider, response.model)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Activation failed')
+      if (mounted.current) {
+        notifyError(err, 'Activation failed')
+      }
     } finally {
-      setActivating(null)
+      if (mounted.current) {
+        setActivating(null)
+      }
     }
   }
 
@@ -204,6 +245,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     try {
       setDeleting(endpoint.id)
       const response = await deleteCustomEndpoint(endpoint.id)
+
+      if (!mounted.current) {
+        return
+      }
+
       setEndpoints(response.endpoints)
 
       if (form.id === endpoint.id) {
@@ -214,9 +260,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       onConfigSaved?.()
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Delete failed')
+      if (mounted.current) {
+        notifyError(err, 'Delete failed')
+      }
     } finally {
-      setDeleting(null)
+      if (mounted.current) {
+        setDeleting(null)
+      }
     }
   }
 
@@ -229,6 +279,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   return (
     <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
       <div className="space-y-6">
         <section>
           <SectionHeading icon={Globe} meta={`${endpoints.length}`} title="Custom Endpoints" />
@@ -274,11 +325,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </Button>
                     {endpoint.source !== 'direct-config' && (
                       <Button
+                        aria-label={t.settings.customEndpoints.deleteEndpoint}
                         className="hover:text-destructive"
                         disabled={deleting === endpoint.id}
                         onClick={() => void handleDelete(endpoint)}
                         size="icon-sm"
-                        title="Delete endpoint"
                         variant="ghost"
                       >
                         {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}

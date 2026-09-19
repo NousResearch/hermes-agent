@@ -78,7 +78,7 @@ def _agent(**overrides):
     lines = []
     agent = SimpleNamespace(
         provider="nous", api_key=make_jwt(), model="gpt-5", base_url=WELCOME, log_prefix="", _rate_limit_state=None,
-        _vprint=lambda text, force=False: lines.append(text),
+        _vprint=lambda text, force=False, diagnostic=False: lines.append(text),
         _try_refresh_nous_client_credentials=lambda **kw: True,
     )
     for k, v in overrides.items():
@@ -206,6 +206,8 @@ class TestTerminalResultsCarryTheFreeTierBlock:
                        _summarize_api_error=lambda e: "HTTP 403: no permissions", _emit_status=lambda *a: None,
                        _persist_session=lambda *a: None, _plines=lambda *a: None, _buffer_status=lambda *a: None,
                        _rate_limit_state=None, _has_pending_fallback=lambda: False)
+        from agent.status_output import StatusOutputMixin
+        agent._emit_diagnostic_status = StatusOutputMixin._emit_diagnostic_status.__get__(agent)
         return agent
 
     def test_a_dark_tier_403_is_stamped_disabled_with_the_chat_sentence(self):

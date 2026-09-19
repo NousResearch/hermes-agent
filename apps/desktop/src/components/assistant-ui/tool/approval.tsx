@@ -112,12 +112,38 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
-  // The pending tool row only shows a single truncated line of the command, and
-  // a pending row can't be expanded (no result yet), so the full command was
-  // previously only reachable via the "Always allow" modal. Let the user reveal
-  // it inline instead — "expand, Run" (2 clicks) rather than the modal dance.
-  const [showCommand, setShowCommand] = useState(false)
-  const busy = submitting !== null
+
+  const present = stack.active
+  const busy = submitting !== null || !present || stack.busy
+  // Answering with the pointer moves focus onto the card, and the card then
+  // unmounts, which parks focus on <body> — where type-to-focus routes the next
+  // keystrokes into the chat composer. For a computer_use flow the agent may
+  // have just aimed its input at another pane (terminal, preview), so the
+  // approval hands focus back to whatever held it before the press (#113839).
+  const focusOrigin = useRef<HTMLElement | null>(null)
+  const cardRef = useRef<HTMLElement | null>(null)
+
+  const rememberFocusOrigin = useCallback(() => {
+    const active = document.activeElement
+
+    if (active instanceof HTMLElement && active !== document.body && !cardRef.current?.contains(active)) {
+      focusOrigin.current = active
+    }
+  }, [])
+
+  const restoreFocusOrigin = useCallback(() => {
+    const origin = focusOrigin.current
+    const active = document.activeElement
+
+    focusOrigin.current = null
+
+    // Only when the answer itself is what stranded focus — never steal from a
+    // surface the user moved to while the reply was in flight.
+    if (origin?.isConnected && (!active || active === document.body || cardRef.current?.contains(active))) {
+      origin.focus({ preventScroll: true })
+    }
+  }, [])
+
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
   const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
@@ -144,31 +170,14 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       setSubmitting(choice)
 
       try {
-        // Route through the session's OWNER (tile route → known profile);
-        // ambient only when no owner is known. The ambient socket follows
-        // foreground focus, and for a cross-profile session it points at a
-        // backend that never held this approval (#91684 client half).
-        await requestForOwnedSession<{ resolved?: boolean }>(
-          request.sessionId,
-          // Bound (not wrapped) so the ambient fallback keeps the exact
-          // 2-arg call shape gateway.request callers assert on.
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'approval.respond',
-          {
-            choice,
-            request_id: request.requestId,
-            session_id: request.sessionId ?? undefined
-          }
-        )
-        triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest(request.sessionId, request.requestId)
-        void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
+        await stack.depart(() => sendApproval(request, choice))
+        restoreFocusOrigin()
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.requestId, request.sessionId]
+    [copy.gatewayDisconnected, copy.sendFailed, gateway, request, restoreFocusOrigin, stack]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.
@@ -195,9 +204,14 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   }, [confirmAlways, respond])
 
   return (
-    <div
-      className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
-      data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
+    <article
+      aria-hidden={!present || undefined}
+      className="min-w-0"
+      data-request-id={request.requestId}
+      data-slot="tool-approval-card"
+      inert={!present}
+      onPointerDownCapture={rememberFocusOrigin}
+      ref={cardRef}
     >
       <div className="flex items-center gap-2.5">
         <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">

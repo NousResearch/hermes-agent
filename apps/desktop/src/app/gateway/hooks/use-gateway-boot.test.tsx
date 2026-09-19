@@ -360,6 +360,48 @@ async function advanceBackoff() {
   })
 }
 
+describe('default-route profile adoption', () => {
+  it.each([null, 'coder-remote'])(
+    'dials the saved startup route before an ambient sender can replace it (%s)',
+    async connectionId => {
+      const base = fakeDesktop()
+      const route = { connectionId, profile: 'coder' }
+
+      const desktop = {
+        ...base,
+        getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+        profile: { ...base.profile, getDefault: vi.fn(async () => route) }
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+
+      if (connectionId) {
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith(route)
+      } else {
+        expect(desktop.getConnection).toHaveBeenCalledWith('coder')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+      }
+
+      expect($connection.get()?.profile).toBe('coder')
+      expect($desktopBoot.get().running).toBe(false)
+    }
+  )
+
+  it('adopts the resolved backend profile rather than the old last-used preference', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'research' })
+    desktop.profile.get.mockResolvedValue({ profile: 'old-last-used' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()?.profile).toBe('research')
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($desktopBoot.get().running).toBe(false)
+  })
+})
+
 describe('primary failure foreground isolation', () => {
   it('ignores a boot snapshot superseded by a successful connection', async () => {
     const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()
@@ -456,6 +498,42 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().visible).toBe(false)
     }
   )
+  it('a rejected background primary offers Settings instead of parking silently', async () => {
+    const desktop = Object.assign(fakeDesktop(), {
+      getConnectionFor: vi.fn(async () => ({
+        ...coderConn,
+        connectionId: 'local',
+        profile: 'default',
+        mode: 'local',
+        baseUrl: 'http://127.0.0.1:9191',
+        wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+      }))
+    })
+
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, mode: 'remote', remoteKind: 'cloud', authMode: 'oauth' } as typeof primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('local', 'default')
+    })
+    await flushAsync()
+    expect(await opening).toBe(true)
+
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    // The parked primary no longer retries by itself, so the user must learn
+    // about it from where they are — without the foreground being hijacked.
+    expect(isActivePrimary()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+    const toasts = $notifications.get().filter(entry => entry.kind === 'error')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].action?.label).toBe('Open Gateways')
+  })
+
   it.each(['progress', 'reconnect'] as const)(
     'primary auth via %s follows the foreground, including a latched error',
     async path => {
@@ -558,8 +636,11 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().error).toContain(error)
 
       desktop.getGatewayWsUrl.mockImplementation(async conn => conn?.wsUrl ?? primaryConn.wsUrl)
-      act(() => FakeWebSocket.instances[0].drop())
-      await advanceBackoff()
+      // A rejected session waits for explicit recovery, even after credentials change.
+      let recovery!: Promise<void>
+      act(() => { recovery = reconnectGateway() })
+      await flushAsync()
+      await recovery
       expect($gatewayState.get()).toBe('open')
       expect($desktopBoot.get().error).toBeNull()
       expect(overlay.queryByRole('heading')).toBeNull()
@@ -573,6 +654,32 @@ describe('primary failure foreground isolation', () => {
 })
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('parks rejected primary auth across timers and wake signals until explicit recovery', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, authMode: 'oauth' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+    expect($desktopBoot.get().error).toContain('session has expired')
+    const calls = desktop.getGatewayWsUrl.mock.calls.length
+    await advanceBackoff()
+    act(() => {
+      powerResume?.()
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('online'))
+    })
+    await advanceBackoff()
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(calls)
+    desktop.getGatewayWsUrl.mockResolvedValue(primaryConn.wsUrl)
+    act(() => { connectionApplied?.() })
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it

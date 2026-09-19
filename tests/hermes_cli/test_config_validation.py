@@ -36,6 +36,15 @@ class TestCustomProvidersValidation:
             "Should detect custom_providers as dict instead of list"
         )
 
+    def test_scalar_is_an_error_naming_key_and_type(self):
+        """A non-list scalar (a bad `config set`) makes every endpoint vanish — name the key and the type."""
+        issues = validate_config_structure({"custom_providers": "oops", "model": {"provider": "openrouter"}})
+        errors = [i.message for i in issues if i.severity == "error"]
+        assert any(m.startswith("custom_providers is a str") and "list" in m for m in errors), errors
+        assert not [i for i in validate_config_structure(
+            {"custom_providers": [{"name": "x", "base_url": "http://h/v1"}], "model": {"provider": "custom"}})
+            if i.severity == "error"]
+
     def test_dict_detects_misplaced_fields(self):
         """When custom_providers is a dict, detect fields that look misplaced."""
         issues = validate_config_structure({

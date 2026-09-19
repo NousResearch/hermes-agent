@@ -622,6 +622,41 @@ class TestPauseResumeJob:
         with pytest.raises(ValueError, match="in the past"):
             resume_job("test-resume-past")
 
+    def test_resume_keeps_slot_that_elapsed_while_paused_due(self, tmp_cron_dir, monkeypatch):
+        """A recurring job paused before its slot and resumed after it comes back with that slot
+        still due — the due scan then fires it (late/catch-up) or logs the skip. Re-anchoring
+        from now consumed the occurrence with no run, no ledger row and no log line (#113603)."""
+        now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="daily pipeline", schedule="30 1 * * *", deliver="local")
+        stored = load_jobs()
+        row = next(r for r in stored if r["id"] == job["id"])
+        slot = datetime(2026, 9, 16, 1, 30, 0, tzinfo=timezone.utc).isoformat()
+        row["next_run_at"] = slot
+        save_jobs(stored)
+
+        pause_job(job["id"], reason="ops audit")
+        assert job["id"] not in {j["id"] for j in get_due_jobs()}
+        assert get_job(job["id"])["next_run_at"] == slot
+
+        assert resume_job(job["id"])["next_run_at"] == slot
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+
+    def test_resume_recomputes_future_or_missing_slot_from_now(self, tmp_cron_dir, monkeypatch):
+        """Control: a paused job whose stored slot is still ahead, or created ``--paused`` with no
+        slot, resumes onto the next future occurrence as before."""
+        now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        ahead = create_job(prompt="daily", schedule="30 1 * * *", deliver="local")
+        pause_job(ahead["id"])
+        canary = create_job(prompt="canary", schedule="0 9 * * *", deliver="local", paused=True)
+        assert get_job(canary["id"])["next_run_at"] is None
+
+        for jid in (ahead["id"], canary["id"]):
+            resumed = resume_job(jid)
+            assert datetime.fromisoformat(resumed["next_run_at"]) > now
+            assert jid not in {j["id"] for j in get_due_jobs()}
+
 
 class TestResolveJobRef:
     """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""

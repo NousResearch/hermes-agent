@@ -121,7 +121,6 @@ export function KeyField({
               disabled={busy}
               onClick={() => void onClear(varKey)}
               size="icon-xs"
-              title={t.settings.credentials.remove}
               type="button"
               variant="ghost"
             >

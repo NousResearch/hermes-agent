@@ -125,6 +125,8 @@ export class JsonRpcGatewayClient {
   private lastSeenSeq = new Map<string, number>()
   /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
   private replayInFlight = false
+  /** Invalidates an interrupted replay so its async cleanup cannot own a replacement socket. */
+  private replayGeneration = 0
   /**
    * While a replay fetch is in flight, live seq'd frames for the sessions
    * being replayed are parked here instead of dispatching immediately.
@@ -533,6 +535,7 @@ export class JsonRpcGatewayClient {
     }
 
     this.replayInFlight = true
+    const replayGeneration = ++this.replayGeneration
     // Park live frames for the sessions we're about to replay so a frame
     // racing the replay response can't dispatch ahead of (or duplicate) the
     // gap events. Sessions without watermarks are unaffected.
@@ -557,6 +560,13 @@ export class JsonRpcGatewayClient {
           )
         )
       )
+
+      // The socket that owned this replay was dropped while its requests were
+      // settling. Its results and cleanup must not consume the replacement
+      // socket's replay window.
+      if (this.replayGeneration !== replayGeneration) {
+        return
+      }
 
       for (const result of results) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
@@ -589,8 +599,10 @@ export class JsonRpcGatewayClient {
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.
     } finally {
-      this.flushReplayHold()
-      this.replayInFlight = false
+      if (this.replayGeneration === replayGeneration) {
+        this.flushReplayHold()
+        this.replayInFlight = false
+      }
     }
   }
 
@@ -648,56 +660,14 @@ export class JsonRpcGatewayClient {
     }
   }
 
-  private gatewayReadyAdvertisesHeartbeat(payload: unknown): boolean {
-    return Boolean(payload && typeof payload === 'object' && (payload as { heartbeat?: unknown }).heartbeat === true)
-  }
-
-  private startHeartbeat(socket: WebSocketLike): void {
-    this.stopHeartbeat()
-    this.lastInboundAt = Date.now()
-
-    if (this.options.heartbeatIntervalMs <= 0 || this.options.heartbeatDeadlineMs <= 0) {
-      return
-    }
-
-    this.heartbeatTimer = setInterval(() => {
-      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
-        return
-      }
-
-      if (Date.now() - this.lastInboundAt >= this.options.heartbeatDeadlineMs) {
-        this.invalidateSocket(socket, new Error('WebSocket heartbeat acknowledgement timed out'))
-
-        return
-      }
-
-      try {
-        socket.send(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id: `heartbeat-${++this.heartbeatSequence}`,
-            method: 'gateway.ping',
-            params: {}
-          })
-        )
-      } catch (error) {
-        this.invalidateSocket(socket, error instanceof Error ? error : new Error(String(error)))
-      }
-    }, this.options.heartbeatIntervalMs)
-  }
-
-  private stopHeartbeat(): void {
-    if (this.heartbeatTimer !== null) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
-  }
-
-  private invalidateSocket(socket: WebSocketLike, error: Error): void {
-    if (this.socket !== socket) {
-      return
-    }
-
+  /** Forget the current socket generation, fail its calls, and go 'closed'. */
+  private dropSocket(error: Error): void {
+    // A replay belongs to the socket that started it. Detaching that socket
+    // rejects its requests asynchronously, so clear its ownership now; the
+    // next open can immediately schedule a replay of its own.
+    this.replayGeneration += 1
+    this.replayInFlight = false
+    this.replayHold = null
     this.socket = null
     this.stopHeartbeat()
 

@@ -390,7 +390,11 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
+        logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
+        from gateway.warning_notifications import render_notification
+        render_notification(
+            lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
+            platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:

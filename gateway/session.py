@@ -855,7 +855,9 @@ class SessionStore(
         self._transcript_reroutes: Dict[str, str] = {}
         self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
         self._transcript_append_failures: Dict[str, int] = {}
-        self._fts_rebuild_attempted = False
+        # Monotonic timestamp of the last FTS5 rebuild attempt, or None before any attempt; see
+        # SessionTranscriptMixin._rebuild_fts_once for the cooldown this gates.
+        self._fts_rebuild_last_attempt_at: Optional[float] = None
         self._has_active_processes_fn = has_active_processes_fn
         self._conversation_worktree_manager_factory = (
             conversation_worktree_manager_factory or _default_conversation_worktree_manager_factory
@@ -1668,16 +1670,26 @@ class SessionStore(
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
     def switch_session(
-        self, session_key: str, target_session_id: str, conversation_kind: str = "interactive",
-        persisted_cwd: Optional[str] = None,
+        self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
-        reopens the target so resume matches the CLI."""
+        reopens the target so resume matches the CLI.
+
+        ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
+        the key no longer points at that session, so a caller that resolved against a snapshot
+        across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
+        """
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
                 return None
-            if old_entry.session_id == target_session_id and persisted_cwd is None:
+            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+                logger.info(
+                    "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
+                    session_key, expected_session_id, old_entry.session_id,
+                )
+                return None
+            if old_entry.session_id == target_session_id:
                 return old_entry
             candidate = SessionEntry(
                 session_key=session_key, session_id=target_session_id,

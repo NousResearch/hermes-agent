@@ -50,7 +50,7 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         runner.session_store = SessionStore(home / 'sessions', config)
         runner._heartbeat_watch = {}
         runner._start_heartbeat_poller = lambda: None
-        runner._profile_name_for_source = lambda source: source.profile
+        runner._profile_name_for_source = lambda source, adapter_profile=None: source.profile
         runner._adapter_for_source = lambda source: object()
         runner._run_in_executor_with_context = asyncio.to_thread
         original = runner.session_store.list_sessions

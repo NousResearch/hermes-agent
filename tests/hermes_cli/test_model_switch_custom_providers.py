@@ -501,6 +501,66 @@ def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch)
     assert result.api_key == "sk-test"
 
 
+def test_switch_to_bare_custom_from_another_provider_resolves_the_configured_endpoint(monkeypatch, tmp_path):
+    """#73680: the per-turn config sync adopting ``provider: custom`` from an OpenRouter session
+    must land on the configured custom endpoint, not pair the new model with OpenRouter's URL
+    and key."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: qwen3:8b\n  provider: custom\n  base_url: http://127.0.0.1:11434/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="qwen3:8b",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="sk-openrouter",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom"
+    assert result.base_url == "http://127.0.0.1:11434/v1"
+    assert result.api_key == "no-key-required"
+
+
+def test_switch_to_bare_custom_with_no_configured_endpoint_keeps_the_current_one(monkeypatch, tmp_path):
+    """#74143 shape on the switched-provider path: with no ``model.base_url`` the bare-custom
+    resolver lands on OpenRouter's default whenever an OpenRouter key exists — a host the user
+    never picked. An Anthropic session must stay on its own endpoint instead."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="m2",
+        current_provider="anthropic",
+        current_model="m",
+        current_base_url="https://api.anthropic.com",
+        current_api_key="sk-ant",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
+
+
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True
     assert providers_mod.is_aggregator("custom:litellm") is True
@@ -2320,7 +2380,7 @@ def test_auto_saved_catalog_round_trips_without_pinning(tmp_path, monkeypatch):
 
     _save_discovered_models_to_config(_LOCAL_ENDPOINT, list(_LOCAL_CATALOG))
 
-    saved = yaml.safe_load(cfg_path.read_text())["custom_providers"][0]
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"][0]
     assert saved["models_discovered"] is True
     assert list(saved["models"]) == _LOCAL_CATALOG
     assert not any(m.startswith("__") for m in saved["models"]), (
@@ -2402,7 +2462,7 @@ def test_legacy_sentinel_catalog_still_resolves_and_migrates(tmp_path, monkeypat
 
     _save_discovered_models_to_config(_LOCAL_ENDPOINT, list(_LOCAL_CATALOG))
 
-    saved = yaml.safe_load(cfg_path.read_text())["custom_providers"][0]
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"][0]
     assert saved["models_discovered"] is True
     assert list(saved["models"]) == _LOCAL_CATALOG
     assert "__discovered_model_catalog__" not in saved["models"]

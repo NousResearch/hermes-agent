@@ -115,7 +115,7 @@ class TestGatewayPinningFailsClosed:
 
         assert resolved is pinned
         getattr(runner.session_store, "switch_session").assert_called_once_with(
-            current.session_key, "sess_live"
+            current.session_key, "sess_live", expected_session_id=current.session_id,
         )
         getattr(
             runner.session_store, "reconcile_conversation_root_transition"
@@ -221,3 +221,52 @@ class TestResetHandlerInterruptsDelegations:
         src = inspect.getsource(slash_commands.GatewaySlashCommandsMixin._handle_reset_command)
         assert "interrupt_for_session" in src
         assert "session_reset" in src
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["none", "revoke", "replace"])
+async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
+    """A non-compression re-pin that resolved its row across an await must not move the route
+    after the run was invalidated (/stop) or the route was replaced (/new, /resume) meanwhile;
+    an undisturbed pin still lands. Real store + real resolver; the DB lookup is event-gated.
+    Scenario by the #113690 reporter."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="test-chat", chat_type="dm", user_id="test-user")
+    entry = store.get_or_create_session(source)
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    generation = runner._begin_session_run_generation(entry.session_key)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def get_session(session_id):
+        entered.set()
+        await release.wait()
+        return {"id": session_id, "ended_at": None}
+
+    runner._session_db = SimpleNamespace(get_session=AsyncMock(side_effect=get_session))
+    task = asyncio.create_task(runner._resolve_async_delegation_session(entry, "test-pinned"))
+    await asyncio.wait_for(entered.wait(), 3)
+    expected = "test-pinned"
+    if boundary != "none":
+        runner._invalidate_session_run_generation(entry.session_key, reason="test boundary")
+        assert not runner._is_session_run_current(entry.session_key, generation)
+        expected = entry.session_id
+    if boundary == "replace":
+        store.switch_session(entry.session_key, "test-replacement")
+        expected = "test-replacement"
+    release.set()
+    result = await asyncio.wait_for(task, 3)
+
+    assert store.lookup_by_session_key(entry.session_key).session_id == expected
+    if boundary == "none":
+        assert result is not None and result.session_id == expected
+    else:
+        assert result is None

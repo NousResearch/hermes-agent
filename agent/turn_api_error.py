@@ -283,9 +283,17 @@ def settle_unrecovered_error(
     shrink_spent = classified.reason == FailoverReason.image_too_large and bool(
         getattr(_retry, "image_shrink_retry_attempted", False)
     )
+    # Same shape for the reasoning-disable rung: the retry already went out without the disable,
+    # so a second reasoning-field rejection means the route refuses the configured reasoning
+    # controls themselves — nothing left to drop, so take the fallback chain now instead of
+    # replaying the identical request ``max_retries`` times (#114460).
+    reasoning_spent = classified.reason == FailoverReason.reasoning_mandatory and bool(
+        getattr(_retry, "reasoning_mandatory_retry_attempted", False)
+    )
     is_client_error = (
         is_local_validation_error
         or shrink_spent
+        or reasoning_spent
         or (
             not classified.retryable
             and not classified.should_compress
@@ -321,12 +329,12 @@ def settle_unrecovered_error(
         # the cascade. An UNCLASSIFIED local ValueError/TypeError keeps its historical fallback;
         # a recognised verdict that opts out wins even when the exception is a ValueError subclass.
         _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
-        if classified.should_fallback or _unclassified_local or shrink_spent:
+        if classified.should_fallback or _unclassified_local or shrink_spent or reasoning_spent:
             # Announce the fallback only when a chain exists, else "trying fallback..." lies
             # before a silent abort.
             if agent._has_pending_fallback():
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-                agent._buffer_status(f"⚠️ {_label} — trying fallback...")
+                agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
             if agent._try_activate_fallback():
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
@@ -355,7 +363,7 @@ def settle_unrecovered_error(
             agent._fallback_activated = False
             return _verdict("continue")
         if agent._has_pending_fallback():
-            agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
         if agent._try_activate_fallback():
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.

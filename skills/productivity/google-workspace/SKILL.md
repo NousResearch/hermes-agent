@@ -210,6 +210,9 @@ $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
 $GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
 $GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
 $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
+$GAPI calendar create --summary "Standup" --start 2026-03-01T10:00:00Z --end 2026-03-01T10:30:00Z --reminders 15
+# --reminders accepts one positive popup offset in minutes. Omitted or non-positive
+# values keep the calendar defaults; 0 does not silence reminders.
 
 # Delete event
 $GAPI calendar delete EVENT_ID

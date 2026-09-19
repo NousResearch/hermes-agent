@@ -596,9 +596,16 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         db, current_session_id = profile_db, None
         owned_dbs.append(profile_db)
     if isinstance(session_id, str) and session_id.strip():
+        sid = session_id.strip()
+        if current_session_id and sid == current_session_id:
+            return tool_error(
+                "session_id is the current live session and has not been flushed to state.db "
+                "yet; use the active conversation context instead",
+                success=False,
+            )
         if around_message_id is not None:
-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(db, session_id.strip(), profile)
+            return _scroll(db, sid, around_message_id, window, current_session_id)
+        return _read_scoped(db, sid, profile)
     limit = _clamp_int(limit, 3, 1, 10)
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)

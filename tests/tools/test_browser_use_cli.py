@@ -1377,12 +1377,21 @@ class TestInstallCli:
         two's store is empty and uv genuinely installs + links there.
 
         Regression guard: with a shared store this fails — the second profile
-        reports success while its bin/ stays empty.
+        reports success while its bin/ stays empty (verify by deleting the
+        UV_TOOL_DIR pin from managed_uv_env: this test then goes red with the
+        "install reported success but the browser-use binary is still not
+        resolvable" message).
         """
         fake_uv = tmp_path / "uv"
         fake_uv.write_text(
             "#!/bin/sh\n"
-            'store="$UV_TOOL_DIR/uvprobe-tool"\n'
+            # uv's real default store when UV_TOOL_DIR is unset: a uv-managed
+            # tool store is per-USER, i.e. shared by every profile that does
+            # not pin one.  Modelling that default is what makes this test
+            # sensitive to the pin — a plain "$UV_TOOL_DIR/..." collapses to a
+            # path that never exists once the pin is gone, so the fake would
+            # "install" every time and the test could never go red.
+            'store="${UV_TOOL_DIR:-$HOME/.local/share/uv/tools}/uvprobe-tool"\n'
             'if [ -e "$store" ]; then\n'
             '  echo "`uvprobe-tool` is already installed"\n'
             '  exit 0\n'
@@ -1397,6 +1406,9 @@ class TestInstallCli:
         fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IXUSR)
 
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        # The store uv falls back to is per-USER, so keep the unpinned path
+        # inside the temp tree — never the developer's real ~/.local/share.
+        monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
         monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
 
         # A real managed_uv_env: pins UV_TOOL_DIR under the ACTIVE HERMES_HOME

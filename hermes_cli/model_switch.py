@@ -1199,6 +1199,20 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
 
 def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
     """Step b: the alias exists but not on the current provider -> try the user's authenticated providers."""
+    from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
+    try:
+        routing_aggregator = is_routing_aggregator(_norm_prov(st.current_provider))
+    except Exception:
+        routing_aggregator = False
+    if not routing_aggregator:
+        # A family alias missing on a single-provider setup is not an invitation to silently
+        # leave it: fail on the configured provider (#114475, #114477). Routing aggregators
+        # keep the cross-provider fallback; everyone else re-runs with --provider <slug>.
+        identity = MODEL_ALIASES[key]
+        return st.fail(
+            f"Alias '{key}' maps to {identity.vendor}/{identity.family} "
+            f"but is not available on {st.current_provider}. "
+            f"Specify the full model name or re-run with --provider <slug>.")
     authed = get_authenticated_provider_slugs(
         current_provider=st.current_provider, user_providers=st.user_providers, custom_providers=st.custom_providers,
     )

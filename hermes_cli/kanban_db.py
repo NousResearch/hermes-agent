@@ -1120,6 +1120,18 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _require_dir_workspace_path(
+    workspace_kind: str, workspace_path: Optional[str]
+) -> Optional[str]:
+    """Reject directory workspaces that cannot be resolved at dispatch."""
+    if workspace_kind != "dir":
+        return workspace_path
+    normalized = str(workspace_path).strip() if workspace_path is not None else ""
+    if not normalized:
+        raise ValueError("workspace_path is required for dir workspaces")
+    return workspace_path
+
+
 def _resolve_project_link(
     conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
     workspace_kind: str, workspace_path: Optional[str],
@@ -1333,6 +1345,8 @@ def create_task(
         board_default = _board_meta_for(board).get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+
+    workspace_path = _require_dir_workspace_path(workspace_kind, workspace_path)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

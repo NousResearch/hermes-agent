@@ -56,7 +56,10 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    pcm_sample_rate: 24000      # Streaming PCM rate expected from the endpoint (auto-overridden by X-Audio-Sample-Rate)
     speed: 1.0                  # 0.25 - 4.0
+    # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
+    # consent_attestation: "I have the speaker's consent"  # Required by some OpenAI-compatible servers for cloned voices
   minimax:
     region: "global"           # "global" or "cn"; see selection rules below
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
@@ -75,7 +78,11 @@ tts:
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
-    language: "en"              # ISO 639-1 code
+    language: "en"              # BCP-47 code (e.g. "en", "pt-BR") or "auto" for detection
+    speed: 1.0                  # 0.7–1.5, playback speed (default: 1.0)
+    auto_speech_tags: false     # insert expressive audio tags via LLM rewrite
+    text_normalization: false   # normalize numbers/abbreviations/symbols to spoken form
+    optimize_streaming_latency: 0  # 0–2, trades quality for lower latency (default: 0)
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
     # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
@@ -123,9 +130,9 @@ tts:
     persona_prompt_file: ~/.hermes/tts/butler-voice.md
 ```
 
-### Gemini Audio Tags
+### Audio Tags (Gemini, xAI)
 
-Gemini 3.1 Flash TTS supports freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, `[laughs]`, and other expressive delivery notes. Enable `tts.gemini.audio_tags` to have Hermes run a hidden rewrite pass before Gemini TTS. The rewrite inserts inline tags into the TTS script only; the visible chat reply stays unchanged.
+Google's Gemini 3.1 Flash TTS and xAI's Grok TTS support freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, `[laughs]`, and other expressive delivery notes. Enable `tts.gemini.audio_tags` or `tts.xai.auto_speech_tags` to have Hermes run a hidden rewrite pass before TTS. The rewrite inserts inline tags into the TTS script only; the visible chat reply stays unchanged.
 
 ```yaml
 tts:
@@ -133,9 +140,17 @@ tts:
   gemini:
     model: gemini-3.1-flash-tts-preview
     audio_tags: true
+  xai: 
+    auto_speech_tags: true
 ```
 
 The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model. Override that auxiliary task if you want tag insertion handled by a cheaper or faster model.
+
+**Streaming sample rate (OpenAI-compatible endpoints)**: streaming playback receives headerless raw PCM, so Hermes must know its sample rate. The official OpenAI API emits 24 kHz. A compatible server that reports its rate — the `X-Audio-Sample-Rate` response header, or `rate=` in the `Content-Type` (`audio/pcm; rate=44100`) — is honored automatically: the speaker, the temp-WAV player and the gateway audio stream all open at the reported rate once the response arrives. For servers that report nothing, set `tts.openai.pcm_sample_rate` to the endpoint's output rate (e.g. `22050` for Piper-backed servers); otherwise speech plays at the wrong speed and pitch. Invalid values log a warning and fall back to `24000`.
+
+**Language (OpenAI-compatible endpoints)**: `tts.openai.language` is forwarded to the endpoint as a `lang_code` request parameter. It is intended for OpenAI-compatible TTS servers that support `lang_code` — for example [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), where `language: "es"` selects the Spanish phonemizer instead of the English default. Leave it unset when using the official OpenAI API, which does not accept this parameter. When unset, nothing extra is sent.
+
+**Cloned-voice consent (OpenAI-compatible endpoints)**: some self-hosted OpenAI-compatible TTS servers reject a cloned voice with `400 consent_required` unless the request carries a `consent_attestation` field. Set `tts.openai.consent_attestation` to the attestation text your server expects; Hermes forwards it verbatim in the request body on every OpenAI-compatible path (whole-file synthesis, streaming, and the desktop's client-direct voice). Leave it unset for the official OpenAI API — when unset, the field is not sent.
 
 
 ### Input length limits

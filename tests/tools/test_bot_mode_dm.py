@@ -1170,3 +1170,84 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     assert "Do NOT resend" in result["detail"]
     assert "approval" in result["notification_error"]
     assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"
+
+
+def test_ack_names_poll_return_path_when_session_cannot_receive_completions(tmp_path, monkeypatch):
+    """#101142: on a non-push sender surface (api_server) terminal_tool refuses the
+    ``notify_on_complete`` promise, so the reply can never be injected later. The ack must not
+    promise a completion notification; it names the surface-supported return path instead."""
+    import tools.terminal_tool as terminal_tool_module
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
+        "output": "Background process started", "session_id": "proc_np1", "notify_on_complete": False,
+        "notify_unsupported": "poll"}))
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert result["reply_delivery"] == "poll"
+    assert "completion notification carries" not in result["detail"]
+    assert "process(action='wait', session_id='proc_np1')" in result["detail"]
+    assert "if wait returns status=timeout, call wait again" in result["detail"]
+
+
+def test_live_owner_ack_carries_the_poll_return_path_when_session_cannot_receive_completions(tmp_path, monkeypatch):
+    """#101142 sibling: a live-owner (Desktop) target still runs the same tracked runner whose
+    stdout carries the reply. On a non-push sender the live-owner ack must propagate
+    ``reply_delivery="poll"`` and the wait instruction instead of 'finish your turn'."""
+    from tools import bot_live_delivery as live
+    import tools.terminal_tool as terminal_tool_module
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
+        "output": "Background process started", "session_id": "proc_np2", "notify_on_complete": False}))
+
+    result = json.loads(bot_mode_dm.message_agent_tool("researcher", "hello", agent=_FakeAgent(home)))
+    assert result["status"] == "queued"
+    assert result["process_id"] == "proc_np2"
+    assert result["reply_delivery"] == "poll"
+    assert "process(action='wait', session_id='proc_np2')" in result["detail"]
+    assert "finish your turn" not in result["detail"].lower()
+
+
+def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_path, monkeypatch):
+    """#101142 durable leg: with no completion notification the sender may end its turn without
+    polling; the tracked runner's exit must still land the reply in the sender's session transcript
+    as a DELIVERY row (``display_kind=process_complete``), so nothing is silently lost."""
+    import tools.terminal_tool as terminal_tool_module
+    from tools.process_registry import process_registry
+
+    reply = json.dumps({"status": "settled", "reply": "PAYLOAD_SENTINEL_42", "delivery_id": "d1"})
+    procs = []
+
+    def fake_terminal_tool(command, **kw):
+        popen = subprocess.Popen([sys.executable, "-c", f"import json; print({reply!r})"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        procs.append(process_registry.adopt_local(popen, command=command, cwd=str(tmp_path), notify_on_complete=False))
+        return json.dumps({"output": "Background process started", "session_id": procs[-1].id,
+                           "notify_on_complete": False})
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+    rows = []
+    agent._session_db.append_message = lambda session_id, role, **kw: rows.append((session_id, role, kw)) or 1
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent))
+    assert result["reply_delivery"] == "poll"
+    assert "transcript" in result["detail"]
+    deadline = time.monotonic() + 10
+    while not rows and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(rows) == 1
+    session_id, role, kw = rows[0]
+    assert (session_id, role) == ("sess-1", "user")
+    assert kw["display_kind"] == "process_complete"
+    assert "PAYLOAD_SENTINEL_42" in kw["content"]
+    assert procs[0].id in kw["content"]
+    assert kw["display_metadata"]["display_text"].startswith("Background Process Finished")

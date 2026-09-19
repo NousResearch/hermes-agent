@@ -1005,7 +1005,7 @@ class GatewayShutdownMixin:
                 # The session's OWN profile's bot (transport ref → profile map), never a bare
                 # self.adapters hit: under multiplex that is the default bot, so a secondary session's
                 # "Gateway shutting down" would land in the user's chat with the wrong bot.
-                adapter = self._adapter_for_source(source) if source is not None else None
+                adapter = self._delivery_adapter_for(source) if source is not None else None
                 if adapter is None:
                     adapter = self._authorization_adapter(platform, profile)
                 if not adapter:

@@ -35,6 +35,9 @@ export const ERROR_CODE_KEYS = [
   'timeout',
   'stream_drop',
   'ssl_cert_verification',
+  // A firewall/CDN in front of the endpoint refused the request (usually by
+  // User-Agent) before it reached the model: not a key problem, and not retryable.
+  'upstream_blocked',
   'context_overflow',
   'payload_too_large',
   'model_not_found',
@@ -84,6 +87,10 @@ export interface ErrorSurface {
   /** Free-tier codes: the backend's own plain sentence for this failure (it
    *  names the wait, the model, the way forward). Shown as the card body. */
   message?: string
+  /** Epoch seconds when the provider said its limit lifts (Retry-After header /
+   *  `resets_at` body field on a 429). Rendered as "Limit resets at HH:mm" next
+   *  to Retry. Absent when the provider named no reset or on older backends. */
+  resetsAt?: number
 }
 
 /** Validate a wire payload into an ErrorSurface, or null when absent/garbled. */
@@ -101,6 +108,7 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     model?: unknown
     provider?: unknown
     provider_label?: unknown
+    resets_at?: unknown
     retryable?: unknown
   }
 
@@ -119,8 +127,33 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     ...(raw.auth_kind === 'oauth' || raw.auth_kind === 'api_key' ? { authKind: raw.auth_kind } : {}),
     ...(typeof raw.provider_label === 'string' && raw.provider_label ? { providerLabel: raw.provider_label } : {}),
     ...(typeof raw.api_key_env === 'string' && raw.api_key_env ? { apiKeyEnv: raw.api_key_env } : {}),
-    ...(typeof raw.message === 'string' && raw.message.trim() ? { message: raw.message.trim() } : {})
+    ...(typeof raw.message === 'string' && raw.message.trim() ? { message: raw.message.trim() } : {}),
+    ...(typeof raw.resets_at === 'number' && Number.isFinite(raw.resets_at) && raw.resets_at > 0
+      ? { resetsAt: raw.resets_at }
+      : {})
   }
+}
+
+/** "HH:mm (in 1h 05m)" for a provider reset moment, or null once it has passed
+ *  (a Retry then simply works, so the hint disappears). `now` is injectable for tests. */
+export function formatLimitReset(resetsAt: number | undefined, now: number = Date.now()): null | string {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) {
+    return null
+  }
+
+  const remainingMinutes = Math.ceil((resetsAt * 1000 - now) / 60_000)
+
+  if (remainingMinutes <= 0) {
+    return null
+  }
+
+  const at = new Date(resetsAt * 1000)
+  const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  const hours = Math.floor(remainingMinutes / 60)
+  const minutes = remainingMinutes % 60
+  const wait = hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}m`
+
+  return `${clock} (in ${wait})`
 }
 
 /** True when the Nous free tier refused or could not serve the turn: the way
@@ -183,7 +216,9 @@ export interface ErrorRecoveryPlan {
   signInAgain: boolean
   /** Open the free-tier sign-in dialog (free_tier_* codes): signing in is free and lifts the refusal. */
   signInFreeTier: boolean
-  /** Settings → Models deep link. */
+  /** Open the live session model menu (switches THIS session via
+   *  model.switch); Settings → Models deep link fallback when no chat surface
+   *  is on screen. */
   switchProvider: boolean
 }
 
@@ -249,6 +284,7 @@ export function formatErrorDiagnostics(input: {
     input.surface ? `layer: ${input.surface.layer}` : null,
     input.surface ? `code: ${input.surface.code}` : null,
     input.surface ? `retryable: ${input.surface.retryable}` : null,
+    input.surface?.resetsAt ? `resets_at: ${new Date(input.surface.resetsAt * 1000).toISOString()}` : null,
     provider ? `provider: ${provider}` : null,
     model ? `model: ${model}` : null,
     input.appVersion ? `app: ${input.appVersion}` : null,

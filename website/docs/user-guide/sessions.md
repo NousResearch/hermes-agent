@@ -650,6 +650,52 @@ conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
+### Repair State Crossed Between Profiles
+
+Every profile owns one `state.db`, and every gateway session key names the
+profile that owns the conversation (`agent:main:…` for the default profile,
+`agent:<name>:…` for a named one). Older releases could leave the two
+disagreeing — a named profile's rows written into the default store, a child
+session inheriting from another profile's row, a routing row copied into the
+wrong store, a Telegram topic or `/voice` setting saved without the bot's
+profile. Current versions put new state in the right place; `hermes sessions
+repair-profiles` settles what is already crossed.
+
+```bash
+# Report only — every store is scanned, nothing is written
+hermes sessions repair-profiles
+
+# Perform the repairs (stop the gateway first; a snapshot of every store is taken)
+hermes sessions repair-profiles --apply
+
+# Machine-readable report
+hermes sessions repair-profiles --json
+```
+
+What it finds and does:
+
+| Finding | Repair |
+|---|---|
+| `profile_name` disagrees with the row's own session key | relabel from the key |
+| rows sitting in another profile's store | move (with all messages) to the owning profile's store |
+| `parent_session_id` pointing at another profile's row | sever the link; the row's own identity is kept |
+| routing rows outside the default store (under multiplexing) | move to the default store; an existing row there wins |
+| routing rows / `sessions.json` entries for a profile that no longer exists | delete |
+| Telegram topic bindings and voice-mode entries missing their bot's profile | relabel from the sessions that hold the chat |
+
+Two cases are reported but never repaired without being told what they are:
+rows keyed to a profile that does not exist (create the profile, or
+`hermes profile migrate-identity <old> <new>`), and `agent:main:…` rows inside
+a named profile's store. The latter are either the history of a gateway that
+used to run standalone for that profile (`--legacy-main rekey` gives them the
+profile's namespace) or default-profile chats that leaked in under a scoped
+write (`--legacy-main move` sends them to the default store) — the rows
+themselves cannot tell the two apart.
+
+`--apply` refuses while a gateway owns any of the stores (it holds the routing
+index in memory and would write it back), and is safe to re-run: a second run
+finds nothing.
+
 
 ## Importing Sessions from Claude Code and Codex CLI
 

@@ -3,6 +3,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
@@ -118,6 +119,7 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     for subdir_name in ["cron", "sessions", "logs", "skills"] + (["memories"] if memory_on else []):
         ensure_dir(f, should_fix, hermes_home / subdir_name, f"{_DHH}/{subdir_name}/ exists",
                    f"Created {_DHH}/{subdir_name}/", f"{_DHH}/{subdir_name}/ not found")
+    _check_scratch_dir(hermes_home, _DHH)
     # SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():
@@ -147,6 +149,18 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
+
+
+def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
+    """Report the scratch dir (TMPDIR target) and its size; a user-set TMPDIR elsewhere is shown, not judged."""
+    from hermes_constants import (
+        SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_AGE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
+    scratch = get_scratch_dir(hermes_home, prune=False)
+    size = _human_bytes(scratch_dir_usage_bytes(scratch))
+    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, pruned after {SCRATCH_MAX_AGE_HOURS}h)")
+    tmpdir = os.environ.get("TMPDIR", "")
+    if tmpdir and tmpdir != os.environ.get(SCRATCH_DIR_MARKER_ENV, ""):
+        check_info(f"TMPDIR={tmpdir} is set by you or the OS, so Hermes leaves it alone")
 
 
 def _session_count(state_db_path: Path):

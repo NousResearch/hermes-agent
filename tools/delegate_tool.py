@@ -31,7 +31,7 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _profile_model_cfg,  # KENSEI CUSTOM
     _registry_surface_chain,  # KENSEI CUSTOM: delegation fallback chain
     _resolve_child_credential_pool,
@@ -199,7 +199,7 @@ def _child_compression_cap_tokens(raw) -> "int | None":
 def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
     (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
-    compacts at 500K like its parent. The compressor applies the cap on first window resolution, which
+    compacts where its parent does. The compressor applies the cap on first window resolution, which
     happens after construction, so setting it here is exactly equivalent to config."""
     from agent.context_compressor import ContextCompressor
 
@@ -617,6 +617,26 @@ def _build_children(
     return children, None
 
 
+def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
+    """Charge *requested* children against the finite one-shot session's total (delegation.oneshot_max_children);
+    the error text tells the model to do the work inline. Interactive and gateway sessions are never charged."""
+    from agent.oneshot_footprint import is_single_query_session
+    if not is_single_query_session():
+        return None
+    cap = _get_oneshot_max_children()
+    if cap <= 0:
+        return None
+    spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
+    if spent + requested > cap:
+        return (
+            f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "
+            f"delegation.oneshot_max_children). Do the remaining work yourself in this session — reviewing "
+            f"your own diff and running the tests inline is expected here, not a delegated review."
+        )
+    parent_agent._oneshot_children_spawned = spent + requested
+    return None
+
+
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
@@ -690,6 +710,9 @@ def delegate_task(
         task_schemas, err = _coerce_task_schemas(task_list, output_schema, _nested_default)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
+    if err:
+        return tool_error(err)
+    err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
 
@@ -790,16 +813,14 @@ _DESCRIPTION_HEAD = (
     "as a new message when subagents finish ({delivery}). Background results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
-    "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
-    "child drifting.\n\n"
-    "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
-    "parallel workstreams.\n"
+    "While children run, `action` (list/steer/stop) controls them live.\n\n"
+    "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
     "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
     "- A single tool call -> call the tool directly\n"
     "- Tasks needing user interaction -> subagents cannot ask questions\n"
     "- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, "
-    "or process exit discards running subagents.\n\n"
+    "or process exit halts running subagents (whole tree); each returns an 'interrupted' completion with partial output.\n\n"
     "RULES:\n"
     "- Children know nothing of this conversation: pass everything needed via 'context', including any required "
     "output language, tone, or style (e.g. \"respond in Chinese\").\n"

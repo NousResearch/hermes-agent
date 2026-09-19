@@ -10,7 +10,10 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
+import * as os from 'node:os'
 import * as path from 'node:path'
+
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
   buildAppEnv,
@@ -22,7 +25,6 @@ import {
   writeEnvFile,
   writeMockProviderConfig,
 } from './fixtures'
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -30,7 +32,7 @@ const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
 const REMOTE_LABEL = 'Homelab'
 const REMOTE_ID = 'homelab'
 const REMOTE_TOKEN = 'e2e-group-gate-homelab-token'
-const SHOTS = '/tmp/batchbots/group-identity-members/shots'
+const SHOTS = path.join(os.tmpdir(), 'batchbots/group-identity-members/shots')
 
 interface RemoteGateway {
   url: string

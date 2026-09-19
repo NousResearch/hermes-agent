@@ -87,8 +87,8 @@ else
         # full, etc.) instead of "✗ Failed to install uv" with zero
         # diagnostic.  Two-stage to avoid `curl | sh` masking curl
         # failures (sh exits 0 on empty stdin under no pipefail).
-        _uv_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
-        _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+        _uv_log="$(mktemp 2>/dev/null || echo "${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}}/hermes-uv-install.$$.log")"
+        _uv_installer="$(mktemp 2>/dev/null || echo "${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}}/hermes-uv-installer.$$.sh")"
         if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_log"; then
             echo -e "${RED}✗${NC} Failed to download uv installer."
             sed 's/^/    /' "$_uv_log" >&2

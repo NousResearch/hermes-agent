@@ -77,6 +77,29 @@ def _hermes_home() -> Path:
     return Path(get_hermes_home())
 
 
+def hermes_service_roots() -> tuple[str, ...]:
+    """Directories a Hermes-owned SCM service binary lives under: the checkout (its ``venv`` included),
+    the running interpreter's ``Scripts`` dir (``hermes.exe`` shim) and the ``gateway-service`` launcher dir."""
+    project_root = Path(__file__).resolve().parent.parent
+    return (str(project_root), str(Path(sys.executable).parent), str(_hermes_home() / "gateway-service"))
+
+
+def _normalize_windows_path(value: str) -> str:
+    return value.strip().lstrip('"').replace("\\", "/").rstrip("/").casefold()
+
+
+def hermes_owns_windows_service(name: str, binpath: str, hermes_roots: tuple[str, ...]) -> bool:
+    """Positive ownership of an SCM service: Hermes-named (``hermes*``) or its binary path starts under a
+    Hermes root. Pure so it is testable off-Windows. A Scheduled-Task-launched gateway descends from
+    ``svchost.exe`` hosting ``Schedule``; without this gate the updater took Task Scheduler for the
+    gateway's supervisor and ``sc.exe stop Schedule`` aborted every update (#97208)."""
+    normalized_name = "".join(char for char in name.casefold() if char.isalnum())
+    if normalized_name.startswith("hermes"):
+        return True
+    candidate = _normalize_windows_path(binpath)
+    return any(candidate.startswith(_normalize_windows_path(root) + "/") for root in hermes_roots if root)
+
+
 def _preserve_hermes_home_path(path: str | Path) -> str:
     r"""Render Hermes-owned paths under the configured HERMES_HOME spelling.
 
@@ -683,6 +706,22 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     return proc.pid
 
 
+def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool:
+    """A human can answer a prompt only on a real console. The Windows CRT reports isatty()==True for
+    every character device — the NUL device included (`hermes gateway start < NUL`, stdin=DEVNULL) — so
+    isatty must be confirmed by GetConsoleMode accepting the handle (#113977). ``console_mode_ok`` is
+    None where that fact does not exist (not Windows) and isatty alone decides."""
+    return isatty and console_mode_ok is not False
+
+
+def _stdin_console_mode_ok() -> bool | None:
+    if sys.platform != "win32":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    return bool(kernel32.GetConsoleMode(handle, ctypes.byref(ctypes.c_ulong())))
+
+
 def _install_choice_from_env(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
@@ -785,7 +824,7 @@ def install(
             _start_or_report_running()
         else:
             print("ℹ Gateway not started and no auto-start service installed.")
-            print("  Run later with: hermes gateway start")
+            print("  Run in the foreground later with: hermes gateway run")
         return
 
     task_name = get_task_name()
@@ -1493,17 +1532,26 @@ def start() -> None:
         return
 
     if not is_task_registered() and not is_startup_entry_installed():
-        from hermes_cli.setup import prompt_yes_no
+        # Login persistence is a lasting system change: a bare ``start`` installs it only on an explicit
+        # answer — the HERMES_GATEWAY_INSTALL_START_ON_LOGIN override or a real TTY prompt — never on a
+        # non-TTY default (#113977). Declining still starts the gateway; the command is ``start``.
+        start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
+        if start_on_login is None:
+            from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
-        print("✗ Gateway service is not installed")
-        if not prompt_yes_no("  Install it now so the gateway starts on login?", True):
-            print("  Run: hermes gateway install")
+            print("✗ Gateway service is not installed")
+            if is_noninteractive() or not _stdin_is_interactive(
+                isatty=is_interactive_stdin(), console_mode_ok=_stdin_console_mode_ok()
+            ):
+                start_on_login = False
+            else:
+                start_on_login = prompt_yes_no("  Install it now so the gateway starts on login?", True)
+        if start_on_login:
+            # install() starts the gateway itself (start_now) and reports the outcome — including a UAC
+            # hand-off to an elevated child — so there is nothing left to spawn or to warn about here.
+            install(force=False, start_now=True, start_on_login=True)
             return
-        install(force=False)
-        if not is_task_registered() and not is_startup_entry_installed():
-            print("⚠ Gateway install did not complete in this process.")
-            print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
-            return
+        print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 

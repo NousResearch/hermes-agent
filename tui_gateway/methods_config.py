@@ -159,6 +159,10 @@ def _cfg_get_reasoning(params):
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
     else:
         raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
+        if isinstance(raw_effort, dict):  # {enabled, effort} form: render the tier, never str(dict)
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(raw_effort) or {}
+            raw_effort = False if parsed.get("enabled") is False else parsed.get("effort")
         # YAML `reasoning_effort: false` means thinking disabled, not "unset".
         effort = "none" if raw_effort is False else str(raw_effort or "medium")
     display = "show" if (cfg.get("display") or {}).get("show_reasoning", True) else "hide"

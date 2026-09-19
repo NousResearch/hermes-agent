@@ -81,9 +81,15 @@ def _broadcast_gateway_session_info() -> None:
         _log.exception("session.info broadcast after config save failed")
 
 
-def _parse_model_ids(resp: "Any") -> List[str]:
-    """Model ids from an OpenAI-compatible ``/v1/models`` response: ``{"data": [{"id": ..}]}``
-    or a bare ``{"data": ["id", ..]}``. ``[]`` on any parse/HTTP error so a slightly
+_MODEL_ENTRY_METADATA = ("canonical_model", "reasoning_effort")
+
+
+def _parse_model_entries(resp: "Any") -> List[Dict[str, str]]:
+    """Model rows from an OpenAI-compatible ``/v1/models`` response as ``{"id": ..}`` dicts,
+    keeping the alias metadata a gateway may advertise (``canonical_model``,
+    ``reasoning_effort``). Flattening to bare ids lost that, so Desktop stored a reasoning
+    alias as the literal upstream model (#93622). Accepts ``{"data": [{"id": ..}]}`` or a
+    bare ``{"data": ["id", ..]}``; ``[]`` on any parse/HTTP error so a slightly
     non-standard endpoint never hard-blocks."""
     try:
         if not resp.is_success:
@@ -94,8 +100,24 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list):
         return []
-    ids = [str((item.get("id") if isinstance(item, dict) else item) or "").strip() for item in data]
-    return [mid for mid in ids if mid]
+    entries: List[Dict[str, str]] = []
+    for item in data:
+        model_id = str((item.get("id") if isinstance(item, dict) else item) or "").strip()
+        if not model_id:
+            continue
+        entry = {"id": model_id}
+        if isinstance(item, dict):
+            for key in _MODEL_ENTRY_METADATA:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    entry[key] = value
+        entries.append(entry)
+    return entries
+
+
+def _parse_model_ids(resp: "Any") -> List[str]:
+    """Bare model ids from a ``/v1/models`` response (see :func:`_parse_model_entries`)."""
+    return [entry["id"] for entry in _parse_model_entries(resp)]
 
 
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,

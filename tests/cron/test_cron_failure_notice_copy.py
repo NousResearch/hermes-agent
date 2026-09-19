@@ -82,6 +82,16 @@ def test_cron_cause_gloss_is_the_shared_table():
     assert provider_failure_notice("Morning brief", "ab12cd34", "unknown", backup_provider_phrase="x.") is None
 
 
+def test_waf_block_names_the_header_fix_not_a_bare_rerun(monkeypatch):
+    """A firewall refusing the SDK's User-Agent is healed by a header or another provider,
+    never by `hermes cron run` alone — the action must say so (#53099, #70566)."""
+    _no_chain(monkeypatch)
+    msg = _summarize_cron_failure_for_delivery(JOB, "Error code: 403 - Sorry, you have been blocked")
+    assert "extra_headers" in msg and "`hermes cron edit ab12cd34 --provider <name>`" in msg, msg
+    assert "Run it again with" not in msg, msg
+    assert "rejected" not in msg.lower(), msg  # not read as a key rejection
+
+
 def test_transient_provider_failures_never_lead_with_jargon(monkeypatch):
     _no_chain(monkeypatch)
     for err in ("Request timed out.", "HTTP 429: Too Many Requests"):

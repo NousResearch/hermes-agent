@@ -545,6 +545,9 @@ class GatewaySessionCommandsMixin:
         if platform_key is not None:
             runtime_kwargs["platform"] = platform_key
         runtime_kwargs["gateway_session_key"] = session_key
+        # Same reasoning setting as a live turn (session ``/reasoning`` > per-model > global): without it
+        # the transport applies its default effort — a 400 on non-reasoning models.
+        runtime_kwargs["reasoning_config"] = self._resolve_session_reasoning_config(source=source, model=model)
 
         tmp_agent = await self._build_manual_compression_agent(session_entry.session_id, model, runtime_kwargs)
         try:
@@ -740,7 +743,7 @@ class GatewaySessionCommandsMixin:
 
             await asyncio.to_thread(_render_and_write)
             # Profile-aware: under multiplex the requester's bot lives in _profile_adapters, not self.adapters.
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if not adapter:
                 return "Platform adapter not found to send the document."
             await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,

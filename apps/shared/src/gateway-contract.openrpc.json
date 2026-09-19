@@ -10366,7 +10366,7 @@
       },
       "ErrorSurface": {
         "additionalProperties": true,
-        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint).",
+        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint,\n+ ``resets_at`` epoch seconds when the provider named when its limit lifts).",
         "properties": {
           "layer": {
             "title": "Layer",
@@ -10403,6 +10403,18 @@
             ],
             "default": null,
             "title": "Model"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
           }
         },
         "required": [

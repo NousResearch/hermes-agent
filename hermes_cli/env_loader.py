@@ -34,6 +34,8 @@ _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex d
 _SECRET_SOURCES: dict[str, str] = {}
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+# Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
+_SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -120,6 +122,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # A retry must not keep serving a partial result after the source is removed, disabled, or can no
     # longer be evaluated. Publish only the snapshot established by this attempt.
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
     try:
         cfg = _load_secrets_config(home)
@@ -177,10 +180,12 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -431,6 +436,15 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
         loaded.append(project_env_path)
 
+    # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
+    # token) back over a value an external source resolved on an earlier call, and the source pass below is a
+    # once-per-home no-op — so the clobber stuck for the life of the process (#74265). Re-assert only what the
+    # source is authoritative for; managed scope, applied last with override=True, still wins on purpose.
+    if _SECRET_SOURCE_RESTORE_BY_HOME:
+        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(str(home_path.resolve()), {}).items():
+            if os.environ.get(name) != value:
+                os.environ[name] = value
+
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
     # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the
@@ -560,6 +574,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             values[name] = os.environ[name]
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
+        n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 
     for src in report.sources:
         if src.applied:

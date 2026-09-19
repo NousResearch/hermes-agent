@@ -14,8 +14,8 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until,
-    _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _codex_principal_identity,
+    _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
@@ -28,6 +28,8 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "q
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
+# Providers whose sibling CLI login Hermes may borrow (``auth.adopt_external_logins``).
+EXTERNAL_LOGIN_PROVIDERS = {"anthropic", "openai-codex"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -81,7 +83,8 @@ _PROVIDER_ALIASES = {
 
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized) or normalized
+    return (_PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized)
+            or auth_mod._plugin_aliases().get(normalized) or normalized)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -404,14 +407,35 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
         source=spec.source, access_token=token, **spec.fields(creds, provider))
-    first_credential = not pool.entries()
+    existing = pool.entries()
     entry = pool.add_entry(entry)
     # The first Codex/xAI credential becomes the active provider (as the old singleton save path
     # did implicitly); subsequent adds leave the active provider as-is.
-    if spec.activate_first and first_credential:
+    if spec.activate_first and not existing:
         auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+    if provider == "openai-codex":
+        _warn_same_codex_account(token, existing)
     return entry
+
+
+def _warn_same_codex_account(token: str, existing: list[PooledCredential]) -> None:
+    """Tell the user when a fresh Codex login is the same OpenAI account as a pooled credential.
+
+    Two logins of one account share a single token family upstream: the provider revokes the
+    older grant, so the second credential adds no quota and silently kills the first (#47096).
+    Only distinct accounts rotate independently — the pool cannot keep both alive.
+    """
+    identity = _codex_principal_identity(token)
+    if identity is None:
+        return
+    for position, sibling in enumerate(existing, start=1):
+        if _codex_principal_identity(sibling.access_token) == identity:
+            print(f'warning: this login is the same OpenAI account as openai-codex credential #{position} '
+                  f'("{sibling.label}"). Both logins share one token family, so OpenAI will revoke the older one '
+                  "and you gain no extra quota. Log into a different account instead, or keep just one "
+                  f"(`hermes auth remove openai-codex {position}`).", file=sys.stderr)
+            return
 
 
 def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:
@@ -491,6 +515,15 @@ def auth_list_command(args) -> None:
             )
             print(row.rstrip())
         print()
+    if not provider_filter or provider_filter in EXTERNAL_LOGIN_PROVIDERS:
+        _print_external_login_notice()
+
+
+def _print_external_login_notice() -> None:
+    """One line telling the user why no Codex CLI / Claude Code login shows up when adoption is off."""
+    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
 def auth_remove_command(args) -> None:
@@ -607,6 +640,8 @@ def auth_status_command(args) -> None:
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
+        if provider in EXTERNAL_LOGIN_PROVIDERS:
+            _print_external_login_notice()
         return
     print(f"{provider}: logged in")
     for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):

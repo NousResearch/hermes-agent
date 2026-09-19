@@ -246,6 +246,12 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
     accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
+    # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
+    model_base_url = str(model_section.get("base_url") or "").strip()
+    if policy_id == "openai-api" and model_base_url:
+        from utils import base_url_host_matches
+        accepts_vendor_slug = accepts_vendor_slug or not base_url_host_matches(model_base_url, "api.openai.com")
     if default_model and "/" in default_model and policy_id and not accepts_vendor_slug:
         check_warn(f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
                    "(vendor-prefixed slugs belong to aggregators like openrouter)")

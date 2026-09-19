@@ -59,45 +59,6 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
-  catalog: {
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    browse: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
-  }
   connectors: {
     title: string
     connect: string
@@ -1825,9 +1786,9 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'home' | 'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'home' | 'maintenance' | 'sessions' | 'system' | 'usage', string>
-    nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
+    sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
@@ -2617,6 +2578,8 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
+    restoredDraftNotice: string
+    restoredDraftUndo: string
     queueEdit: string
     queueSendNext: string
     queueSend: string
@@ -2701,30 +2664,6 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
-    markDone: string
-    markDoneAria: (task: string) => string
-    reopen: string
-    reopenAria: (task: string) => string
-    retryTaskSync: string
-    syncingTask: string
-    markDoneTitle: string
-    markDoneDescription: string
-    markingDone: string
-    markedDone: string
-    reopenTitle: string
-    reopenDescription: string
-    reopening: string
-    reopened: string
-    taskChanged: string
-    taskMissing: string
-    taskSessionMissing: string
-    taskSyncFailed: string
-    taskUpdateFailed: string
-    taskUpdatesUnavailable: string
-    statusPending: string
-    statusInProgress: string
-    statusCompleted: string
-    statusCancelled: string
     running: string
     stop: string
     dismiss: string
@@ -3608,6 +3547,7 @@ export interface Translations {
       /** Global toast title for a mid-turn gateway `error` event. */
       errorToastTitle: string
       errorRetry: string
+      errorLimitResets: (time: string) => string
       /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
       errorStartNewSession: string
       errorSwitchProvider: string
@@ -3677,8 +3617,6 @@ export interface Translations {
       placeholder: string
       skip: string
       skipped: string
-      timedOut: string
-      cancelled: string
       continueLabel: string
       confirmAndContinueLabel: string
       answeredBadge: string

@@ -7,16 +7,7 @@ export interface DeepLinkPayload {
 }
 
 export type DeepLinkAction =
-  | {
-      type: 'plugin-install'
-      repo: string
-      enable: boolean
-      force: boolean
-      legacyHint: PluginInstallLegacyHint
-      catalogName?: string
-      sha?: string
-    }
-  | { type: 'skill-install'; identifier: string }
+  | { type: 'plugin-install'; repo: string; enable: boolean; force: boolean; legacyHint: PluginInstallLegacyHint }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'ignore' }
 
@@ -39,17 +30,7 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
   }
 
-  if (payload.kind === 'skill') {
-    const identifier = payload.params?.identifier
-
-    return payload.name === 'install' && identifier && identifier === identifier.trim()
-      ? { type: 'skill-install', identifier }
-      : { type: 'ignore' }
-  }
-
-  const repo = (
-    payload.params?.repo || payload.params?.identifier || (payload.kind !== 'plugin' ? payload.name : '') || ''
-  ).trim()
+  const repo = (payload.params?.repo || payload.params?.identifier || payload.name || '').trim()
 
   if (payload.kind === 'plugin' && payload.name === 'install' && repo) {
     return {
@@ -57,9 +38,7 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
       repo,
       enable: truthyParam(payload.params?.enable, true),
       force: truthyParam(payload.params?.force, false),
-      legacyHint: null,
-      catalogName: payload.params?.catalog_name || undefined,
-      sha: payload.params?.sha || undefined
+      legacyHint: null
     }
   }
 

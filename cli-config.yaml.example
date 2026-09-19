@@ -154,6 +154,16 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+  #
+  # session_affinity_header: NAME of a header that carries Hermes' conversation
+  # id on every request to that provider (all api_modes + auxiliary calls). Off
+  # unless set. For session-aware proxies that otherwise treat each agent-loop
+  # request as a new conversation and replay the whole history upstream.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "http://127.0.0.1:4000/v1"
+  #     session_affinity_header: x-litellm-session-id
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1
@@ -161,6 +171,15 @@ model:
 #     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
 #     # (the bundled meta-ai provider covers this — a named custom provider is
 #     # only needed for a non-default Meta-compatible endpoint)
+# Fast/priority tier behind an OpenAI-compatible gateway or proxy: agent.service_tier
+# (`/fast`) only reaches first-party endpoints; ask a gateway for its own tier via
+# extra_body, which is merged into every request routed to that provider.
+# providers:
+#   my-gateway:
+#     base_url: https://gateway.example.com/v1
+#     api_key: ${MY_GATEWAY_KEY}
+#     extra_body:
+#       service_tier: priority   # whatever tier value your gateway documents
 # providers:
 #   router:
 #     base_url: https://api.router.com/v1
@@ -643,14 +662,12 @@ compression:
   #   "claude-sonnet": 0.35
   #   "gpt-5": 0.30
 
-  # Optional absolute token cap for the compression trigger (default: null = disabled).
-  # When set, compression fires at the LOWER of the ratio-based threshold and this
-  # absolute token count — first-fires-wins. It never fires later than this count
-  # regardless of which model is active (useful when switching between models with
-  # very different context windows). Clamped to the model's context length at
-  # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
-  # Survives model switches and fallback activations.
-  # threshold_tokens: 200000
+  # Absolute token cap for the compression trigger (default: 256000).
+  # Compression fires at the LOWER of the ratio-based threshold and this count,
+  # bounding large-window sessions while lower proportional triggers still win
+  # whenever they fall below the cap. The cap survives model switches and fallbacks.
+  # Set null to restore ratio-only behavior.
+  threshold_tokens: 256000
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
@@ -692,7 +709,8 @@ compression:
 
   # Native OpenAI Responses server-side compaction (default: false). When true,
   # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
-  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # Codex subscription, plus exact gpt-6-astra on official Codex OAuth, compact
+  # server-side: OpenAI prunes older context into an
   # encrypted checkpoint that Hermes replays on later turns. No other provider,
   # route, or model is affected. Hermes' local compression stays armed as the
   # fallback and still handles every non-eligible session.
@@ -915,6 +933,12 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
+#                                 # substantive event before it fails fast (default: 60).
+#                                 # Independent of "timeout" above (the overall request
+#                                 # budget) — raising "timeout" alone does not widen this
+#                                 # window. Each substantive event re-arms it; a slow but
+#                                 # progressing reasoning/summary stream is not affected.
 #
 #   # Post-turn memory/skill self-improvement review fork. Runs after a turn
 #   # when the nudge intervals fire; writes skills/memories in a daemon thread.
@@ -1223,12 +1247,17 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
+  # Providers with bespoke thinking tiers (a relay serving fast/thinking): use the
+  # dict form and the level is sent verbatim. Bare strings stay strict (typo guard).
+  #   reasoning_effort:
+  #     enabled: true
+  #     effort: thinking
   reasoning_effort: "medium"
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,
   #      provider prefix optional). First match wins.
-  # Value: reasoning effort level (same options as reasoning_effort)
+  # Value: reasoning effort level (same options as reasoning_effort, dict form included)
   # Override the global reasoning_effort for that specific model.
   # NOTE: no `hermes config set` support for this key -- edit YAML directly.
   # reasoning_overrides:
@@ -1397,6 +1426,7 @@ platform_toolsets:
 #   require_mention: true            # Require @mention in server channels (default: true)
 #   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   free_response_auto_thread: false # Free-response channels also auto-thread (default: reply inline)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
@@ -1615,6 +1645,8 @@ stt:
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
+    timeout: 60                # request timeout in seconds; increase for self-hosted model cold starts
+    max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:

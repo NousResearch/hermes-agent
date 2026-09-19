@@ -382,7 +382,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
       client → ``{"text": "..."}`` frames (incremental; may combine with done),
                ``{"done": true}`` when the reply is complete,
                ``{"stop": true}`` or disconnect = barge-in
-      server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
+      server → ``{"type": "start", "sample_rate": N, "channels": 1}`` (sent
+               with the first PCM frame, once the provider's rate is final),
                binary PCM frames, then ``{"type": "end"}``
       server → ``{"type": "fallback"}`` when the configured provider has no
                chunked API — the client uses the POST endpoint instead.
@@ -422,9 +423,20 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             await ws.close()
         return
 
-    await ws.send_json(
-        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
-    )
+    # The start frame is deferred until the first PCM chunk (or end-of-speech):
+    # the OpenAI-compatible streamer only learns the endpoint's real rate from
+    # the response headers inside stream(), and the client opens its
+    # AudioContext at whatever rate the start frame carries.
+    start_sent = False
+
+    async def _send_start():
+        nonlocal start_sent
+        if start_sent:
+            return
+        start_sent = True
+        await ws.send_json(
+            {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+        )
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
@@ -511,8 +523,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             chunk = await chunks.get()
             if chunk is None:
                 break
+            await _send_start()
             await ws.send_bytes(chunk)
         if not stop.is_set():
+            await _send_start()
             await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass

@@ -18,6 +18,8 @@ from rich import box as rich_box
 from rich.panel import Panel
 from typing import Optional
 
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
+
 
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
@@ -26,6 +28,21 @@ class CLIChatTurnMixin:
     # response string, so one-shot callers that must map an outcome onto a
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
+
+    def _sync_fallback_chain_with_config(self, agent) -> None:
+        """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
+        per-turn, fail-closed contract as the Desktop/TUI and messaging gateways: a torn config.yaml
+        keeps the last known-good chain instead of reading as "chain removed"."""
+        from cli import logger
+        try:
+            from gateway.run import GatewayRunner
+            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_cli.fallback_config import get_fallback_chain
+            self._fallback_model = get_fallback_chain(load_user_config_effective(fail_closed=True))
+        except Exception as e:
+            logger.debug("fallback chain sync skipped (keeping current chain): %s", e)
+            return
+        GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
     def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
@@ -51,7 +68,7 @@ class CLIChatTurnMixin:
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
-            self.agent = None
+            _retire_agent(self)
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
@@ -60,6 +77,7 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
@@ -341,7 +359,7 @@ class CLIChatTurnMixin:
                 for _key, _value in _restore.items():
                     if _value is not None:
                         setattr(self, _key, _value)
-                self.agent = None
+                _retire_agent(self)
                 self._pending_moa_restore_model = None
                 self._pending_moa_disable_after_turn = False
         except Exception as exc:

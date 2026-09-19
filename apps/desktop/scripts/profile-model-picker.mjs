@@ -1,6 +1,8 @@
 // CPU-profile one model-picker open.
 //   node scripts/profile-model-picker.mjs [--port 9222]
 import { writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { CDP } from './perf/lib/cdp.mjs'
 import { cpuProfileTopSelf } from './perf/lib/stats.mjs'
@@ -46,7 +48,7 @@ const openMs = await cdp.eval(OPEN)
 const { profile } = await cdp.send('Profiler.stop')
 
 console.log('openMs:', Math.round(openMs))
-const out = `/tmp/model-picker-open.cpuprofile`
+const out = join(tmpdir(), 'model-picker-open.cpuprofile')
 writeFileSync(out, JSON.stringify(profile))
 console.log('wrote', out)
 console.log('top self-time (ms):')

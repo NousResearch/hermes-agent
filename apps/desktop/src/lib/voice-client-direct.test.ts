@@ -111,6 +111,8 @@ describe('transcribeAudioClientDirect', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.groq.com/openai/v1/audio/transcriptions')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer gsk_test')
+    // A hung provider must not stall dictation forever: every STT upload carries a timeout signal.
+    expect(init.signal).toBeInstanceOf(AbortSignal)
 
     const form = init.body as FormData
     expect(form.get('model')).toBe('whisper-large-v3-turbo')
@@ -205,6 +207,64 @@ describe('transcribeAudioClientDirect', () => {
     expect((init.headers as Record<string, string>)['xi-api-key']).toBe('gsk_test')
     expect((init.body as FormData).get('model_id')).toBe('scribe_v2')
   })
+
+  /** A fetch that only settles when its AbortSignal fires — a wedged STT endpoint. */
+  function hangingFetch() {
+    return vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        })
+    )
+  }
+
+  it('aborts a hanging transcription at the default 60 s instead of transcribing forever', async () => {
+    vi.useFakeTimers()
+
+    try {
+      mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+      const fetchMock = hangingFetch()
+      vi.stubGlobal('fetch', fetchMock)
+
+      const pending = transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))
+      const settled = vi.fn()
+
+      pending.then(settled, settled)
+      await vi.advanceTimersByTimeAsync(0)
+
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(init.signal).toBeInstanceOf(AbortSignal)
+
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(settled).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(pending).rejects.toThrow(/Transcription timed out after 60s/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('honours the gateway-resolved stt.openai.timeout for the direct request', async () => {
+    vi.useFakeTimers()
+
+    try {
+      mockDesktopApi({ ok: true, stt: { ...directStt, timeout_s: 5 }, tts: relay })
+      vi.stubGlobal('fetch', hangingFetch())
+
+      const pending = transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))
+      const settled = vi.fn()
+
+      pending.then(settled, settled)
+      await vi.advanceTimersByTimeAsync(4_900)
+      expect(settled).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(200)
+      await expect(pending).rejects.toThrow(/Transcription timed out after 5s/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('synthesizeSpeechClientDirect', () => {
@@ -230,7 +290,10 @@ describe('synthesizeSpeechClientDirect', () => {
     const fetchMock = vi.fn(async () => new Response(bytes, { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    const audio = await synthesizeSpeechClientDirect(openaiTts, 'Hello there.')
+    const audio = await synthesizeSpeechClientDirect(
+      { ...openaiTts, extra_body: { consent_attestation: 'I own this voice' } },
+      'Hello there.'
+    )
 
     expect(new Uint8Array(audio)).toEqual(new Uint8Array([1, 2, 3]))
 
@@ -242,6 +305,8 @@ describe('synthesizeSpeechClientDirect', () => {
     expect(body.voice).toBe('nova')
     expect(body.input).toBe('Hello there.')
     expect(body.speed).toBeUndefined()
+    // Server-resolved tts.openai extras (consent_attestation for cloned voices) reach the wire.
+    expect(body.consent_attestation).toBe('I own this voice')
   })
 
   it('speaks the elevenlabs tts shape with the voice in the path', async () => {

@@ -263,7 +263,8 @@ def _api_key_provider_api_mode(provider: str, model_cfg: Dict[str, Any], api_key
 
 def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model_cfg: Optional[Dict[str, Any]]) -> str:
     """Opt-in rewrite to "codex_app_server" via ``model.openai_runtime``; only ``openai`` /
-    ``openai-codex`` are eligible. No-op when unset, "auto", or empty."""
+    ``openai-codex`` are eligible. No-op when unset, "auto", or empty. Applied once, on the
+    runtime ``resolve_runtime_provider`` picked — never inside an individual ladder rung."""
     if model_cfg and provider in {"openai", "openai-codex"} and str(model_cfg.get("openai_runtime") or "").strip().lower() == "codex_app_server":
         return "codex_app_server"
     return api_mode
@@ -491,6 +492,10 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             override_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
             if override_url:
                 return api_mode, override_url
+            # model.base_url is the secondary proxy override (same rule as the generic tail below:
+            # only when the pool row still carries the canonical URL).
+            if base_url in ("", default_url):
+                base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
@@ -521,7 +526,6 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
     base_url = _finalize_base_url(provider, api_mode, base_url)
-    api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=api_mode, model_cfg=model_cfg)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
@@ -650,7 +654,8 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
         if not base_url:
             base_url = _actual_url(provider, creds.get("base_url", "").rstrip("/"))
     api_mode = _api_key_provider_api_mode(provider, model_cfg, api_key, base_url, target_model or model_cfg.get("default", ""),
-                                          opencode_by_model=False)
+                                          opencode_by_model=True)
+    base_url = _finalize_base_url(provider, api_mode, base_url)
     api_key = _actual_local_key(provider, api_key, base_url)
     return _runtime(provider, api_mode, base_url.rstrip("/"), api_key, source="explicit", requested_provider=requested_provider)
 
@@ -906,6 +911,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
          keyless fallback as ``auth_error``) → minimax-oauth
          → external-process → anthropic env → bedrock → registry api_key providers
       8. OpenRouter / bare-custom fallback
+      9. ``model.openai_runtime`` overlay (openai/openai-codex only): rewrites the picked rung's
+         api_mode to ``codex_app_server``; the rung's credential/endpoint is then not used
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
@@ -913,6 +920,15 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    # model.openai_runtime is applied ONCE, after the ladder: every rung (pool, OAuth store,
+    # explicit --api-key/--base-url, env key) hardcodes the wire api_mode for openai/openai-codex,
+    # so applying the opt-in inside one rung left the others on codex_responses (#115169).
+    api_mode = _maybe_apply_codex_app_server_runtime(
+        provider=runtime.get("provider", ""), api_mode=runtime.get("api_mode", ""), model_cfg=_get_model_config())
+    if api_mode != runtime.get("api_mode"):
+        logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
+                    "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
+    runtime["api_mode"] = api_mode
     return runtime
 
 
@@ -1008,3 +1024,55 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested: Optional[str] = None,
+                                  target_model: Optional[str] = None, explicit_base_url: Optional[str] = None,
+                                  explicit_api_key: Optional[str] = None,
+                                  ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """``resolve_runtime_provider`` plus resolution-time fallback: ``(runtime, fallback_entry_or_None)``.
+
+    Only an ``AuthError`` from the primary (missing/expired credentials, exhausted quota, cooled-down pool)
+    walks ``get_fallback_chain(config)`` in order and returns the first entry that resolves — the single
+    resolution-time walker shared by the gateway and oneshot. ``ValueError``/other errors are genuine
+    misconfiguration (unknown ``--provider`` ...) and propagate unchanged, so a typo is never silently
+    rerouted onto a provider the operator did not ask for. When every entry fails, the *primary* error is
+    re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
+    ``model`` is the model the caller must send.
+    """
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    try:
+        return resolve_runtime_provider(requested=requested, target_model=target_model,
+                                        explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
+    except AuthError as primary_exc:
+        from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
+        for entry in get_fallback_chain(config):
+            provider = (entry.get("provider") or "").strip().lower()
+            model = (entry.get("model") or "").strip()
+            if not provider or not model:
+                continue
+            kwargs: Dict[str, Any] = {"requested": provider, "target_model": model}
+            if entry.get("base_url"):
+                kwargs["explicit_base_url"] = entry["base_url"]
+            if entry_key := resolve_entry_api_key(entry):
+                kwargs["explicit_api_key"] = entry_key
+            try:
+                runtime = resolve_runtime_provider(**kwargs)
+            except AuthError as fb_exc:
+                logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
+                continue
+            except Exception as fb_exc:
+                # Not a credential problem: a mistyped provider/base_url must be visible, not silently skipped.
+                logger.warning("Fallback entry %s/%s is misconfigured and was skipped: %s", provider, model, fb_exc)
+                continue
+            # Named custom entries resolve to the bare "custom" class; persist the configured identity (#98739).
+            runtime["provider"] = effective_runtime_provider(entry, runtime)
+            # A rate-limit/quota cap is transient (credentials are fine, re-auth cannot help); the log must not
+            # mislabel it as an auth failure (#32790).
+            if is_rate_limited_auth_error(primary_exc):
+                logger.warning("Primary provider rate-limited (429): %s. Falling back to %s/%s",
+                               primary_exc, provider, model)
+            else:
+                logger.warning("Primary provider auth failed (%s). Falling back to %s/%s", primary_exc, provider, model)
+            return runtime, entry
+        raise primary_exc

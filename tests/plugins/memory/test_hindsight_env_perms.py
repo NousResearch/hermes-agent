@@ -3,6 +3,7 @@ plaintext ``HINDSIGHT_API_LLM_API_KEY`` and must be created/kept owner-only
 (0600), and must not survive a failed post-write permission validation.
 """
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -143,3 +144,33 @@ def test_api_prefixed_vault_name_resolves(monkeypatch):
         assert hs_embedded._embedded_llm_api_key(_CONFIG) == "sk-test-live-key"
     finally:
         secret_scope.reset_secret_scope(token)
+
+
+def test_profile_env_serializes_configured_default_headers_across_rewrites():
+    """Regression for #112645: relay headers survive profile-env rewrites."""
+    headers = {"x-opencode-session": "example-session-id"}
+    config = dict(_CONFIG, llm_default_headers=headers)
+
+    profile_env = _materialize_embedded_profile_env(config, llm_api_key="sk-first")
+    config["llm_model"] = "gpt-4.1-mini"
+    _materialize_embedded_profile_env(config, llm_api_key="sk-second")
+
+    env_values = dict(
+        line.split("=", 1)
+        for line in profile_env.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert json.loads(env_values["HINDSIGHT_API_LLM_DEFAULT_HEADERS"]) == headers
+    assert env_values["HINDSIGHT_API_LLM_MODEL"] == "gpt-4.1-mini"
+
+
+def test_profile_env_uses_inherited_default_headers_when_config_is_absent(monkeypatch):
+    headers = '{"x-opencode-session":"inherited-session"}'
+    monkeypatch.setenv("HINDSIGHT_LLM_DEFAULT_HEADERS", headers)
+
+    profile_env = _materialize_embedded_profile_env(_CONFIG, llm_api_key="sk-current")
+
+    assert (
+        "HINDSIGHT_API_LLM_DEFAULT_HEADERS=" + headers + "\n"
+        in profile_env.read_text(encoding="utf-8")
+    )

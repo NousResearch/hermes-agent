@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
 import logging
 import os
 import sys
@@ -180,6 +181,18 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
             base_url = ""
     if base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)
+    # The embedded daemon reads this JSON mapping directly. Prefer the
+    # profile config so a materialized env survives daemon restarts, while
+    # retaining the inherited deployment-level setting as a fallback.
+    default_headers = config.get("llm_default_headers")
+    if not default_headers:
+        default_headers = os.environ.get("HINDSIGHT_LLM_DEFAULT_HEADERS", "")
+    if default_headers:
+        env_values["HINDSIGHT_API_LLM_DEFAULT_HEADERS"] = (
+            json.dumps(default_headers, separators=(",", ":"))
+            if isinstance(default_headers, dict)
+            else str(default_headers)
+        )
     if (idle_timeout := config.get("idle_timeout")) is None:
         idle_timeout = os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
     if idle_timeout is not None and idle_timeout != "":

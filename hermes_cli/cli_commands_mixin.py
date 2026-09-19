@@ -357,7 +357,7 @@ def _without_session_meta(messages) -> list:
 
 def _db_unavailable_line() -> str:
     from hermes_state import format_session_db_unavailable
-    return f"  {format_session_db_unavailable()}"
+    return f"  {format_session_db_unavailable(details=True)}"
 
 
 def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
@@ -632,6 +632,12 @@ class CLICommandsMixin:
         # --all / --force: classic full restore, overwriting user edits too.
         restore_all = any(a.lower() in ("--all", "--force") for a in args)
         args = [a for a in args if a.lower() not in ("--all", "--force")]
+        if reason := mgr.unsupported_backend_reason():  # CLI: no session key, the "default" container
+            # Container-backed session: any host checkpoint listed here belongs to another tree,
+            # so diff/restore are refused; the list stays visible for local administration.
+            print(f"  {reason}")
+            if args:
+                return
         if not args:
             # No checkpoints for this dir → cross-project view (writes may sit under the session cwd).
             checkpoints = mgr.list_checkpoints(cwd)
@@ -758,6 +764,8 @@ class CLICommandsMixin:
             "  (Plain /diff still works — it uses git directly.)"))
         if mgr is None:
             return
+        if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+            return print(f"  {reason}")
         result = mgr.session_diff(cwd)
         if not result.get("success"):
             return print(f"  {result.get('error', 'Could not generate diff')}")
@@ -1261,6 +1269,8 @@ class CLICommandsMixin:
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /resume.")
         from cli import _sync_process_session_id
         target = _command_arg(cmd_original)
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
@@ -1367,6 +1377,11 @@ class CLICommandsMixin:
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
         full history so a different approach can be explored without losing the original."""
+        # An in-flight agent run would flush through the rotating session identity: the branch
+        # ends the parent row and repoints agent.session_id (_sync_agent_to_session), so the
+        # turn's remaining messages land on the branch. Refuse mid-turn like /handoff does.
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /branch.")
         from cli import _sync_process_session_id
         if not self.conversation_history:
             return _cp("  No conversation to branch — send a message first.")
@@ -1660,6 +1675,7 @@ class CLICommandsMixin:
         result = _cron_api(action="list")
         jobs = result.get("jobs", []) if result.get("success") else []
         if jobs:
+            from hermes_cli.cron import _next_run_row
             _pr("  Current Jobs:", "  " + "-" * 63)
             for job in jobs:
                 print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
@@ -1667,7 +1683,9 @@ class CLICommandsMixin:
                     print(f"      Skills: {', '.join(job['skills'])}")
                 print(f"      {job.get('prompt_preview', '')}")
                 if job.get("next_run_at"):
-                    print(f"      Next: {job['next_run_at']}")
+                    # A stamp parked past the scheduler grace must not read as upcoming (#114309).
+                    label, value = _next_run_row(job)
+                    print(f"      {'Next' if label == 'Next run' else label}: {value}")
                 print()
         else:
             print("  No scheduled jobs. Use '/cron add' to create one.")
@@ -1678,13 +1696,14 @@ class CLICommandsMixin:
         jobs = result.get("jobs", []) if result.get("success") else []
         if not jobs:
             return print("(._.) No scheduled jobs.")
+        from hermes_cli.cron import _next_run_row
         print()
         _pr("Scheduled Jobs:", "-" * 80)
         for job in jobs:
             _pr(f"  ID: {job['job_id']}", f"  Name: {job['name']}",
                 f"  State: {job.get('state', '?')}",
                 f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})",
-                f"  Next run: {job.get('next_run_at', 'N/A')}")
+                "  %s: %s" % _next_run_row(job) if job.get("next_run_at") else "  Next run: N/A")
             if job.get("skills"):
                 print(f"  Skills: {', '.join(job['skills'])}")
             print(f"  Prompt: {job.get('prompt_preview', '')}")
@@ -1765,12 +1784,17 @@ class CLICommandsMixin:
         if action == "remove":
             removed = result.get("removed_job", {})
             return print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
+        job = result["job"]
+        if action == "run" and job.get("execution_skipped"):
+            # A refused run-now (claim lost, paused, gone) must not read as accepted.
+            return print(f"(x_x) Did not run job: {job['name']} ({job_id})\n  {job['execution_skipped']}")
         verb = {"pause": "Paused", "resume": "Resumed", "run": "Triggered"}[action]
-        print(f"(^_^)b {verb} job: {result['job']['name']} ({job_id})")
+        print(f"(^_^)b {verb} job: {job['name']} ({job_id})")
         if action == "resume":
-            print(f"  Next run: {result['job'].get('next_run_at')}")
+            print(f"  Next run: {job.get('next_run_at')}")
         elif action == "run":
-            print("  It will run on the next scheduler tick.")
+            from hermes_cli.cron import _run_outcome
+            print(f"  {_run_outcome(job)}")
 
     # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):
@@ -1999,9 +2023,8 @@ class CLICommandsMixin:
                 _print_side_result_panel(self, header_lines=header_lines, body=body,
                                          title_suffix=title_suffix, empty_note=empty_note,
                                          console=console)
-                if bell and self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                if bell:
+                    self._ring_bell(context=f"{fail_label} complete")
             except Exception as e:
                 _refresh_tui_before_print(self)
                 line = f"  ❌ {fail_label} failed: {e}"
@@ -2081,7 +2104,9 @@ class CLICommandsMixin:
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],
-            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": getattr(parent_agent, "session_id", None),
+        }
         preview = _ellipsize(question, 60)
         _cp(f"  💬 Side question: \"{preview}\"",
             "  Answering from a snapshot of this conversation — the current work continues.\n")

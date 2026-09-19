@@ -14,6 +14,8 @@ Three behaviors salvaged from PR #79787:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -196,3 +198,27 @@ class TestPlainFallbackUnchanged:
         agent = _make_agent(fallback_model=fbs)
         _activate(agent, "https://api.anthropic.com/v1", "claude-opus-4-6")
         assert agent.api_mode == "anthropic_messages"
+
+
+class TestOpenCodeFamilyPerModelWire:
+    """OpenCode Zen/Go serve Responses-only, Anthropic-wire and chat-completions models behind
+    one provider; a fallback entry must land on the same wire the primary /model path picks
+    (#102148: muse-spark on opencode-go was sent to /chat/completions → deterministic 500)."""
+
+    @pytest.mark.parametrize(
+        ("entry", "resolved_base_url", "expected_mode"),
+        [
+            ({"provider": "opencode-go", "model": "muse-spark-1.3-contributor"}, "https://opencode.ai/zen/go/v1", "codex_responses"),
+            ({"provider": "opencode-go", "model": "minimax-m2.7"}, "https://opencode.ai/zen/go/v1", "anthropic_messages"),
+            ({"provider": "custom", "model": "muse-spark-1.3-contributor", "base_url": "https://opencode.ai/zen/go/v1", "api_key": "k"},
+             "https://opencode.ai/zen/go/v1", "codex_responses"),
+            # controls: a chat-completions model stays put; an explicit pin always wins.
+            ({"provider": "opencode-go", "model": "deepseek-v4-flash"}, "https://opencode.ai/zen/go/v1", "chat_completions"),
+            ({"provider": "opencode-go", "model": "muse-spark-1.3-contributor", "api_mode": "chat_completions"},
+             "https://opencode.ai/zen/go/v1", "chat_completions"),
+        ],
+    )
+    def test_fallback_wire_matches_opencode_model_table(self, entry, resolved_base_url, expected_mode):
+        agent = _make_agent(fallback_model=[entry])
+        _activate(agent, resolved_base_url, entry["model"])
+        assert agent.api_mode == expected_mode

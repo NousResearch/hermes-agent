@@ -3,6 +3,7 @@ import pytest
 
 from pathlib import Path
 from types import SimpleNamespace
+from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -85,6 +86,33 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
         conn.close()
 
 
+def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
+    """The CLI must persist thread route anchors without dropping existing metadata."""
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="thread route", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="discord", chat_id="thread",
+            thread_id="thread", delivery_metadata={"chat_type": "thread", "existing": "keep"},
+        )
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "discord", "--chat-id", "thread",
+        "--thread-id", "thread", "--chat-type", "thread", "--parent-chat-id", "parent",
+        "--guild-id", "guild",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["delivery_metadata"] == {
+        "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
+    }
+
+
 def test_child_task_inherits_parent_delivery_mode(kanban_home):
     """Graph children inherit the parent's ACK edge AND its delivery_mode."""
     import hermes_cli.kanban_db as kb
@@ -152,6 +180,27 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
         assert subs[0]["delivery_mode"] == "wake"
     finally:
         conn.close()
+
+
+def test_notify_sub_user_id_backfills_legacy_senderless_rows(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy sub", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        assert kbn.list_notify_subs(conn, tid)[0]["user_id"] is None
+
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", user_id="640466638",
+        )
+        subs = kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs[0]["user_id"] == "640466638"
 
 
 def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
@@ -562,7 +611,11 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    sent = fake_adapter.send.call_args[0][1]
+    assert tid in sent
+    # Plain-language outcome per event kind (no internal event names).
+    expected = {"crashed": "stopped unexpectedly", "gave_up": "blocked", "timed_out": "time limit"}[kind]
+    assert expected in sent
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside

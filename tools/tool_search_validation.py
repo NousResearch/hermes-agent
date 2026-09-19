@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import tool_error
-from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 
 logger = logging.getLogger("tools.tool_search")
 
@@ -151,6 +151,13 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if not str(args.get("name") or "").strip():
             return [], "tool_call requires 'calls' (an array of {name, arguments})"
         raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
+    if isinstance(raw_calls, str):
+        # Tolerate the model emitting the batch envelope as a JSON string —
+        # mirror the per-entry `arguments` handling below (#114484).
+        try:
+            raw_calls = json.loads(raw_calls)
+        except json.JSONDecodeError as e:
+            return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -177,3 +184,45 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             return [], f"tool_call calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})
     return entries, None
+
+
+_ECHO_ARGS_MAX_CHARS = 1500
+
+
+def local_batch_error(entries: List[Dict[str, Any]]) -> str:
+    """Rejection for a multi-entry batch that names a local tool. Restates the valid
+    shape with the caller's OWN first entry: small models re-send an identical batch
+    when told only the constraint, and the echoed payload is what gets them unstuck."""
+    first = entries[0]
+    args = json.dumps(first.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
+    if len(args) > _ECHO_ARGS_MAX_CHARS:
+        args = "{...}"  # keep the correction readable; the model still has its own arguments
+    retry = '{"calls":[{"name":%s,"arguments":%s}]}' % (json.dumps(first["name"], ensure_ascii=False), args)
+    remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
+                 if len(entries) > 1 else "")
+    return (
+        f"tool_call takes exactly one entry for local tools; you sent {len(entries)}. "
+        f"Retry with only: {retry}{remaining}. Only connectors__ names may be batched together."
+    )
+
+
+def not_deferrable_error(name: str) -> str:
+    """Rejection for a ``tool_call`` naming something that is not a deferred tool.
+    Two different mistakes reach here and need opposite corrections: a directly-listed
+    tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
+    cited by its bare suffix instead of the full ``mcp__<server>__<tool>`` name. Telling
+    the second group 'call it directly' is the opposite of what they must do."""
+    from tools.tool_search import _core_tool_names  # late: tool_search imports this module
+    if name in _core_tool_names() or _registry_entry(name) is not None:
+        return (f"'{name}' is a directly-listed tool, not a deferred one. "
+                "Call it directly instead of via tool_call.")
+    suffix = f"__{name}"
+    try:
+        from tools.registry import registry
+        candidates = sorted(n for n in registry.get_all_tool_names() if n.endswith(suffix))
+    except Exception:
+        candidates = []
+    hint = (f" Did you mean {', '.join(repr(c) for c in candidates)}?" if candidates
+            else " Use tool_search to find the exact name.")
+    return (f"'{name}' is not a known tool name. Deferred tools must be invoked through tool_call "
+            f"by the exact name tool_search returns (e.g. mcp__<server>__<tool>).{hint}")

@@ -1,7 +1,7 @@
 /**
  * Bot Mode has to keep linking against an OLDER desktop SDK.
  *
- * `McpTab`, `ToolsetConfigPanel` and `SkillsView` are capability exports: the
+ * `McpTab`, `ToolsetConfigPanel` and `CapabilitiesView` are capability exports: the
  * shell that hosts the plugin may predate any of them. Every use site is
  * therefore guarded, and the plugin module graph must evaluate — and still
  * hand back a registrable plugin — when all three are missing. A bare
@@ -12,7 +12,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 /** Names an older SDK is allowed not to export. */
-const OPTIONAL_CAPABILITY_EXPORTS = new Set(['McpTab', 'SkillsView', 'ToolsetConfigPanel'])
+const OPTIONAL_CAPABILITY_EXPORTS = new Set(['McpTab', 'CapabilitiesView', 'ToolsetConfigPanel'])
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
@@ -65,13 +65,13 @@ describe('an SDK without the optional capability exports', () => {
     expect(typeof plugin.register).toBe('function')
   })
 
-  it('leaves the SkillsView connection-routing capability off', async () => {
-    // `skillsViewRoutesConnections` gates whether a source-scoped bot may open
-    // the Capabilities tab at all — with no SkillsView it must read false, not
+  it('leaves the CapabilitiesView connection-routing capability off', async () => {
+    // `capabilitiesViewRoutesConnections` gates whether a source-scoped bot may open
+    // the Capabilities tab at all — with no CapabilitiesView it must read false, not
     // throw on the missing export.
-    const { SkillsView, skillsViewRoutesConnections } = await import('./profile-config')
+    const { CapabilitiesView, capabilitiesViewRoutesConnections } = await import('./profile-config')
 
-    expect(SkillsView).toBeUndefined()
-    expect(skillsViewRoutesConnections).toBe(false)
+    expect(CapabilitiesView).toBeUndefined()
+    expect(capabilitiesViewRoutesConnections).toBe(false)
   })
 })

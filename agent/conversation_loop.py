@@ -28,6 +28,7 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
@@ -39,6 +40,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
+from agent.turn_failure_copy import failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -287,7 +289,13 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
-    if visible:
+    if is_runaway_repetition(visible):
+        # Runaway shape only (a correct batch-style partial stays replayable): the looped bytes must
+        # reach neither the replayed correction nor the placeholder below (empty ``visible`` takes
+        # the hidden shape).
+        checkpoint_parts.append(REPETITION_LOOP_INTERRUPTED)
+        visible = ""
+    elif visible:
         checkpoint_parts += ["Visible response before the interruption:", visible]
     checkpoint = "\n\n".join(checkpoint_parts)
     correction = f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"
@@ -457,7 +465,7 @@ def _print_guidance(agent, message: str) -> bool:
     if not message:
         return False
     for line in message.splitlines():
-        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True, diagnostic=True)
     return True
 
 
@@ -862,6 +870,14 @@ _CODEX_ACK_CONTINUATION_NUDGE = (
     "after completing the task.]"
 )
 
+# Re-prompt after a collapsed fragment ended a turn that had done real tool work (#103483). Asks
+# for the same answer again when it WAS complete, so a false positive costs one call, never the answer.
+_DEGENERATE_FINAL_NUDGE = (
+    "[System: Your previous message ended the turn with a fragment that is not a usable answer. "
+    "If the task is unfinished, continue it and then give the complete answer. If that fragment "
+    "WAS your complete answer, send it again exactly as before.]"
+)
+
 # Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
 _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was included. Do not narrate a plan or "
@@ -876,11 +892,6 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 )
 
 
-# Shared trailer for both content-policy refusal paths so guidance cannot drift.
-_CONTENT_POLICY_RECOVERY_HINT = (
-    "Try rephrasing the request, narrowing the context, or adding a fallback provider with "
-    "`hermes fallback add`."
-)
 
 
 # Memo for send-path tool-call argument canonicalization (re-run on every historical call
@@ -970,6 +981,7 @@ def _content_policy_blocked_result(
     return {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
+        "failure_reason": "content_policy_blocked", "failure_retryable": False,
     }
 
 
@@ -1040,9 +1052,10 @@ def _provider_overflow_exhausted_result(
     # providers.
     agent._persist_session(messages, conversation_history)
     return _partial_turn_result(
-        "Context length exceeded: compression could not reduce the rebuilt request below the safe threshold.",
+        site_copy("context_overflow", model=agent.model),
         messages, api_call_count, failed=True, compression_exhausted=True,
         turn_exit_reason="context_compression_exhausted",
+        failure_reason="context_overflow", failure_retryable=False,
     )
 
 
@@ -1268,6 +1281,7 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any
     return _partial_turn_result(
         str(exc), list(conversation_history or []), 0,
         failed=True, compression_exhausted=True, turn_exit_reason="context_compression_timeout",
+        failure_reason="context_overflow", failure_retryable=False,
     )
 
 
@@ -1609,7 +1623,50 @@ def run_conversation(
         moa_config=moa_config,
         turn_author=turn_author,
     )
-    return export_current_turn_boundary(agent, result, user_message)
+    result = export_current_turn_boundary(agent, result, user_message)
+    _close_durable_failed_turn(agent, result)
+    return result
+
+
+def _close_durable_failed_turn(agent, result: Any) -> None:
+    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
+    durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
+
+    The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
+    interrupt before any assistant text) persist the accepted user row and return without
+    reaching ``finalize_turn``; the next prompt then appends a second user row and
+    ``repair_message_sequence`` merges the failed request into the new one. The gateway
+    compensates with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop and ACP hosts hand
+    ``result["messages"]`` straight back as history, so the seam is here.
+
+    Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
+    ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
+    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
+    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
+    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    """
+    try:
+        if not isinstance(result, dict) or result.get("completed") is True:
+            return
+        if (
+            result.get("compression_exhausted") or result.get("compression_deferred")
+            or result.get("failure_reason") == "context_overflow"
+        ):
+            return
+        messages = result.get("messages")
+        db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+        if not isinstance(messages, list) or not messages or db is None or not session_id:
+            return
+        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
+            return
+        # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
+        # hedge over the whole list rather than under-report a possible side effect.
+        start = result.get("current_turn_user_idx")
+        turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
+        append_message(messages, {"role": "assistant", "content": failed_turn_notice(turn_messages)})
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        logger.debug("failed-turn boundary not written", exc_info=True)
 
 
 __all__ = ["run_conversation"]

@@ -16,10 +16,19 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Mapping, Optional
 
 DESKTOP_ENTRY_NAME = "hermes.desktop"
+
+# XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
+# (updater relaunch) launches. See launched_from_shell().
+SHELL_LAUNCH_ENV_VAR = "DESKTOP_STARTUP_ID"
+# Write end of the reveal pipe handed to Electron; one byte means "main window is on screen".
+READY_FD_ENV_VAR = "HERMES_DESKTOP_READY_FD"
+REVEAL_BYTE = b"r"  # what linux-launcher-ready.ts writes; anything else is finish()'s wake-up
 
 _SHELL_NAMES = ("bash", "sh", "dash", "zsh", "ksh")
 
@@ -209,13 +218,28 @@ def _resolve_hermes_bin_for_desktop_entry(
     finally:
         sys.argv[0] = original_argv0
 
-    if not primary:
-        return primary
-    if rerouted is not None:
-        return rerouted or primary
+    # A resolver miss (argv[0] is ``-c`` under ``python -m`` on a cold relaunch AND PATH has no
+    # ``hermes``) must NOT return None here: that skipped the durable-wrapper probe below and persisted
+    # the module form, so the entry's bytes flipped on every alternating launch context — and
+    # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
+    # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
+    # probe can still find anything.
+    if primary and rerouted is not None and not _inside_checkout(
+        rerouted, checkout_root, original_argv0
+    ):
+        return rerouted
+    # A PATH hit inside this checkout is the same launch-context artifact as argv[0]: the
+    # desktop-update hand-off hands the updater <checkout>/venv/bin at the front of PATH, so
+    # persisting a reroute to the venv console script pins the entry to WHO wrote it. The next
+    # DE-launched context re-resolves to the durable wrapper and flips the bytes back — and
+    # every flip rewrites hermes.desktop, which arms the gnome-shell 50.x crash this function's
+    # callers guard against when the write lands inside a launch's STARTING window. Fall
+    # through to the durable probe below, exactly as a PATH miss does.
 
-    # argv[0] was checkout-internal AND PATH had no `hermes` — common in stripped systemd user
-    # sessions and autostart relaunches. Probe the installer's known wrapper locations; each
+    # argv[0] was checkout-internal AND PATH yielded no DURABLE launcher (miss, or a hit inside
+    # this checkout) — common in stripped systemd user sessions, autostart relaunches, and the
+    # update hand-off with <checkout>/venv/bin on PATH. Probe the installer's known wrapper
+    # locations; each
     # candidate must be DE-safe and target THIS checkout (a foreign wrapper would make the entry
     # stable-but-wrong). No durable wrapper → None, so resolve_exec_command emits its runnable
     # module fallback instead of the self-regenerating checkout-internal form.
@@ -615,3 +639,84 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
 
     refresh_desktop_databases(entry_path.parent)
     return entry_path
+
+
+def launched_from_shell(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """True when this process was started from the app grid / menu (XDG startup notification).
+
+    A grid launch has a gnome-shell ShellApp in STARTING until our window maps; unpatched
+    shells (before GNOME MR !4428) drop that app's last reference when its own ``.desktop``
+    entry changes, and the next idle GC kills the whole Wayland session (#111906). A false
+    negative degrades to the pre-#111906 behaviour; a false positive only delays a heal.
+    """
+    env = os.environ if environ is None else environ
+    return bool(env.get(SHELL_LAUNCH_ENV_VAR))
+
+
+class DeferredDesktopEntryInstall:
+    """Install the entry once the desktop window is on screen — never while the shell's
+    ShellApp is STARTING.
+
+    The launcher hands Electron the write end of a pipe (``HERMES_DESKTOP_READY_FD``); Electron
+    writes one byte when the main window is revealed and a worker thread then installs the entry.
+    An exit without a reveal (boot crash, early quit) does NOT heal: gnome-shell keeps the ShellApp
+    in STARTING until the startup-notification sequence completes or times out (mutter, ~15 s),
+    not until the process dies, so a write right after such an exit still lands in the arming
+    window. The next terminal/updater launch or revealed grid launch installs the entry instead.
+    Terminal and detached launches never build one of these: they install immediately, as before.
+    """
+
+    def __init__(
+        self,
+        project_root: Path,
+        install: Optional[Callable[[Path], Optional[Path]]] = None,
+        settle_seconds: float = 2.0,
+    ) -> None:
+        self._project_root = project_root
+        self._install = install or install_desktop_entry
+        # Electron reports the reveal before the compositor has necessarily mapped the surface;
+        # a short settle after the signal keeps the write on the RUNNING side. It is a margin
+        # after the condition, not a substitute for it.
+        self._settle_seconds = settle_seconds
+        self._read_fd, self.write_fd = os.pipe()
+        self._thread = threading.Thread(target=self._wait_for_reveal, name="desktop-entry-install", daemon=True)
+
+    def child_env(self, env: dict) -> dict:
+        env[READY_FD_ENV_VAR] = str(self.write_fd)
+        return env
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return (self.write_fd,)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _wait_for_reveal(self) -> None:
+        try:
+            data = os.read(self._read_fd, 1)
+        except OSError:
+            return
+        if data != REVEAL_BYTE:  # woken by finish(): the app exited without a reveal, skip the heal
+            return
+        if self._settle_seconds:
+            time.sleep(self._settle_seconds)
+        try:
+            entry = self._install(self._project_root)
+            if entry:
+                print(f"✓ Desktop launcher entry installed: {entry}")
+        except Exception as exc:  # never fail a launch on launcher plumbing
+            print(f"⚠ Could not install the desktop launcher entry: {exc}")
+
+    def finish(self) -> None:
+        """Electron exited: let a heal already triggered by the reveal complete, never start one."""
+        try:
+            os.write(self.write_fd, b"x")  # wake a still-waiting reader so join() returns promptly
+        except OSError:
+            pass
+        self._thread.join(timeout=15)
+        for fd in (self._read_fd, self.write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass

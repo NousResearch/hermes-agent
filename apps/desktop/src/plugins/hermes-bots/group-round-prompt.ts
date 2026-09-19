@@ -1,7 +1,21 @@
-import { botHandle } from './data'
-import { groupSpeakerLabel } from './group-chat'
+import { botMentionTag } from './data'
+import { GROUP_CHAT_HISTORY_LIMIT, groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
+
+// Openers of Hermes' own control frames (the mid-turn steer marker, the compaction
+// handoff, runtime/system notes). A member reply is republished to every peer inside
+// a role=user prompt, so a reply reproducing one of these reads as harness input to
+// the peers; the opener is relabelled visibly (the words stay, the exact trusted
+// shape does not). Genuine user lines are never touched. Keep in sync with
+// agent/prompt_builder.py::CONTROL_FRAME_OPENERS (the source of
+// gateway/hosted_room_discussion.py::_MEMBER_CONTROL_FRAME_RE).
+const MEMBER_CONTROL_FRAME_RE =
+  /\[(?=\/?OUT-OF-BAND USER MESSAGE|CONTEXT COMPACTION|CONTEXT SUMMARY\]|PRIOR CONTEXT|Runtime note:|System note:|System:|SYSTEM\]|IMPORTANT:|Planning state preserved|ASYNC DELEGATION)/gi
+
+function relabelMemberControlFrames(text: string) {
+  return text.replace(MEMBER_CONTROL_FRAME_RE, '[member-quoted ')
+}
 
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
@@ -10,7 +24,7 @@ export type GroupChatLineViewer =
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer) {
+export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer, group?: null | string) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -33,7 +47,24 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+  return `${groupSpeakerLabel(entry.from.name, group)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
+}
+
+/** #114341: a member's turn renders only the last GROUP_CHAT_HISTORY_LIMIT
+ *  delta lines while the watermark commit advances past the whole tail, so
+ *  the head of an over-long delta is never delivered on any later turn
+ *  either. Mark the cut — without it a member has no way to know its view
+ *  of the room is partial (typically missing the very user instruction
+ *  that started the exchange). */
+export function formatGroupDeltaLines(delta: GroupMessage[], viewer: GroupChatLineViewer, group?: null | string) {
+  const omitted = delta.length - GROUP_CHAT_HISTORY_LIMIT
+  const lines = delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, viewer, group))
+
+  if (omitted > 0) {
+    lines.unshift(`… ${omitted} earlier room message${omitted === 1 ? '' : 's'} omitted since your last turn`)
+  }
+
+  return lines
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {
@@ -82,14 +113,14 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
 
   const peerNames = peers
     .map(m => {
-      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
+      const handle = m.title ? `${m.title} (@${botMentionTag(m)})` : `@${botMentionTag(m)}`
 
       return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
     })
     .join(', ')
 
   return [
-    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    `[Group chat: "${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
     'New messages in the room since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),

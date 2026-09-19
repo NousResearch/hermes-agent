@@ -29,6 +29,12 @@ def _event_field():
     return field(default_factory=threading.Event, init=False, repr=False)
 
 
+def exception_message(exc: BaseException) -> str:
+    """``str(exc)``, or the type name when it is empty (bare ``TimeoutError()``/``RuntimeError()``)
+    so ``mark_error`` never records a blank cause."""
+    return str(exc) or type(exc).__name__
+
+
 @dataclass
 class DashboardOAuthFlow:
     flow_id: str
@@ -43,7 +49,7 @@ class DashboardOAuthFlow:
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
     expected_state: str | None = field(default=None, init=False)
-    _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    _callback: tuple[str, str | None, str | None] | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = _event_field()
     _callback_ready: threading.Event = _event_field()
@@ -70,8 +76,13 @@ class DashboardOAuthFlow:
             raise RuntimeError(self.error or "MCP OAuth flow ended before authorization")
         return self.authorization_url
 
-    def deliver_callback(self, *, code: str | None, state: str | None, error: str | None) -> None:
-        """Hand the browser redirect to the waiting flow; ``state`` must match exactly."""
+    def deliver_callback(
+        self, *, code: str | None, state: str | None, error: str | None, iss: str | None = None
+    ) -> None:
+        """Hand the browser redirect to the waiting flow; ``state`` must match exactly.
+
+        ``iss`` (RFC 9207) is carried through — see ``tools.mcp_oauth._parse_redirect_query``.
+        """
         with self._lock:
             if self._callback_ready.is_set():
                 raise ValueError("OAuth callback already received")
@@ -80,18 +91,20 @@ class DashboardOAuthFlow:
             if error:
                 self._callback_error = error
             elif code:
-                self._callback = (code, state)
+                self._callback = (code, state, iss)
             else:
                 self._callback_error = "OAuth callback did not include code or error"
             self._callback_ready.set()
 
-    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
+    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None, str | None]:
         if not await asyncio.to_thread(self._callback_ready.wait, timeout):
             raise TimeoutError("Timed out waiting for MCP OAuth callback")
         if self._callback_error:
             raise RuntimeError(f"OAuth authorization failed: {self._callback_error}")
         if self._callback is None:
-            raise RuntimeError("OAuth callback did not include an authorization code")
+            raise RuntimeError(
+                f"MCP OAuth flow for '{self.server_name}' ended without an authorization code "
+                f"(status={self.status}, error={self.error!r})")
         return self._callback
 
     def mark_approved(self) -> None:
@@ -102,11 +115,22 @@ class DashboardOAuthFlow:
             self.error = None
 
     def mark_error(self, error: str) -> None:
+        """Fail the flow with *error*; the first reason wins. Waking the callback waiter makes the
+        worker fail too, and its follow-on ``mark_error`` must not clobber the cause the user needs."""
         with self._lock:
-            if self.status == "approved":
+            if self.status in {"approved", "error"}:
                 return
             self.status = "error"
-            self.error = error
+            self.error = error or "MCP OAuth flow failed before the callback was received (empty error message)"
+            # The SDK's callback waiter reads _callback_error, not error — without
+            # this copy, a failure marked before any browser redirect (worker
+            # crash, authorization-URL timeout, user cancel) wakes the waiter
+            # with no callback and no error, surfacing as the generic
+            # "did not include an authorization code" RuntimeError while the
+            # real cause stays unread. Guarded so a late mark_error cannot
+            # override an already delivered callback.
+            if self._callback is None and self._callback_error is None:
+                self._callback_error = self.error
             self._authorization_ready.set()
             self._callback_ready.set()
 

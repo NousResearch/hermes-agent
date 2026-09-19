@@ -56,6 +56,32 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _inline_post_swap_handoff(request, monkeypatch):
+    """Run the post-swap tail in-process instead of re-executing ``hermes update --post-swap``.
+
+    ``_apply_pulled_update`` / ``_update_via_zip`` hand the rest of the run to a child
+    interpreter on the pulled tree. A mocked updater flow must not spawn that child (it would
+    run a real dependency sync against the worktree), so the tail runs here through the same
+    payload round-trip — every step stays patchable and the payload shape is still exercised.
+    Tests of the hand-off itself opt out with ``@pytest.mark.real_post_swap_handoff``.
+    """
+    if request.node.get_closest_marker("real_post_swap_handoff"):
+        return
+    try:
+        from hermes_cli import update_cmd, update_receipt
+    except Exception:
+        return
+
+    def _inline(args, **payload_kwargs):
+        payload = update_cmd._post_swap_payload(**payload_kwargs)
+        if payload["receipt"]:
+            update_receipt.resume_update_receipt(payload["receipt"])
+        update_cmd._execute_post_swap(payload, args, payload_kwargs["gateway_mode"])
+
+    monkeypatch.setattr(update_cmd, "_hand_off_post_swap", _inline, raising=False)
+
+
 @pytest.fixture
 def isolated_update_runtime(monkeypatch, tmp_path, request):
     """Keep mocked updater flows off the host checkout and runtime fleet."""
@@ -69,8 +95,6 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     if hasattr(request.module, "PROJECT_ROOT"):
         monkeypatch.setattr(request.module, "PROJECT_ROOT", checkout)
 
-    # A real purge would discard the module objects patched below.
-    monkeypatch.setattr(main, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "_get_service_pids", lambda *a, **k: set())

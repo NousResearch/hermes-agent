@@ -29,6 +29,8 @@ CRED_ENV = {
         "WHATSAPP_CLOUD_ACCESS_TOKEN": "EAAB-test-access-token",
     },
     "homeassistant": {"HASS_TOKEN": "hass-long-lived-token"},
+    # flag-driven, not credential-driven: WHATSAPP_ENABLED=true must not beat an explicit YAML disable (#73289)
+    "whatsapp": {"WHATSAPP_ENABLED": "true"},
     "email": {
         "EMAIL_ADDRESS": "bot@example.com",
         "EMAIL_PASSWORD": "app-password",

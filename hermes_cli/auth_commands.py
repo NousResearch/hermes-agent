@@ -28,6 +28,8 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "q
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
+# Providers whose sibling CLI login Hermes may borrow (``auth.adopt_external_logins``).
+EXTERNAL_LOGIN_PROVIDERS = {"anthropic", "openai-codex"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -129,6 +131,18 @@ def _provider_base_url(provider: str) -> str:
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
     return (provider in PROVIDER_REGISTRY or provider == "openrouter"
             or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+
+
+def _unknown_provider_exit(provider: str) -> SystemExit:
+    """Did-you-mean over the known provider ids plus the two commands that list/pick them."""
+    import difflib
+    known = sorted(set(PROVIDER_REGISTRY) | {"openrouter"}
+                   | {entry["name"] for entry in _get_custom_provider_entries()})
+    close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
+    hint = f" Did you mean {', '.join(close)}?" if close else ""
+    return SystemExit(
+        f"Unknown provider '{provider}'.{hint} Run `hermes auth` to see the provider list, or "
+        "`hermes model` to pick one interactively.")
 
 
 def _display_source(source: str) -> str:
@@ -348,7 +362,7 @@ def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise _unknown_provider_exit(provider)
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
@@ -479,13 +493,15 @@ def auth_list_command(args) -> None:
             )
             print(row.rstrip())
         print()
-    _print_oauth_heal_notices()
+    if not provider_filter or provider_filter in EXTERNAL_LOGIN_PROVIDERS:
+        _print_external_login_notice()
 
 
-def _print_oauth_heal_notices() -> None:
-    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
-    for note in auth_mod.consume_oauth_heal_notices():
-        print(f"note: {note}")
+def _print_external_login_notice() -> None:
+    """One line telling the user why no Codex CLI / Claude Code login shows up when adoption is off."""
+    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
 def auth_remove_command(args) -> None:
@@ -573,10 +589,12 @@ def auth_refresh_command(args) -> None:
     refreshed = pool.try_refresh_matching(credential_id=matched.id)
     if refreshed is None:
         after = next((e for e in pool.entries() if e.id == matched.id), None)
-        state = "removed from pool" if after is None else (after.last_status or "unknown")
+        label = PROVIDER_REGISTRY[provider].name if provider in PROVIDER_REGISTRY else provider
+        state = ("it was removed from the pool" if after is None
+                 else "the saved session is no longer valid")
         raise SystemExit(
-            f"Refresh failed for {provider} credential #{index} ({matched.label}); "
-            f"status now: {state}.")
+            f"Could not renew the {label} sign-in for credential #{index} ({matched.label}); {state}. "
+            f"Sign in again with `hermes auth add {provider} --type oauth`.")
     status = refreshed.last_status or "ok"
     if status == "ok":
         print(f"Refreshed {provider} credential #{index} ({refreshed.label}); status: ok")
@@ -590,10 +608,7 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
-    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
-        load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
-    _print_oauth_heal_notices()
     if status.get("free_tier"):
         # Free tier: not an account login, so no account fields; point at the upgrade path.
         label, hint = _free_tier_lines()
@@ -603,6 +618,8 @@ def auth_status_command(args) -> None:
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
+        if provider in EXTERNAL_LOGIN_PROVIDERS:
+            _print_external_login_notice()
         return
     print(f"{provider}: logged in")
     for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
@@ -721,7 +738,7 @@ def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise _unknown_provider_exit(provider)
 
     auth_type = "api_key"
     if provider in _OAUTH_CAPABLE_PROVIDERS:

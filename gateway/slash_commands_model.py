@@ -70,6 +70,7 @@ class _ModelSwitchContext:
     config_path: Any
     persist_global: bool
     one_turn: bool = False
+    reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
     current_provider: str = "openrouter"
@@ -320,7 +321,15 @@ class GatewayModelCommandsMixin:
         if error is not None:
             return error
         await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        return await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        reply = await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        if ctx.reasoning_effort and not one_turn:
+            # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
+            # The record step already evicted the cached agent, so the pin lands on the rebuild.
+            from gateway.run import _platform_config_key
+            reply += "\n" + self._apply_reasoning_selection(
+                ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
+                persist_global=ctx.persist_global)
+        return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
@@ -359,7 +368,7 @@ class GatewayModelCommandsMixin:
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
         )
-        adapter = self._adapter_for_source(ctx.source)
+        adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
@@ -399,11 +408,13 @@ class GatewayModelCommandsMixin:
         rendered confirm buttons itself.
         """
         try:
-            from hermes_cli.model_selection_guards import combined_selection_warning
+            from hermes_cli.model_selection_guards import (
+                combined_selection_warning, selection_context_for_agent)
             warning = await asyncio.to_thread(
                 combined_selection_warning, result.new_model, provider=result.target_provider,
                 base_url=result.base_url or ctx.current_base_url or "",
                 api_key=result.api_key or ctx.current_api_key or "", model_info=result.model_info,
+                selection_context=selection_context_for_agent(self._cached_agent_for(ctx.session_key)),
             )
         except Exception:
             warning = None
@@ -466,6 +477,7 @@ class GatewayModelCommandsMixin:
                 explicit_provider=request.explicit_provider,
             ),
             one_turn=request.is_once,
+            reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
@@ -606,7 +618,7 @@ class GatewayModelCommandsMixin:
     ) -> bool:
         """Send an interactive choice picker when the adapter *type* supports it (the /model gate);
         a failed send returns False (text fallback) instead of erroring."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
         try:

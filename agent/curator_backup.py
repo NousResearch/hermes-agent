@@ -27,14 +27,18 @@ from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_KEEP = 5
+DEFAULT_KEEP = 2
 
 # Never rolled into a snapshot: .hub/ is owned by the skills hub (rolling it back breaks lockfile invariants); .curator_backups
 # is the backup dir itself; .git is repository metadata — rolling it back breaks git tracking, and snapshots that include it grow
 # with the full history (once backups are committed back, each snapshot contains the prior ones: 38MB of skills inflated to 24GB
-# in weeks). The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
-# See #91449.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".git"}
+# in weeks); .locks holds skill_manage's per-skill lock files — restoring them would swap a lock out from under a waiting
+# writer. The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
+# See #91449. ``.curator_ledger.jsonl`` is the append-only audit log and ``.archive/`` the recoverable store the curator
+# promises never to delete: rolling either back to an older copy LOSES entries/skills, and both grow without bound (a 650MB
+# ledger made every snapshot 820MB — and every archive step gunzips the newest snapshot in full, so a pass that pruned 57
+# skills held the CLI prompt for 6 minutes).
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git", ".archive", ".curator_ledger.jsonl"}
 
 # Snapshot id: UTC ISO with colons replaced by dashes (Windows-safe filename); optional ``-NN`` suffix for same-second snapshots.
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
@@ -169,9 +173,16 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot
         return None
 
-    _prune_old(keep=get_keep(), protect=protect_ids)
+    # A same-second id reuse after a prune (`...Z` next to a surviving `...Z-02`) sorts BELOW its sibling;
+    # the snapshot just written must never be its own prune victim.
+    _prune_old(keep=get_keep(), protect=(protect_ids or set()) | {snap_id})
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
+
+
+def prune_old_snapshots() -> List[str]:
+    """Apply ``curator.backup.keep`` without taking a new snapshot (the prune-only curator pass)."""
+    return _prune_old(keep=get_keep())
 
 
 def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:

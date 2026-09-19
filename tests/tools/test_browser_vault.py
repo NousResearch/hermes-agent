@@ -302,6 +302,88 @@ class TestBrowserVaultTools:
         assert "Refused" in out["error"]
         assert "s3cret-pw" not in json.dumps(out)
 
+    @staticmethod
+    def _manager_meta():
+        from agent.vault_store import VaultItemMeta
+
+        return VaultItemMeta(
+            id="op:multi", kind="login", label="Amazon", origin="https://amazon.co.uk",
+            created_at="2026-01-01T00:00:00Z", identifier_type="username", identifier="jane@example.com",
+            allowed_origins=("https://amazon.co.uk", "https://www.amazon.co.uk",
+                             "https://eu.account.amazon.com"))
+
+    def test_fill_allowed_on_every_saved_origin_of_a_multi_website_item(self):
+        """A manager item with several saved websites fills on each of them
+        (exact match only), and the in-page origin assert pins the origin
+        actually being filled — not just the first saved one."""
+        from tools import browser_vault_tool
+
+        meta = self._manager_meta()
+
+        class _ManagerBackend:
+            name, display_name, needs_unlock = "onepassword", "1Password", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return meta if handle == meta.id else None
+
+            def resolve_password(self, handle):
+                return "s3cret-pw"
+
+        controls = [
+            {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+        secret_exprs = []
+
+        def fake_eval(task_id, expression):
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://www.amazon.co.uk"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill("op:multi")
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["origin"] == "https://www.amazon.co.uk"
+        # the synchronous in-page check is bound to the origin actually matched
+        assert "https://www.amazon.co.uk" in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+        assert out["filled_fields"] == 1
+
+    def test_fill_still_refused_on_origin_not_saved_on_the_item(self):
+        """Multi-website items widen nothing: an unsaved origin — even a sibling
+        subdomain — is still refused (fail-closed regression)."""
+        from tools import browser_vault_tool
+
+        meta = self._manager_meta()
+
+        class _ManagerBackend:
+            name, display_name, needs_unlock = "onepassword", "1Password", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return meta if handle == meta.id else None
+
+            def resolve_password(self, handle):
+                return "s3cret-pw"
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://payments.amazon.co.uk"):
+            out = json.loads(browser_vault_tool.browser_vault_fill("op:multi"))
+        assert out["success"] is False
+        assert out["error_type"] == "origin_mismatch"
+        assert "s3cret-pw" not in json.dumps(out)
+
     def test_fill_unknown_handle(self, store):
         from tools import browser_vault_tool
 

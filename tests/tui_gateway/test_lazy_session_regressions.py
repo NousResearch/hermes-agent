@@ -295,8 +295,9 @@ class TestGatewaySurfacesNullResponse:
             agent_result, response, history_len=5,
         )
 
-        assert "500 Internal Server Error" in response
-        assert "/reset" in response
+        # Plain outcome plus the way forward; the raw provider text stays in the log.
+        assert "500 Internal Server Error" not in response
+        assert "/retry" in response and "/new" in response
 
 
     def test_silent_drop_after_stop_surfaces_hint(self):

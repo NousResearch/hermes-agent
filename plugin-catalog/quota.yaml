@@ -1,0 +1,15 @@
+name: quota
+repo: https://github.com/rarf/hermes-quota-plugin
+sha: 40cc87b1170a129d9e8b347175c8dac27de54ced
+description: Per-provider quota / rate-limit status via /quota command and desktop widget. Reads precomputed quota_cache.json so the widget never does network I/O. Disclosure — refreshes your Gemini OAuth token using the Gemini CLI's client identity and queries Copilot's internal usage endpoint with VS Code client headers; the opt-in (default off) grok.com check reads local browser cookies.
+maintainer: rarf
+tier: community
+category: desktop
+docs_url: https://github.com/rarf/hermes-quota-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - footer
+    - usage_extra
+  provides_middleware: []
+  requires_env: []

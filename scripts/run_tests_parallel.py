@@ -29,6 +29,9 @@ Usage:
     (e.g. ``-q``, ``-v``, ``-x``, ``--tb=long``, ``-k 'pattern'``, ``--lf``)
     with no special separator — a bare ``-q`` "just works". Anything after
     a literal ``--`` is also passed through, and stacks with bare flags.
+    ``-h``/``--help`` prints this usage; a bare flag pytest does not know
+    (a typo like ``--jbs``) is a usage error here rather than a per-file
+    pytest failure. Tokens after ``--`` are never validated.
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
@@ -53,7 +56,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # Default test discovery roots.
@@ -303,6 +306,56 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
+def _effective_file_timeout(
+    file: Path,
+    repo_root: Path,
+    file_timeout: float,
+    durations: dict[str, float] | None,
+) -> float:
+    """Scale the per-file timeout for files whose last observed runtime
+    approaches the flat cap.
+
+    The flat ``file_timeout`` (default 300s) is sized for the typical file,
+    but a handful of large-collection files (e.g. ``tests/test_hermes_state.py``,
+    239 tests × subprocess-per-test overhead) legitimately run 200s+ on a
+    quiet runner. Under CI load that dilates past the cap, the file is
+    SIGKILL'd mid-run, and the automatic retry then passes — a manufactured
+    FLAKY report for a file that was never broken (seen 2026-08-18 on main:
+    first attempt killed at 300s, retry passed in 205s).
+
+    Rule: a file gets ``max(flat_cap, 3 × last_observed_duration)``. Files
+    without a cache entry keep the flat cap. This only ever *raises* the
+    bound — a genuinely hung file is still killed, just with headroom
+    proportional to its known-good runtime.
+    """
+    if not durations:
+        return file_timeout
+    cached = durations.get(_format_file(file, repo_root))
+    if not cached:
+        return file_timeout
+    return max(file_timeout, float(cached) * 3.0)
+
+
+def _clean_pass_durations(
+    file_times: List[Tuple[Path, float]],
+    failures: List[Tuple[Path, str, Dict[str, int]]],
+    flaky: List[Tuple[Path, str]],
+) -> List[Tuple[Path, float]]:
+    """Keep only durations from files that passed on their first attempt.
+
+    ``file_times`` records every file's total subprocess wall, including a
+    timed-out attempt (~the cap) and retry-summed walls for FLAKY files.
+    Feeding those into the cache would let the timeout scaler compound: a
+    file that hung once is cached at ~300s, gets a 900s bound next run,
+    hangs again and is cached at ~900s, and so on until the job timeout
+    is the only bound left. A duration is a measurement of a healthy run
+    or it is not a measurement; failed and retried files keep their last
+    known-good entry instead.
+    """
+    excluded = {f for f, _o, _s in failures} | {f for f, _o in flaky}
+    return [(f, t) for f, t in file_times if f not in excluded]
+
+
 def _run_one_file(
     file: Path,
     pytest_args: List[str],
@@ -469,6 +522,12 @@ def _run_one_file_once(
         # (venv without pytest, -k that matches nothing) can't report green.
         rc = 0
     summary = _parse_pytest_summary(output)
+    crash = _describe_interpreter_crash(rc, output) if rc != 0 else None
+    if crash:
+        # Same convention as the timeout path: the diagnosis leads the
+        # captured output, so the failure dump reads correctly on its own.
+        summary["crashed"] = 1
+        output = f"(interpreter crashed: {crash})\n{output}"
     subproc_wall = time.monotonic() - subproc_start
     return file, rc, output, summary, subproc_wall
 
@@ -504,6 +563,35 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
         if line.startswith("FAILED") or line.startswith("SHORT TEST SUMMARY"):
             break
     return result
+
+
+def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
+    """Return a one-line description when the pytest subprocess died instead of exiting.
+
+    A native fault (sqlite stepping a connection another thread closed,
+    #113186) kills the interpreter mid-file: faulthandler prints ``Fatal
+    Python error: Segmentation fault`` and the process dies by signal, so
+    there is no summary line and every count parses to 0. Without this the
+    file is reported as "no tests ran (collection/import error)" under a
+    summary that says ``0 failed`` — the wrong diagnosis in both places.
+    """
+    fatal = next(
+        (line.strip() for line in output.splitlines() if "Fatal Python error:" in line),
+        None,
+    )
+    if fatal:
+        # The faulthandler banner is appended to the progress dots of the
+        # last test; keep only the banner.
+        fatal = fatal[fatal.index("Fatal Python error:"):]
+    if rc < 0:
+        import signal as _signal
+
+        try:
+            name = _signal.Signals(-rc).name
+        except ValueError:
+            name = f"signal {-rc}"
+        return f"{fatal} ({name})" if fatal else f"killed by {name}"
+    return fatal
 
 
 def _format_file(file: Path, repo_root: Path) -> str:
@@ -568,6 +656,8 @@ def _print_progress(
             parts.append(f"{xf}xf")
         if xp:
             parts.append(f"{xp}xp")
+        if file_summary.get("crashed"):
+            parts.append("CRASHED")
         test_str = " ".join(parts) + ", " if parts else ""
     else:
         n_tests = test_counts.get(file, 0)
@@ -771,6 +861,38 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
+def _pytest_flag_error(tokens: List[str]) -> Optional[str]:
+    """Return pytest's own complaint about the bare passthrough tokens, if any.
+
+    A mistyped flag (``--jbs``) that is not one of OUR options used to be
+    forwarded to every per-file pytest, so the run discovered the whole suite
+    and each file died with ``unrecognized arguments`` — an hours-long way to
+    learn about a typo. Ask pytest's own argparse parser (with the installed
+    plugins loaded, so ``-n``/``--timeout`` count) which tokens it does not
+    know; argparse handles the attached-value (``-rA``), combined-flag
+    (``-xvs``) and ``-k expr`` forms for us. A known flag with a bad or
+    missing value (``--tb`` alone) makes that parser raise ``UsageError``;
+    it is reported the same way instead of once per discovered file. Only
+    if the parser cannot be built is the check skipped and tokens forwarded
+    as before.
+    """
+    try:
+        from _pytest.config import UsageError, get_config
+
+        config = get_config()
+        config.pluginmanager.load_setuptools_entrypoints("pytest11")
+        parser = config._parser.optparser
+    except Exception:
+        return None
+    try:
+        _, unknown = parser.parse_known_args(tokens)
+    except UsageError as exc:
+        # "usage: ...\n<prog>: error: argument --tb: expected one argument"
+        return str(exc).rsplit("error: ", 1)[-1].strip()
+    unknown = [tok for tok in unknown if tok.startswith("-")]
+    return f"unrecognized arguments: {' '.join(unknown)}" if unknown else None
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -883,7 +1005,7 @@ def main() -> int:
     # it never reaches our positional ``paths``. ``=``-joined forms
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
     OUR_FLAGS = {
-        "-j", "--jobs", "--paths", "--include-integration",
+        "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
     }
     # pytest short flags that consume the NEXT token as their value.
@@ -926,6 +1048,14 @@ def main() -> int:
         i += 1
 
     args = parser.parse_args(our_args)
+
+    # Bare tokens are validated against pytest's option set so a typo fails
+    # here with usage instead of once per discovered file. Anything after a
+    # literal ``--`` is the caller's explicit choice and is forwarded as-is.
+    if bare_passthrough:
+        flag_error = _pytest_flag_error(bare_passthrough)
+        if flag_error:
+            parser.error(flag_error)
 
     # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
     # This runner is FILE-granular: it spawns one ``pytest <file>`` per test
@@ -1072,11 +1202,12 @@ def main() -> int:
     # nothing-ran guard, whereas a file that died before collection reports
     # nothing at all and must.
     tests_collected = 0
+    files_crashed = 0
     lock = threading.Lock()
 
     def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, Dict[str, int], float]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
-        nonlocal tests_collected
+        nonlocal tests_collected, files_crashed
         n_tests = test_counts.get(file, 0)
         try:
             fpath, rc, output, summary, subproc_wall = fut.result()
@@ -1101,6 +1232,7 @@ def main() -> int:
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
             tests_skipped += summary.get("skipped", 0)
+            files_crashed += summary.get("crashed", 0)
             tests_collected += sum(
                 summary.get(k, 0)
                 for k in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
@@ -1123,12 +1255,19 @@ def main() -> int:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        # Duration cache for the timeout scaler: known-slow files get
+        # proportional headroom instead of a false timeout-kill under
+        # CI load (see _effective_file_timeout).
+        timeout_durations = _load_durations(repo_root)
         futures: List[Future] = []
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
                 _run_one_file, file, pytest_passthrough, repo_root,
-                args.file_timeout, args.file_retries,
+                _effective_file_timeout(
+                    file, repo_root, args.file_timeout, timeout_durations
+                ),
+                args.file_retries,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)
@@ -1142,7 +1281,13 @@ def main() -> int:
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     skipped_note = f", {tests_skipped} skipped" if tests_skipped else ""
-    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    # A crashed interpreter has no failed-test count; say so on the one line
+    # everyone reads, or "0 failed" + exit 1 looks like a runner bug.
+    crashed_note = (
+        f", {files_crashed} file{'s' if files_crashed != 1 else ''} CRASHED"
+        if files_crashed else ""
+    )
+    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{crashed_note}{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Host-OS gating note: tests marked for another OS were skipped by the
     # conftest hook, not run. Say so explicitly — a green local run on Linux
@@ -1165,7 +1310,7 @@ def main() -> int:
     # The summary line above reads green at a glance ("0 failed ... 100%
     # complete"), which has been misread as a successful verification, so say
     # it plainly AND fail the exit code.
-    no_tests_ran_at_all = bool(files) and tests_collected == 0
+    no_tests_ran_at_all = bool(files) and tests_collected == 0 and not files_crashed
     if no_tests_ran_at_all:
         print()
         print(
@@ -1188,13 +1333,15 @@ def main() -> int:
             print(f"  {_format_file(f, repo_root)}")
             print(output.rstrip())
 
-    # Save durations for future --slice runs. Each slice writes its own
-    # partial test_durations.json; a CI merge step joins them later.
-    # Locally, _save_durations merges with any existing cache so entries
-    # from previous runs aren't lost.
-    if file_times:
-        _save_durations(file_times, repo_root)
-        print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
+    # Save durations for future runs (LPT slicing and the per-file timeout
+    # scaler, see _effective_file_timeout). _save_durations merges with any
+    # existing cache so entries from previous runs aren't lost.
+    clean_times = _clean_pass_durations(
+        file_times, failures, _FLAKY_RESULTS,
+    )
+    if clean_times:
+        _save_durations(clean_times, repo_root)
+        print(f"  Durations cached to {_DURATIONS_FILE} ({len(clean_times)} files)")
 
     # Per-file time distribution (throwaway diagnostic — shows how
     # subprocess time is distributed so we can see if startup dominates).
@@ -1231,11 +1378,17 @@ def main() -> int:
             print(output.rstrip())
         print()
         # Split: files with actual test failures vs non-zero exit for other reasons
-        test_fail_files = [(f, s) for f, _o, s in failures if s.get("failed", 0) > 0]
-        all_passed_but_nonzero = [(f, s) for f, _o, s in failures
+        crashed_files = [(f, o, s) for f, o, s in failures if s.get("crashed")]
+        rest = [(f, s) for f, _o, s in failures if not s.get("crashed")]
+        test_fail_files = [(f, s) for f, s in rest if s.get("failed", 0) > 0]
+        all_passed_but_nonzero = [(f, s) for f, s in rest
                                   if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
-        no_tests_ran = [(f, s) for f, _o, s in failures
+        no_tests_ran = [(f, s) for f, s in rest
                         if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+        if crashed_files:
+            print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
+            for file, output, _s in crashed_files:
+                print(f"  {_format_file(file, repo_root)}  {output.splitlines()[0]}")
         if test_fail_files:
             total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
             print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")

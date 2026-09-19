@@ -54,6 +54,19 @@ class TestLoadConfigCacheEnvStaleness:
     environment (#58514): a load before load_hermes_dotenv() runs, or an env
     var rotated in-process, must not keep serving the old expansion."""
 
+    def test_ref_resolves_from_dotenv_before_os_environ_populated(self, tmp_path, monkeypatch):
+        """A ${env:VAR} ref must resolve from ~/.hermes/.env even when the
+        process env isn't populated yet (import-time plugin discovery runs
+        load_config() before load_hermes_dotenv()). Regression: the ref was
+        left as a literal placeholder and a spurious 'not set' warning fired
+        even though the key existed in .env."""
+        from hermes_cli.config import _env_ref_lookup
+        env_file = tmp_path / ".env"
+        env_file.write_text("LATE_DOTENV_KEY_58514=from-dotenv\n")
+        monkeypatch.setattr("hermes_cli.config.get_env_path", lambda: env_file)
+        monkeypatch.delenv("LATE_DOTENV_KEY_58514", raising=False)
+        assert _env_ref_lookup("LATE_DOTENV_KEY_58514") == "from-dotenv"
+
     def test_env_var_appearing_after_first_load_invalidates_cache(self, tmp_path, monkeypatch):
         config_yaml = "auxiliary:\n  vision:\n    api_key: ${LATE_DOTENV_KEY_58514}\n"
         config_file = tmp_path / "config.yaml"

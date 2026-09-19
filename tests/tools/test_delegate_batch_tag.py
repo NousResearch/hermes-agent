@@ -79,6 +79,7 @@ def test_child_tree_lines_and_relayed_events_carry_batch_tag():
     ref["session_id"] = "child-sess"
 
     cb("subagent.start")
+    cb("subagent.heartbeat")
     cb("tool.started", "terminal", "ls")
 
     tree = parent._delegate_spinner.lines
@@ -86,6 +87,7 @@ def test_child_tree_lines_and_relayed_events_carry_batch_tag():
     assert tree[1].startswith(" [set 1 · 3/9] ├─ ")
     assert all(kw.get("delegation_id") == "deleg_6a664903" for _, kw in relayed)
     assert all(kw.get("child_session_id") == "child-sess" for _, kw in relayed)
+    assert [event for event, _ in relayed] == ["subagent.start", "subagent.heartbeat", "subagent.tool"]
 
 
 def test_child_tree_prefix_without_batch_id_is_unchanged():

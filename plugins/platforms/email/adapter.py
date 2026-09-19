@@ -11,6 +11,7 @@ import re
 import smtplib
 import socket
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -166,6 +167,107 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
+def _open_imap_conn(host: str, port: int, security: str, tls_verify: bool) -> imaplib.IMAP4:
+    """Unauthenticated IMAP connection (tls / starttls / plain).
+
+    Module-level twin of ``EmailAdapter._connect_imap`` (same branches, same
+    timeout) so the out-of-process ``_standalone_send`` Sent-folder APPEND
+    opens IMAP over the same transport rules as the live adapter, which has
+    no instance to hang the connection logic off of.
+    """
+    if security == "tls":
+        return imaplib.IMAP4_SSL(host, port, timeout=30, ssl_context=_tls_context(tls_verify, host))
+    imap = imaplib.IMAP4(host, port, timeout=30)
+    if security == "starttls":
+        try:
+            imap.starttls(ssl_context=_tls_context(tls_verify, host))
+        except Exception:
+            _close_imap(imap)
+            raise
+    return imap
+
+
+# Sent folders a CREATE has already been attempted for, keyed by
+# (host, account, folder). The APPEND runs once per outbound mail, so
+# without this every single send re-issued CREATE — and a rejection (e.g. a
+# read-only account) was swallowed silently, leaving the operator with no
+# signal beyond a per-send APPEND warning. Process-scoped on purpose: the
+# helper is shared with the one-shot standalone sender, which has no adapter
+# instance to hang the state off.
+_SENT_FOLDER_CREATE_ATTEMPTED: set = set()
+
+
+def _ensure_sent_folder(imap: "imaplib.IMAP4", key: tuple, sent_folder: str) -> None:
+    """CREATE *sent_folder* once per process, warning once if that fails."""
+    if key in _SENT_FOLDER_CREATE_ATTEMPTED:
+        return
+    _SENT_FOLDER_CREATE_ATTEMPTED.add(key)
+    try:
+        # CREATE is idempotent; most servers return NO on "already exists".
+        imap.create(sent_folder)
+    except Exception as e:  # noqa: BLE001 — never fatal, but no longer silent
+        logger.warning(
+            "[Email] Could not CREATE Sent folder %r: %s. Replies will only be "
+            "archived if the folder already exists.",
+            sent_folder,
+            e,
+        )
+
+
+def _imap_append_to_sent(
+    *,
+    imap_host: str,
+    imap_port: int,
+    imap_security: str,
+    imap_tls_verify: bool,
+    address: str,
+    password: str,
+    sent_folder: str,
+    raw_bytes: bytes,
+) -> None:
+    """IMAP-APPEND a freshly-sent outbound mail to ``sent_folder``.
+
+    No-op when the folder is unset (empty string) or no IMAP host is
+    configured. Best-effort: failures are logged as warnings and never
+    re-raised — losing the Sent-folder copy must NOT roll back an SMTP send
+    that already succeeded.
+
+    Shared by the live ``EmailAdapter._append_to_sent`` and the
+    out-of-process ``_standalone_send`` so both SMTP paths archive identically.
+    """
+    if not sent_folder or not imap_host:
+        return
+    try:
+        imap = _open_imap_conn(imap_host, imap_port, imap_security, imap_tls_verify)
+        try:
+            imap.login(address, password)
+            _send_imap_id(imap)
+            _ensure_sent_folder(imap, (imap_host, address, sent_folder), sent_folder)
+            # imaplib returns ("NO"/"BAD", ...) on a rejected APPEND WITHOUT
+            # raising — inspect the status tuple explicitly so a silent failure
+            # isn't logged as success.
+            typ, data = imap.append(
+                sent_folder,
+                "(\\Seen)",
+                imaplib.Time2Internaldate(time.time()),
+                raw_bytes,
+            )
+            if typ != "OK":
+                detail = b" ".join(p for p in data if isinstance(p, bytes)).decode(
+                    "utf-8", "replace"
+                )
+                logger.warning(
+                    "[Email] APPEND to %r returned %s: %s",
+                    sent_folder, typ, detail,
+                )
+            else:
+                logger.debug("[Email] APPEND to %r ok", sent_folder)
+        finally:
+            _close_imap(imap)
+    except Exception as e:  # noqa: BLE001 — Sent-folder mirror is best-effort
+        logger.warning("[Email] APPEND to %r failed: %s", sent_folder, e)
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -353,6 +455,9 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        # Sent-folder archival: platforms.email.sent_folder (config.yaml only, not env).
+        # Empty string is a deliberate opt-out — do NOT collapse with `or`.
+        self._sent_folder = extra.get("sent_folder", "Sent")
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -423,6 +528,24 @@ class EmailAdapter(BasePlatformAdapter):
             if isinstance(exc, ssl.SSLError):
                 raise
             return _open_smtp(host, port, security, ctx, _IPv4SMTP, _IPv4SMTP_SSL, timeout=SMTP_CONNECT_TIMEOUT)
+
+    def _append_to_sent(self, raw_bytes: bytes) -> None:
+        """IMAP-APPEND a freshly-sent outbound mail to ``self._sent_folder``.
+
+        Thin wrapper over the shared :func:`_imap_append_to_sent` helper so the
+        live adapter and the out-of-process ``_standalone_send`` archive
+        identically. Best-effort — see the helper for failure semantics.
+        """
+        _imap_append_to_sent(
+            imap_host=self._imap_host,
+            imap_port=self._imap_port,
+            imap_security=self._imap_security,
+            imap_tls_verify=self._imap_tls_verify,
+            address=self._address,
+            password=self._password,
+            sent_folder=self._sent_folder,
+            raw_bytes=raw_bytes,
+        )
 
     def _fail(self, log_fmt: str, err: object, code: str, detail: str, *, retryable: bool) -> bool:
         """Log *err*, record a fatal error for the gateway's reconnect machinery, return False."""
@@ -683,7 +806,12 @@ class EmailAdapter(BasePlatformAdapter):
         return msg, msg_id, subject
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
-        """Login, send, and always release the SMTP connection (quit, else close)."""
+        """Login, send, and always release the SMTP connection (quit, else close).
+
+        Archives to the Sent folder AFTER the finally block, so a send failure
+        (which propagates out of the try) never reaches the archival call —
+        a message that was never sent must never be archived.
+        """
         smtp = self._connect_smtp()
         try:
             smtp.login(self._address, self._password)
@@ -693,6 +821,7 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.quit()
             except Exception:
                 smtp.close()
+        self._append_to_sent(msg.as_bytes())
 
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
@@ -777,16 +906,45 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
+    # Sent-folder archival config (parity with EmailAdapter). The standalone path only requires
+    # SMTP, so IMAP may be unconfigured — the shared helper no-ops on a missing host or an empty folder.
+    imap_host = extra.get("imap_host") or _get_secret("EMAIL_IMAP_HOST", "")
+    imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+    imap_security = _normalize_security(_get_secret("EMAIL_IMAP_SECURITY", "") or extra.get("imap_security"))
+    imap_tls_verify = _esecret_bool("EMAIL_IMAP_TLS_VERIFY", is_truthy_value(extra.get("imap_tls_verify"), default=True))
+    # Empty string is a deliberate opt-out — do NOT collapse with `or`.
+    sent_folder = extra.get("sent_folder", "Sent")
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
-        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+
+        def _blocking_send() -> None:
+            """SMTP send + Sent-folder mirror. Both are synchronous sockets."""
+            server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
+            server.login(address, password)
+            server.send_message(msg)
+            server.quit()
+            # Best-effort Sent-folder mirror — never fails the (already-completed)
+            # SMTP send. Shares the archival helper with EmailAdapter.
+            _imap_append_to_sent(
+                imap_host=imap_host,
+                imap_port=imap_port,
+                imap_security=imap_security,
+                imap_tls_verify=imap_tls_verify,
+                address=address,
+                password=password,
+                sent_folder=sent_folder,
+                raw_bytes=msg.as_bytes(),
+            )
+
+        # Off the event loop: this coroutine drives blocking sockets with a
+        # default timeout, so an unreachable SMTP or IMAP server would stall
+        # every other task in the process for the duration. The adapter's own
+        # send paths already run their synchronous senders in an executor.
+        await asyncio.get_running_loop().run_in_executor(None, _blocking_send)
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:

@@ -27,6 +27,8 @@ declare module '@hermes/ink' {
 
   export type InputEvent = {
     readonly input: string
+    /** `input` is a control byte's binding name, not typed text (#115284). */
+    readonly isControlByteChord: boolean
     readonly key: Key
     readonly keypress: { readonly isPasted?: boolean; readonly name?: string; readonly raw?: string }
   }

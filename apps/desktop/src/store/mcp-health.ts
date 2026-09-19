@@ -102,7 +102,7 @@ let offProfile: (() => void) | null = null
 // scrolls to and focuses the server so its ServerConfig pane (with the
 // Authenticate button) is one click away.
 function openMcpServerPage(name: string): void {
-  window.location.hash = `#/skills?tab=mcp&server=${encodeURIComponent(name)}`
+  window.location.hash = `#/capabilities?tab=mcp&server=${encodeURIComponent(name)}`
 }
 
 // "Disable" from the toast: `enabled: false` in config.yaml (the server stays

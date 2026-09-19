@@ -151,7 +151,8 @@ Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_st
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
-compression-failure fields, `profile_name`, `rewind_count`, `archived`, and
+compression-failure fields, `profile_name`, `transport_profile` (the multiplex
+bot that received the lane, nullable), `rewind_count`, `archived`, and
 `pinned`):
 
 ```sql
@@ -193,6 +194,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
+
+`user_id` is the principal on the other end of the session: messaging adapters
+store the platform sender id, and `desktop` / dashboard sessions opened through
+an authenticated `hermes serve` (OAuth or the basic username/password provider)
+store the login as `<provider>:<user id>` (for example `basic:alice`). Sessions
+with nobody behind them — anonymous loopback use, `subagent`, `cron`, `kanban`
+— keep it empty. The value is set when the row is created and never inferred
+later.
 
 ### Messages Table
 

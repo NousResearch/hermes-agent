@@ -137,6 +137,7 @@ from gateway.browser_control_broker import (
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms.tcp_site import start_tcp_site
 
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,20 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+
+
+def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
+    """Host/port the adapter binds: config.yaml ``platforms.api_server`` wins over the env fallbacks.
+
+    Shared with the CLI restart path, which must wait on the SAME address the replacement will
+    bind — an env-only reading missed every config.yaml port (#91547).
+    """
+    host = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
+    raw_port = extra.get("port")
+    if raw_port is None:
+        raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
+    return host, _coerce_port(raw_port, DEFAULT_PORT)
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 # Send a comment before remote API clients' common 20-second idle deadline.
@@ -1142,11 +1157,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
-        self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        raw_port = extra.get("port")
-        if raw_port is None:
-            raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
-        self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
+        self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
@@ -1208,6 +1219,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
         ``GatewayRunner._running_agents``): exactly the set the drain waits on. Returns count."""
+        run_ids = {
+            run_id for run_id, task in self._active_run_tasks.items() if not task.done()
+        } | set(self._active_run_agents)
+        _api_runs._mark_shutdown_interrupted_runs(self, run_ids)
         # Dedupe by identity: an agent in both registries must be interrupted once.
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())
@@ -1293,7 +1308,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         profile_name = ""
         with suppress(Exception):
             from hermes_cli.profiles import get_active_profile_name
-            profile = get_active_profile_name()
+            profile = get_active_profile_name()  # launch profile, pre-identity (advertised model name)
             if profile and profile not in {"default", "custom"}:
                 profile_name = profile
         return resolve_effective_model(explicit, profile_name, "hermes-agent")
@@ -2770,6 +2785,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
+                                        notification_category: str = "result") -> None:
+        """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key);
+        see ``api_server_runs.run_internal_session_turn``."""
+        await _api_runs.run_internal_session_turn(
+            self, session_id=session_id, text=text, profile=profile,
+            notification_category=notification_category, _api_server=sys.modules[__name__])
+
     @_require_auth
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -2807,8 +2830,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
                 # the tui_gateway lookups heal.
                 from tools.bot_mode_probe import BOT_CHAT_TITLE
-                stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
-                if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
+
+                def _resurrect() -> bool:
+                    # Lookup + unarchive (a WRITE with the full write patience) as one worker-thread
+                    # hop: a contended lock parks this thread, never the event loop (#113772).
+                    stale = db.get_session_by_title(title_filter)
+                    return bool(stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]))
+
+                if title_filter == BOT_CHAT_TITLE and await asyncio.to_thread(_resurrect):
                     sessions = await _list()
             except Exception:
                 pass  # resolution degrades to today's no-row behavior
@@ -3051,7 +3080,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return None, lock_error
-        if not self._persist_session_runtime_lock(session_id, runtime_request):
+        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return None, _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         lock_active = bool(runtime_request.get("require_model_lock"))
@@ -3303,7 +3332,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return lock_error
-        if not self._persist_session_runtime_lock(session_id, runtime_request):
+        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         requested = runtime_request.get("requested") or {}
@@ -3991,19 +4020,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly (a pre-probe raced the bind, misreporting TIME_WAIT as "in use").
-            # SO_REUSEADDR off on macOS (BSD can split traffic between two listeners).
             # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
             # real bind and reported a TIME_WAIT socket as "in use" (#10297), failing gateway restarts for
-            # up to ~60s. SO_REUSEADDR is platform-dependent (same rationale as the webhook adapter,
-            # #65482): - macOS (BSD semantics): two sockets with SO_REUSEADDR can silently split traffic
-            # while both report success — disable. - Linux: SO_REUSEADDR only permits rebinding past
-            # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
-            # (enabled) for instant restart rebinds.
-            self._site = web.TCPSite(
-                self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
+            # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
+            # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
             try:
-                await self._site.start()
+                # aiohttp registers a site with its runner before binding, so a failed start leaves the
+                # site registered: rebuild the runner per attempt rather than reach into its internals.
+                for attempt in range(_BIND_ATTEMPTS):
+                    try:
+                        self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
+                        break
+                    except OSError as exc:
+                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                            raise
+                        await self._runner.cleanup()
+                        self._runner = web.AppRunner(self._app)
+                        await self._runner.setup()
+                        await asyncio.sleep(0.2 * (attempt + 1))
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

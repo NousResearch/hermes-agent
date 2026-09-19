@@ -1401,12 +1401,31 @@ def _register_linux_desktop_entry(defer: bool = False):
     return None
 
 
+def _remove_half_installed_get_windows(project_root: Path) -> list[Path]:
+    """Delete a ``node_modules/get-windows`` an interrupted extract left without ``package.json``.
+
+    A Windows in-place update with the Desktop/gateway holding files open fails tar
+    extraction mid-package (#90829); npm never revisits a directory that already exists,
+    so the optional dep stayed unresolvable on every later update until a manual repair.
+    Both the workspace hoist and the app-local copy are checked.
+    """
+    removed = []
+    for candidate in (project_root / "node_modules" / "get-windows",
+                      project_root / "apps" / "desktop" / "node_modules" / "get-windows"):
+        if candidate.is_dir() and not (candidate / "package.json").exists():
+            shutil.rmtree(candidate, ignore_errors=True)
+            print(f"  ⚠ Removed half-installed {candidate} so npm re-extracts it")
+            removed.append(candidate)
+    return removed
+
+
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     """npm-install the desktop workspace; exits on a failure that isn't a repairable missing Electron dist."""
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _run_npm_install_deterministic
     from hermes_constants import with_hermes_node_path
     print("→ Installing desktop workspace dependencies...")
+    _remove_half_installed_get_windows(PROJECT_ROOT)
     # Managed Node on PATH so npm's child scripts that shell out to bare `node`
     # (e.g. electron-winstaller's select-7z-arch.js) resolve it even when the
     # desktop updater chain lost shell PATH customizations. Wrapping the NixOS
@@ -1435,6 +1454,11 @@ def _run_desktop_pack_with_recovery(
     A MISSING exe is the signature of the corrupt-download class; a late failure
     (e.g. macOS signing) leaves it in place and a redownload retry would only
     repeat the same slow failure.
+
+    Both rungs additionally require the Electron distributable to be MISSING.
+    "No staged exe" is also true of every failure before electron-builder ever
+    runs (compile, bundler, native link), and switching mirrors cannot repair
+    those — it just re-runs the whole pack behind a message blaming GitHub.
     """
     from hermes_cli.main import PROJECT_ROOT
     def _staged_exe() -> Optional[Path]:
@@ -1468,13 +1492,13 @@ def _run_desktop_pack_with_recovery(
         build_result.returncode != 0
         and staging_dir is not None
         and not env.get("ELECTRON_MIRROR")
-        and _staged_exe() is None):
+        and _staged_exe() is None
+        and not _electron_dist_ok(PROJECT_ROOT)):
         print("  ⚠ Desktop build still failing; the Electron download from "
               "GitHub looks blocked. Re-downloading via a public mirror "
               "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
         mirror_env = {**npm_build_env, "ELECTRON_MIRROR": _ELECTRON_FALLBACK_MIRROR}
-        if not _electron_dist_ok(PROJECT_ROOT):
-            _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
+        _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
         _stop_desktop_processes_locking_build(desktop_dir)
         build_result = _pack(mirror_env)
     return build_result

@@ -146,7 +146,7 @@ export function useTitlebarToolContributions(side: 'left' | 'right'): TitlebarTo
 }
 
 /**
- * Bridge a page's `GroupSetter` extension point (SkillsView, MessagingView,
+ * Bridge a page's `GroupSetter` extension point (CapabilitiesView, MessagingView,
  * ChatPreviewRail, …) into the registry: each call replaces the group's items
  * as DATA contributions in `<prefix>.<side>`, so page-owned items flow through
  * the same pipe plugins use. Setting an empty list clears the group.

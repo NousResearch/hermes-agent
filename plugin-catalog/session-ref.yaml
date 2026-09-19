@@ -1,0 +1,19 @@
+name: session-ref
+repo: https://github.com/kama-dev/hermes-session-ref
+sha: 9b6f03fb0ccd9113e2211fb7dd01df88ad45a8ba
+description: Reference another Hermes session in the Desktop composer with @session —
+  type @ and pick from live session suggestions. Inserts a compact @session:"<title>"
+  reference; nothing is injected into context, the agent resolves it with its own
+  session-search. No more copying session IDs.
+maintainer: kama-dev
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/kama-dev/hermes-session-ref#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

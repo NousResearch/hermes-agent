@@ -126,7 +126,7 @@ jobs:
             fi
 
             # Manifest schema + declared-vs-registered capability check.
-            if ! hermes plugins validate "$PLUGIN_DIR"; then
+            if ! hermes plugins validate --install-deps "$PLUGIN_DIR"; then
               echo "::error file=$entry::hermes plugins validate failed"
               FAILED=1; echo "::endgroup::"; continue
             fi

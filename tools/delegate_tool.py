@@ -137,7 +137,7 @@ def _child_compression_cap_tokens(raw) -> "int | None":
 def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
     (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
-    compacts at 500K like its parent. The compressor applies the cap on first window resolution, which
+    compacts where its parent does. The compressor applies the cap on first window resolution, which
     happens after construction, so setting it here is exactly equivalent to config."""
     from agent.context_compressor import ContextCompressor
 
@@ -545,16 +545,14 @@ _DESCRIPTION_HEAD = (
     "as a new message when subagents finish ({delivery}). Background results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
-    "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
-    "child drifting.\n\n"
-    "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
-    "parallel workstreams.\n"
+    "While children run, `action` (list/steer/stop) controls them live.\n\n"
+    "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
     "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
     "- A single tool call -> call the tool directly\n"
     "- Tasks needing user interaction -> subagents cannot ask questions\n"
     "- Durable work that must survive this session -> cronjob or terminal(background=True, notify=True); /stop, /new, "
-    "or process exit discards running subagents.\n\n"
+    "or process exit halts running subagents (whole tree); each returns an 'interrupted' completion with partial output.\n\n"
     "RULES:\n"
     "- Children know nothing of this conversation: pass everything needed via 'context', including any required "
     "output language, tone, or style (e.g. \"respond in Chinese\").\n"
@@ -562,6 +560,8 @@ _DESCRIPTION_HEAD = (
     "\"file written\" may be wrong. For external side effects (uploads, remote writes, publishing), require a "
     "verifiable handle (URL, ID, absolute path) and verify it yourself before telling the user the operation "
     "succeeded.\n"
+    "- Children cannot close tracked work: a child asked to close it returns findings instead; "
+    "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."

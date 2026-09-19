@@ -741,6 +741,52 @@ describe('the roster loop forgets a machine that left', () => {
     stopBotRelay()
   })
 
+  it('retries the clear on the next tick when the push fails, instead of spending it', async () => {
+    // The clear is one-shot per sole connection, so spending it before the push lands means a
+    // failure is never retried: the surviving gateway keeps the departed machine's agents in every
+    // bot's prompt, and as message_agent targets, for the life of the Desktop. requestProfile
+    // throws on a socket that is not up yet, not only on a backend too old to have the RPC.
+    let clearFails = true
+
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return { profiles: [{ name: call.connectionId === 'a' ? 'default' : 'ops' }] }
+      }
+
+      if (call.method === 'bot_relay.roster.sync' && clearFails && !(call.params.agents as unknown[]).length) {
+        throw new Error('Hermes gateway is not connected')
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+
+    // b leaves; the clear is attempted and fails.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toHaveLength(1)
+    calls.length = 0
+
+    // Next tick must try again rather than treat the roster as already forgotten.
+    clearFails = false
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([
+      expect.objectContaining({ connectionId: 'a', params: { agents: [] } })
+    ])
+
+    // And once it lands it is spent, exactly as before.
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([])
+
+    stopBotRelay()
+  })
+
   it('clears the roster of a sole connection that replaced the previous sole one', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {

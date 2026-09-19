@@ -114,6 +114,8 @@ export class JsonRpcGatewayClient {
   private lastSeenSeq = new Map<string, number>()
   /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
   private replayInFlight = false
+  /** Invalidates an interrupted replay so its async cleanup cannot own a replacement socket. */
+  private replayGeneration = 0
   /**
    * While a replay fetch is in flight, live seq'd frames for the sessions
    * being replayed are parked here instead of dispatching immediately.
@@ -250,6 +252,9 @@ export class JsonRpcGatewayClient {
         void this.fetchReplay()
       }
 
+      // Every rejection below names its failure class. The boot overlay renders this message verbatim, and
+      // a bare connectErrorMessage collapses "server refused the token", "TLS/DNS/refused before open" and
+      // "nothing answered" into one sentence nobody can act on (#41566).
       const onError = () => {
         if (settled || this.socket !== socket) {
           return
@@ -258,7 +263,8 @@ export class JsonRpcGatewayClient {
         settled = true
         cleanup()
         this.setState('error')
-        reject(new Error(this.options.connectErrorMessage))
+        // A browser/renderer 'error' event carries no detail; the class is the message.
+        reject(this.connectFailure('WebSocket error before open'))
       }
 
       // A server that closes during the handshake (auth gate, 4401/4403)
@@ -268,7 +274,7 @@ export class JsonRpcGatewayClient {
       // and moved the generation to 'closed'; the branch below only runs
       // when `onSocketClose` intercepted that transition and left the
       // half-open socket bound.
-      const onClose = () => {
+      const onClose = (event: CloseEvent) => {
         if (settled) {
           return
         }
@@ -281,7 +287,11 @@ export class JsonRpcGatewayClient {
           this.setState('error')
         }
 
-        reject(new Error(this.options.connectErrorMessage))
+        reject(
+          this.connectFailure(
+            `WebSocket closed during handshake: code ${event.code}${event.reason ? ` ${event.reason}` : ''}`
+          )
+        )
       }
 
       socket.addEventListener('open', onOpen, { once: true })
@@ -310,10 +320,14 @@ export class JsonRpcGatewayClient {
             this.setState('error')
           }
 
-          reject(new Error(this.options.connectErrorMessage))
+          reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
         }, this.options.connectTimeoutMs)
       }
     })
+  }
+
+  private connectFailure(detail: string): Error {
+    return new Error(`${this.options.connectErrorMessage} (${detail})`)
   }
 
   close(): void {
@@ -449,6 +463,7 @@ export class JsonRpcGatewayClient {
     }
 
     this.replayInFlight = true
+    const replayGeneration = ++this.replayGeneration
     // Park live frames for the sessions we're about to replay so a frame
     // racing the replay response can't dispatch ahead of (or duplicate) the
     // gap events. Sessions without watermarks are unaffected.
@@ -474,6 +489,13 @@ export class JsonRpcGatewayClient {
           )
         )
       )
+
+      // The socket that owned this replay was dropped while its requests were
+      // settling. Its results and cleanup must not consume the replacement
+      // socket's replay window.
+      if (this.replayGeneration !== replayGeneration) {
+        return
+      }
 
       for (const result of results) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
@@ -506,8 +528,10 @@ export class JsonRpcGatewayClient {
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.
     } finally {
-      this.flushReplayHold()
-      this.replayInFlight = false
+      if (this.replayGeneration === replayGeneration) {
+        this.flushReplayHold()
+        this.replayInFlight = false
+      }
     }
   }
 
@@ -567,6 +591,12 @@ export class JsonRpcGatewayClient {
 
   /** Forget the current socket generation, fail its calls, and go 'closed'. */
   private dropSocket(error: Error): void {
+    // A replay belongs to the socket that started it. Detaching that socket
+    // rejects its requests asynchronously, so clear its ownership now; the
+    // next open can immediately schedule a replay of its own.
+    this.replayGeneration += 1
+    this.replayInFlight = false
+    this.replayHold = null
     this.socket = null
     this.channel.detach(error)
     this.setState('closed')

@@ -79,6 +79,20 @@ def test_curator_defaults(curator_env):
     assert c.get_stale_after_days() == 14
     assert c.get_archive_after_days() == 30
 
+def test_bundled_skills_are_off_limits_unless_opted_in(curator_env, monkeypatch):
+    """Shipped skills vanishing after 30 idle days is opt-in: with no config the reader says off, and
+    the same reader flips with the key. Both loaders see the same answer (DEFAULT_CONFIG agrees)."""
+    import importlib
+    import tools.skill_usage as usage
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    importlib.reload(usage)  # the fixture pins _prune_builtins_enabled; reload restores the real reader
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {}})
+    assert usage._prune_builtins_enabled() is False
+    assert DEFAULT_CONFIG["curator"]["prune_builtins"] is False
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {"prune_builtins": True}})
+    assert usage._prune_builtins_enabled() is True
+
+
 
 
 

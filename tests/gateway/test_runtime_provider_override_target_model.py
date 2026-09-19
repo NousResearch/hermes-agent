@@ -2,8 +2,8 @@
 
 Channel overrides, persisted ``/model`` switches and API-server provider refreshes all resolve
 credentials through ``gateway.run._resolve_runtime_agent_kwargs_for_provider``; without the model
-the ladder keys off config's ``default`` and a ``*-free`` default sends a Go-only model to the
-keyless Zen relay ("Model ... is not supported")."""
+the ladder keys off config's ``default`` and a ``*-free`` default decides the api_mode/base_url
+for a Go-only model ("Model ... is not supported")."""
 
 import pytest
 

@@ -235,10 +235,11 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
             return git_url + ".git", (subdir.strip("/") or None)
         return identifier, None
 
-    # owner/repo[/subdir...] shorthand
+    # owner/repo[/subdir...] or owner/repo#subdir shorthand (the catalog spells subdirs with ``#``).
+    identifier, _, fragment = identifier.partition("#")
     parts = [p for p in identifier.strip("/").split("/") if p]
     if len(parts) >= 2:
-        subdir = "/".join(parts[2:]).strip("/")
+        subdir = "/".join([*parts[2:], *fragment.split("/")]).strip("/")
         return f"https://github.com/{parts[0]}/{parts[1]}.git", (subdir or None)
     raise ValueError(
         f"Invalid plugin identifier: '{identifier}'. "
@@ -1376,7 +1377,8 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
 
 def _discover_all_plugins() -> list:
     """``(name, version, description, source, dir_path, key)`` for every plugin the loader sees,
-    in ``PluginManager.discover_and_load`` order: bundled, user, entry points (later wins)."""
+    in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
+    displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
     # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
@@ -1388,7 +1390,7 @@ def _discover_all_plugins() -> list:
         _scan_level(base, source, skip, "", 0, seen)
     # Entry-point plugins are installed as Python packages, so they have no plugin directory.
     for m in discover_entrypoint_manifests():
-        seen[m.name] = (m.name, m.version, m.description, "entrypoint", m.path, m.name)
+        seen.setdefault(m.name, (m.name, m.version, m.description, "entrypoint", m.path, m.name))
     return list(seen.values())
 
 
@@ -1430,10 +1432,13 @@ def cmd_list(args: Any | None = None) -> None:
     # Source shows catalog provenance (``catalog:<tier>@<sha8>``) or a ``--ref`` pin
     # (``git pinned@<sha8>``) so a team can eyeball that everyone runs the same commit.
     pins = _read_install_metadata()
+    # One kill-list resolution for the whole listing: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    removed_entries = catalog.resolved_removed_entries()
     rows = [
         (name, _plugin_status(name, enabled, disabled, key=key), str(version), description,
          catalog.catalog_annotation(_dir) or _pin_annotation(name, pins) or source,
-         catalog.removed_annotation(name, _dir))
+         catalog.removed_annotation(name, _dir, removed_entries))
         for name, version, description, source, _dir, key in entries
     ]
 
@@ -1988,14 +1993,12 @@ def _run_plugin_git(
     git_exe: str, target: Path, *args: str, timeout: int = 60, auth_url: str = "",
 ) -> subprocess.CompletedProcess:
     """Run one git command inside a plugin checkout (non-interactive). *auth_url* names the remote
-    a network verb talks to so a stored user credential for its host is attached (private repos)."""
-    env = noninteractive_git_env()
-    if auth_url:
-        from hermes_cli.git_credentials import with_git_auth
-        env = with_git_auth(env, auth_url)
-    return subprocess.run(
-        [git_exe, *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
-        cwd=str(target), stdin=subprocess.DEVNULL, env=env)
+    a network verb talks to; it runs anonymously first and a stored user credential for that host
+    is attached only when the remote refuses anonymous access (private repos)."""
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    return run_git_with_credential_fallback(
+        [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
+        encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
 
 
 def _stash_ref(git_exe: str, target: Path) -> str:
@@ -2175,7 +2178,8 @@ _PLUGIN_ACTIONS = {
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
-    "validate": lambda args: _catalog().cmd_validate(args.path, as_json=getattr(args, "json", False)),
+    "validate": lambda args: _catalog().cmd_validate(
+        args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
     "update": lambda args: cmd_update(args.name),
     "remove": lambda args: cmd_remove(args.name),
     "rm": lambda args: cmd_remove(args.name),

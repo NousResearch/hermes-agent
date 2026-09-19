@@ -271,7 +271,10 @@ def _(rid, params: dict) -> dict:
 
     For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
     the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
-    the free-tier identity exists (or has been refused) rather than racing the mint. If the record
+    the free-tier identity exists (or has been refused) rather than racing the mint. A record that
+    says ``False`` is reconciled with the config files first (``reconcile_record``): a provider
+    added after boot — the Models page, a picker key, ``hermes setup`` from a shell — flips it
+    without a restart. If the record
     is still missing after the wait, or a named profile is asked about, today's live probe answers.
     The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
     try:

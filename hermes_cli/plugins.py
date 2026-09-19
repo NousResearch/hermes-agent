@@ -1318,7 +1318,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         manifests: List[PluginManifest] = self._collect_directory_manifests()
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
-        ep_manifests = self._scan_entry_points()
+        # An installed directory plugin keeps its identity when its own pip dependency also ships an
+        # entry point under the same name (the pyproject wrapper shape): the directory is what the
+        # user installed, carries catalog provenance and is what update/remove act on.
+        directory_keys = {manifest_key(m) for m in manifests}
+        ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
         disabled = _get_disabled_plugins()

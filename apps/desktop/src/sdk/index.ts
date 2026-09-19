@@ -1538,6 +1538,24 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
+ *  lists, full-skill detail pane, embedded hub picker with one-click
+ *  installs). For plugin dialogs pass `embedded` (tab state stays local —
+ *  never touches the page router) and `fixedProfile` to pin every tab to one
+ *  bot's backend; the internal profile selector hides itself. Add
+ *  `fixedConnection` (registry connection id) to pin a bot living on another
+ *  registered gateway — probe `CapabilitiesView.supportsFixedConnection` first;
+ *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
+ *  Advanced section is the reference consumer. */
+export { CapabilitiesView } from '@/app/capabilities'
+
+// -- ui: the design language --------------------------------------------------
+
+/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
+ *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
+ *  renders anywhere (a plugin dialog); pass a live `gateway` (see
+ *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
+export { McpTab } from '@/app/capabilities/mcp/mcp-tab'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1548,9 +1566,6 @@ export {
   type ComposerAttachmentProvider,
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1570,6 +1585,11 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
+ *  sits past the scheduler grace and the job is expected to fire. Every surface
+ *  that prints a next run switches its label on this (`t.cron.next` →
+ *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
+export { nextRunOverdueMs } from '@/app/cron/job-state'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
@@ -1596,7 +1616,13 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+export {
+  type RouteContribution,
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution,
+  WORKSPACE_PAGE_HEADER_AREA
+} from '@/app/routes'
 
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
@@ -1617,21 +1643,6 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
- *  lists, full-skill detail pane, embedded hub picker with one-click
- *  installs). For plugin dialogs pass `embedded` (tab state stays local —
- *  never touches the page router) and `fixedProfile` to pin every tab to one
- *  bot's backend; the internal profile selector hides itself. Add
- *  `fixedConnection` (registry connection id) to pin a bot living on another
- *  registered gateway — probe `SkillsView.supportsFixedConnection` first;
- *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
- *  Advanced section is the reference consumer. */
-export { SkillsView } from '@/app/skills'
-/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
- *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
- *  renders anywhere (a plugin dialog); pass a live `gateway` (see
- *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
-export { McpTab } from '@/app/skills/mcp-tab'
 /** Canonical raw message renderer: applies Desktop message transforms (including
  * `MEDIA:` delivery directives) and the same rich Markdown/media components as
  * core chat. Prefer this over raw Streamdown for transcript-style messages. */
@@ -1810,6 +1821,10 @@ export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+/** Titlebar slots are PERMANENT mount points: a component registered here
+ *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup
+ *  runs once per registration, not once per route. Page-owned controls that
+ *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
 /** The app's own gateway-readiness evaluation (setup.status +

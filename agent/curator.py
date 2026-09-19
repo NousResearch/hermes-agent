@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -896,15 +897,21 @@ def run_curator_review(
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
-        # Pre-mutation snapshot — best-effort, never blocks the run: a transient
-        # disk issue must not silently disable the curator forever.
-        try:
-            from agent import curator_backup
-            snap = curator_backup.snapshot_skills(reason="pre-curator-run")
-            if snap is not None:
-                _notify(on_summary, f"curator: snapshot created ({snap.name})")
-        except Exception as e:
-            logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        from agent import curator_backup
+        # The prune-only pass just renames directories into .archive/ (its own undo) and every edit is
+        # ledgered; only the LLM consolidation pass rewrites content in place, so only it earns a
+        # whole-tree snapshot. Retention still runs so old snapshots age out either way.
+        if consolidate:
+            # Best-effort, never blocks the run: a transient disk issue must not silently disable the curator forever.
+            try:
+                snap = curator_backup.snapshot_skills(reason="pre-curator-run")
+                if snap is not None:
+                    _notify(on_summary, f"curator: snapshot created ({snap.name})")
+            except Exception as e:
+                logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        else:
+            with contextlib.suppress(Exception):
+                curator_backup.prune_old_snapshots()
         counts = apply_automatic_transitions(now=start)
     auto_summary = ", ".join(
         f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
@@ -1088,13 +1095,54 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
 # --- Public entrypoint for the session-start hook ---
 
+_CLAIM_STALE_SECONDS = 3600.0
+
+
+def _run_claim_path() -> Path:
+    return get_hermes_home() / "skills" / ".locks" / "curator-run"
+
+
+def _claim_run() -> bool:
+    """One automatic pass per home across processes: two CLIs launched seconds apart both saw the
+    weekly interval elapsed and both pruned the tree. O_EXCL create wins the claim; a claim older than
+    an hour is a crashed holder and is taken over. When the lock dir cannot be created, run anyway."""
+    lock = _run_claim_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return True
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            if time.time() - lock.stat().st_mtime > _CLAIM_STALE_SECONDS:
+                lock.unlink()
+                return _claim_run()
+        except OSError:
+            pass
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(str(os.getpid()))
+    return True
+
+
+def _release_run_claim() -> None:
+    with contextlib.suppress(OSError):
+        _run_claim_path().unlink()
+
+
 def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
     """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
         # Idle gating: only enforce when the caller provided a measurement.
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None
-        return run_curator_review(on_summary=on_summary)
+        if not _claim_run():
+            return None
+        try:
+            return run_curator_review(on_summary=on_summary)
+        finally:
+            _release_run_claim()
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None

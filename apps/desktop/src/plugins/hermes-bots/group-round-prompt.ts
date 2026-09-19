@@ -1,5 +1,5 @@
 import { botMentionTag } from './data'
-import { groupSpeakerLabel } from './group-chat'
+import { GROUP_CHAT_HISTORY_LIMIT, groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
 
@@ -48,6 +48,23 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
   return `${groupSpeakerLabel(entry.from.name, group)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
+}
+
+/** #114341: a member's turn renders only the last GROUP_CHAT_HISTORY_LIMIT
+ *  delta lines while the watermark commit advances past the whole tail, so
+ *  the head of an over-long delta is never delivered on any later turn
+ *  either. Mark the cut — without it a member has no way to know its view
+ *  of the room is partial (typically missing the very user instruction
+ *  that started the exchange). */
+export function formatGroupDeltaLines(delta: GroupMessage[], viewer: GroupChatLineViewer, group?: null | string) {
+  const omitted = delta.length - GROUP_CHAT_HISTORY_LIMIT
+  const lines = delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, viewer, group))
+
+  if (omitted > 0) {
+    lines.unshift(`… ${omitted} earlier room message${omitted === 1 ? '' : 's'} omitted since your last turn`)
+  }
+
+  return lines
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {

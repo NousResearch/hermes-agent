@@ -199,6 +199,32 @@ class TestSkillsShSource:
         auth = MagicMock(spec=GitHubAuth)
         return SkillsShSource(auth=auth)
 
+    def test_sitemap_fetches_go_through_guarded_get_and_ask_for_gzip_only(self, monkeypatch):
+        """Sitemap hops use the hub's guarded GET *and* keep the explicit
+        ``Accept-Encoding: gzip`` pin: skills.sh serves sitemaps brotli-compressed and
+        httpx's optional brotlicffi backend has a streaming-decode bug on them, so the
+        default ``gzip, deflate, br`` negotiation must never reach the server."""
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        calls = []
+
+        def fake_get(url, *, timeout, headers=None):
+            calls.append((url, headers))
+            body = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap></sitemapindex>"
+                    if url.endswith("/sitemap.xml") else
+                    "<urlset><url><loc>https://skills.sh/acme/repo/my-skill</loc></url></urlset>")
+            return MagicMock(status_code=200, headers={}, text=body)
+
+        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+
+        results = self._source()._sitemap_catalog(limit=5)
+
+        assert [r.identifier for r in results] == ["skills-sh/acme/repo/my-skill"]
+        assert [u for u, _ in calls] == ["https://www.skills.sh/sitemap.xml", "https://www.skills.sh/sitemap-skills-0.xml"]
+        assert all(h == {"Accept-Encoding": "gzip"} for _, h in calls), calls
+
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
@@ -228,6 +254,37 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
+    @patch("tools.skills_hub_skillssh.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_sitemap_catalog_retries_failed_shard_and_never_caches_partial(
+        self, _mock_read_cache, mock_write_cache, _mock_sleep, monkeypatch,
+    ):
+        """A per-skill sitemap shard that keeps failing is a hole in the catalog, not an
+        empty shard: retry it, and never publish the partial slice to the shared cache."""
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
+                 "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
+        shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
+        calls: List[str] = []
+
+        def fake_get(url, *, timeout, headers=None):
+            calls.append(url)
+            if url.endswith("sitemap.xml"):
+                return MagicMock(status_code=200, headers={}, text=index)
+            if url.endswith("sitemap-skills-0.xml"):
+                return MagicMock(status_code=200, headers={}, text=shard0)
+            return MagicMock(status_code=503, headers={}, text="")
+
+        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        results = self._source()._sitemap_catalog(0)
+
+        assert [m.identifier for m in results] == ["skills-sh/o/r/skill-a"]
+        assert calls.count("https://www.skills.sh/sitemap-skills-1.xml") == SkillSource.CATALOG_PAGE_RETRIES
+        mock_write_cache.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)

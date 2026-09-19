@@ -13,6 +13,7 @@ import { useInRouterContext, useNavigate } from 'react-router'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
+import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
   contentHasVisibleText,
@@ -96,7 +97,12 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // <sender>", expandable), mirroring the sender-side notice the previous
   // user message already renders as. Grok-bots parity: the transcript shows
   // events; the texts are one click away. Detection: the immediately
-  // preceding user message matches AGENT_MESSAGE_RE.
+  // preceding user message matches AGENT_MESSAGE_RE — UNLESS that delivery
+  // answers a `message_agent` dispatch this bot itself sent to the sender
+  // earlier in the thread. Seen from the dispatching bot, the inbound row is
+  // the teammate's answer and the next assistant message is the report to
+  // the human (#114629); folding it hid the substance of the turn behind a
+  // "Replied to" row nothing was ever sent through.
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
@@ -115,7 +121,13 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
         if (prev.role === 'user') {
           const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
 
-          return match ? (match[1] || match[3] || 'agent').trim() : null
+          if (!match) {
+            return null
+          }
+
+          const sender = (match[1] || match[3] || 'agent').trim()
+
+          return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
         }
       }
 

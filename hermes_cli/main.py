@@ -35,6 +35,10 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast  # noqa: E402
 
+# A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
+# before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
+_startup_fast.normalize_hermes_home_env()
+
 # Early venv self-heal — MUST run before any third-party import below. A prior
 # ``hermes update`` may have left a recovery marker with a core package wiped;
 # the hermes_cli.config/env_loader imports further down would then crash before
@@ -811,6 +815,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_dist_exists,
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
+    _desktop_stamp_path,
     _install_rebuilt_desktop_app,
 )
 from hermes_cli.main_web_build import (
@@ -1861,7 +1866,7 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (only kanban/project propagate).
+    surfaces the return code to ``main()`` (kanban/project/mcp propagate).
     """
 
     def _cmd(args):
@@ -1895,7 +1900,7 @@ cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
-cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command")
+cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
 cmd_claw = _forward_command("cmd_claw", "hermes_cli.claw", "claw_command")
 cmd_import_agent = _forward_command("cmd_import_agent", "hermes_cli.agent_import", "import_agent_command")
 
@@ -2220,7 +2225,10 @@ def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
 
-    (backup.run_quick_backup if getattr(args, "quick", False) else backup.run_backup)(args)
+    if getattr(args, "quick", False):
+        backup.run_quick_backup(args)
+    elif not backup.run_backup(args):
+        raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
@@ -2368,6 +2376,15 @@ def cmd_update(args):
         describe_holder,
     )
 
+    # A child spawned off hermes.exe: the parent still holds the shim (and the venv python)
+    # until it exits — nothing below may scan holders, pause gateways or rename shims before.
+    # Waiting BEFORE the lock matters: the parent's exit releases ITS marker, so a child that
+    # merely ran under the parent's claim would finish the install with no lock at all
+    # (#101600); once the parent is gone the child claims a marker of its own.
+    from hermes_cli.update_handoff import wait_for_shim_parent_exit
+
+    wait_for_shim_parent_exit()
+
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
@@ -2470,8 +2487,13 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         _report_dashboard_status()
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
-        if not _find_stale_dashboard_pids():
-            print("No hermes dashboard processes running.")
+        # Scoped to the invoking home (`-p` applied by _apply_profile_override): another
+        # install's or profile's backend on this machine is never a target (#113978).
+        from hermes_constants import get_hermes_home
+
+        own_home = str(get_hermes_home())
+        if not _find_stale_dashboard_pids(scope_home=own_home):
+            print("No hermes dashboard processes running for this profile.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`;
         # it prints outcomes itself. Exit 1 only if a pid was unkillable — judged
@@ -2479,7 +2501,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         # its backend on a fresh PID, which is not a failed stop.
         from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 
-        result = _kill_stale_dashboard_processes(reason="requested via --stop")
+        result = _kill_stale_dashboard_processes(reason="requested via --stop", scope_home=own_home)
         sys.exit(1 if result["failed"] else 0)
 
 

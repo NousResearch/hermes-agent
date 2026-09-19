@@ -64,7 +64,7 @@ class TestFailoverReason:
             "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "image_corrupt",
-            "model_not_found", "format_error",
+            "model_not_found", "format_error", "role_alternation",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
             "reasoning_mandatory",
@@ -890,6 +890,24 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
         assert result.should_compress is False
+
+    def test_reasoning_field_rejection_is_reasoning_mandatory(self):
+        """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
+        unsupported; use ...", #114460) or forward ("Unrecognized request argument supplied:
+        reasoning_effort") — takes the drop-the-disable rung, not the format_error abort; a
+        model-id segment (kimi-k2-thinking) stays route gating."""
+        for msg in (
+            "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
+            "Unrecognized request argument supplied: reasoning_effort",
+        ):
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
+            assert result.reason == FailoverReason.reasoning_mandatory, msg
+            assert result.retryable is True and result.should_fallback is False
+        gated = classify_api_error(
+            MockAPIError("The model kimi-k2-thinking is not supported when using this account", status_code=400),
+            provider="custom", model="kimi-k2-thinking",
+        )
+        assert gated.reason != FailoverReason.reasoning_mandatory
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 
@@ -1861,3 +1879,21 @@ class TestNousWelcomeTier:
         result = classify_api_error(MockAPIError("forbidden", status_code=403, body={"message": "forbidden"}), provider="nous", api_key=make_jwt())
         assert result.reason == FailoverReason.auth
         assert "welcome_route" not in result.error_context
+
+
+class TestAuthErrorNamesOffRouteEndpoint:
+    """#113719: an auth refusal from a route that is not the provider's own endpoint names the host."""
+
+    _BODY = {"error": {"code": "api_key_not_supported", "message": "API keys are not supported by this endpoint."}}
+
+    def test_stale_base_url_names_contacted_host(self):
+        e = MockAPIError("Unauthorized", status_code=401, body=self._BODY)
+        result = classify_api_error(e, provider="anthropic", model="claude", base_url="https://chatgpt.com/backend-api/codex")
+        assert result.reason == FailoverReason.auth
+        assert result.message == "API keys are not supported by this endpoint. (endpoint: chatgpt.com)"
+
+    def test_stock_endpoint_and_no_base_url_keep_plain_message(self):
+        e = MockAPIError("Unauthorized", status_code=401, body=self._BODY)
+        for base_url in ("", "https://api.anthropic.com/v1"):
+            result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
+            assert result.message == "API keys are not supported by this endpoint.", base_url

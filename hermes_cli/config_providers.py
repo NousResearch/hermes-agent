@@ -324,7 +324,14 @@ def get_compatible_custom_providers(
 
     custom_providers = config.get("custom_providers")
     if custom_providers is not None and not isinstance(custom_providers, list):
-        return []
+        # A malformed legacy value (a string written by an old `config set`) used to empty the
+        # whole view silently — Desktop showed "Custom Endpoints 0" while valid v12+ `providers:`
+        # entries still existed. Skip only the legacy list, and say so.
+        logger.warning(
+            "custom_providers is a %s, expected a list — skipping legacy entries; "
+            "'providers:' entries are still used. Move provider configs to the 'providers:' section.",
+            type(custom_providers).__name__)
+        custom_providers = []
     candidates = [_normalize_custom_provider_entry(e) for e in (custom_providers or [])]
     candidates += providers_dict_to_custom_providers(config.get("providers"))
 

@@ -28,6 +28,32 @@ def stamp_failure(result: Dict[str, Any], reason: str, retryable: bool) -> Dict[
     return result
 
 
+# ---- failed-turn transcript boundary ----------------------------------------------------------
+# The Hermes-authored assistant row that closes a durable turn which ended without one. A
+# transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
+# ever interpolated (that rides ``final_response``). Owned here so the core closer
+# (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
+# (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+
+FAILED_TURN_NOTICE = (
+    "Your request was not processed. Send it again if you still want me to carry it out."
+)
+PARTIAL_FAILED_TURN_NOTICE = (
+    "This turn did not complete. Some actions may already have run; verify their effects "
+    "before resending."
+)
+
+
+def failed_turn_notice(turn_messages: Any) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+    for row in turn_messages or ():
+        if isinstance(row, dict) and (
+            row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
+        ):
+            return PARTIAL_FAILED_TURN_NOTICE
+    return FAILED_TURN_NOTICE
+
+
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
     from hermes_cli.models import provider_label
@@ -128,6 +154,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
+    FailoverReason.role_alternation.value: (
+        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "conversation's shape. Start a clean session with /new or switch models with /model."
+    ),
     FailoverReason.ssl_cert_verification.value: (
         "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
         "This is usually a corporate proxy or an outdated certificate store on this computer — "
@@ -144,10 +174,7 @@ _NONRETRYABLE_DEFAULT_COPY = (
     "or check the details in `{home}/logs/agent.log`."
 )
 _AUTH_COPY: Dict[str, str] = {
-    "oauth": (
-        "{label} rejected your sign-in, so the model can't be reached. Sign in again: "
-        "`hermes portal` for Nous, `hermes auth add <provider> --type oauth` for other accounts."
-    ),
+    "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
     "api_key": (
         "{label} rejected your API key, so the model can't be reached. Update it in "
         "Settings → Providers, or run `hermes setup` in a terminal."
@@ -230,6 +257,17 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
     ),
+    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
+    # message must stay in the transcript and the session must not be auto-reset.
+    "server_context_rejection": (
+        "The model server rejected this request as too large, but this conversation is only "
+        "about {tokens:,} tokens — well under the {window:,}-token window Hermes knows for "
+        "{model} — so shrinking it would not help. Another request on the same server (for "
+        "example a background memory review from an earlier session) was probably holding its "
+        "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
+        "moment and send /retry; if it keeps happening, check the server's context setting."
+    ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "
         "so nothing was run. Check your network and send /retry; asking for the file in smaller "
@@ -272,6 +310,36 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str) -> s
     )
 
 
+def oauth_relogin_command(provider: Any) -> str:
+    """The exact re-login command for a rejected OAuth grant, naming the provider slug and the active
+    named profile: a profile's credentials are its own (93889b770da), so a bare ``hermes auth`` from
+    the root profile re-signs the wrong store and the goal judge, reading a bare 401, guesses which
+    service revoked the token (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if slug == "nous":
+        return f"hermes {profile_cli_selector()}portal"
+    return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def relogin_command_hint(provider: Any) -> str:
+    """Re-sign-in command for a rejected credential on surfaces that may not know the provider:
+    the exact OAuth command for a known OAuth slug, ``hermes auth add <slug>`` for a known API-key
+    slug, and the ``<provider>`` placeholder when the slug is unknown — always carrying the
+    ``-p <profile>`` selector so a profile user never re-signs the ROOT store (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if not slug:
+        return f"hermes {profile_cli_selector()}auth add <provider>"
+    from agent.error_surface import auth_kind
+
+    if auth_kind(slug) == "oauth":
+        return oauth_relogin_command(slug)
+    return f"hermes {profile_cli_selector()}auth add {slug}"
+
+
 def nonretryable_copy(
     classified: Any, *, provider: Any, model: Any, summary: str, prefix_suggestion: Optional[str] = None,
 ) -> str:
@@ -288,7 +356,8 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
-    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint)
+    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+                           relogin=oauth_relogin_command(provider))
     return f"{body}\n\nProvider said: {summary}"
 
 

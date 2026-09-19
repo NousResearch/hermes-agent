@@ -71,7 +71,7 @@ delegation:
 
 单个值中可以有多个引用：`url: "${HOST}:${PORT}"`。如果引用的变量未设置，占位符将保持原样（`${UNDEFINED_VAR}` 保持不变）。仅支持 `${VAR}` 语法 —— 裸 `$VAR` 不会被展开。
 
-关于 AI provider 设置（OpenRouter、Anthropic、Copilot、自定义端点、自托管 LLM、回退模型等），请参阅 [AI Providers](/integrations/providers)。
+关于 AI provider 设置（OpenRouter、Anthropic、Copilot、自定义端点、自托管 LLM、回退模型等），请参阅 [AI Providers](../integrations/providers.md)。
 
 ### Provider 超时
 
@@ -478,7 +478,7 @@ skills:
 hermes config set skills.config.myplugin.path ~/myplugin-data
 ```
 
-有关在您自己的技能中声明配置设置的详细信息，请参阅[创建技能 — 配置设置](/developer-guide/creating-skills#config-settings-configyaml)。
+有关在您自己的技能中声明配置设置的详细信息，请参阅[创建技能 — 配置设置](../developer-guide/creating-skills.md#config-settings-configyaml)。
 
 ### Agent 创建技能写入的守卫
 
@@ -687,7 +687,7 @@ agent:
 
 ## 上下文引擎
 
-上下文引擎控制在接近模型 token 限制时如何管理对话。内置的 `compressor` 引擎使用有损摘要（参见[上下文压缩](/developer-guide/context-compression-and-caching)）。插件引擎可以用替代策略替换它。
+上下文引擎控制在接近模型 token 限制时如何管理对话。内置的 `compressor` 引擎使用有损摘要（参见[上下文压缩](../developer-guide/context-compression-and-caching.md)）。插件引擎可以用替代策略替换它。
 
 ```yaml
 context:
@@ -703,7 +703,7 @@ context:
 
 插件引擎**永远不会自动激活** —— 您必须将 `context.engine` 显式设置为插件名称。可用引擎可以通过 `hermes plugins` → Provider Plugins → Context Engine 浏览和选择。
 
-有关内存插件的类似单选系统，请参阅[内存 Providers](/user-guide/features/memory-providers)。
+有关内存插件的类似单选系统，请参阅[内存 Providers](./features/memory-providers.md)。
 
 ## 迭代预算
 
@@ -719,7 +719,7 @@ agent:
 
 当迭代预算完全耗尽时，CLI 向用户显示通知：`⚠ Iteration budget reached (500/500) — response may be incomplete`。
 
-`agent.api_max_retries` 控制 Hermes 在回退 provider 切换启动**之前**对瞬时错误（速率限制、连接断开、5xx）重试 provider API 调用的次数。默认为 `3` —— 总共四次尝试。如果您配置了[回退 providers](/user-guide/features/fallback-providers) 并希望更快地故障转移，请将其降至 `0`，这样主 provider 上的第一个瞬时错误会立即切换到回退，而不是对不稳定的端点进行重试。
+`agent.api_max_retries` 控制 Hermes 在回退 provider 切换启动**之前**对瞬时错误（速率限制、连接断开、5xx）重试 provider API 调用的次数。默认为 `3` —— 总共四次尝试。如果您配置了[回退 providers](./features/fallback-providers.md) 并希望更快地故障转移，请将其降至 `0`，这样主 provider 上的第一个瞬时错误会立即切换到回退，而不是对不稳定的端点进行重试。
 
 ### API 超时
 
@@ -775,7 +775,7 @@ credential_pool_strategies:
   anthropic: least_used      # 始终选择使用最少的密钥
 ```
 
-选项：`fill_first`（默认）、`round_robin`、`least_used`、`random`。完整文档请参阅[凭据池](/user-guide/features/credential-pools)。
+选项：`fill_first`（默认）、`round_robin`、`least_used`、`random`。完整文档请参阅[凭据池](./features/credential-pools.md)。
 
 ## Prompt 缓存
 
@@ -783,7 +783,7 @@ credential_pool_strategies:
 
 对于**原生 Anthropic**、**OpenRouter** 和 **Nous Portal** 上的 Claude，Hermes 在系统提示词和技能块上附加带有 1 小时 TTL（`ttl: "1h"`）的 `cache_control` 断点。在新鲜的一小时内首次发送时按完整输入费率计费；同一小时内任何会话的后续发送以折扣缓存读取费率从缓存中提取。这意味着系统提示词、加载的技能内容以及任何长上下文包含的早期部分在第一个小时内跨 `hermes` 会话和分叉子 agent 被重用。
 
-Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，因此 Hermes 在那里使用 5 分钟断点 TTL。其他通过第三方的 Claude 路径（AWS Bedrock、Azure Foundry）回退到 provider 自己的缓存默认值。xAI Grok 使用单独的会话固定对话 ID 机制 —— 参阅 [xAI prompt 缓存](/integrations/providers#xai-grok--responses-api--prompt-caching)。
+Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，因此 Hermes 在那里使用 5 分钟断点 TTL。其他通过第三方的 Claude 路径（AWS Bedrock、Azure Foundry）回退到 provider 自己的缓存默认值。xAI Grok 使用单独的会话固定对话 ID 机制 —— 参阅 [xAI prompt 缓存](../integrations/providers.md#xai-grok--responses-api--prompt-caching)。
 
 不存在禁用此功能的旋钮 —— 缓存始终开启，即使在单轮对话中也能节省费用，因为仅系统提示词就占输入 token 数的相当大比例。
 
@@ -838,7 +838,7 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 
 当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 或 `OPENAI_API_KEY` 进行认证）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
 
-辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](/reference/environment-variables)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
+辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](../reference/environment-variables.md)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
 
 :::tip MiniMax OAuth
 `minimax-oauth` 通过浏览器 OAuth 登录（无需 API 密钥）。运行 `hermes model` 并选择 **MiniMax (OAuth)** 进行认证。辅助任务自动使用 `MiniMax-M2.7-highspeed`。参阅 [MiniMax OAuth 指南](../guides/minimax-oauth.md)。
@@ -849,12 +849,12 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 :::
 
 :::warning `"main"` 仅用于辅助任务
-`"main"` provider 选项表示"使用我的主 agent 使用的任何 provider" —— 它仅在 `auxiliary:`、`compression:` 和 `fallback_model:` 配置中有效。它**不是**顶级 `model.provider` 设置的有效值。如果您使用自定义 OpenAI 兼容端点，请在 `model:` 部分设置 `provider: custom`。所有主模型 provider 选项请参阅 [AI Providers](/integrations/providers)。
+`"main"` provider 选项表示"使用我的主 agent 使用的任何 provider" —— 它仅在 `auxiliary:`、`compression:` 和 `fallback_model:` 配置中有效。它**不是**顶级 `model.provider` 设置的有效值。如果您使用自定义 OpenAI 兼容端点，请在 `model:` 部分设置 `provider: custom`。所有主模型 provider 选项请参阅 [AI Providers](../integrations/providers.md)。
 :::
 
 如果端点直接拒绝推理字段（例如 OpenAI 兼容中继后面的纯聊天模型返回 `400 Unrecognized request argument supplied: reasoning_effort`），辅助调用会去掉所有推理字段重试一次，因此该任务（例如会话标题）仍会以端点的默认行为完成。
 
-**后台审查有所不同：** 与主会话使用同一模型的审查分支始终继承主会话的推理强度；`auxiliary.background_review.reasoning_effort` 在这条路径上不会生效，即使显式指定了主会话的 provider/model 也一样。推理设置、系统 prompt、完整会话快照和工具定义保持逐字节一致，以复用 prompt 缓存前缀。没有用于同模型审查的独立推理强度开关。详见[同模型审查的推理强度](/user-guide/features/memory#same-model-review-reasoning)。路由到其他模型时的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。
+**后台审查有所不同：** 与主会话使用同一模型的审查分支始终继承主会话的推理强度；`auxiliary.background_review.reasoning_effort` 在这条路径上不会生效，即使显式指定了主会话的 provider/model 也一样。推理设置、系统 prompt、完整会话快照和工具定义保持逐字节一致，以复用 prompt 缓存前缀。没有用于同模型审查的独立推理强度开关。详见[同模型审查的推理强度](./features/memory.md#same-model-review-reasoning)。路由到其他模型时的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。
 
 ### 完整辅助配置参考
 
@@ -922,7 +922,7 @@ auxiliary:
 :::
 
 :::info
-上下文压缩有自己的 `compression:` 块用于阈值，以及 `auxiliary.compression:` 块用于模型/provider 设置 —— 参阅上方的[上下文压缩](#context-compression)。主备用链使用顶层的 `fallback_providers:` 列表 —— 参阅[备用提供商](/integrations/providers#fallback-providers)。三者都遵循相同的 provider/model/base_url 模式。
+上下文压缩有自己的 `compression:` 块用于阈值，以及 `auxiliary.compression:` 块用于模型/provider 设置 —— 参阅上方的[上下文压缩](#context-compression)。主备用链使用顶层的 `fallback_providers:` 列表 —— 参阅[备用提供商](../integrations/providers.md#fallback-providers)。三者都遵循相同的 provider/model/base_url 模式。
 :::
 
 ### 辅助任务的每任务回退链
@@ -955,7 +955,7 @@ auxiliary:
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
-当辅助任务解析到 OpenRouter（显式或通过 `provider: "main"` 而您的主 agent 在 OpenRouter 上）时，主 agent 的 `provider_routing` 和 `openrouter.min_coding_score` 设置**不会传播** —— 按设计，每个辅助任务是独立的。要为特定辅助任务设置 OpenRouter provider 偏好或使用 [Pareto Code 路由器](/integrations/providers#openrouter-pareto-code-router)，请通过 `extra_body` 按任务设置：
+当辅助任务解析到 OpenRouter（显式或通过 `provider: "main"` 而您的主 agent 在 OpenRouter 上）时，主 agent 的 `provider_routing` 和 `openrouter.min_coding_score` 设置**不会传播** —— 按设计，每个辅助任务是独立的。要为特定辅助任务设置 OpenRouter provider 偏好或使用 [Pareto Code 路由器](../integrations/providers.md#openrouter-pareto-code-router)，请通过 `extra_body` 按任务设置：
 
 ```yaml
 auxiliary:
@@ -1103,7 +1103,7 @@ auxiliary:
 
 ### 原生视觉嵌入预算（顶层 `vision:`）
 
-与 `auxiliary.vision`（选择描述器模型）不同：当*主*模型支持视觉时，`vision_analyze` 和浏览器截图会把真实像素嵌入工具结果，并在之后的每一轮请求中重复发送。`vision.embed_target_bytes`（默认 `262144`，限制在 64 KiB..4 MiB 之间）控制单次嵌入的大小；`vision.max_calls_per_image` 限制同一张图片在一个会话中可被嵌入的次数（未设置 = 委派子代理内为 3，主代理不限；`0` = 不限）。参见 [视觉 → 原生嵌入伴随整个会话](/user-guide/features/vision#原生嵌入伴随整个会话visionembed_target_bytes-与-visionmax_calls_per_image)。
+与 `auxiliary.vision`（选择描述器模型）不同：当*主*模型支持视觉时，`vision_analyze` 和浏览器截图会把真实像素嵌入工具结果，并在之后的每一轮请求中重复发送。`vision.embed_target_bytes`（默认 `262144`，限制在 64 KiB..4 MiB 之间）控制单次嵌入的大小；`vision.max_calls_per_image` 限制同一张图片在一个会话中可被嵌入的次数（未设置 = 委派子代理内为 3，主代理不限；`0` = 不限）。参见 [视觉 → 原生嵌入伴随整个会话](./features/vision.md#原生嵌入伴随整个会话visionembed_target_bytes-与-visionmax_calls_per_image)。
 
 ## 推理努力程度
 
@@ -1371,7 +1371,7 @@ voice:
   silence_duration: 3.0         # 自动停止前的静默秒数
 ```
 
-在 CLI 中使用 `/voice on` 启用麦克风模式，使用 `record_key` 开始/停止录音，使用 `/voice tts` 切换口语回复。端到端设置和平台特定行为请参阅[语音模式](/user-guide/features/voice-mode)。
+在 CLI 中使用 `/voice on` 启用麦克风模式，使用 `record_key` 开始/停止录音，使用 `/voice tts` 切换口语回复。端到端设置和平台特定行为请参阅[语音模式](./features/voice-mode.md)。
 
 ## 流式传输
 
@@ -1424,7 +1424,7 @@ group_sessions_per_user: true  # true = 群组/频道中每用户隔离，false 
 - 私信不受影响。Hermes 仍然像往常一样通过聊天/DM ID 键入 DM。
 - 线程与其父频道保持隔离；使用 `true` 时，每个参与者在线程内也获得自己的会话。
 
-有关行为详情和示例，请参阅[会话](/user-guide/sessions)和 [Discord 指南](/user-guide/messaging/discord)。
+有关行为详情和示例，请参阅[会话](./sessions.md)和 [Discord 指南](./messaging/discord.md)。
 
 ## 未授权 DM 行为
 
@@ -1526,7 +1526,7 @@ web:
 
 **后端选择：** 如果未设置 `web.backend`，后端从可用的 API 密钥自动检测。如果仅设置了 `SEARXNG_URL`，使用 SearXNG。如果仅设置了 `EXA_API_KEY`，使用 Exa。如果仅设置了 `TAVILY_API_KEY`，使用 Tavily。如果仅设置了 `PARALLEL_API_KEY`，使用 Parallel。否则 Firecrawl 是默认值。
 
-**SearXNG** 是一个免费、自托管、尊重隐私的元搜索引擎，查询 70+ 个搜索引擎。无需 API 密钥 —— 只需将 `SEARXNG_URL` 设置为您的实例（例如 `http://localhost:8080`）。SearXNG 仅限搜索；`web_extract` 需要单独的提取 provider（设置 `web.extract_backend`）。Docker 设置说明请参阅 [Web 搜索设置指南](/user-guide/features/web-search)。
+**SearXNG** 是一个免费、自托管、尊重隐私的元搜索引擎，查询 70+ 个搜索引擎。无需 API 密钥 —— 只需将 `SEARXNG_URL` 设置为您的实例（例如 `http://localhost:8080`）。SearXNG 仅限搜索；`web_extract` 需要单独的提取 provider（设置 `web.extract_backend`）。Docker 设置说明请参阅 [Web 搜索设置指南](./features/web-search.md)。
 
 **自托管 Firecrawl：** 设置 `FIRECRAWL_API_URL` 指向您自己的实例。设置自定义 URL 后，API 密钥变为可选（在服务器上设置 `USE_DB_AUTHENTICATION=***` 以禁用认证）。
 
@@ -1566,7 +1566,7 @@ browser:
 
 完整对话框工作流请参阅[浏览器功能页面](./features/browser.md#browser_dialog)。
 
-浏览器工具集支持多个 provider。有关 Browserbase、Browser Use 和本地 Chromium 系 CDP 设置的详细信息，请参阅[浏览器功能页面](/user-guide/features/browser)。
+浏览器工具集支持多个 provider。有关 Browserbase、Browser Use 和本地 Chromium 系 CDP 设置的详细信息，请参阅[浏览器功能页面](./features/browser.md)。
 
 ## 时区
 
@@ -1668,7 +1668,7 @@ approvals:
 
 ## 检查点
 
-破坏性文件操作之前的自动文件系统快照。详情请参阅[检查点与回滚](/user-guide/checkpoints-and-rollback)。
+破坏性文件操作之前的自动文件系统快照。详情请参阅[检查点与回滚](./checkpoints-and-rollback.md)。
 
 ```yaml
 checkpoints:
@@ -1735,8 +1735,8 @@ Hermes 使用两种不同的上下文范围：
 - 所有加载的上下文文件上限为 20,000 字符，并进行智能截断。
 
 另请参阅：
-- [个性与 SOUL.md](/user-guide/features/personality)
-- [上下文文件](/user-guide/features/context-files)
+- [个性与 SOUL.md](./features/personality.md)
+- [上下文文件](./features/context-files.md)
 
 ## 工作目录
 

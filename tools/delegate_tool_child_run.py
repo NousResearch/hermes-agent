@@ -503,8 +503,18 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    interrupt_note = ""
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+        # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
+        # assistant row); the completion must carry what the child actually had so far — its last real assistant
+        # text — and keep the placeholder as the error.
+        from agent.message_content import flatten_message_text
+        placeholders = {"", summary.strip(), "Operation interrupted."}
+        partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
+                        and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
+        if partial:
+            interrupt_note, summary = summary.strip(), partial
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -554,6 +564,8 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+    elif interrupt_note:
+        entry["error"] = interrupt_note
 
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.

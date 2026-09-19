@@ -40,6 +40,13 @@ logger = logging.getLogger("gateway.run")
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
+    # A configured platform failed non-retryably this boot and is parked: every "we are serving"
+    # status stamp (startup, drain release, scale-to-zero wake) must say ``degraded``, not ``running``.
+    _startup_parked_platforms: bool = False
+
+    def _serving_state(self) -> str:
+        return "degraded" if self._startup_parked_platforms else "running"
+
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
     ) -> None:
@@ -78,7 +85,7 @@ class GatewayStartupMixin:
         while queue:
             event = queue.pop(0)
             source = getattr(event, "source", None)
-            adapter = self._adapter_for_source(source)
+            adapter = self._intake_adapter_for(source)
             if adapter is None:
                 logger.debug(
                     "Dropping startup-restore queued message: adapter unavailable for %s",
@@ -337,7 +344,7 @@ class GatewayStartupMixin:
 
     def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None) -> None:
         """Wake one deadline-driven ledger worker per bot identity, never sleep in a send."""
-        from gateway.delivery_ledger import flood_retry_delay, pending_flood_retries
+        from gateway.delivery_ledger import flood_retry_delay, pending_retries
         target = platform if isinstance(platform, Platform) else Platform(str(platform))
         key = (target.value, profile or "default")
         pending = getattr(self, "_flood_redelivery_tasks", None)
@@ -356,7 +363,7 @@ class GatewayStartupMixin:
             try:
                 while getattr(self, "_running", False):
                     wake.clear()
-                    waiting = await asyncio.to_thread(pending_flood_retries)
+                    waiting = await asyncio.to_thread(pending_retries)
                     deadlines = [r["not_before"] for r in waiting
                                  if (r["platform"], r["profile"]) == key]
                     if not deadlines:
@@ -383,9 +390,9 @@ class GatewayStartupMixin:
             self._track_task_in(background, task)
 
     async def _arm_flood_timers_for_waiting_rows(self) -> None:
-        """Recover adopted, newly refused and unsent released rows without blocking the loop."""
-        from gateway.delivery_ledger import pending_flood_retries
-        for row in await asyncio.to_thread(pending_flood_retries):
+        """Recover adopted, newly refused/rejected and unsent released rows without blocking the loop."""
+        from gateway.delivery_ledger import pending_retries
+        for row in await asyncio.to_thread(pending_retries):
             self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
@@ -429,8 +436,8 @@ class GatewayStartupMixin:
                     await asyncio.to_thread(
                         mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
                     )
-        # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
-        # again just now) gets a timer, so no flood-refused reply waits for the next restart.
+        # Whatever is still waiting on a flood penalty or a retry backoff (adopted at boot, skipped as not
+        # yet due, refused again just now) gets a timer, so no rejected reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
             await self._arm_flood_timers_for_waiting_rows()
         return redelivered
@@ -449,10 +456,16 @@ class GatewayStartupMixin:
             adapter = self.adapters.get(platform)
         # A runtime claim whose reconnect vanished before dispatch is released without spending an
         # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
+        # Only a flood row keeps its error (the platform's wait must be honoured); any other row
+        # becomes reconnect-only, or the redelivery timer would claim and release it until the
+        # adapter is back.
         if adapter is None and row.get("runtime_recovery"):
+            from gateway.delivery_ledger import is_flood_error
+
+            last_error = row.get("last_error")
             await self._release_runtime_claim_quiet(
                 row["obligation_id"], "failed to release undispatched runtime obligation %s",
-                error=row.get("last_error") or "send_path_degraded",
+                error=last_error if is_flood_error(last_error) else "send_path_degraded",
             )
         return adapter
 
@@ -553,8 +566,8 @@ class GatewayStartupMixin:
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
             if self._is_session_running(entry.session_key):
                 continue
-            source = entry.origin
-            adapter = self._adapter_for_source(source)
+            source = self._restored_source(entry)
+            adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s", entry.session_key,
@@ -803,7 +816,7 @@ class GatewayStartupMixin:
                 )
         with suppress(Exception):
             from hermes_cli.profiles import get_active_profile_name
-            _profile = get_active_profile_name()
+            _profile = get_active_profile_name()  # launch profile, pre-identity (boot log)
             if _profile and _profile != "default":
                 logger.info("Active profile: %s", _profile)
         _write_runtime_status_quiet(gateway_state="starting", exit_reason=None, clear_profile_platforms=True)
@@ -1220,9 +1233,27 @@ class GatewayStartupMixin:
         self, connected_count: int, enabled_platform_count: int, startup_retryable_errors: list,
         startup_nonretryable_errors: list,
     ) -> bool:
-        """Log/degrade when nothing connected; return True when startup must exit."""
+        """Log/degrade when a configured platform failed to start; return True when startup must exit.
+
+        The SHARED gate for every platform, not the api_server path: a configured platform that never
+        came up must leave a loud, observable trace (ERROR + a ``degraded`` runtime state) even while
+        sibling platforms serve normally. One WARNING next to "Gateway running with N platform(s)" let
+        a gateway with no API server at all look healthy for half an hour (api_server lost the bind
+        race against the gateway it was replacing, and nothing retried).
+        """
         from gateway.run import _write_runtime_status_quiet
         if connected_count != 0:
+            if startup_nonretryable_errors:
+                # Parked fatal failures never heal on their own, so the platforms still serving must
+                # not be reported as a healthy run. Retryable peers are deliberately left alone: the
+                # reconnect watcher recovers them and their platform entry already says "retrying".
+                self._startup_parked_platforms = True
+                logger.error(
+                    "%d configured platform(s) failed to start and are parked (fix the reported error, "
+                    "then `hermes gateway restart`): %s. The gateway is DEGRADED — it serves the "
+                    "remaining platform(s) with those unserved.",
+                    len(startup_nonretryable_errors), "; ".join(startup_nonretryable_errors),
+                )
             return False
         if startup_nonretryable_errors and not startup_retryable_errors:
             reason = "; ".join(startup_nonretryable_errors)
@@ -1232,6 +1263,7 @@ class GatewayStartupMixin:
         if startup_nonretryable_errors:
             # Mixed (some fatal, some transient): exiting 78 would take the gateway PERMANENTLY down
             # over a blip. Log the fatal side loudly and fall through to the degraded/retry path.
+            self._startup_parked_platforms = True
             logger.error(
                 # WhatsApp enabled but never paired) while others hit merely transient errors (e.g. Telegram
                 # TimedOut during polling startup). Exiting with GATEWAY_FATAL_CONFIG_EXIT_CODE here is
@@ -1411,6 +1443,7 @@ class GatewayStartupMixin:
         self._start_startup_warmup()
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
+        self._startup_parked_platforms = False  # fresh boot: no platform has failed yet
         (
             _aborted, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
         ) = await self._start_prefilter_platforms()
@@ -1441,7 +1474,10 @@ class GatewayStartupMixin:
         self._wire_teams_pipeline_runtime()
         self._running = True
         self._install_plugin_message_injector()
-        self._update_runtime_status("running")
+        # A boot that could not start every configured platform is not a normal run: stamp ``degraded``
+        # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
+        # line next to "Gateway running with N platform(s)".
+        self._update_runtime_status(self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         logger.info("Press Ctrl+C to stop")

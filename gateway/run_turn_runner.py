@@ -34,6 +34,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Consecutive turns a session's persisted transcript may lag its live cached history before
+# _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
+_TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
 _CARD_DESTINATION_REFUSALS = {
@@ -260,7 +264,7 @@ class TurnRunner:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -700,7 +704,7 @@ class TurnRunner:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -924,7 +928,7 @@ class TurnRunner:
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
-                adapter = self._runner._adapter_for_source(ctx.source)
+                adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
@@ -1557,16 +1561,27 @@ class TurnRunner:
         # #50502.
         if reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id:
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
+            # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
+            # is the #114266 write outage and must escalate past a repeating WARNING.
+            streaks = getattr(self._runner, "_transcript_lag_streaks", None)
+            if streaks is None:  # tests may build bare runners
+                streaks = self._runner._transcript_lag_streaks = {}
             if selected is not agent_history:
-                logger.warning(
+                streak = streaks[ctx.session_key] = streaks.get(ctx.session_key, 0) + 1
+                log = logger.error if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else logger.warning
+                log(
                     "Persisted transcript lagged live cached history for "
-                    "session %s (disk=%d, memory=%d); preserving live "
-                    "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(selected),
+                    "session %s (disk=%d, memory=%d, consecutive_turns=%d); preserving live "
+                    "conversation context (possible FTS write corruption)%s",
+                    ctx.session_key, len(agent_history), len(selected), streak,
+                    "; state.db is not receiving this session's writes and needs operator attention"
+                    if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else "",
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
                 # the full canonicalization so no replay transform can slip through.
                 agent_history = canonicalize_replay_history(selected)
+            else:
+                streaks.pop(ctx.session_key, None)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
@@ -1582,7 +1597,7 @@ class TurnRunner:
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._adapter_for_source(self._ctx.source), "interactive_resume", True))
+        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.

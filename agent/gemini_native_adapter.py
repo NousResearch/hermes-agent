@@ -34,6 +34,10 @@ except Exception:
 _API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# Vertex AI express-mode keys (``AQ.…``) only authenticate against aiplatform, which serves the
+# same native API under ``{version}/publishers/google/models/…``; the base carries that prefix so
+# every ``{base}/models/{model}:…`` builder (chat, tier probe, TTS) needs no path branching.
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/google"
 
 # Published max output-token ceiling shared by every current Gemini text model; used
 # for max_tokens=None because the native API's low internal default truncates output.
@@ -100,7 +104,20 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
 _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
-def normalize_gemini_base_url(base_url: Optional[str]) -> str:
+def is_vertex_express_key(api_key: str) -> bool:
+    """Vertex AI express-mode keys are ``AQ.…``; AI Studio keys are ``AIza…``."""
+    return str(api_key or "").strip().startswith("AQ.")
+
+
+def is_vertex_express_base_url(base_url: str) -> bool:
+    """An aiplatform host without a project path — the express surface. The OAuth Vertex provider's
+    ``…/projects/{p}/locations/{r}/endpoints/openapi`` base is OpenAI-compatible and must stay off
+    the native adapter."""
+    normalized = str(base_url or "").strip().lower()
+    return "aiplatform.googleapis.com" in normalized and "/projects/" not in normalized
+
+
+def normalize_gemini_base_url(base_url: Optional[str], api_key: str = "") -> str:
     """Gemini native base URL with the API version segment guaranteed. Google's own client treats the
     base as a host root and appends the version itself, so users configure ``GEMINI_BASE_URL`` (or a
     proxy root like ``http://localhost:4000/gemini``) that way; our request builders expect
@@ -108,11 +125,25 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     slashes and an ``/openai`` suffix are stripped; an existing version segment (``v1``, ``v1beta``,
     ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``. Only the LAST path
     segment is inspected, so ``.../v1beta/extra`` still gets ``/v1beta`` appended; this does not
-    decide routing (see ``is_native_gemini_base_url``)."""
+    decide routing (see ``is_native_gemini_base_url``).
+
+    A Vertex express base (``aiplatform.googleapis.com``, ``…/v1beta1`` or the full
+    ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form. With ``api_key``
+    given, an express key (``AQ.``) that would land on the Studio host is routed to
+    ``VERTEX_EXPRESS_BASE_URL`` instead — it can only ever 403 there — while an explicit proxy or
+    Vertex base is left alone."""
     trimmed = str(base_url or "").strip().rstrip("/")
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:
-        return DEFAULT_GEMINI_BASE_URL
+        trimmed = DEFAULT_GEMINI_BASE_URL
+    if is_vertex_express_key(api_key) and "generativelanguage.googleapis.com" in trimmed.lower():
+        return VERTEX_EXPRESS_BASE_URL
+    if is_vertex_express_base_url(trimmed):
+        if trimmed.lower().endswith("/publishers/google"):
+            return trimmed
+        if not _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
+            trimmed = f"{trimmed}/v1beta1"
+        return f"{trimmed}/publishers/google"
     if _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
         return trimmed
     return f"{trimmed}/v1beta"
@@ -121,7 +152,9 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
-    return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
+    if normalized.endswith("/openai"):
+        return False
+    return "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized)
 
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
@@ -138,7 +171,7 @@ def probe_gemini_tier(
     key = (api_key or "").strip()
     if not key:
         return "unknown"
-    base = normalize_gemini_base_url(base_url)
+    base = normalize_gemini_base_url(base_url, key)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
     headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
     try:
@@ -722,7 +755,7 @@ class GeminiNativeClient:
         if not (api_key or "").strip():
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
-        self.base_url = normalize_gemini_base_url(base_url)
+        self.base_url = normalize_gemini_base_url(base_url, api_key)
         self._default_headers = dict(default_headers or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))

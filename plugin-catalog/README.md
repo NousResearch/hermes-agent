@@ -44,6 +44,16 @@ meaningful:
    appear as warnings in the CI log and the reviewer reads them before merging.
    In exchange, installs at the pinned SHA accept `caution` without a prompt
    (`dangerous` still blocks). Review the warnings; do not merge past them.
+8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
+   in the Desktop renderer with the app's full authority (the loader isolates
+   errors, not capabilities), so a listed one may only use the plugin SDK:
+   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
+   / `react` (app bundle chunks, blob or http URLs included), no script-tag
+   injection, no reaching into the app's internal stores. `hermes plugins
+   validate` refuses these at admission (`desktop surface` check); a plugin
+   that needs a capability the SDK lacks asks for an SDK hook instead of
+   patching around it.
 
 ## Entry schema
 
@@ -84,3 +94,16 @@ is recorded in `removed.yaml` with a reason and date. The installer refuses
 to install anything matching a removed entry's name or repo URL, so a
 malicious plugin cannot be re-installed from a stale identifier after
 removal. Removals, like additions, land via reviewed PRs.
+
+Delisting is different from removal: an entry that is merely unmaintained, superseded, or
+squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
+users who already installed it are unaffected) and is welcome back under a distinct name.
+
+## Names
+
+The catalog key and the manifest `name:` are what users search, install, and — for memory
+providers — put in `memory.provider`. A `memory` / `exclusive` entry must not reuse the name of
+another provider or of a well-known upstream project it is not affiliated with: two providers
+registering the same `register_memory_provider` name make `memory.provider` ambiguous
+(whichever loads last wins). Reviewers check the registered provider name, not just the file
+name, and the affiliated project gets the bare key.

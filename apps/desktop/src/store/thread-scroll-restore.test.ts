@@ -35,11 +35,14 @@ describe('shouldReapplyFrozenThreadScrollOffset', () => {
     expect(threadScrollTargetTop(OFFSET, next)).toBe(5600 - 600 - 800)
   })
 
-  it('leaves kind:bottom / following restore alone', () => {
+  it('re-pins a settled bottom target only on transcript growth, never on a composer-only resize', () => {
     const previous = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5000 }
-    const next = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5600 }
 
-    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, next)).toBe(false)
+    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, { ...previous, scrollHeight: 5600 })).toBe(true)
+    expect(
+      shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, { clearanceHeight: 200, scrollHeight: 5080 })
+    ).toBe(false)
+    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, { ...previous, scrollHeight: 4000 })).toBe(false)
   })
 
   it('does not re-pin while the session-switch settle loop is still running', () => {

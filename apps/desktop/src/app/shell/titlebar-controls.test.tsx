@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { useEffect } from 'react'
+import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -14,10 +15,19 @@ import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
 
+let navigateTo: (to: string) => void = () => {}
+
+function NavigateProbe() {
+  navigateTo = useNavigate()
+
+  return null
+}
+
 function renderControls(pathname: string, props?: { leftTools?: TitlebarTool[]; tools?: TitlebarTool[] }) {
   return render(
     <MemoryRouter initialEntries={[pathname]}>
       <I18nProvider configClient={null} initialLocale="en">
+        <NavigateProbe />
         <TitlebarControls leftTools={props?.leftTools} onOpenSettings={() => {}} tools={props?.tools} />
       </I18nProvider>
     </MemoryRouter>
@@ -76,7 +86,7 @@ describe('TitlebarControls fixed clusters', () => {
   })
 
   it('keeps the app clusters on a first-party workspace page', () => {
-    renderControls('/skills')
+    renderControls('/capabilities')
 
     expect(windowControls()).not.toBeNull()
     expect(appControls()).not.toBeNull()
@@ -89,18 +99,41 @@ describe('TitlebarControls fixed clusters', () => {
     expect(pluginTool()).not.toBeNull()
   })
 
-  it('leaves page titles to the workspace header without hiding window controls', () => {
+  it('keeps a titleBar.center component mounted across a chat -> page -> chat round trip', () => {
+    // Plugins tear down global side effects (style tags, observers) in their
+    // effect cleanup; a remount on navigation ran the OLD cleanup after the
+    // NEW setup and left the plugin dead until reload (#114290).
+    const life = { cleanups: 0, mounts: 0 }
+
+    function PluginCenter() {
+      useEffect(() => {
+        life.mounts += 1
+
+        return () => {
+          life.cleanups += 1
+        }
+      }, [])
+
+      return <span>plugin-center</span>
+    }
+
     const disposeTitle = registry.register({
       area: 'titleBar.center',
-      id: 'test-page-title',
-      render: () => <span>Board picker</span>
+      id: 'test-plugin-center',
+      render: () => <PluginCenter />
     })
 
     try {
-      renderControls('/kanban')
-      expect(screen.queryByText('Board picker')).toBeNull()
+      renderControls('/')
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+
+      act(() => navigateTo('/skills'))
+      expect(screen.getByText('plugin-center')).not.toBeNull()
       expect(windowControls()).not.toBeNull()
       expect(appControls()).not.toBeNull()
+
+      act(() => navigateTo('/'))
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
     } finally {
       act(disposeTitle)
     }

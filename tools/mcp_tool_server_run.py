@@ -113,7 +113,16 @@ class MCPServerRunMixin:
                     # transports — clear the rapid-drop budget without pinging (#62212). An
                     # earlier wake (a hidden-then-missed recycle deadline) is not that proof.
                     if (not self._session_proven and proof_at is not None
-                            and time.monotonic() >= proof_at and not self._stdio_children_dead()):
+                            and time.monotonic() >= proof_at):
+                        if self._stdio_children_dead():
+                            # A dead child never fires a lifecycle event, so continuing here
+                            # would spin on zero-timeout waits forever (#115483). No mark_suspect:
+                            # the reconnect rebuilds the transport and the new child's handshake is
+                            # the health check.
+                            logger.warning("MCP server '%s' stdio child exited before the session proved "
+                                           "healthy; triggering reconnect (state: connected → degraded)",
+                                           self.name)
+                            break
                         self._mark_session_proven()
                     continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
@@ -240,6 +249,28 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+
+    def _refresh_remote_config(self, config: dict) -> dict:
+        """Before rebuilding a remote transport, re-read this server's definition from config.yaml and
+        adopt it when the endpoint or its auth changed (#113907). ``run()`` otherwise keeps the dict it
+        was started with, so a ``url`` edited while the process runs (dashboard/Desktop re-auth, a
+        catalog migration) left the loop probing the OLD URL — and that stale-URL provider evicted the
+        fresh one the dashboard had just authorised for the new URL, dropping its tokens/DCR client."""
+        if not self._is_http():
+            return config
+        from tools import mcp_tool_config as _config
+        fresh = (_config._load_mcp_config() or {}).get(self.name)
+        if not isinstance(fresh, dict) or "url" not in fresh or all(
+                fresh.get(k) == config.get(k) for k in self._REMOTE_REBIND_KEYS):
+            return config
+        logger.info("MCP server '%s': definition changed in config.yaml (%s -> %s); rebuilding with the new one",
+                    self.name, config.get("url"), fresh.get("url"))
+        self._config = fresh
+        self._auth_type = (fresh.get("auth") or "").lower().strip()
+        self._sse_fallback = False  # latched for the old endpoint
+        return fresh
+
     async def run(self, config: dict):
         """Long-lived: connecting -> connected -> (degraded -> parked -> revived)*. Unproven drops
         and transport errors charge a rapid-drop budget with jittered backoff; exhausting it (or
@@ -249,8 +280,12 @@ class MCPServerRunMixin:
             return
         self._reconnect_retries = 0
         budget = _RetryBudget()
+        rebuild = False
         while True:
             try:
+                if rebuild:
+                    config = self._refresh_remote_config(config)
+                rebuild = True
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 if not await self._on_clean_return(await run_transport(config), budget):
                     break

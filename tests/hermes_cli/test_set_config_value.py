@@ -1147,3 +1147,179 @@ class TestProviderSwitchClearsBaseUrl:
         assert "Cleared" not in out
         # Unknown host: kept, but the user is told the old route still applies (from #113725).
         assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])
+
+
+# ---------------------------------------------------------------------------
+# Comment / formatting preservation (#63039)
+# ---------------------------------------------------------------------------
+
+class TestCommentPreservation:
+    """`hermes config set` must not destroy hand-edited config.yaml content.
+
+    Regression for #63039: set_config_value round-tripped the file through
+    PyYAML (fast_safe_load → atomic_yaml_write), which strips every comment,
+    blank line, and the user's key order on each write. The CLI's own
+    save_config_value (cli.py) already preserves them via ruamel round-trip;
+    this class pins the same contract onto the `hermes config set` path.
+    Test matrix extends the cases contributed in #63140.
+    """
+
+    CONFIG = (
+        "# Hermes main config — hand-maintained; ask in #infra before editing.\n"
+        "model:\n"
+        "  default: gpt-5.2  # pinned for eval reproducibility\n"
+        "  provider: openai\n"
+        "\n"
+        "# Terminal execution backend: docker isolates agent commands.\n"
+        "terminal:\n"
+        "  backend: docker\n"
+        "\n"
+        "custom_providers:\n"
+        "  - name: local-vllm  # dev box\n"
+        "    api_key: old-key\n"
+        "  - name: prod-endpoint\n"
+        "    api_key: prod-key\n"
+    )
+
+    def _seed(self, home):
+        (home / "config.yaml").write_text(self.CONFIG)
+
+    @pytest.mark.parametrize("key, initial, requested, expected", [
+        ("compression.threshold", "compression:\n  threshold: 1\n", "1.0", 1.0),
+        ("compression.threshold_tokens", "compression:\n  threshold_tokens: false\n", "0", 0),
+        ("compression.enabled", "compression:\n  enabled: 0\n", "false", False),
+        ("custom_providers.0.context_length",
+         "custom_providers:\n  - name: local\n    context_length: false\n", "0", 0),
+    ])
+    def test_equal_scalar_values_still_write_requested_type(
+            self, _isolated_hermes_home, key, initial, requested, expected):
+        from hermes_cli.config import _get_nested
+
+        path = _isolated_hermes_home / "config.yaml"
+        path.write_text(
+            "# hand maintained\n" + initial + "model:\n  default: m  # keep this comment\n",
+            encoding="utf-8",
+        )
+        set_config_value(key, requested)
+        text = path.read_text(encoding="utf-8")
+        actual = _get_nested(yaml.safe_load(text), key)
+        assert type(actual) is type(expected)
+        assert actual == expected
+        assert "# hand maintained" in text and "# keep this comment" in text
+
+    def test_header_comment_survives_unrelated_set(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home)
+        set_config_value("tts.provider", "elevenlabs")
+        text = _read_config(_isolated_hermes_home)
+        assert "# Hermes main config — hand-maintained" in text
+        assert "provider: elevenlabs" in text
+
+    def test_inline_comment_on_untouched_key_survives(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home)
+        set_config_value("terminal.backend", "ssh")
+        text = _read_config(_isolated_hermes_home)
+        assert "# pinned for eval reproducibility" in text
+        assert "backend: ssh" in text
+
+    def test_section_comment_survives_sibling_write(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home)
+        set_config_value("model.provider", "anthropic")
+        text = _read_config(_isolated_hermes_home)
+        assert "# Terminal execution backend: docker isolates agent commands." in text
+        assert "provider: anthropic" in text
+
+    def test_blank_lines_and_key_order_survive(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home)
+        set_config_value("terminal.backend", "ssh")
+        text = _read_config(_isolated_hermes_home)
+        # model section still precedes terminal, blank separators intact.
+        assert text.index("model:") < text.index("terminal:") < text.index("custom_providers:")
+        assert "\n\n" in text
+
+    def test_indexed_list_write_keeps_sibling_element_comments(self, _isolated_hermes_home):
+        """Indexed paths (#17876 semantics) must not flatten the list's comments."""
+        self._seed(_isolated_hermes_home)
+        set_config_value("custom_providers.0.api_key", "new-key")
+        text = _read_config(_isolated_hermes_home)
+        assert "# dev box" in text
+        import yaml as _yaml
+        data = _yaml.safe_load(text)
+        assert data["custom_providers"][0]["api_key"] == "new-key"
+        assert data["custom_providers"][1]["api_key"] == "prod-key"
+
+    def test_api_base_alias_canonicalized_and_comments_preserved(self, _isolated_hermes_home):
+        """The #8919 alias migration must keep working on the round-trip path."""
+        self._seed(_isolated_hermes_home)
+        set_config_value("model.api_base", "http://localhost:8000/v1")
+        text = _read_config(_isolated_hermes_home)
+        import yaml as _yaml
+        data = _yaml.safe_load(text)
+        assert data["model"]["base_url"] == "http://localhost:8000/v1"
+        assert "api_base" not in data["model"]
+        assert "api_base" not in data
+        assert "# Hermes main config — hand-maintained" in text
+
+    def test_duplicate_key_file_still_writes_value(self, _isolated_hermes_home):
+        """PyYAML tolerates duplicate keys (last wins); ruamel round-trip does
+        not. On such files the write must still land — falling back to the
+        plain dump (comments lost) rather than crashing."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "terminal:\n  backend: local\nterminal:\n  backend: docker\n"
+        )
+        set_config_value("tts.provider", "openai")
+        import yaml as _yaml
+        data = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert data["tts"]["provider"] == "openai"
+        assert data["terminal"]["backend"] == "docker"
+
+    def test_new_nested_key_created_without_touching_rest(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home)
+        set_config_value("custom_section.port", "8899")
+        text = _read_config(_isolated_hermes_home)
+        import yaml as _yaml
+        data = _yaml.safe_load(text)
+        assert data["custom_section"]["port"] == 8899
+        assert "# dev box" in text
+        assert "# pinned for eval reproducibility" in text
+
+    def test_unset_preserves_comments_on_remaining_keys(self, _isolated_hermes_home):
+        """`hermes config unset` shares the write path — same contract (#63039)."""
+        from hermes_cli.config import unset_config_value
+        self._seed(_isolated_hermes_home)
+        unset_config_value("terminal.backend")
+        text = _read_config(_isolated_hermes_home)
+        assert "# Hermes main config — hand-maintained" in text
+        assert "# pinned for eval reproducibility" in text
+        import yaml as _yaml
+        data = _yaml.safe_load(text)
+        assert "backend" not in (data.get("terminal") or {})
+
+    def test_write_failure_propagates_instead_of_stripping_comments(
+        self, _isolated_hermes_home, monkeypatch
+    ):
+        """Sweeper ask on the salvage PR: only round-trip *parser* rejection
+        may fall back to the plain (comment-stripping) dump. A genuine write
+        failure (temp file, fsync, atomic replace) must propagate — falling
+        through would turn a failed write into a "successful" rewrite that
+        destroys the user's comments."""
+        import utils as utils_module
+
+        self._seed(_isolated_hermes_home)
+        original = _read_config(_isolated_hermes_home)
+
+        real_replace = utils_module.atomic_replace
+        calls = {"n": 0}
+
+        def first_call_explodes(tmp_path, path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("simulated atomic-replace failure")
+            return real_replace(tmp_path, path)  # a fallback dump would succeed
+
+        monkeypatch.setattr(utils_module, "atomic_replace", first_call_explodes)
+        import pytest as _pytest
+        with _pytest.raises(OSError, match="simulated atomic-replace failure"):
+            set_config_value("terminal.backend", "ssh")
+
+        # File untouched: no plain-dump fallback happened, comments intact.
+        assert _read_config(_isolated_hermes_home) == original

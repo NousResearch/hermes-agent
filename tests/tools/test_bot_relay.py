@@ -164,11 +164,25 @@ def test_write_reply_reason_passthrough_and_classification(root):
     assert data["reason"] == "" and data["reply"] == "ok"
 
 
-def test_waiter_command_quotes_and_targets_reply_file(root):
+def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
+    """The waiter is spawned through terminal_tool from the SENDER's turn. When a bot replies to a
+    teammate from its own one-shot delivery turn, that turn runs under ``approvals.single_query_mode``
+    (default ``deny``), and inline interpreter code is a flagged pattern — so the reply waiter was
+    refused exactly when bots talked to each other, and the reply never woke the sender."""
+    import shlex
+
+    from tools.approval import detect_dangerous_command
+
     env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     cmd = bot_relay.waiter_command(root, env)
-    assert ("b" * 32) in cmd and "-c" in cmd
-    assert "rm -rf" not in cmd  # sanity: single quoted -c payload
+    parts = shlex.split(cmd)
+
+    assert detect_dangerous_command(cmd)[0] is False, cmd
+    assert parts[1].endswith("bot_mode_dm.py") and parts[2] == "--wait-reply"
+    assert parts[3] == str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json")
+    assert parts[4:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
+    # The shape this replaces, for the record: flagged, hence refused under deny.
+    assert detect_dangerous_command("python3 -c 'import json'")[0] is True
 
 
 def test_waiter_outlives_the_desktop_deliver_deadline():
@@ -184,15 +198,34 @@ def test_waiter_outlives_the_desktop_deliver_deadline():
     assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
 
 
-def test_waiter_give_up_message_states_the_real_budget(root):
-    import shlex
+@pytest.mark.parametrize(
+    ("reply_file", "expected_code", "expected_lines"),
+    [
+        ({"reply": "pong"}, 0, ["Reply from @researcher on ssh-vps:", "pong"]),
+        ({"reply": ""}, 0, ["Reply from @researcher on ssh-vps:", "(empty reply)"]),
+        ({"error": "turn failed", "reason": "provider_rate_limit"}, 1,
+         ["Delivery to @researcher on ssh-vps failed [reason: provider_rate_limit]: turn failed"]),
+        ({"error": "turn failed"}, 1, ["Delivery to @researcher on ssh-vps failed: turn failed"]),
+        (None, 1, ["No reply from @researcher on ssh-vps within 0.3s. The message may still be delivered "
+                   "when the Desktop reconnects; do not resend blindly."]),
+    ],
+    ids=["reply", "empty-reply", "typed-error", "untyped-error", "gave-up"],
+)
+def test_waiter_prints_the_completion_notification_the_sender_wakes_on(root, capsys, reply_file, expected_code, expected_lines):
+    """The waiter's stdout IS the sender's completion notification: the reply, a typed failure the
+    sender can branch on without parsing prose (#93091), or an honest give-up that names the budget."""
+    from tools import bot_mode_dm
 
     env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
-    parts = shlex.split(bot_relay.waiter_command(root, env))
-    code = parts[parts.index("-c") + 1]
-    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
-    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
-    assert "within 900s" not in code
+    reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
+    reply_path.parent.mkdir(parents=True, exist_ok=True)
+    if reply_file is not None:
+        reply_path.write_text(json.dumps(reply_file), encoding="utf-8")
+
+    code = bot_mode_dm._delivery_main(["--wait-reply", str(reply_path), "@researcher on ssh-vps", "0.3"])
+
+    assert (code, capsys.readouterr().out.splitlines()) == (expected_code, expected_lines)
+    assert bot_mode_dm._delivery_main(["--wait-reply", str(reply_path)]) == 2
 
 
 def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
@@ -236,38 +269,25 @@ def test_roster_rejects_connection_id_outside_handle_charset(root):
     assert bot_relay.write_remote_roster(root, [good]) == 1
 
 
-def test_waiter_command_repr_encodes_hostile_connection_id(root):
-    import ast
+def test_hostile_roster_fields_ride_as_argv_data(root):
+    """Envelope fields come from the Desktop-pushed roster — untrusted. They must never become
+    source text: the waiter takes them as argv, so a payload shaped like Python is a label."""
     import shlex
+    import subprocess
 
     inj = "x'); open(r'/tmp/pwned','w').write('pwned'); print('x"
-    env = {
-        "id": "c" * 32,
-        "target_handle": "researcher",
-        "target_connection": inj,
-    }
+    env = {"id": "c" * 32, "target_handle": "researcher", "target_connection": inj}
     cmd = bot_relay.waiter_command(root, env)
     parts = shlex.split(cmd)
-    code = parts[parts.index("-c") + 1]
-    compile(code, "<waiter>", "exec")
-    tree = ast.parse(code)
-    opens = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "open"
-    ]
-    # Only json.load(open(p, ...)) is a real open(); the payload must stay data.
-    assert len(opens) == 1
 
-    # A quote in the id used to SyntaxError the waiter. It must compile.
-    quoted = bot_relay.waiter_command(
-        root,
-        {"id": "a" * 32, "target_handle": "h", "target_connection": "foo'bar"},
-    )
-    qcode = shlex.split(quoted)[shlex.split(quoted).index("-c") + 1]
-    compile(qcode, "<waiter-quote>", "exec")
+    assert "-c" not in parts
+    assert parts[4] == f"@researcher on {inj}"
+    reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
+    reply_path.parent.mkdir(parents=True, exist_ok=True)
+    reply_path.write_text(json.dumps({"reply": "pong"}), encoding="utf-8")
+    proc = subprocess.run(parts, capture_output=True, text=True, timeout=30)
+
+    assert proc.returncode == 0 and proc.stdout.splitlines() == [f"Reply from @researcher on {inj}:", "pong"]
 
 
 # ── message_agent integration: relay route + legacy-SOUL gate fix ───────────

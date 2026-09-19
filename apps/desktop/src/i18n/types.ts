@@ -2482,6 +2482,7 @@ export interface Translations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
+      sourceBadge: (platform: string) => string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string

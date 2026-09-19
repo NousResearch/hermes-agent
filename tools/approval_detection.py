@@ -62,9 +62,8 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
 _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
 )
+_CMDPOS += r"(?:/?(?:[^\s/]+/)*)?"
 
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
@@ -1179,6 +1178,106 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     return "".join(out)
 
 
+_WRAPPER_WORDS = frozenset({
+    "sudo", "doas", "env", "exec", "nohup", "setsid", "time",
+    "command", "builtin", "nice", "ionice", "stdbuf", "timeout",
+})
+
+_WRAPPER_STR_OPERAND = {
+    "sudo": {"-u", "-g", "-h", "-p", "-U", "-D", "-R", "-T",
+             "--user", "--group", "--host", "--prompt", "--chdir",
+             "--role", "--type"},
+    "doas": {"-u"},
+    "env": {"-u", "-C", "-a", "-S",
+            "--unset", "--chdir", "--argv0", "--split-string"},
+    "exec": {"-a"},
+    "ionice": {"-c", "-p", "--class", "--pid"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+}
+
+_WRAPPER_NUM_OPERAND = {
+    "sudo": {"-C", "--close-from"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-n", "--classdata"},
+}
+
+_WRAPPER_DURATION_RE = re.compile(r"[+-]?\d+(?:\.\d+)?[A-Za-z]*")
+
+def _wrapper_prefix_end(command: str, start: int) -> int:
+    """Offset where the real program after any leading wrappers begins."""
+    pos = start
+    seen_wrapper = False
+    while True:
+        ws, we, word = _read_shell_word(command, pos)
+        if ws == we:
+            return start  # prefix with no program: nothing executes
+        base = word.rsplit("/", 1)[-1].lower()
+        if base not in _WRAPPER_WORDS:
+            return ws if seen_wrapper else start
+        seen_wrapper = True
+        pos = we
+        while True:  # this wrapper's options / assignments / leading positional
+            ows, owe, oword = _read_shell_word(command, pos)
+            if ows == owe:
+                pos = owe
+                break
+            # Option matching is case-sensitive (`sudo -H` is a no-operand
+            # flag, `sudo -h host` takes an operand).
+            if oword == "--":
+                pos = owe
+                break
+            if oword.startswith("-") and oword != "-":
+                if "=" in oword:
+                    pos = owe  # --opt=value carries its own operand
+                    continue
+                str_opts = _WRAPPER_STR_OPERAND.get(base, ())
+                num_opts = _WRAPPER_NUM_OPERAND.get(base, ())
+                kind = None
+                if oword in str_opts:
+                    kind = "str"
+                elif oword in num_opts:
+                    kind = "num"
+                elif re.fullmatch(r"-[a-zA-Z]+", oword):
+                    # short bundle: the last letter owns the operand
+                    if ("-" + oword[-1]) in str_opts:
+                        kind = "str"
+                    elif ("-" + oword[-1]) in num_opts:
+                        kind = "num"
+                if kind is None:
+                    pos = owe  # no-operand flag
+                    continue
+                vws, vwe, value = _read_shell_word(command, owe)
+                if vws == vwe:
+                    pos = owe
+                    continue
+                if kind == "num" and not _WRAPPER_DURATION_RE.fullmatch(value):
+                    return start  # invalid operand: the wrapper errors here
+                pos = vwe
+                continue
+            if base == "env" and _ENV_ASSIGNMENT_RE.fullmatch(oword):
+                pos = owe
+                continue
+            if base == "timeout" and _WRAPPER_DURATION_RE.fullmatch(oword):
+                pos = owe  # leading duration positional
+                continue
+            break
+
+def _strip_wrapper_prefixes(command: str) -> str:
+    """Blank every leading wrapper chain so the real verb sits at the anchor."""
+    cuts = []
+    for start in _iter_shell_command_starts(command):
+        end = _wrapper_prefix_end(command, start)
+        if end > start:
+            cuts.append((start, end))
+    if not cuts:
+        return command
+    out = command
+    for s, e in reversed(cuts):
+        out = out[:s] + " " + out[e:]
+    return out
+
+
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     for pos in _iter_shell_command_starts(command):
@@ -1436,6 +1535,12 @@ def _command_detection_variants(command: str):
         if fresh(variant):
             yield variant
         pending = carry
+
+    # Strip only prefixes found using the original quote state.
+    stripped = _strip_wrapper_prefixes(_mask_quoted_newlines(command))
+    variant = _normalize_command_for_detection(_mark_command_starts(stripped, marker=" \n"))
+    if fresh(variant):
+        yield variant
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:

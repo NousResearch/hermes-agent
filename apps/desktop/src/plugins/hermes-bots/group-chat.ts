@@ -52,6 +52,7 @@ const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
 const GROUP_CHAT_SYNC_MESSAGES = 16
 const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
+const GROUP_CHAT_SYNC_TRUNCATION_MARK = '… [truncated]'
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -62,6 +63,9 @@ interface GroupChatSyncRoom {
   log: GroupMessage[]
   members?: GroupMember[]
   name?: string
+  /** At least this many earlier room entries exist that the projection does
+   *  not carry (head-trimmed to the message/byte budget). */
+  omitted?: number
   revision?: number
   roomId?: string
 }
@@ -90,6 +94,36 @@ const groupChatSyncInFlightConnections = new Set<string>()
 const groupChatSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const groupChatSyncRetryCounts = new Map<string, number>()
 export let groupChatSyncDisposed = false
+
+/** Cut one sync-projection line to the per-message budget and mark the cut.
+ *  Receivers used to see a silent mid-sentence slice with no signal that the
+ *  body continued. Keep the mark inside the same char budget so CJK/envelope
+ *  accounting does not grow. */
+export function compactGroupChatSyncText(text: string, limit = GROUP_CHAT_SYNC_TEXT_CHARS) {
+  const raw = String(text || '')
+
+  if (raw.length <= limit) {
+    return { text: raw }
+  }
+
+  const budget = Math.max(0, limit - GROUP_CHAT_SYNC_TRUNCATION_MARK.length)
+
+  return {
+    text: `${raw.slice(0, budget)}${GROUP_CHAT_SYNC_TRUNCATION_MARK}`,
+    truncated: true as const
+  }
+}
+
+/** #114341: the ui_meta mirror is the only on-disk copy of a room, so a
+ *  head-trimmed log must say how many earlier entries it does not carry —
+ *  a bare slice reads as "the user never said it". */
+function noteGroupChatSyncOmitted(room: GroupChatSyncRoom, total: number) {
+  const omitted = total - room.log.length
+
+  if (omitted > 0) {
+    room.omitted = omitted
+  }
+}
 
 /** Conservative byte count for the gateway's ensure_ascii JSON encoding.
  *  Python also inserts separator spaces, so reserve one extra byte per JS
@@ -216,29 +250,38 @@ export function groupChatSyncSnapshot(
   }
 
   for (const [name, room] of ranked) {
-    const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
-      ...(entry?.id
-        ? {
-            id: String(entry.id).slice(0, 160)
-          }
-        : {}),
-      from: {
-        kind: entry?.from?.kind === 'member' ? 'member' : 'user',
-        name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
-        ...(entry?.from?.source
+    const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => {
+      const compacted = compactGroupChatSyncText(String(entry?.text || ''))
+
+      return {
+        ...(entry?.id
           ? {
-              source: String(entry.from.source).slice(0, 128)
+              id: String(entry.id).slice(0, 160)
+            }
+          : {}),
+        from: {
+          kind: entry?.from?.kind === 'member' ? 'member' : 'user',
+          name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
+          ...(entry?.from?.source
+            ? {
+                source: String(entry.from.source).slice(0, 128)
+              }
+            : {})
+        },
+        text: compacted.text,
+        at: Number(entry?.at || 0),
+        ...(entry?.thread
+          ? {
+              thread: String(entry.thread).slice(0, 128)
+            }
+          : {}),
+        ...(compacted.truncated
+          ? {
+              truncated: true
             }
           : {})
-      },
-      text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
-      at: Number(entry?.at || 0),
-      ...(entry?.thread
-        ? {
-            thread: String(entry.thread).slice(0, 128)
-          }
-        : {})
-    }))
+      }
+    })
 
     const compact: GroupChatSyncRoom = {
       name: String(name).slice(0, 64),
@@ -286,9 +329,11 @@ export function groupChatSyncSnapshot(
 
     const key = groupChatRoomKey(name, room)
     rooms[key] = compact
+    noteGroupChatSyncOmitted(compact, room.log.length)
 
     while (compact.log.length > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       compact.log.shift()
+      noteGroupChatSyncOmitted(compact, room.log.length)
     }
 
     if (compact.image && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
@@ -418,6 +463,8 @@ export function mergeGroupChatSyncSnapshots(
     }
 
     const remoteRevision = Math.max(0, Number(remoteRoom?.revision || 0))
+    // Either writer's head trim is a lower bound on what the union still lacks.
+    const omitted = Math.max(Number(remoteRoom?.omitted || 0), Number(localRoom?.omitted || 0))
 
     const localRevision = changed.has(key)
       ? Math.max(0, Number(writeRevision || 0))
@@ -473,6 +520,11 @@ export function mergeGroupChatSyncSnapshots(
       }),
       members,
       revision: Math.max(remoteRevision, localRevision),
+      ...(omitted > 0
+        ? {
+            omitted
+          }
+        : {}),
       ...(typeof image === 'string' && image
         ? {
             image
@@ -531,6 +583,7 @@ function groupChatSyncEnvelope(
   for (const [key, room] of ranked) {
     while ((room.log?.length || 0) > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       room.log.shift()
+      room.omitted = (room.omitted || 0) + 1
     }
 
     if (room.image && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {

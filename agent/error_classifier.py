@@ -50,6 +50,7 @@ class FailoverReason(enum.Enum):
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
@@ -277,6 +278,19 @@ _INVALID_MESSAGE_BODY_PATTERNS = (
     "messages: at least one message is required", _NO_USER_QUERY_SIGNAL,
 )
 
+# Strict-alternation chat templates (llama.cpp / vLLM Jinja templates, Mistral, some
+# OpenRouter routes) 400 when two adjacent messages share a role. Deterministic for the
+# request shape, and the only bad thing is the adjacency, so the caller that produced it
+# (the MoA aggregator appends ``user(guidance)`` after ``user(task)`` on iteration 1 —
+# #112358) merges the pair for THAT destination and retries once. Checked before the
+# request-validation table: the body usually also carries ``invalid_request_error``.
+_ROLE_ALTERNATION_PATTERNS = (
+    "roles must alternate", "role must alternate", "must alternate between",
+    "consecutive user messages", "consecutive messages with the same role",
+    "consecutive messages of the same role", "same role in a row", "multiple user messages in a row",
+    "adjacent messages with the same role",
+)
+
 # Proxy-side rejection of the model's own tool-call JSON (Ollama "invalid tool call arguments",
 # OpenRouter-wrapped "function_call arguments"). Checked before the generic 400 validation and
 # overflow heuristics: on a large session the bare message would otherwise read as overflow.
@@ -428,6 +442,9 @@ _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded,
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
+# Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
+# already merges adjacent users before the call) keep aborting to the fallback chain.
+_V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 # The MODEL emitted unparseable tool-call JSON and the proxy (Ollama, OpenRouter) rejected it: no
 # other provider can fix that output, so falling back only replays the same broken turn 4-5 times
 # (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
@@ -456,6 +473,26 @@ _REASONING_FIELD_TOKEN = re.compile(
     r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
     r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
 )
+
+
+_REASONING_REQUIRED_MARKERS = (
+    "mandatory", "cannot be disabled", "can't be disabled", "must be enabled", "is required",
+    "always enabled", "cannot be turned off",
+)
+
+
+def is_reasoning_required_rejection(error_msg: str) -> bool:
+    """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
+    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
+    ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
+    reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
+    also works, but tells the caller nothing about the next call)."""
+    msg = (error_msg or "").lower()
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    if token is None:
+        return False
+    near = msg[max(0, token.start() - 48):token.end() + 96]
+    return any(m in near for m in _REASONING_REQUIRED_MARKERS)
 
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:
@@ -524,7 +561,8 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 
 # Status-less message path, head (before usage-limit disambiguation).
 _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
-                       (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE)) + _IMAGE_TOOL_RULES
+                       (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),
+                       (_ROLE_ALTERNATION_PATTERNS, _V_ROLE_ALTERNATION)) + _IMAGE_TOOL_RULES
 
 # Status-less tail. Overload before rate_limit/billing so "overloaded" backs off
 # instead of rotating; policy block before model_not_found; timeout/connection
@@ -966,6 +1004,8 @@ def _classify_400(c: _Ctx) -> Verdict:
         return _V_SERVER_ERROR
     if any(p in msg for p in _MALFORMED_TOOL_ARGS_PATTERNS):
         return _V_MALFORMED_TOOL_ARGS
+    if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
+        return _V_ROLE_ALTERNATION
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR

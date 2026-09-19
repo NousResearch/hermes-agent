@@ -159,6 +159,9 @@ class SessionManager:
         the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
         self._sessions: Dict[str, SessionState] = {}
         self._lock = threading.Lock()
+        # Serializes DB restores: session construction runs off the event loop, so two
+        # overlapping session/load for one id must share a single agent build.
+        self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
 
@@ -178,7 +181,12 @@ class SessionManager:
         a process restart) when it is not in memory; ``None`` if unknown."""
         with self._lock:
             state = self._sessions.get(session_id)
-        return state if state is not None else self._restore(session_id)
+        if state is not None:
+            return state
+        with self._restore_lock:
+            with self._lock:
+                state = self._sessions.get(session_id)  # a concurrent restore may have installed it
+            return state if state is not None else self._restore(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""

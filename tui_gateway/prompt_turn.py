@@ -487,6 +487,52 @@ class _TurnRun:
     receipt_attempted: bool = False
 
 
+def _adopt_out_of_band_turns(session: dict) -> None:
+    """Fold turns another surface appended to this session (Telegram reply, cron run) into the model-facing
+    history before the turn snapshots it. The desktop already repaints them from the DB (#86588); without
+    this the next prompt still ran on the in-memory history and the model never saw them (#42962).
+    Foreign rows are the active rows between the highest ``_row_id`` the agent's own flushes stamped onto
+    the in-memory messages (``sync_flushed_message_markers``; a local compaction re-stamps them too) and
+    this turn's own user row, which ``_persist_submit_user_row`` already wrote (#111868). When a foreign
+    row is a compaction summary the other surface rewrote the transcript under us, so the in-memory history
+    is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Nothing stamped
+    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped."""
+    with session["history_lock"]:
+        history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
+    seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
+               default=None)
+    if seen is None:
+        return
+    ceiling = _message_row_id(session.get("_submit_user_row") or {})
+
+    def _below_ceiling(rid) -> bool:
+        return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+
+    def _foreign(rid) -> bool:
+        return _below_ceiling(rid) and rid > seen
+    # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+    with _session_db(session) as db:
+        try:
+            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+        except Exception:
+            logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
+            return
+    newer = [row for row in newer if _foreign(row.get("id"))]
+    if not newer:
+        return
+    rewritten = any(row.get("_compressed_summary") for row in newer)
+    rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
+    keep = _below_ceiling if rewritten else _foreign
+    tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
+    if not tail:
+        return
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != version:
+            return  # /compress, a rewind or a pivot marker landed meanwhile; the next turn re-derives
+        session["history"] = tail if rewritten else history + tail
+        session["history_version"] = version + 1
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -520,6 +566,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
+    _adopt_out_of_band_turns(session)
     st.agent = agent = session["agent"]
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
@@ -799,7 +846,9 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
         run_kwargs.clear()
     try:  # while the profile HERMES_HOME override is still active (session's own config)
         from hermes_cli.mem_trim import trim_memory
-        trim_memory(reason="tui turn completion")
+        # The finishing session is still marked running here; every OTHER session must be idle (#58576).
+        if _sessions_quiescent(exclude=sid):
+            trim_memory(reason="tui turn completion")
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
     if st.thinking_started:

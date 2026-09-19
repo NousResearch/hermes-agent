@@ -1,6 +1,6 @@
 name: hermes-subscription-meter
 repo: https://github.com/NealZhouPanda/hermes-subscription-meter
-sha: 345ef9d5055d1053f189045e800965e8417c8421
+sha: 16c870f9c7b7e3fab02710816ebbd228ba25580d
 description: Provider-neutral subscription quota matrix panel — each provider's subscription window as a single time x quota row (elapsed vs remaining at a glance), with UI-side show/hide per provider row.
 maintainer: NealZhouPanda
 tier: community

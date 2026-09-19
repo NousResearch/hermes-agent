@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
-from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +51,16 @@ def test_dispatcher_spawned_worker_signals_a_provider_outage_not_a_protocol_viol
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
     code = _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason})
     assert code == KANBAN_RATE_LIMIT_EXIT_CODE
+
+
+@pytest.mark.parametrize("reason", ["auth", "auth_permanent", "model_not_found", "ssl_cert_verification"])
+def test_dispatcher_spawned_worker_signals_a_terminal_provider_error(monkeypatch, reason):
+    """A revoked credential / missing model cannot be retried into working: the worker says so
+    with EX_CONFIG so the dispatcher parks the card after one spawn. A person's run keeps 1."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == 1
 
 
 @pytest.mark.parametrize(

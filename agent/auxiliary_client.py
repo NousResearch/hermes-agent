@@ -29,7 +29,9 @@ from agent.error_classifier import (
     _OVERLOADED_PATTERNS,
     UNSUPPORTED_PARAM_MARKERS,
     is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
 )
+from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -3302,6 +3304,16 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
     return is_reasoning_field_rejection(str(exc))
 
 
+def _is_reasoning_required_rejection(exc: Exception) -> bool:
+    """Provider 400 refusing to switch reasoning OFF ("Reasoning is mandatory for this endpoint and cannot
+    be disabled"): the field is understood, only the disable is refused, so the rung steps the effort up to
+    the floor instead of dropping the field (agent/auxiliary_reasoning_floor.py)."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    return is_reasoning_required_rejection(str(exc))
+
+
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
     """Copy *kwargs* without reasoning wire controls (top-level ``reasoning_effort``, the adapter's
     private ``_reasoning_config`` and every ``extra_body`` reasoning key); None when nothing was
@@ -6464,7 +6476,9 @@ def _build_call_kwargs(
     # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
     # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
     from agent.reasoning_effort import clamp_reasoning_config
-    reasoning_config = clamp_reasoning_config(reasoning_config)
+    from agent.auxiliary_reasoning_floor import known_reasoning_floor
+    reasoning_config = clamp_reasoning_config(
+        known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
@@ -7184,7 +7198,8 @@ def _param_rung_accepts(exc: Exception) -> bool:
             # a temperature-strip retry on max_tokens), and a route-gating 400 after a strip still
             # reaches the provider-fallback rung.
             or _is_unsupported_parameter_error(exc, "temperature")
-            or _is_reasoning_field_rejection(exc) or _is_structured_output_rejection(exc)
+            or _is_reasoning_field_rejection(exc) or _is_reasoning_required_rejection(exc)
+            or _is_structured_output_rejection(exc)
             or _is_model_incompatible_error(exc))
 
 
@@ -7238,6 +7253,12 @@ def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
         # (top-level ``reasoning_effort: none``), and strict-schema gateways reject the generic
         # ``extra_body.reasoning`` fallback outright (#109774); the caller only wanted "no thinking",
         # so retry with every reasoning field omitted and let the route default apply (#112781).
+        # The endpoint refuses the *disable* rather than the field (Nous Portal gpt-6-astra: "Reasoning is
+        # mandatory ... cannot be disabled"): step the effort up to the floor and remember the route so
+        # the next thinking-off aux call starts there. Ordered before the strip so a floor that still
+        # 400s falls through to it.
+        (_is_reasoning_required_rejection, with_reasoning_floor,
+         "provider requires reasoning; retrying at the floor effort", remember_reasoning_floor),
         (_is_reasoning_field_rejection, _without_reasoning_fields,
          "provider rejected the reasoning field; retrying without it (route default applies)", None),
         (lambda exc: max_tokens is not None and _is_max_tokens_rejection(exc, client), _without_max_tokens,

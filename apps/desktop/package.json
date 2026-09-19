@@ -213,7 +213,7 @@
     ],
     "beforeBuild": "scripts/before-build.mjs",
     "beforePack": "scripts/before-pack.mjs",
-    "afterPack": "scripts/after-pack.mjs",
+    "afterExtract": "scripts/after-extract.mjs",
     "extraResources": [
       {
         "from": "build/install-stamp.json",

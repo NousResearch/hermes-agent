@@ -581,3 +581,23 @@ def test_start_on_tty_hands_both_answers_to_install_and_honours_the_env_opt_out(
 
 
 
+
+
+def test_hermes_owns_windows_service_requires_name_or_binary_under_a_hermes_root():
+    """Task Scheduler (``Schedule`` in svchost) above a task-launched gateway is never its supervisor;
+    a service is Hermes-owned only by a ``hermes*`` name or a binary under the install (#97208)."""
+    roots = (
+        r"C:\Users\kaize\AppData\Local\hermes\hermes-agent",
+        r"C:\Users\kaize\AppData\Local\hermes\hermes-agent\venv\Scripts",
+        r"C:\Users\kaize\AppData\Local\hermes\gateway-service",
+    )
+    owns = gateway_windows.hermes_owns_windows_service
+
+    assert not owns("Schedule", r"C:\Windows\system32\svchost.exe -k netsvcs -p -s Schedule", roots)
+    assert not owns("BITS", r"C:\Windows\System32\svchost.exe -k netsvcs -p -s BITS", roots)
+    assert not owns("Other", r"C:\Users\kaize\AppData\Local\hermes\hermes-agent-fork\run.exe", roots)
+
+    assert owns("HermesGateway", r"C:\nssm\nssm.exe", roots)
+    assert owns("Hermes_Gateway_derek", "", roots)
+    assert owns("gw", r'"C:\Users\KAIZE\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run', roots)
+    assert owns("gw", r"C:\Users\kaize\AppData\Local\hermes\gateway-service\Hermes_Gateway.cmd", roots)

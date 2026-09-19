@@ -277,7 +277,9 @@ def test_schedule_running_task_terminates_worker_before_releasing_claim(
             (task_id,),
         ).fetchone()
         assert run["status"] == "scheduled"
-        assert run["worker_pid"] is None
+        # The closed run row retains the pid (the reaper's only OS evidence once
+        # tasks.worker_pid is wiped); the tasks row is what schedule clears.
+        assert run["worker_pid"] == 4242
 
 
 

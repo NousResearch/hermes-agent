@@ -41,7 +41,11 @@ class CLIChatTurnMixin:
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import SubagentNotification
-        self._ensure_conversation_worktree_binding()
+        # Test doubles subclass CLIChatTurnMixin alone (no worktree mixin), so bind only when
+        # the method exists instead of assuming the full HermesCLI MRO.
+        ensure_binding = getattr(self, "_ensure_conversation_worktree_binding", None)
+        if ensure_binding is not None:
+            ensure_binding()
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.

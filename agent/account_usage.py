@@ -187,13 +187,28 @@ def _nous_logged_in() -> bool:
 
 
 def _fetch_portal_account(timeout: float):
-    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout)."""
-    import concurrent.futures
+    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout).
+
+    No ``with`` block on purpose: ``Executor.__exit__`` joins the worker via
+    ``shutdown(wait=True)``, so a portal that accepts the connection but never
+    answers would hold the caller until the provider's own timeout instead of
+    ``timeout``. The abandoned daemon worker runs on to its own network timeout
+    and never blocks the caller or process exit; its eventual exception is
+    drained so GC never logs "exception was never retrieved"."""
     import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
     context = contextvars.copy_context()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    future = pool.submit(context.run, get_nous_portal_account_info, force_fresh=True)
+    try:
+        return future.result(timeout=timeout)
+    except BaseException:
+        future.add_done_callback(lambda f: f.exception())
+        raise
+    finally:
+        pool.shutdown(wait=False)
 
 
 def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:

@@ -1,3 +1,7 @@
+import concurrent.futures
+import contextvars
+import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -5,6 +9,7 @@ import pytest
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    _fetch_portal_account,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -325,3 +330,57 @@ def test_base_noop_usage_hook_spawns_no_thread(monkeypatch):
                         lambda self: pytest.fail(f"base no-op hook spawned thread {self.name!r}"))
 
     assert account_usage.fetch_account_usage("plugin-noop") is None
+
+
+def test_fetch_portal_account_is_wall_clock_bounded(monkeypatch):
+    """A portal that accepts the connection but never answers must release the
+    caller at ``timeout``, not when the wedged worker finishes on its own
+    (``Executor.__exit__`` used to join it via ``shutdown(wait=True)``)."""
+    release = threading.Event()
+
+    def hanging_portal_fetch(*, force_fresh):
+        release.wait(timeout=30)
+        return object()
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info", hanging_portal_fetch
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(concurrent.futures.TimeoutError):
+            _fetch_portal_account(timeout=0.5)
+    finally:
+        release.set()
+    assert time.monotonic() - started < 10
+
+
+def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch):
+    marker = contextvars.ContextVar("portal_fetch_test_marker", default="unset")
+    sentinel = object()
+    seen = {}
+
+    def probing_portal_fetch(*, force_fresh):
+        seen["force_fresh"] = force_fresh
+        seen["marker"] = marker.get()
+        return sentinel
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info", probing_portal_fetch
+    )
+    token = marker.set("profile-scope")
+    try:
+        assert _fetch_portal_account(timeout=5) is sentinel
+    finally:
+        marker.reset(token)
+    assert seen == {"force_fresh": True, "marker": "profile-scope"}
+
+
+def test_fetch_portal_account_propagates_worker_error(monkeypatch):
+    def failing_portal_fetch(*, force_fresh):
+        raise RuntimeError("portal down")
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info", failing_portal_fetch
+    )
+    with pytest.raises(RuntimeError, match="portal down"):
+        _fetch_portal_account(timeout=5)

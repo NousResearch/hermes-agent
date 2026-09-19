@@ -269,9 +269,11 @@ def _marker_only_restart_obsolete() -> bool:
     if not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
     _clear_fleet_restart_pending_marker()
-    logger.debug(
-        "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
-        len(fleet), expected_sha[:10],
+    # INFO, not DEBUG: retiring the marker is state a later reader must be able to explain
+    # (the warning it would have printed is gone, and agent.log is where INFO lands).
+    logger.info(
+        "fleet_restart_pending retired — all live gateways already run %s (%d row(s))",
+        expected_sha[:10], len(fleet),
     )
     return True
 

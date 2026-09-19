@@ -358,8 +358,8 @@ class TestBackup:
         if entry_point == "manual":
             assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
             output = capsys.readouterr().out
-            assert "    chrome-debug/" in output
-            assert "    profiles/coder/chrome-debug/" in output
+            for live_dir in live_dirs:
+                assert f"    {live_dir.relative_to(hermes_home)}/" in output
         else:
             assert backup_mod._write_full_zip_backup(out_zip, hermes_home) == out_zip
 

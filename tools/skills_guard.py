@@ -351,7 +351,14 @@ THREAT_PATTERNS = [
     (r'\.claude/settings|\.codex/config',
      "other_agent_config_ref", "low", "persistence", "references other agent configuration files (informational; only modification intent is scored)"),
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
+    # A value that is itself an env-var NAME (SHOUTY_SNAKE, ≥2 underscore-separated
+    # segments) references where the credential lives instead of embedding it
+    # (#116221). Scoped case-sensitive — the table compiles with IGNORECASE and a
+    # lowercase snake value is the passphrase shape; requiring an underscore
+    # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
+     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
      "embedded_private_key", "critical", "credential_exposure", "embedded private key"),

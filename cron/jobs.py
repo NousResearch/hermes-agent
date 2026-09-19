@@ -2804,8 +2804,14 @@ COMPLETED_ONESHOT_RETENTION_DAYS = 7
 def _cron_config_number(key: str, default: Any, cast: Callable[[Any], Any]) -> Any:
     """Read ``cron.<key>`` from config as *cast*, falling back to *default* on any failure."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config() or {}
+        # Read-only cached-config access (#95320): all three callers are hot read-only paths —
+        # _completed_oneshot_retention_days runs once per scheduler tick inside the jobs lock and
+        # needs one scalar, and _cron_output_keep runs per saved run output. load_config()'s
+        # defensive deepcopy of the entire merged config cost more than the rest of those paths
+        # put together. Cache invalidation on config change is handled by _LOAD_CONFIG_CACHE's
+        # file-signature check; nothing here writes to the returned structure.
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         return cast(cron_cfg.get(key, default))
     except Exception:
@@ -3274,14 +3280,27 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     raw_jobs = load_jobs()
     scan = _DueScan(raw_jobs, _hermes_now())
     scan.needs_save = _normalize_due_scan_records(raw_jobs)
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+    # Derived scheduler view (#95320): one shallow per-record copy of each already-normalized
+    # record with skill fields aligned. The tick used to deepcopy the whole store here — pure
+    # O(N x fields) allocation churn (~48% of profiled tick CPU on a 1k-job store) that protected
+    # nothing, since raw_jobs came fresh out of json.loads() inside load_jobs() above and nothing
+    # shares references with it. _apply_skill_fields already returns a shallow copy of the record,
+    # which keeps its view-only keys out of save_jobs(); nested values are shared with the
+    # canonical records, which is safe because the scan only ever assigns whole keys on a view
+    # record (never mutates a nested structure in place) and mirrors every persisted change onto
+    # raw_jobs through scan.persist() before save_jobs() below.
+    jobs = [_apply_skill_fields(rj) for rj in raw_jobs]
     # One-shot run-claim TTL, resolved once per scan (see _oneshot_run_claim_ttl_seconds).
     run_claim_ttl = _oneshot_run_claim_ttl_seconds()
 
     # Retention sweep: completed one-shots are kept for inspection but must not accumulate forever.
     if _sweep_completed_oneshots(raw_jobs, scan.now, removed_ids=scan.removed):
         scan.needs_save = True
-        jobs = [j for j in jobs if scan.find(j.get("id")) is not None]
+        # O(N) survivor filter (#95320): scan.find() is a linear scan over raw_jobs, so the old
+        # per-job membership check was quadratic in store size exactly when the sweep fired. One
+        # set build over the survivors replaces every per-job search.
+        surviving_ids = {rj.get("id") for rj in raw_jobs}
+        jobs = [j for j in jobs if j.get("id") in surviving_ids]
 
     due = []
     for job in jobs:

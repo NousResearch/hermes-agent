@@ -33,6 +33,8 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import {
   $boardSlug,
   addComment,
+  BOARDS_KEY,
+  decomposeTask,
   deleteTask,
   estimateTask,
   fetchLog,
@@ -43,10 +45,12 @@ import {
   PROFILES_KEY,
   reassignTask,
   reclaimTask,
+  specifyTask,
   taskKey,
   uploadAttachment
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
+import { TriageActions } from './triage-actions'
 import {
   type Diagnostic,
   type DiagnosticAction,
@@ -587,6 +591,7 @@ export function TaskDrawer({
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
     void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
+    void qc.invalidateQueries({ queryKey: BOARDS_KEY })
   }
 
   // Optimistic status change against the task cache; rolls back + toasts on a
@@ -791,6 +796,29 @@ export function TaskDrawer({
               <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
                 <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">{k.readyUnassignedBody}</p>
               </Callout>
+            )}
+
+            {task.status === 'triage' && (
+              <Section label={k.triageActions}>
+                <TriageActions
+                  labels={{
+                    failed: k.actionFailed,
+                    decompose: k.decompose,
+                    decomposed: k.decomposed,
+                    decomposedSingle: k.decomposedSingle,
+                    decomposing: k.decomposing,
+                    specify: k.specify,
+                    specified: k.specified,
+                    specifiedRetitled: k.specifiedRetitled,
+                    specifying: k.specifying,
+                    unknownError: k.unknownError
+                  }}
+                  onDecompose={() => decomposeTask(task.id)}
+                  onRefresh={invalidate}
+                  onSpecify={() => specifyTask(task.id)}
+                  status={task.status}
+                />
+              </Section>
             )}
 
             {task.diagnostics && task.diagnostics.length > 0 && (

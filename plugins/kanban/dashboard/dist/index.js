@@ -466,61 +466,115 @@
   // standard `drop` event and our `hermes-kanban:drop` event.
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // Touch drag (issue: a tap on a card moved it)
+  //
+  // A touch pointerdown used to start the drag unconditionally and call
+  // preventDefault(), so on a phone:
+  //   - the click was suppressed, and the card never opened;
+  //   - a finger that moved even a few pixels produced a drop on whatever
+  //     column sat under it, so a plain tap could MOVE the task.
+  // Real fingers always jitter, so this was the normal case, not an edge case.
+  //
+  // Now the gesture stays a tap until the finger travels past TOUCH_SLOP, and
+  // the drag only begins at that point.
+  // -------------------------------------------------------------------------
+
+  // Movement (in px) a finger must travel before a touch becomes a drag.
+  // Matches the platform convention (~8dp touch slop on Android); below this
+  // the gesture is treated as a tap so the card's own click handler runs.
+  var TOUCH_SLOP = 8;
+
   function attachTouchDrag(el, taskId) {
     if (!el) return;
     function onDown(e) {
       if (e.pointerType !== "touch") return;
-      e.preventDefault();
-      const proxy = el.cloneNode(true);
-      proxy.classList.add("hermes-kanban-touch-proxy");
-      document.body.appendChild(proxy);
-      let lastTarget = null;
+
+      var startX = e.clientX;
+      var startY = e.clientY;
+      var armed = false;   // true once the gesture is definitely a drag
+      var proxy = null;
+      var lastTarget = null;
+
+      // Deliberately NOT calling e.preventDefault() here: doing so suppresses
+      // the click, which is what stopped a tap from opening the card.
+      function beginDrag() {
+        proxy = el.cloneNode(true);
+        proxy.classList.add("hermes-kanban-touch-proxy");
+        document.body.appendChild(proxy);
+        proxy.style.position = "fixed";
+        proxy.style.pointerEvents = "none";
+        proxy.style.opacity = "0.85";
+        proxy.style.zIndex = "9999";
+        proxy.style.width = el.offsetWidth + "px";
+        proxy.style.left = (startX - el.offsetWidth / 2) + "px";
+        proxy.style.top = (startY - 24) + "px";
+      }
+
+      function cleanup() {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", up);
+      }
 
       function move(ev) {
-        proxy.style.left = `${ev.clientX - proxy.offsetWidth / 2}px`;
-        proxy.style.top = `${ev.clientY - 24}px`;
+        if (!armed) {
+          var dx = ev.clientX - startX;
+          var dy = ev.clientY - startY;
+          // Still a tap: finger jitter must not become a drag.
+          if (dx * dx + dy * dy < TOUCH_SLOP * TOUCH_SLOP) return;
+          armed = true;
+          beginDrag();
+        }
+        // Suppress page scrolling only once this is a real drag.
+        if (ev.cancelable) ev.preventDefault();
+        proxy.style.left = (ev.clientX - proxy.offsetWidth / 2) + "px";
+        proxy.style.top = (ev.clientY - 24) + "px";
         proxy.style.display = "none";
-        const under = document.elementFromPoint(ev.clientX, ev.clientY);
+        var under = document.elementFromPoint(ev.clientX, ev.clientY);
         proxy.style.display = "";
-        const col = under && under.closest && under.closest("[data-kanban-column]");
-        const trash = under && under.closest && under.closest("[data-kanban-trash]");
-        const target = col || trash;
+        var col = under && under.closest && under.closest("[data-kanban-column]");
+        var trash = under && under.closest && under.closest("[data-kanban-trash]");
+        var target = col || trash;
         if (target !== lastTarget) {
           if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
           if (target) target.classList.add("hermes-kanban-column--drop");
           lastTarget = target;
         }
       }
+
       function up() {
-        document.removeEventListener("pointermove", move);
-        document.removeEventListener("pointerup", up);
-        document.removeEventListener("pointercancel", up);
+        cleanup();
+        // The gesture never became a drag, so this was a tap: leave it alone and
+        // let the card's click handler open the task.
+        if (!armed) return;
+        // A completed drag also produces a click; swallow it so the drag does
+        // not additionally open the card.
+        var swallow = function (ce) { ce.stopPropagation(); ce.preventDefault(); };
+        document.addEventListener("click", swallow, { capture: true, once: true });
+        setTimeout(function () {
+          document.removeEventListener("click", swallow, { capture: true });
+        }, 0);
         if (lastTarget) {
           lastTarget.classList.remove("hermes-kanban-column--drop");
-          const status = lastTarget.getAttribute("data-kanban-column");
-          const isTrash = lastTarget.hasAttribute("data-kanban-trash");
+          var status = lastTarget.getAttribute("data-kanban-column");
+          var isTrash = lastTarget.hasAttribute("data-kanban-trash");
           if (isTrash) {
             lastTarget.dispatchEvent(new CustomEvent("hermes-kanban:delete", {
-              detail: { taskId },
+              detail: { taskId: taskId },
               bubbles: true,
             }));
           } else if (status) {
             lastTarget.dispatchEvent(new CustomEvent("hermes-kanban:drop", {
-              detail: { taskId, status },
+              detail: { taskId: taskId, status: status },
               bubbles: true,
             }));
           }
         }
-        proxy.remove();
+        if (proxy) proxy.remove();
+        proxy = null;
       }
-      // Kick off proxy at the pointer origin.
-      proxy.style.position = "fixed";
-      proxy.style.pointerEvents = "none";
-      proxy.style.opacity = "0.85";
-      proxy.style.zIndex = "9999";
-      proxy.style.width = `${el.offsetWidth}px`;
-      proxy.style.left = `${e.clientX - el.offsetWidth / 2}px`;
-      proxy.style.top = `${e.clientY - 24}px`;
+
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", up);
       document.addEventListener("pointercancel", up);

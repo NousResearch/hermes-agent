@@ -330,9 +330,12 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
     if new_ctx is not None:
         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
-        compressor.update_model(
+        from agent.context_engine import update_engine_model
+        update_engine_model(
+            compressor,
             model=agent.model, context_length=new_ctx, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+            max_tokens=getattr(agent, "max_tokens", None),
         )
         # Persist the provider-reported limit BEFORE compression/retry: rate limit,
         # missing usage, or restart must not lose confirmed metadata. Probe flags

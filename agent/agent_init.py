@@ -1848,9 +1848,12 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         # resolution already sees them.
         if cs.model_thresholds:
             agent.context_compressor.model_thresholds = cs.model_thresholds
-        agent.context_compressor.update_model(
+        from agent.context_engine import update_engine_model
+        update_engine_model(
+            agent.context_compressor,
             model=agent.model, context_length=_plugin_ctx_len, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+            max_tokens=_compressor_max_tokens(agent),
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)

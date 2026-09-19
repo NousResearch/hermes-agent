@@ -92,7 +92,8 @@ These have sensible defaults in the ABC. Override as needed:
 | `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
-| `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
+| `update_model(model, context_length, ..., max_tokens=None)` | Updates context_length + threshold | You need to recalculate budgets on model switch. `max_tokens=None` means unspecified (keep any existing output reservation); subtract it from the window before applying your percentage when you reserve output space. Omit the parameter if you do not need it — the host filters kwargs by signature, so older overrides keep working. |
+| `on_compaction_completed(*, session_id, old_session_id="", in_place=False, compression_count=0, **kwargs)` | No-op | You need an explicit event after a committed compaction (the `on_session_start(boundary_reason="compression")` lineage call still fires). Never fires on abort/timeout; failures never propagate. |
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
@@ -216,6 +217,8 @@ Only one engine can be registered. A second plugin attempting to register is rej
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
+
+After every committed compaction the host also emits the optional `on_compaction_completed(session_id=..., old_session_id=..., in_place=..., compression_count=..., runtime="local")` event (Codex app-server compactions use `runtime="codex_app_server"` with `thread_id`/`turn_id`). The existing `on_session_start(boundary_reason="compression")` lineage call still fires; the new event is the explicit boundary signal for engines that compact externally.
 
 ## Configuration
 

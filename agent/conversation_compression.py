@@ -2449,21 +2449,31 @@ def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: s
         relay_runtime.SESSION_COORDINATOR.notify_session_compacted(
             profile_key=relay_runtime.current_profile_key(), session_id=new_session_id, old_session_id=old_session_id
         )
+    notified = False
     callback = getattr(agent.context_compressor, "on_session_start", None)
-    if not callable(callback):
-        return False
-    try:
-        callback(
-            new_session_id, boundary_reason="compression", old_session_id=old_session_id,
-            platform=getattr(agent, "platform", None) or "cli",
-            conversation_id=getattr(agent, "_gateway_session_key", None),
-        )
-        return True
-    except Exception:
-        # Context-engine hooks are observers. A callback failure must not undo
-        # history that the core or an outer host transaction already committed.
-        logger.debug("context engine on_session_start (compression) failed", exc_info=True)
-        return False
+    if callable(callback):
+        try:
+            callback(
+                new_session_id, boundary_reason="compression", old_session_id=old_session_id,
+                platform=getattr(agent, "platform", None) or "cli",
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+            )
+            notified = True
+        except Exception:
+            # Context-engine hooks are observers. A callback failure must not undo
+            # history that the core or an outer host transaction already committed.
+            logger.debug("context engine on_session_start (compression) failed", exc_info=True)
+    with _swallow('context engine on_compaction_completed failed', exc_info=True):
+        from agent.context_engine import emit_compaction_completed
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None and emit_compaction_completed(
+            compressor, session_id=new_session_id, old_session_id=old_session_id,
+            in_place=(new_session_id == old_session_id),
+            compression_count=getattr(compressor, "compression_count", 0),
+            runtime="local",
+        ):
+            notified = True
+    return notified
 
 
 def _queue_context_engine_compression_notification(agent: Any, *, new_session_id: str, old_session_id: str) -> None:

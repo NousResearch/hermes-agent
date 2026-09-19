@@ -1215,10 +1215,13 @@ def restore_primary_runtime(agent) -> bool:
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
         _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
+        from agent.context_engine import update_engine_model
+        update_engine_model(
+            agent.context_compressor,
             model=rt["compressor_model"], context_length=rt["compressor_context_length"],
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+            max_tokens=rt.get("compressor_max_tokens", getattr(agent, "max_tokens", None)),
         )
         # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
         if getattr(agent, "_compression_feasibility_checked", False) is True:
@@ -2101,13 +2104,16 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
         )
-        agent.context_compressor.update_model(
+        from agent.context_engine import update_engine_model
+        update_engine_model(
+            agent.context_compressor,
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+            max_tokens=getattr(agent, "max_tokens", None),
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
@@ -2145,6 +2151,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "compressor_context_length": cc.context_length if cc else 0,
         "compressor_api_mode": getattr(cc, "api_mode", agent.api_mode),
         "compressor_threshold_tokens": cc.threshold_tokens if cc else 0,
+        "compressor_max_tokens": getattr(cc, "max_tokens", getattr(agent, "max_tokens", None)) if cc else getattr(agent, "max_tokens", None),
     }
     if api_mode == "anthropic_messages":
         rt.update({

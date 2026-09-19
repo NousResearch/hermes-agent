@@ -175,6 +175,14 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens, compressor.last_completion_tokens = -1, 0
             compressor.awaiting_real_usage_after_compression = True
+        with suppress(Exception):
+            from agent.context_engine import emit_compaction_completed
+            emit_compaction_completed(
+                compressor, session_id=getattr(agent, "session_id", None) or "",
+                old_session_id="", in_place=False,
+                compression_count=getattr(compressor, "compression_count", 0),
+                runtime="codex_app_server", thread_id=thread_id, turn_id=turn_id,
+            )
     # Provider-side context was rewritten; the usage anchor's transcript snapshot no longer matches.
     set_usage_anchor(agent, None)
     agent._last_compaction_in_place = False

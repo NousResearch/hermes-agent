@@ -3162,6 +3162,12 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
     transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
     """
+    with _swallow('Could not migrate todo state on compression: %s'):
+        from tools.todo_tool import TodoStore
+        todos = agent._todo_store.read()
+        agent._todo_store = TodoStore.for_session(agent.session_id)
+        if todos:
+            agent._todo_store.write(todos)
     with _swallow('Could not migrate goal on compression: %s'):
         # Carry a persistent /goal onto the continuation session. Compression mints a fresh child id;
         # load_goal does a flat per-session lookup with no parent walk, so without this an active goal

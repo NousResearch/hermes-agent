@@ -618,3 +618,40 @@ def test_capability_refusal_names_the_config_key_to_change():
     assert msg.startswith("BLOCKED_MISSING_PREREQUISITE")
     assert "compression.checkpoint_required" in msg
     assert "false" in msg.lower()
+
+
+def test_persistence_isolated_fork_compaction_is_not_blocked_by_the_checkpoint_gate():
+    """A fork that discards its transcript has no durable evidence for the gate to protect.
+
+    ``build_cache_parity_fork`` (background review and ``/btw``) builds with
+    ``skip_memory=True``, so ``_memory_manager`` is None, and then re-enables
+    compression on the fork after ``_persist_disabled`` severs persistence. The
+    fork replays the parent's snapshot, so it reaches the compress threshold
+    exactly when the parent does — failing closed there aborted the whole
+    auxiliary pass with ``BLOCKED_MISSING_PREREQUISITE`` while preserving
+    nothing, because the fork's transcript is discarded on teardown.
+    """
+
+    class _ForkAgent:
+        _persist_disabled = True
+        _memory_manager = None
+
+    assert (
+        _pre_compress_memory_context(
+            _ForkAgent(), [{"role": "user", "content": "evidence"}], True
+        )
+        == ""
+    )
+
+
+def test_durable_agent_compaction_still_requires_a_checkpoint_provider():
+    """The operator contract is unchanged where a durable transcript IS at risk."""
+
+    class _DurableAgent:
+        _persist_disabled = False
+        _memory_manager = None
+
+    with pytest.raises(CompressionCheckpointUnavailable, match="pre-compress checkpoint"):
+        _pre_compress_memory_context(
+            _DurableAgent(), [{"role": "user", "content": "evidence"}], True
+        )

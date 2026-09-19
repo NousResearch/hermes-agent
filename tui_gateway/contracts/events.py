@@ -21,6 +21,7 @@ from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, PlanGauge, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
+from .observations import (InputOccurrence, InputObservation, ProjectedInput, SharedSessionCapability)
 
 
 class OpenPayload(Payload):
@@ -54,6 +55,7 @@ class GatewayReadyPayload(Payload):
     skin: SkinPayload
     change_events: bool
     replay_epoch: str
+    shared_session: SharedSessionCapability | None = None
     heartbeat: bool | None = None  # WebSocket transport only
     # WebSocket transport bound to a session authority: session verbs speak the canonical wire
     # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
@@ -115,6 +117,8 @@ class ErrorPayload(Payload):
     """Every ``_emit("error", …)`` site sets exactly ``message``."""
 
     message: str
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
 
 
 event("error", ErrorPayload, doc="A session-level failure outside a turn (agent init, model switch, compression, resume).")
@@ -133,7 +137,7 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 
 
 class MessageStartPayload(Payload):
-    """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
+    """``message.start``. Empty for an ordinary session-authority admission;
     ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
     (``session_automation.admission_display``: a background-process completion) and its model
     text, so a viewer that did not submit the turn paints the same header the submitter would."""
@@ -142,10 +146,20 @@ class MessageStartPayload(Payload):
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    # TUI-gateway observed executions provide the three fields below; other start producers omit them.
+    input: ProjectedInput | None = None
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
+
+
+class MessageInputPayload(InputObservation, Payload):
+    pass
 
 
 event("message.start", MessageStartPayload,
-      doc="A turn began streaming; an automation turn carries its async-result card.")
+      doc="A turn began streaming; an automation turn carries its async-result card, an observed "
+          "execution its canonical input and occurrence evidence.")
+event("message.input", MessageInputPayload, doc="An accepted visible correction in the captured execution.")
 
 
 class StreamDeltaPayload(Payload):
@@ -288,6 +302,8 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    inputs: list[InputOccurrence] | None = None
+    inputs_complete: bool | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

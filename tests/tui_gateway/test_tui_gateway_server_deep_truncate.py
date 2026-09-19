@@ -48,7 +48,10 @@ def test_prompt_submit_refuses_deep_truncation_without_confirm(monkeypatch):
     try:
         refused = _submit()
         assert refused["error"]["code"] == 4033
-        assert refused["error"]["data"] == {"archived_messages": 4, "archived_user_turns": 2}
+        # ``submission`` is the shared-session correlation every pre-start error carries.
+        data = {key: value for key, value in refused["error"]["data"].items() if key != "submission"}
+        assert data == {"archived_messages": 4, "archived_user_turns": 2}
+        assert refused["error"]["data"]["submission"]["disposition"] == "unresolved"
         assert sess["history"] == history and replaced == []
 
         assert _submit(confirm_deep_truncate=True).get("error") is None
@@ -63,7 +66,8 @@ def test_prompt_submit_refuses_deep_truncation_without_confirm(monkeypatch):
         sess["history"] = [{"_row_id": 100, "_absorbed_row_ids": [150], "role": "user",
                             "content": "u0\n\nu0b"}, *history[1:]]
         carrier = _submit(truncate_before_row_id=150)
-        assert carrier["error"]["data"] == {"archived_messages": 6, "archived_user_turns": 3}
+        carrier_data = {key: value for key, value in carrier["error"]["data"].items() if key != "submission"}
+        assert carrier_data == {"archived_messages": 6, "archived_user_turns": 3}
     finally:
         server._sessions.pop("deep-trunc-sid", None)
 

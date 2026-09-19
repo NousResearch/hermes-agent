@@ -502,8 +502,13 @@ def test_ready_frame_advertises_a_session_authority_only_when_one_is_bound(monke
         asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
         return sent[0]["params"]["payload"]
 
-    assert ready({"hermes.session_authority": object()})["session_authority"] is True
-    assert "session_authority" not in ready({})
+    bound, legacy = ready({"hermes.session_authority": object()}), ready({})
+    assert bound["session_authority"] is True
+    assert "session_authority" not in legacy
+    # Shared-session observations come from the legacy dispatcher only: an authority socket must not
+    # invite clients to send submission_ref / input_visibility to the canonical wire.
+    assert "shared_session" not in bound
+    assert legacy["shared_session"]["version"] == 1
 
 
 def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):

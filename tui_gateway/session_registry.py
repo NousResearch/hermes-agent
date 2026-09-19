@@ -813,7 +813,9 @@ def _live_session_payload(
     # (a hidden seed row is in ``history`` but never on the wire).
     messages = ([] if omit_messages else
                 _history_to_messages(history, profile_home=session.get("profile_home"), image_urls=inline_images))
+    from tui_gateway.input_observation import cached_snapshot
     payload = {
+        "submission_state": cached_snapshot(session),
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,
         "messages_omitted": omit_messages, "running": running, "turn_started_at": turn_started_at,

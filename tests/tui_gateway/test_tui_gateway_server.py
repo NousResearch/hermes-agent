@@ -20,6 +20,15 @@ from tools import async_delegation as ad
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
+# Shared-session correlation fields this file does not pin: submission identity and turn/input
+# provenance are covered by test_shared_session_wire.py and test_input_observation.py.
+_OBSERVATION_KEYS = frozenset({"submission", "turn", "input", "input_batch", "inputs", "inputs_complete",
+                               "input_observations", "input_observations_complete"})
+
+
+def _without_observation(value: dict) -> dict:
+    return {key: item for key, item in value.items() if key not in _OBSERVATION_KEYS}
+
 
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
@@ -284,7 +293,7 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
                 "params": {"session_id": "iso-sid", "text": "hello"},
             }
         )
-        assert resp["result"] == {"status": "streaming", "turn_isolation": True}
+        assert _without_observation(resp["result"]) == {"status": "streaming", "turn_isolation": True}
         assert fake_supervisor.frames[0]["type"] == "turn.start"
         assert fake_supervisor.frames[0]["sid"] == "iso-sid"
         assert fake_supervisor.frames[0]["text"] == "hello"
@@ -407,7 +416,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     finally:
         server._sessions.pop("iso-fallback", None)
 
-    assert resp == {
+    assert {**resp, "result": _without_observation(resp["result"])} == {
         "jsonrpc": "2.0",
         "id": "fallback-turn",
         "result": {"status": "streaming"},
@@ -699,7 +708,8 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         class _FakeSupervisor:
             def submit_turn(self, frame, *, on_complete=None):
                 sid = frame["sid"]
-                server._emit("message.start", sid)
+                # The child's _run_prompt_submit projects the starting input, as the inline path does.
+                server._emit("message.start", sid, {"input": {"role": "user", "text": "hello"}})
                 server._emit("message.delta", sid, {"text": "hi"})
                 server._emit("message.complete", sid, {"text": "hi", "usage": usage, "status": "complete"})
                 server._emit("session.info", sid, dict(fixed_info))
@@ -736,7 +746,18 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         finally:
             server._sessions.pop("sid", None)
 
-    assert run_flag_on() == run_flag_off()
+    def transcript(events):
+        # Input ids are minted per process; parity is about the projected input, not its volatile ids.
+        # The parent re-sends the settled session.info after an isolated turn (its submission state is
+        # the authority); a repeated identical info frame changes nothing a client renders.
+        out = []
+        for event, sid, payload in events:
+            frame = (event, sid, {"input": payload.get("input")} if event == "message.start" and payload else payload)
+            if not (event == "session.info" and out and out[-1] == frame):
+                out.append(frame)
+        return out
+
+    assert transcript(run_flag_on()) == transcript(run_flag_off())
 
 
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
@@ -12804,7 +12825,7 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
     finally:
         server._sessions.pop("sid", None)
 
-    assert resp["result"] == {
+    assert _without_observation(resp["result"]) == {
         "status": "redirected",
         "text": "use Postgres",
     }
@@ -12895,7 +12916,7 @@ def test_session_redirect_build_window_scrubs_stale_p_when_queuing_q():
     finally:
         server._sessions.pop("sid", None)
 
-    assert resp["result"] == {"status": "queued", "text": "correction Q"}
+    assert _without_observation(resp["result"]) == {"status": "queued", "text": "correction Q"}
     assert session["queued_prompt"]["text"] == "correction Q"
     assert not session.get("queued_prompts")
 
@@ -13019,7 +13040,7 @@ def test_session_redirect_queues_during_agent_build_window(monkeypatch):
     finally:
         server._sessions.pop("sid", None)
 
-    assert resp["result"] == {"status": "queued", "text": "wait, use SQLite"}
+    assert _without_observation(resp["result"]) == {"status": "queued", "text": "wait, use SQLite"}
     assert session["queued_prompt"]["text"] == "wait, use SQLite"
 
 
@@ -17609,7 +17630,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         )
 
         inflight = resp["result"].get("inflight")
-        assert inflight == {
+        assert _without_observation(inflight) == {
             "assistant": "partial answer",
             "streaming": True,
             "user": "write a long answer",
@@ -17674,7 +17695,7 @@ def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
             }
         )
 
-        assert activated["result"]["queued"] == {"user": "newest prompt"}
+        assert _without_observation(activated["result"]["queued"]) == {"user": "newest prompt"}
         assert "transport" not in activated["result"]["queued"]
     finally:
         server._sessions.pop("sid-live", None)
@@ -21802,7 +21823,8 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         lambda *_args, **_kwargs: server._ok("host", {"status": "streaming"}),
     )
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+    # The real _start_inflight_turn stays: this test joins the real turn thread, and an admitted turn always
+    # owns its inflight snapshot (the turn thread's still-pending check reads the submit's input batch there).
 
     try:
         # Rewind 1: cut before "third" (last user turn). Survivors: turns

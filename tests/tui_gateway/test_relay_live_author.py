@@ -18,6 +18,11 @@ AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
 OTHER = {"id": "bot:writer", "name": "writer", "is_bot": True}
 
 
+def _without_submission(result):
+    """Drop the shared-session submission correlation; its identity is tested in test_shared_session_wire."""
+    return {key: value for key, value in result.items() if key != "submission"} if isinstance(result, dict) else result
+
+
 def _result(resp):
     return resp["result"] if "result" in resp else resp
 
@@ -103,7 +108,7 @@ def test_busy_relay_dms_queue_with_their_authors_and_drain_with_them(monkeypatch
             params = {"session_id": "sid", "text": text, "queued": True}
             if author:
                 params["_turn_author"] = DeliveryAuthor(author)
-            assert _result(srv._methods["prompt.submit"]("r", params)) == {"status": "queued"}
+            assert _without_submission(_result(srv._methods["prompt.submit"]("r", params))) == {"status": "queued"}
         # Authored envelopes never merge with each other or with the human's text.
         assert session["queued_prompt"]["turn_author"] == AUTHOR
         assert [e["text"] for e in session["queued_prompts"]] == ["hello", "human note"]
@@ -151,7 +156,7 @@ def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monk
     srv._sessions["sid"] = session
     try:
         params = {"session_id": "sid", "text": "ping", "queued": True, "_turn_author": DeliveryAuthor(AUTHOR)}
-        assert _result(srv._methods["prompt.submit"]("r", params)) == {"status": "queued"}
+        assert _without_submission(_result(srv._methods["prompt.submit"]("r", params))) == {"status": "queued"}
         session["running"] = False
         assert srv._drain_queued_prompt("d", "sid", session) is True
         session["running"] = True

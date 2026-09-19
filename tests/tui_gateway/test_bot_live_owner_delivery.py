@@ -12,6 +12,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     import contextlib
     import contextvars
     import logging
+    import os
     import time
     from tui_gateway import prompt_turn
     from tui_gateway.session_lifecycle import _start_session_work
@@ -27,11 +28,17 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     session = dict(agent=agent, session_key="chat", history_lock=threading.RLock(), running=True)
     retired = []
     noop = lambda *args, **kwargs: None
+    def admit(_sid, admitted_session, *_args, **_kwargs):
+        # Like _admit_prompt_turn: an admitted turn always owns an inflight snapshot.
+        admitted_session.setdefault("inflight_turn", {"user": "refused input"})
+        return [], agent
+
     submit = rebind(prompt_turn._run_prompt_submit, {
-        "threading": threading, "time": time, "logger": logging.getLogger(__name__),
+        "threading": threading, "time": time, "os": os, "logger": logging.getLogger(__name__),
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
-        "_admit_prompt_turn": lambda *args, **kwargs: ([], agent),
+        "_admit_prompt_turn": admit,
+        "_display_turn_input": lambda text, display_kind=None: {"role": "user", "text": text},
         "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),

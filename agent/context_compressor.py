@@ -238,6 +238,9 @@ SUMMARY_PREFIX = (
     "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+# Separator between the handoff prefix and the block. The assembled-block ceiling (#109681) is
+# measured from this join (it rides the emitted handoff), so it costs the body one character.
+_SUMMARY_PREFIX_JOIN = "\n"
 
 # Underscore prefix ON PURPOSE: wire sanitizers strip ``_``-keys; strict gateways
 # reject unknown keys, so a bare key would poison every request in the session.
@@ -797,6 +800,9 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
 _SYNTHETIC_USER_ROW_PREFIXES = (
     "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
     "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
+    # Compaction's own restatement of an in-flight ask is scaffolding, not human wording: quoting it
+    # back into the block is self-reference, not the user's intent (#109681).
+    _INFLIGHT_TASK_REPLAY_HEADER,
 )
 
 
@@ -853,6 +859,33 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
         f"session_search(query='<keywords>', session_id='{session_id}') — "
         "do not guess at lost specifics when you can look them up."
     )
+
+
+# Ceiling bookkeeping for the ASSEMBLED handoff block (#109681). ``max_summary_tokens`` governs the
+# generated summary alone, never the assembled block; every pass also re-attaches the mechanically
+# appended sections, so without a ceiling of its own the block can settle above the size that
+# triggered compaction and stall there (observed: 51,710 chars held over 4 consecutive compactions).
+_HANDOFF_BLOCK_TRUNCATION_MARKER = "\n...[handoff block truncated to the summary allowance]"
+
+
+def _lean_section_re(heading: str) -> "re.Pattern[str]":
+    """Match a mechanically appended lean section: its heading through the next ``## `` heading."""
+    return re.compile(rf"(?ms)^[ \t]*{re.escape(heading)}[ \t]*\n.*?(?=^## |\Z)")
+
+
+def _replace_lean_section(summary: str, heading: str, section: str) -> str:
+    """Re-derive a lean section in *summary*: replace the stale copy, drop it when nothing is derivable.
+
+    ``section`` is the section freshly built from the current window (``""`` when the window holds
+    nothing for it, in which case the stale copy must not stay: it is the re-embedding #109681
+    reported).
+    """
+    pattern = _lean_section_re(heading)
+    if not pattern.search(summary):
+        return summary + section
+    if not section:
+        return pattern.sub("", summary, count=1)
+    return pattern.sub(lambda _match: section.lstrip("\n"), summary, count=1)
 
 
 # Detailed session log comes from the SAME single summary request (one aux LLM
@@ -2023,6 +2056,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._reset_real_usage_pairing()
         self._last_compression_telemetry = self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
+        # Handoff-block ceiling bookkeeping (#109681): last assembled block size and whether
+        # consecutive compactions stalled at the allowance. Deliberately NOT reset per attempt —
+        # the fixed-point verdict compares against the previous pass.
+        self._last_handoff_block_len = None
+        self._last_handoff_block_fixed_point = False
         self._reset_proactive_prune_rearm()
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
@@ -3300,7 +3338,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: List[Dict[str, Any]]) -> str:
-        """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
+        """Re-derive the deterministic lean-mode sections in the block; no-op in legacy mode.
+
+        Every section is a function of *this* window, so a stale copy that an earlier pass left in
+        the rolling summary is replaced (or dropped when the window yields nothing for it) instead
+        of riding along verbatim: re-embedding it pass after pass is what pinned the block at a fixed
+        size across consecutive compactions (#109681).
+        """
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
         for heading, build in (
@@ -3308,9 +3352,46 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
             (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):
-            if heading not in summary:
-                summary += build()
-        return summary
+            summary = _replace_lean_section(summary, heading, build())
+        return self._enforce_handoff_block_ceiling(summary)
+
+    def _handoff_block_cap_chars(self) -> int:
+        """Ceiling for the ASSEMBLED handoff block: the summary allowance at 4 chars/token (#109681)."""
+        return max(int(self.max_summary_tokens) * _CHARS_PER_TOKEN, _CHARS_PER_TOKEN)
+
+    def _enforce_handoff_block_ceiling(self, summary: str) -> str:
+        """Hold the assembled block inside its allowance; record a stall instead of letting it hide.
+
+        A block that still sits at the ceiling after trimming does not shrink between passes — a
+        fixed point: compaction can never drop back below the size that triggered it (#109681).
+        """
+        cap = self._handoff_block_cap_chars()
+        # The block is measured from the prefix join (see _SUMMARY_PREFIX_JOIN), so the body has one
+        # character less to spend than the cap.
+        body_cap = max(cap - len(_SUMMARY_PREFIX_JOIN), 1)
+        body = summary
+        if len(body) > body_cap:
+            # Cheapest loss first: these sections are re-derived from the live window on every pass
+            # and their detail stays recoverable via the session-history footer.
+            for heading in (_LEAN_ANCHOR_HEADING, _LEAN_USER_MESSAGES_HEADING, _LEAN_RECOVERY_HEADING):
+                body = _lean_section_re(heading).sub("", body, count=1)
+                if len(body) <= body_cap:
+                    break
+        if len(body) > body_cap:
+            body = body[: max(body_cap - len(_HANDOFF_BLOCK_TRUNCATION_MARKER), 0)] + _HANDOFF_BLOCK_TRUNCATION_MARKER
+            if len(body) > body_cap:  # allowance smaller than the marker itself
+                body = body[:body_cap]
+        previous = getattr(self, "_last_handoff_block_len", None)
+        self._last_handoff_block_fixed_point = bool(
+            len(summary) >= body_cap and previous is not None and previous >= len(body)
+        )
+        self._last_handoff_block_len = len(body)
+        if self._last_handoff_block_fixed_point and not self.quiet_mode:
+            logger.warning(
+                "Compaction handoff block is pinned at its %d-char allowance (previous %d) — consecutive "
+                "compactions are reproducing the same block (#109681)", cap, previous,
+            )
+        return body
 
     @classmethod
     def _bound_summary_input(cls, content: str) -> str:
@@ -3740,7 +3821,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _with_summary_prefix(cls, summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
         text = cls._strip_summary_prefix(summary)
-        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+        return f"{SUMMARY_PREFIX}{_SUMMARY_PREFIX_JOIN}{text}" if text else SUMMARY_PREFIX
 
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:
@@ -3902,7 +3983,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            raw_text = _content_text_for_contains(msg.get("content"))
+            if _INFLIGHT_TASK_REPLAY_HEADER in raw_text:
+                # A restatement compaction itself appended on an earlier pass (#100818). Grounding on
+                # it would cite the block's own previous output as human intent and re-embed the same
+                # ask every pass (#109681) — keep walking back to the last real user words.
+                continue
+            text = _redact_compaction_text(raw_text.strip())
             if not text:
                 continue
             text = re.sub(r"\s+", " ", text)
@@ -4312,6 +4399,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return compressed
 
         task_text = _content_text_for_contains(inflight.get("content")).strip()
+        if self._is_context_summary_message(inflight) and _SUMMARY_END_MARKER in task_text:
+            # A carrier holds the ask after its handoff boundary; the block itself is not the ask.
+            task_text = task_text.split(_SUMMARY_END_MARKER, 1)[1].strip()
         if _INFLIGHT_TASK_REPLAY_HEADER in task_text:
             # Already a restatement from an earlier compaction (standalone row
             # or merged onto a carrier): take the text after the header so a
@@ -4328,7 +4418,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         last_visible_role = _last_template_visible_role(compressed)
-        if inflight.get(_INFLIGHT_REPLAY_MERGED_KEY):
+        if inflight.get(_INFLIGHT_REPLAY_MERGED_KEY) or self._is_context_summary_message(inflight):
             # Never copy a summary carrier (metadata would mark the replay
             # synthetic): restate as a plain user row.
             replay = {"role": "user", "content": task_text}
@@ -4739,6 +4829,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             # Anthropic/Bedrock: summary must lead the first visible message; the real request
             # follows the end marker.
             msg["content"] = _append_text_to_content(old_content, summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n", prepend=True)
+            # The carried row's own words now sit AFTER the handoff boundary. When they are a real
+            # user ask they are the only copy of the live request left, so flag the carrier — the
+            # next compaction then restates the ask instead of silently dropping it (#100818).
+            if msg.get("role") == "user" and not self._is_synthetic_compression_user_turn(
+                {"role": "user", "content": old_content},
+            ):
+                msg[_INFLIGHT_REPLAY_MERGED_KEY] = True
         else:
             # Old tail content is kept as delimited reference BEFORE the summary; the end marker goes last.
             suffix = "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n" + summary + "\n\n" + _SUMMARY_END_MARKER

@@ -92,6 +92,7 @@ interface AssistantMessageProps {
 }
 
 export const AssistantMessage: FC<AssistantMessageProps> = props => {
+  const silent = useAuiState(s => s.message.metadata.custom?.silent === true)
   // A reply to an inter-agent delivery is part of that exchange, not part of
   // the human conversation — collapse it under a compact notice ("Reply to
   // <sender>", expandable), mirroring the sender-side notice the previous
@@ -141,6 +142,10 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // inter-agent reply can ever be collapsed. Dispatching on that first keeps
   // the status subscription out of the standard path entirely — the standard
   // message root now re-renders for content, never for a pending flip.
+  if (silent) {
+    return <AssistantBranchPicker />
+  }
+
   return interAgentSender ? (
     <InterAgentAssistantMessage {...props} sender={interAgentSender} />
   ) : (
@@ -961,21 +966,25 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
-      <BranchPickerPrimitive.Root
-        className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
-        hideWhenSingleBranch
-      >
-        <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-          <Codicon name="chevron-left" size="0.875rem" />
-        </BranchPickerPrimitive.Previous>
-        <span className="tabular-nums">
-          <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-        </span>
-        <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-          <Codicon name="chevron-right" size="0.875rem" />
-        </BranchPickerPrimitive.Next>
-      </BranchPickerPrimitive.Root>
+      <AssistantBranchPicker />
       <AssistantActionBar durationS={durationS} {...props} />
     </div>
   )
 }
+
+const AssistantBranchPicker: FC = () => (
+  <BranchPickerPrimitive.Root
+    className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
+    hideWhenSingleBranch
+  >
+    <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <Codicon name="chevron-left" size="0.875rem" />
+    </BranchPickerPrimitive.Previous>
+    <span className="tabular-nums">
+      <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+    </span>
+    <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <Codicon name="chevron-right" size="0.875rem" />
+    </BranchPickerPrimitive.Next>
+  </BranchPickerPrimitive.Root>
+)

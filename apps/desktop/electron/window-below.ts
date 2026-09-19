@@ -155,9 +155,14 @@ const describeError = (error: unknown): string =>
  * that), so in dev — where nothing is archived — this is a no-op. The segment
  * is matched against either separator because the staged specifier comes from
  * `path.join`, which on Windows yields backslashes; same regex as main.ts.
+ *
+ * A complete segment means BOTH sides. Guarding only the trailing side leaves
+ * `app.asar` matching inside a longer name: `/opt/my-app.asar/x` became
+ * `/opt/my-app.asar.unpacked/x`, a directory nothing ships, and the redirect
+ * then pointed at a path that does not exist.
  */
 export const resolveOutsideAsar = (specifier: string): string =>
-  specifier.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
+  specifier.replace(/(?<=^|[\\/])app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
 
 let getWindowsModule: Promise<GetWindowsModule | EnumerationFailure> | null = null
 

@@ -33,9 +33,27 @@ export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', 
 // ── Relative time ──────────────────────────────────────────────────────────
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
+// What an unusable timestamp renders as. A dashboard row with a missing
+// `created_at` should read as "no value", never as a crash.
+export const NO_TIMESTAMP = '—'
+
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
-export function relativeTime(targetMs: number, nowMs = Date.now()): string {
+//
+// `targetMs` is `number | null | undefined` because callers read it off wire
+// data (`created_at`, `next_run_at`, `generated_at`): a missing field arrives as
+// undefined and a malformed one as NaN, neither of which the type can promise
+// away. `Intl.RelativeTimeFormat.format()` THROWS a RangeError on a non-finite
+// value ("Value need to be finite number for
+// Intl.RelativeTimeFormat.prototype.format()"), and that throw reaches a React
+// error boundary — so a single bad row blanks the whole page. Guarding here
+// means every surface (kanban, mission control, cron) degrades the same way,
+// with no caller-side branch required.
+export function relativeTime(targetMs: number | null | undefined, nowMs = Date.now()): string {
+  if (typeof targetMs !== 'number' || !Number.isFinite(targetMs) || !Number.isFinite(nowMs)) {
+    return NO_TIMESTAMP
+  }
+
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1

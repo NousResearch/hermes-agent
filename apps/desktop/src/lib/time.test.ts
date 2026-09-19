@@ -8,7 +8,9 @@ import {
   formatAgo,
   HOUR,
   MINUTE,
+  NO_TIMESTAMP,
   nominalDayStart,
+  relativeTime,
   SECOND,
   sessionBucketLabel
 } from './time'
@@ -147,5 +149,40 @@ describe('sessionBucketLabel', () => {
     }
 
     expect(sessionBucketLabel(monthYearBucket, labels)).toBe(fmtMonthYear.format(monthYearBucket.at))
+  })
+})
+
+describe('relativeTime', () => {
+  const at = 1_000 * DAY
+
+  it('formats a usable timestamp in the coarsest sensible unit', () => {
+    // Locale-agnostic contract: assert against the same Intl formatter the
+    // module uses rather than frozen en-US strings, so the test holds under any
+    // host locale. This is the positive control — the guard must not have
+    // turned real timestamps into the placeholder.
+    const en = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+
+    expect(relativeTime(at - 5 * SECOND, at)).toBe(en.format(-5, 'second'))
+    expect(relativeTime(at - 3 * HOUR, at)).toBe(en.format(-3, 'hour'))
+    expect(relativeTime(at + 2 * DAY, at)).toBe(en.format(2, 'day'))
+  })
+
+  it('degrades to the placeholder for a missing or non-finite timestamp', () => {
+    // Every one of these reached rtf.format() before the guard:
+    //   undefined / NaN / +/-Infinity  -> RangeError "Value need to be finite
+    //                                    number for Intl.RelativeTimeFormat
+    //                                    .prototype.format()"
+    //   null                           -> coerced to 0, i.e. a nonsense age of
+    //                                    ~20,000 days, not a crash
+    // The throw is what an error boundary turns into a blank page, so the
+    // assertion is that NOTHING here throws and every one reads as "no value".
+    for (const unusable of [undefined, null, NaN, Infinity, -Infinity] as const) {
+      expect(relativeTime(unusable, at)).toBe(NO_TIMESTAMP)
+    }
+  })
+
+  it('degrades when the caller-supplied `now` is itself unusable', () => {
+    expect(relativeTime(at, NaN)).toBe(NO_TIMESTAMP)
+    expect(relativeTime(at, Infinity)).toBe(NO_TIMESTAMP)
   })
 })

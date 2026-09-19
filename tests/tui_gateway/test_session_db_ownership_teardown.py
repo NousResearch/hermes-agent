@@ -120,6 +120,27 @@ def test_close_is_idempotent_for_an_owned_handle():
     assert db.closed == 1
 
 
+def test_repeated_close_does_not_reopen_an_owned_handle(tmp_path):
+    """A second close must not write through the handle released by the first."""
+    from unittest.mock import patch
+
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="sid", source="desktop")
+    agent = _bare_agent(_session_db=db, _owns_session_db=True)
+
+    with patch.object(db, "end_session", wraps=db.end_session) as end_session:
+        try:
+            agent.close()
+            agent.close()
+
+            assert end_session.call_count == 1
+            assert db._conn is None
+        finally:
+            db.close()
+
+
 def test_raising_close_is_swallowed_and_not_retried():
     """A raising ``session_db.close()`` must not escape ``agent.close()``,
     and the flag stays cleared so a second ``agent.close()`` does not

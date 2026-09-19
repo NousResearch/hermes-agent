@@ -1029,6 +1029,7 @@ class AIAgent(
             # See #90837.
             from hermes_state_registry import release_or_close
             release_or_close(session_db)
+            self._session_db = None
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only

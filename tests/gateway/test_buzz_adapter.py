@@ -2149,6 +2149,37 @@ class TestThreadRoots:
 class TestBuzzAdapterSend:
 
     @pytest.mark.asyncio
+    async def test_create_handoff_thread_uses_top_level_seed_event_as_root(self):
+        """Continuable cron needs a new root, not a reply in the origin thread."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "fresh-root", "message": ""})
+        adapter._run_cli = cli
+
+        thread_id = await adapter.create_handoff_thread(CHANNEL, "Hermes — source interview")
+
+        assert thread_id == "fresh-root"
+        args, stdin_text = cli.calls[0]
+        assert "--reply-to" not in args
+        assert stdin_text == "Hermes — source interview"
+
+    @pytest.mark.asyncio
+    async def test_create_handoff_thread_returns_none_when_seed_publish_fails(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": False, "message": "rejected"})
+        adapter._run_cli = cli
+
+        assert await adapter.create_handoff_thread(CHANNEL, "new thread") is None
+
+    @pytest.mark.asyncio
+    async def test_create_handoff_thread_returns_none_when_seed_publish_raises(self):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(side_effect=RuntimeError("transport failed"))
+
+        assert await adapter.create_handoff_thread(CHANNEL, "new thread") is None
+
+    @pytest.mark.asyncio
     async def test_send_success_via_stdin(self):
         adapter = _make_adapter()
         adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}

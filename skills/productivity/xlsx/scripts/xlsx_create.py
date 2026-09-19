@@ -169,7 +169,37 @@ def add_conditional(ws, spec):
     ws.conditional_formatting.add(rng, rule)
 
 
-def build_sheet(ws, spec):
+def ranges_overlap(range1, range2):
+    if not range1 or not range2:
+        return False
+    min_c1, min_r1, max_c1, max_r1 = range_boundaries(range1)
+    min_c2, min_r2, max_c2, max_r2 = range_boundaries(range2)
+    if None in (min_c1, min_r1, max_c1, max_r1, min_c2, min_r2, max_c2, max_r2):
+        return False
+    return not (max_c1 < min_c2 or min_c1 > max_c2 or max_r1 < min_r2 or min_r1 > max_r2)
+
+
+def validate_table_header(ws, rng):
+    min_col, min_row, max_col, _ = range_boundaries(rng)
+    if min_col is None or min_row is None or max_col is None:
+        raise ValueError(f"Invalid range for table: {rng}")
+    headers = []
+    for col in range(min_col, max_col + 1):
+        cell = ws.cell(row=min_row, column=col)
+        val = cell.value
+        if val is None or str(val).strip() == "":
+            col_letter = cell.column_letter
+            raise ValueError(f"Table header in cell {col_letter}{min_row} cannot be empty")
+        header_str = str(val).strip()
+        if header_str in headers:
+            raise ValueError(f"Duplicate table header column: '{header_str}' in range {rng}")
+        headers.append(header_str)
+    return headers
+
+
+def build_sheet(ws, spec, warnings=None):
+    if warnings is None:
+        warnings = []
     for row in spec.get("rows", []):
         values, styled = [], []
         for item in row:
@@ -207,7 +237,9 @@ def build_sheet(ws, spec):
         dv.add(dv_spec["range"])
         ws.add_data_validation(dv)
     for t_spec in spec.get("tables", []):
-        table = Table(displayName=t_spec["name"], ref=t_spec["range"])
+        t_range = t_spec["range"]
+        validate_table_header(ws, t_range)
+        table = Table(displayName=t_spec["name"], ref=t_range)
         table.tableStyleInfo = TableStyleInfo(
             name=t_spec.get("style", "TableStyleMedium9"),
             showRowStripes=t_spec.get("row_stripes", True),
@@ -238,16 +270,19 @@ def main(argv=None):
 
     wb = Workbook()
     wb.remove(wb.active)
+    warnings = []
     for sheet_spec in spec.get("sheets", []):
         ws = wb.create_sheet(sheet_spec.get("name", "Sheet1"))
-        build_sheet(ws, sheet_spec)
+        build_sheet(ws, sheet_spec, warnings)
     for name, ref in spec.get("defined_names", {}).items():
         wb.defined_names[name] = DefinedName(name, attr_text=ref)
     if spec.get("full_calc_on_load"):
         wb.calculation.fullCalcOnLoad = True
     wb.save(args.output)
-    print(json.dumps({"ok": True, "output": args.output,
-                      "sheets": wb.sheetnames}, ensure_ascii=False))
+    result = {"ok": True, "output": args.output, "sheets": wb.sheetnames}
+    if warnings:
+        result["warnings"] = warnings
+    print(json.dumps(result, ensure_ascii=False))
     return 0
 
 

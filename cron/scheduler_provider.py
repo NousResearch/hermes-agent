@@ -507,8 +507,8 @@ class InProcessCronScheduler(CronScheduler):
         can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
     ):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
-        home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
-        heartbeated."""
+        home)``, when given, is consulted during enumeration and re-checked under the profile's tick
+        lock before dispatch."""
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
@@ -534,6 +534,15 @@ class InProcessCronScheduler(CronScheduler):
             if not tick_adapters and adapters:
                 return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
             return tick_adapters
+
+        def profile_dispatch_gate_for(profile_name, home):
+            def dispatch_allowed():
+                return (
+                    (can_dispatch is None or can_dispatch())
+                    and profile_gate(profile_name, home)
+                )
+
+            return dispatch_allowed
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
@@ -584,9 +593,12 @@ class InProcessCronScheduler(CronScheduler):
                     for _pname, home in cycle_homes:
                         try:
                             with _profile_cron_scope(home):
+                                profile_can_dispatch = can_dispatch
+                                if profile_gate is not None:
+                                    profile_can_dispatch = profile_dispatch_gate_for(_pname, home)
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
-                                    sync=False, can_dispatch=can_dispatch,
+                                    sync=False, can_dispatch=profile_can_dispatch,
                                 )
                         except CronTickYielded as e:
                             # Yield for THIS profile only; one fresh gateway must not stop others.

@@ -319,6 +319,7 @@ export const zhHant = defineLocale({
       keybinds: '鍵盤快捷鍵',
       keysTools: '工具',
       keysSettings: '設定',
+      keysCustom: '自訂',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       about: '關於',
@@ -1111,7 +1112,15 @@ export const zhHant = defineLocale({
     keys: {
       loading: '正在載入 API 金鑰和憑證...',
       failedLoad: 'API 金鑰載入失敗',
-      empty: '此類別尚未有任何設定。'
+      empty: '此類別尚未有任何設定。',
+      customTitle: '自訂金鑰',
+      customHint: '儲存在 .env 中、Hermes 無法識別的任意環境變數。可用於為技能、MCP 伺服器或你自己的工具注入環境變數。',
+      addCustomKey: '新增自訂密鑰',
+      customKeyName: '變數名稱',
+      customKeyNamePlaceholder: '例如 MY_SERVICE_API_KEY',
+      customKeyExists: '已存在同名的變數。',
+      invalidKeyName: '僅能使用字母、數字和底線（必須以字母或底線開頭）。',
+      add: '新增'
     },
     search: {
       placeholder: '搜尋所有設定...',

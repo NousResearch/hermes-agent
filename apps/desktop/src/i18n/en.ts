@@ -505,6 +505,7 @@ export const en: Translations = {
       keybinds: 'Keyboard Shortcuts',
       keysTools: 'Tools',
       keysSettings: 'Settings',
+      keysCustom: 'Custom',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
@@ -1246,7 +1247,16 @@ export const en: Translations = {
     keys: {
       loading: 'Loading API keys and credentials...',
       failedLoad: 'API keys failed to load',
-      empty: 'Nothing configured in this category yet.'
+      empty: 'Nothing configured in this category yet.',
+      customTitle: 'Custom Keys',
+      customHint:
+        "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
+      addCustomKey: 'Add a custom key',
+      customKeyName: 'Variable name',
+      customKeyNamePlaceholder: 'e.g. MY_SERVICE_API_KEY',
+      customKeyExists: 'A variable with this name already exists.',
+      invalidKeyName: 'Use letters, numbers and underscores only (must start with a letter or underscore).',
+      add: 'Add'
     },
     search: {
       placeholder: 'Search all settings…',

@@ -508,6 +508,7 @@ import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
+import { shouldFallbackWslgRenderer, WSLG_X11_FALLBACK_EXIT_CODE, wslgX11FallbackArgs } from './wslg-launch'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -14756,6 +14757,34 @@ function createWindow() {
 
   streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
+
+  let relaunchingForWslgX11Fallback = false
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (relaunchingForWslgX11Fallback || !shouldFallbackWslgRenderer(details)) {
+      return
+    }
+
+    const fallbackArgs = wslgX11FallbackArgs(process.argv.slice(1))
+
+    if (!fallbackArgs) {
+      return
+    }
+
+    relaunchingForWslgX11Fallback = true
+    rememberLog('[renderer] WSLg automatic Wayland launch failed; relaunching once with X11')
+
+    try {
+      // The pre-Electron WSLg supervisor owns the replacement process. A
+      // direct app.relaunch() would let that supervisor exit and tear down
+      // Vite during development.
+      void exitAfterBackendShutdown(WSLG_X11_FALLBACK_EXIT_CODE).catch(error => {
+        rememberLog(`[renderer] WSLg fallback backend shutdown failed: ${error?.message || error}`)
+        app.exit(WSLG_X11_FALLBACK_EXIT_CODE)
+      })
+    } catch (error) {
+      rememberLog(`[renderer] WSLg X11 fallback relaunch failed: ${error?.message || error}`)
+    }
+  })
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
   // policy (crashed/oom → bounded reload via the shared rolling budget, then

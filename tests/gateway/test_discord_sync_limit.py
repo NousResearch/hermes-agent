@@ -138,3 +138,110 @@ async def test_safe_sync_deletes_before_creating():
         f"Deletions must happen before creations to avoid exceeding 100-command limit. "
         f"Last delete at index {last_delete_idx}, first create at index {first_create_idx}"
     )
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreated_upserts_before_delete():
+    """When a command payload is patchable, upsert BEFORE delete so the
+    command stays available even if a 429 aborts the sync mid-operation.
+
+    Regression guard for the alloevil fix: the old code deleted the command
+    first, then upserted. If a 429 aborted after the delete, the command
+    would be missing until the next sync. The fix upserts first (replaces
+    by name), then deletes the old ID, tolerating a 404 if the upsert
+    already removed it.
+    """
+    _ensure_discord_mock()
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+
+    adapter._client = MagicMock()
+    adapter._client.tree = MagicMock()
+    adapter._client.http = AsyncMock()
+    adapter._client.application_id = "test_app_id"
+    adapter._sleep_between_command_sync_mutations = AsyncMock()
+    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
+    adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
+    adapter._patchable_app_command_payload = MagicMock(return_value=True)
+
+    # Simulate a single command that exists on Discord with the same name
+    # but different payload — the "recreated" path.
+    # Existing on Discord: cmd_foo (id="old_id", name="cmd_foo")
+    # Desired locally: cmd_foo (same name, patchable payload change)
+    existing_commands = [
+        SimpleNamespace(id="old_id", name="cmd_foo", type=1),
+    ]
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=existing_commands)
+
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_FakeTreeCommand(name="cmd_foo", command_type=1)]
+    )
+
+    # Track the order of mutations
+    mutation_log = []
+
+    async def mock_upsert(*args):
+        mutation_log.append(("upsert", args[-1].get("name")))
+
+    async def mock_delete(*args):
+        mutation_log.append(("delete", args[-1]))
+
+    adapter._client.http.upsert_global_command = mock_upsert
+    adapter._client.http.delete_global_command = mock_delete
+    adapter._client.http.edit_global_command = AsyncMock()
+
+    # Call sync
+    await adapter._safe_sync_slash_commands()
+
+    # Verify upsert happened BEFORE delete
+    assert len(mutation_log) == 2, f"Expected 2 mutations, got {len(mutation_log)}: {mutation_log}"
+    assert mutation_log[0][0] == "upsert", (
+        f"First mutation should be upsert (to keep command available), got {mutation_log[0]}"
+    )
+    assert mutation_log[1][0] == "delete", (
+        f"Second mutation should be delete (clean up old ID), got {mutation_log[1]}"
+    )
+    assert mutation_log[0][1] == "cmd_foo", f"Upsert should target cmd_foo"
+    assert mutation_log[1][1] == "old_id", f"Delete should target old_id"
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreated_tolerates_delete_404():
+    """When the upsert replaces the command by name, the old ID may already
+    be gone — the delete should tolerate a 404 without crashing the sync.
+    """
+    _ensure_discord_mock()
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+
+    adapter._client = MagicMock()
+    adapter._client.tree = MagicMock()
+    adapter._client.http = AsyncMock()
+    adapter._client.application_id = "test_app_id"
+    adapter._sleep_between_command_sync_mutations = AsyncMock()
+    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
+    adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
+    adapter._patchable_app_command_payload = MagicMock(return_value=True)
+
+    existing_commands = [
+        SimpleNamespace(id="old_id", name="cmd_foo", type=1),
+    ]
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=existing_commands)
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_FakeTreeCommand(name="cmd_foo", command_type=1)]
+    )
+
+    # Make delete raise an exception (simulating 404)
+    async def mock_upsert(*args):
+        pass
+
+    async def mock_delete(*args):
+        raise Exception("404 Not Found")
+
+    adapter._client.http.upsert_global_command = mock_upsert
+    adapter._client.http.delete_global_command = mock_delete
+    adapter._client.http.edit_global_command = AsyncMock()
+
+    # Should not raise
+    summary = await adapter._safe_sync_slash_commands()
+    assert summary["recreated"] == 1, "Should have counted 1 recreated command"

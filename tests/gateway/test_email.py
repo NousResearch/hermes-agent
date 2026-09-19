@@ -468,6 +468,29 @@ class TestSendMethods(unittest.TestCase):
         self.assertEqual(info["subject"], "Test")
 
 
+def _mock_imap_with_uids(uids):
+    """MagicMock IMAP handle answering SELECT/FETCH like a server holding *uids*.
+
+    *uids* are bytes UIDs in mailbox order (oldest first). SELECT reports the message
+    count and FETCH ``lo:hi (UID)`` returns that sequence-number slice, so the mock
+    exercises the same arithmetic ``_seed_recent_uids`` relies on. ``uid()`` answers
+    NO: seeding must never fall back to an unbounded ``UID SEARCH``.
+    """
+    mock = MagicMock()
+    mock.select.return_value = ("OK", [str(len(uids)).encode()])
+
+    def _fetch(seq_range, spec):
+        lo, hi = (int(x) for x in seq_range.split(":"))
+        return ("OK", [
+            (b"%d (UID %s)" % (seq, uids[seq - 1]), b"")
+            for seq in range(lo, hi + 1) if 1 <= seq <= len(uids)
+        ])
+
+    mock.fetch.side_effect = _fetch
+    mock.uid.return_value = ("NO", [])
+    return mock
+
+
 class TestConnectDisconnect(unittest.TestCase):
     """Test IMAP/SMTP connection lifecycle."""
 
@@ -488,8 +511,7 @@ class TestConnectDisconnect(unittest.TestCase):
         import asyncio
         adapter = self._make_adapter()
 
-        mock_imap = MagicMock()
-        mock_imap.uid.return_value = ("OK", [b"1 2 3"])
+        mock_imap = _mock_imap_with_uids([b"1", b"2", b"3"])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
              patch("smtplib.SMTP") as mock_smtp:
@@ -771,14 +793,7 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
     def _run_connect(self, adapter, mailbox_uids, *, is_reconnect):
         import asyncio
 
-        mock_imap = MagicMock()
-
-        def uid_handler(command, *args):
-            if command == "search":
-                return ("OK", [mailbox_uids])
-            return ("NO", [])
-
-        mock_imap.uid.side_effect = uid_handler
+        mock_imap = _mock_imap_with_uids(mailbox_uids.split())
         smtp = MagicMock()
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
@@ -1142,6 +1157,86 @@ class TestSenderAuthentication(unittest.TestCase):
             authserv_id="mx.ourserver.com",
         )
         self.assertFalse(ok, reason)
+
+
+class TestLargeMailboxConnect(unittest.TestCase):
+    """connect() must stay bounded on a mailbox too large for ``UID SEARCH ALL``.
+
+    A 423k-message Gmail INBOX answers ``UID SEARCH ALL`` with a single ~2.8 MB line,
+    overflowing imaplib's 1 MB ``_MAXLINE`` ("command: UID => got more than 1000000
+    bytes"). That raised inside the connection probe, so the platform never reached a
+    connected state and the gateway retried forever.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def setUp(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+        EmailAdapter._seen_uids_snapshot.clear()
+
+    tearDown = setUp
+
+    def _connect(self, adapter, mock_imap):
+        import asyncio
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_connect_smtp", return_value=MagicMock()
+        ):
+            ok = asyncio.run(adapter.connect())
+        asyncio.run(adapter.disconnect())
+        return ok
+
+    def test_seeds_only_the_recent_slice_of_a_large_mailbox(self):
+        """The baseline is the newest ``_seen_uids_max`` UIDs, not the whole mailbox."""
+        adapter = self._make_adapter()
+        total = 5000
+        mock_imap = _mock_imap_with_uids([str(i).encode() for i in range(1, total + 1)])
+
+        self.assertTrue(self._connect(adapter, mock_imap))
+
+        cap = adapter._seen_uids_max
+        self.assertEqual(len(adapter._seen_uids), cap)
+        # Newest kept, oldest never fetched.
+        self.assertIn(str(total).encode(), adapter._seen_uids)
+        self.assertNotIn(b"1", adapter._seen_uids)
+        # Exactly one bounded FETCH covering the trailing slice.
+        mock_imap.fetch.assert_called_once_with(f"{total - cap + 1}:{total}", "(UID)")
+
+    def test_connect_never_issues_an_unbounded_uid_search(self):
+        """The overflow came from ``UID SEARCH ALL``; seeding must not call it."""
+        adapter = self._make_adapter()
+        mock_imap = _mock_imap_with_uids([b"1", b"2", b"3"])
+
+        self.assertTrue(self._connect(adapter, mock_imap))
+
+        searches = [c for c in mock_imap.uid.call_args_list
+                    if c.args and c.args[0] == "search" and "ALL" in c.args]
+        self.assertEqual(searches, [], "connect() issued an unbounded UID SEARCH ALL")
+
+    def test_empty_mailbox_seeds_nothing_without_fetching(self):
+        """A zero-message INBOX must not emit a degenerate ``0:0`` FETCH."""
+        adapter = self._make_adapter()
+        mock_imap = _mock_imap_with_uids([])
+
+        self.assertTrue(self._connect(adapter, mock_imap))
+
+        self.assertEqual(adapter._seen_uids, set())
+        mock_imap.fetch.assert_not_called()
+
+    def test_maxline_raised_above_imaplib_default(self):
+        """Defense-in-depth for the ``UID SEARCH UNSEEN`` poll path, which is still a line."""
+        import imaplib
+        import plugins.platforms.email.adapter  # noqa: F401  (import applies the bump)
+        self.assertGreaterEqual(imaplib._MAXLINE, 100_000_000)
 
 
 if __name__ == "__main__":

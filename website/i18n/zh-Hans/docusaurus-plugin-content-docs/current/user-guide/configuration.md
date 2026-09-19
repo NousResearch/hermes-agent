@@ -666,6 +666,22 @@ auxiliary:
 摘要模型**必须**具有至少与您的主 agent 模型一样大的上下文窗口。压缩器将对话的完整中间部分发送给摘要模型 —— 如果该模型的上下文窗口小于主模型的，摘要调用将因上下文长度错误而失败。发生这种情况时，中间轮次将**在没有摘要的情况下被丢弃**，静默丢失对话上下文。如果您覆盖模型，请验证其上下文长度满足或超过您的主模型。
 :::
 
+## Gateway 重启循环熔断器
+
+当 gateway 在存在中断会话的情况下重启时，通常会自动恢复这些会话。如果某个会话不断崩溃或再次请求重启，就可能形成无限的 supervisor 循环。重启循环熔断器会持久记录这些带中断会话的启动；达到阈值后，它只停止**自动重放**。Gateway 本身仍会启动、接收新消息，并保留该中断会话，供之后的真实用户消息继续处理。
+
+```yaml
+gateway:
+  restart_loop_guard:
+    max_restarts: 3       # 设为 0 可禁用熔断器
+    window_seconds: 60    # 同时作为链式间隔的最小值
+    max_gap_seconds: 300  # 仍视为同一崩溃周期的最大间隔
+```
+
+只要每两次连续启动之间的间隔不超过 `max(window_seconds, max_gap_seconds)`，它们就会被计入同一个循环。这样既能捕获快速的 supervisor 重启，也能捕获由存活监视器每隔几分钟终止卡死 gateway 的慢速循环。超过该间隔的安静期会开始一条新链，因此偶尔的人工重启不会永久累积。
+
+熔断器触发时，gateway 日志会出现 `Restart-loop breaker TRIPPED`，持久状态位于 `~/.hermes/gateway/restart_loop.json`（当前 `HERMES_HOME` 下）。应先诊断具体会话或重启来源，而不是直接提高阈值。如果确认是误报且 gateway 其他方面健康，请停止 gateway、删除该状态文件，再重新启动。
+
 ## 会话卡死监视器（Session Stall Watchdog）
 
 Gateway 运行一个仅通知的卡死监视器（`agent.session_stall_timeout`，默认 `300` 秒，`0` = 禁用）。当一个忙碌的会话存在**待处理的入站后续消息**，且 agent 的共享活动时钟空闲达到该时长时，gateway 会记录一条 WARNING 日志并向用户发送一次性通知：

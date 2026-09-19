@@ -160,9 +160,13 @@ def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tup
         if not isinstance(entry, dict):
             unverified = True
             continue
-        kind = entry.get("kind", default_kind)
+        kind = entry.get("kind") or default_kind
         profile = entry.get("profile")
-        if kind in ("serve", "dashboard") and entry.get("supervisor") == "manual-serve" and entry not in pending_manual:
+        if kind in ("serve", "dashboard"):
+            # Serve/dashboard restart debt is tracked separately once transfer succeeds.
+            # A retained row means that transfer failed, so gateway coverage cannot settle it.
+            if entry in pending_manual:
+                unverified = True
             continue
         if kind != "gateway" or not profile or profile == "unknown":
             unverified = True

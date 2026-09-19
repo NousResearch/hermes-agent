@@ -75,7 +75,17 @@ class _NoFtsExistingTableConnection(sqlite3.Connection):
 
 
 class _NoTrigramCursor(sqlite3.Cursor):
-    """Simulate a SQLite build with FTS5 but without the trigram tokenizer."""
+    """Simulate a SQLite build with FTS5 but without the trigram tokenizer.
+
+    A real SQLite rejects the trigram DDL whichever API submits it, so both
+    ``execute`` (transactional statement-by-statement DDL) and
+    ``executescript`` must raise.
+    """
+
+    def execute(self, sql, parameters=()):
+        if "tokenize='trigram'" in sql:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().execute(sql, parameters)
 
     def executescript(self, sql_script):
         if "tokenize='trigram'" in sql_script:

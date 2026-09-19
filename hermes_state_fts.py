@@ -330,7 +330,10 @@ class SessionFtsSetupMixin:
             return False
         try:
             # Run even when the table exists: recreates triggers a no-FTS5 runtime dropped.
-            cursor.executescript(ddl)
+            # ``executescript`` commits implicitly and destroys caller savepoints; keep schema
+            # repair inside the caller's transaction instead.
+            # SessionDB composes this mixin with the schema mixin that owns the helper.
+            self._execute_ddl_script_transactional(cursor, ddl)  # type: ignore[attr-defined]
             return True
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):

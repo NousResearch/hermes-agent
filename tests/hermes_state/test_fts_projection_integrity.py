@@ -134,3 +134,43 @@ def test_index_reading_raw_messages_realigns_once_on_open(tmp_path):
         ] == [row_id]
     finally:
         migrated.close()
+
+
+def test_empty_index_reading_raw_messages_realigns_on_open(tmp_path):
+    """An empty pre-projection store realigns transactionally on open.
+
+    The empty-store fast path uses a savepoint instead of the rebuild-admission
+    path. FTS schema creation must not implicitly commit and destroy that
+    savepoint.
+    """
+    path = tmp_path / "state.db"
+    first = SessionDB(db_path=path)
+    if not first._fts_enabled:
+        first.close()
+        pytest.skip("SQLite FTS5 unavailable")
+
+    first_conn = first._conn
+    assert first_conn is not None
+    first_conn.execute("DROP TABLE messages_fts")
+    first_conn.execute(
+        "CREATE VIRTUAL TABLE messages_fts USING fts5("
+        "content, tool_name, tool_calls, content='messages', content_rowid='id')"
+    )
+    first_conn.execute(
+        "INSERT INTO state_meta(key, value) VALUES('fts_storage_version', '2') "
+        "ON CONFLICT(key) DO UPDATE SET value = '2'"
+    )
+    first.close()
+
+    migrated = SessionDB(db_path=path)
+    try:
+        assert migrated.get_meta("fts_storage_version") == str(FTS_STORAGE_VERSION)
+        migrated_conn = migrated._conn
+        assert migrated_conn is not None
+        index_sql = migrated_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_fts'"
+        ).fetchone()[0]
+        assert "messages_fts_src" in index_sql
+        _strict_integrity_probe(migrated)
+    finally:
+        migrated.close()

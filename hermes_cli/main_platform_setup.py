@@ -96,8 +96,12 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
+    from gateway.platforms.whatsapp_common import (
+        record_whatsapp_bridge_dependency_fingerprint,
+        whatsapp_bridge_dependencies_fresh,
+    )
     from hermes_constants import find_node_executable, with_hermes_node_path
-    if (bridge_dir / "node_modules").exists():
+    if whatsapp_bridge_dependencies_fresh(bridge_dir):
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
@@ -117,6 +121,9 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         err = (result.stderr or "").strip()
         preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
         _say("  ✗ npm install failed:", preview)
+        return False
+    if not record_whatsapp_bridge_dependency_fingerprint(bridge_dir):
+        print("  ✗ Dependencies installed, but their version stamp could not be written")
         return False
     print("  ✓ Dependencies installed")
     return True

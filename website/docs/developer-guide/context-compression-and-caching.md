@@ -239,7 +239,8 @@ auxiliary:
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
+| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
+| `threshold_tokens` | `256000` | int or `null` | Absolute cap on the trigger: compaction fires at the lower of the ratio trigger and this count, so a 1M window compacts at 256K instead of 500K. `null` = ratio-only |
 | `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
@@ -441,7 +442,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
 
 :::note Threshold is derived from the MAIN model's context window
-`threshold_tokens` is always `threshold × context_length`, where `context_length`
+`threshold_tokens` is `threshold × context_length` (then capped by `compression.threshold_tokens`), where `context_length`
 is the **main agent model's** context window — never the auxiliary/summary
 model's. On a 262,144-token model at the default `0.50`, the threshold is
 `262,144 × 0.50 = 131,072`. That number being close to a common "128K context"

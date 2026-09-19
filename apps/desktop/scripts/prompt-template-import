@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Drop a prompt-template import job for a running Hermes Desktop (no rebuild).
+# Writes JSON under $HERMES_HOME/prompt-templates-inbox/; the renderer merges it live.
+#
+# Usage:
+#   prompt-template-import --folder "Group" --label "Name" --text-file ./pe.md
+#   prompt-template-import --file ./job.json
+#   prompt-template-import --clear
+set -euo pipefail
+INBOX="${HERMES_HOME:-$HOME/.hermes}/prompt-templates-inbox"
+mkdir -p "$INBOX/applied"
+ts=$(date +%Y%m%d-%H%M%S)
+job="$INBOX/job-$ts-$$.json"
+
+if [[ "${1:-}" == "--clear" ]]; then
+  printf '%s\n' '{"v":1,"op":"replace","templates":[]}' > "$job"
+  echo "queued clear -> $job"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--file" ]]; then
+  src="${2:?json file}"
+  cp "$src" "$job"
+  echo "queued file -> $job"
+  exit 0
+fi
+
+folder="" label="" text="" text_file="" desc=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --folder) folder="$2"; shift 2 ;;
+    --label) label="$2"; shift 2 ;;
+    --text) text="$2"; shift 2 ;;
+    --text-file) text_file="$2"; shift 2 ;;
+    --description) desc="$2"; shift 2 ;;
+    *) echo "unknown $1" >&2; exit 1 ;;
+  esac
+done
+[[ -n "$label" ]] || { echo "need --label" >&2; exit 1; }
+if [[ -n "$text_file" ]]; then
+  text=$(cat "$text_file")
+fi
+[[ -n "$text" ]] || { echo "need --text or --text-file" >&2; exit 1; }
+
+python3 - "$job" "$folder" "$label" "$desc" "$text" <<'PY'
+import json,sys
+job, folder, label, desc, text = sys.argv[1:6]
+payload = {"v":1,"op":"merge","templates":[{"label":label,"description":desc,"text":text}]}
+if folder:
+    payload["folder"]=folder
+open(job,"w",encoding="utf-8").write(json.dumps(payload,ensure_ascii=False,indent=2)+"\n")
+print("queued", job)
+PY

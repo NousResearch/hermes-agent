@@ -3105,6 +3105,12 @@ export const en: Translations = {
     stop: 'Stop',
     dismiss: 'Dismiss',
     exit: code => `exit ${code}`,
+    // A background task the chat owes a result for (`notify_on_complete`): the
+    // row must say the follow-up is coming, and say it once the task is done —
+    // otherwise the user's only way to know is to come back and ask.
+    willNotifyChat: 'Result will be sent to this chat',
+    notifySent: 'Result sent to this chat',
+    openOutput: 'Open for output',
     control: {
       goalActiveTurns: (turn, maxTurns) => `Turn ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} turn${turns === 1 ? '' : 's'}`,

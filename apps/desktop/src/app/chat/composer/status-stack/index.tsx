@@ -82,6 +82,23 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
 const hasRunningTodo = (group: StatusGroup) =>
   group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
 
+/**
+ * The card line for a background group that owes this conversation a result
+ * (`terminal(background=true, notify=true)`). Groups are COLLAPSED by default,
+ * so the header is what the user actually sees while the work runs — without
+ * this the chat reads as finished and the pending follow-up message is
+ * invisible. Null when no row carries the `notify_on_complete` contract.
+ */
+const backgroundDeliveryLine = (group: StatusGroup, s: Translations['statusStack']): string | undefined => {
+  const notify = group.type === 'background' ? group.items.filter(item => item.notifyOnComplete) : []
+
+  if (notify.length === 0) {
+    return undefined
+  }
+
+  return notify.some(item => item.state === 'running') ? s.willNotifyChat : s.notifySent
+}
+
 interface ComposerStatusStackProps {
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   /** The queue, built by the composer (it owns the queue's callbacks). */
@@ -221,6 +238,8 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   }
 
   for (const group of groups) {
+    const delivery = backgroundDeliveryLine(group, t.statusStack)
+
     if (group.type === 'subagent' && sessionId) {
       sections.push({ key: group.type, node: <SubagentSection key={sessionId} sessionId={sessionId} /> })
 
@@ -258,6 +277,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
           defaultCollapsed={group.type !== 'todo'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
+          preview={
+            delivery ? (
+              <div className="px-2 py-0.5 text-[0.68rem] leading-4 text-muted-foreground/80">{delivery}</div>
+            ) : undefined
+          }
         >
           {group.items.map(item => (
             <StatusItemRow

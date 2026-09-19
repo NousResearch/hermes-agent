@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -30,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+
+_COMMENT_PROVENANCE_PREFIX = re.compile(
+    r"^\s*\[(?P<profile>[^\]\r\n]+?)\s+(?i:run)\s+(?P<run>\d+)\]\s*",
+)
 
 
 # --- Gating ---
@@ -174,6 +179,21 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return int(raw) if raw else None
     except ValueError:
         return None
+
+
+def _validate_comment_provenance(body: str) -> None:
+    """Reject a leading profile/run claim unless it matches this worker run."""
+    match = _COMMENT_PROVENANCE_PREFIX.match(body)
+    if not match:
+        return
+
+    trusted_author = os.environ.get("HERMES_PROFILE") or "worker"
+    active_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    trusted_run_id = _worker_run_id(active_task_id) if active_task_id else None
+    if match["profile"] != trusted_author or int(match["run"]) != trusted_run_id:
+        raise _Reject(
+            "comment provenance prefix must match the active worker profile and run"
+        )
 
 
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
@@ -805,6 +825,7 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = os.environ.get("HERMES_PROFILE") or "worker"
+    _validate_comment_provenance(str(body))
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)

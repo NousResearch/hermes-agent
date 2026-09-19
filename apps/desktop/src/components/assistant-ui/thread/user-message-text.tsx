@@ -122,7 +122,11 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
   const top = useMemo(() => splitFences(text), [text])
 
   return (
-    <span className={cn('block', className)} data-slot="aui_user-message-text">
+    <span
+      className={cn('block', className)}
+      data-selectable-text="true"
+      data-slot="aui_user-message-text"
+    >
       {top.map((segment, segmentIndex) => {
         if (segment.kind === 'fence') {
           return (

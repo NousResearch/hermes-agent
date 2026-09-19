@@ -1421,6 +1421,27 @@ def _cap_long_context_tier(agent: Any) -> int:
     return old_ctx
 
 
+def _retry_bedrock_after_stale_env_credentials(agent: Any) -> bool:
+    """Retry the same Bedrock route after dropping stale env keys. Does not consume auth failover."""
+    if getattr(agent, "provider", None) != "bedrock":
+        return False
+    from agent.bedrock_adapter import (
+        fallback_aws_profile_credentials,
+        rebuild_bedrock_clients_after_env_eviction,
+    )
+    if not fallback_aws_profile_credentials():
+        return False
+    try:
+        rebuild_bedrock_clients_after_env_eviction(agent)
+    except Exception:
+        logger.warning("Failed to rebuild Bedrock clients after AWS_PROFILE fallback", exc_info=True)
+        return False
+    agent._buffer_diagnostic_status(
+        "🔐 AWS environment credentials failed — falling back to AWS_PROFILE..."
+    )
+    return True
+
+
 def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_failure: bool) -> str:
     """Status line announcing an eager fallback switch."""
     if is_upstream:
@@ -1620,18 +1641,17 @@ def route_classified_error(
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
     # escalate to the fallback chain once; False -> terminal handling.
-    if (
-        classified.is_auth
-        and not _retry.auth_failover_attempted
-        and agent._fallback_index < len(agent._fallback_chain)
-    ):
-        _retry.auth_failover_attempted = True
-        agent._buffer_diagnostic_status(
-            "🔐 Authentication failed and could not be refreshed — "
-            "switching to fallback provider..."
-        )
-        if agent._try_activate_fallback(reason=classified.reason):
-            return _fallback_break()
+    if classified.is_auth and not _retry.auth_failover_attempted:
+        if _retry_bedrock_after_stale_env_credentials(agent):
+            return _verdict("continue")
+        if agent._fallback_index < len(agent._fallback_chain):
+            _retry.auth_failover_attempted = True
+            agent._buffer_diagnostic_status(
+                "🔐 Authentication failed and could not be refreshed — "
+                "switching to fallback provider..."
+            )
+            if agent._try_activate_fallback(reason=classified.reason):
+                return _fallback_break()
 
     # Nous Portal: a genuine account-level 429 is recorded to a shared file so ALL
     # sessions back off; is_genuine_nous_rate_limit excludes upstream 429s.

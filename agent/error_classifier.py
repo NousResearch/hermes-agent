@@ -348,6 +348,9 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
 _AUTH_PATTERNS = (
     "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
+    "unrecognizedclientexception", "invalidclienttokenid", "expiredtokenexception",
+    "invalidsignatureexception", "signaturedoesnotmatch", "invalid security token",
+    "security token included in the request is invalid", "invalid_security_token",
 )
 
 # Empty-response advisories (OpenRouter / nano-gpt). Checked before overflow

@@ -1679,15 +1679,24 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
 
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
-    if (fb.get("provider") or "").strip().lower() != "nous":
-        return None
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("nous") or {}
-    except Exception as exc:
-        return f"nous_auth_unreadable:{type(exc).__name__}"
-    has_token = any(isinstance(t, str) and t.strip() for t in (state.get("access_token"), state.get("refresh_token")))
-    return None if has_token else "nous_token_missing"
+    provider = (fb.get("provider") or "").strip().lower()
+    if provider == "nous":
+        try:
+            from hermes_cli.auth import get_provider_auth_state
+            state = get_provider_auth_state("nous") or {}
+        except Exception as exc:
+            return f"nous_auth_unreadable:{type(exc).__name__}"
+        has_token = any(isinstance(t, str) and t.strip() for t in (state.get("access_token"), state.get("refresh_token")))
+        return None if has_token else "nous_token_missing"
+
+    if provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"}:
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            return None if has_aws_credentials() else "no_aws_credentials"
+        except Exception as exc:
+            return f"bedrock_creds_unreadable:{type(exc).__name__}"
+
+    return None
 
 
 _FALLBACK_REASON_LABELS = {

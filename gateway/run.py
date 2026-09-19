@@ -3155,7 +3155,6 @@ _RECONNECT_BACKOFF_CAP = 300
 
 # Seconds continuously in the reconnect queue before NEEDS_ATTENTION. Retrying never stops (transient
 # outages must self-heal); this only makes a permanently-failing loop loud. 0 disables.
-_RECONNECT_ATTENTION_AFTER_SECONDS = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
 
 
 def _reconnect_backoff(attempt: int) -> int:
@@ -3166,13 +3165,14 @@ def _reconnect_backoff(attempt: int) -> int:
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """True when a reconnect-queue entry has waited long enough for NEEDS_ATTENTION.
     ``queued_at`` is re-stamped on each (re)entry, so only *continuous* failure escalates."""
-    if _RECONNECT_ATTENTION_AFTER_SECONDS <= 0:
+    threshold = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
+    if threshold <= 0:
         return False  # escalation disabled
     queued_at = info.get("queued_at")
     if queued_at is None:
         info["queued_at"] = now
         return False
-    return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
+    return (now - queued_at) >= threshold
 
 
 # "No session DB pinned": lets ``_session_db`` distinguish "resolve from profile scope" from a

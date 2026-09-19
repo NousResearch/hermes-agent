@@ -15,12 +15,13 @@ import { sessionRoute } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { SearchField } from '@/components/ui/search-field'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { cn } from '@/lib/utils'
 import {
   countByCategory,
   dismissExpiredRequest,
   fetchInboxRequestDetails,
+  filterByCategory,
+  filterInboxItems,
   filterNeedsAttention,
   type InboxCategory,
   type InboxEntry,
@@ -29,8 +30,7 @@ import {
   type InboxRequestContext,
   type InboxRequestDetails,
   redoExpiredRequest,
-  refreshInbox,
-  searchInboxItems
+  refreshInbox
 } from '@/store/inbox'
 import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -39,8 +39,6 @@ import { $connection, setSelectedStoredSessionId } from '@/store/session'
 import { ApprovalCard } from './approval-card'
 import { AutomationControls } from './automation-controls'
 import { ClarifyCard } from './clarify-card'
-
-type SearchScope = 'all' | 'section'
 
 const EXPIRY_OUTCOME_TEXT: Record<string, string> = {
   notify_failed: 'never reached a surface that could answer it',
@@ -360,7 +358,7 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
   const [category, setCategory] = useState<InboxCategory>('all')
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
   const [query, setQuery] = useState('')
-  const [searchScope, setSearchScope] = useState<SearchScope>('section')
+  const [narrowDuringSearch, setNarrowDuringSearch] = useState(false)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const [detailsCache, setDetailsCache] = useState<Record<string, InboxRequestDetails>>({})
   const [detailsLoading, setDetailsLoading] = useState<Record<string, boolean>>({})
@@ -401,23 +399,28 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
   const coverage = snapshot?.coverage
   const items = useMemo(() => snapshot?.items ?? [], [snapshot?.items])
 
-  const needsAttentionCount = useMemo(() => filterNeedsAttention(items).length, [items])
+  const trimmedQuery = query.trim()
+  const isSearching = trimmedQuery.length > 0
+
+  // Search spans every section; the rail then shows where the matches live. While a
+  // search is running the list shows all matches until a section is clicked to narrow.
+  const matches = useMemo(
+    () => (isSearching ? filterInboxItems(items, trimmedQuery) : null),
+    [isSearching, items, trimmedQuery]
+  )
+  const narrowBySection = !isSearching || narrowDuringSearch
+
+  const needsAttentionCount = useMemo(() => filterNeedsAttention(matches ?? items).length, [items, matches])
 
   const visibleItems = useMemo(() => {
-    // Global search ("All sessions") searches ALL items regardless of attention/category filter.
-    // The attention/category filters only apply to "This section" scope.
-    if (searchScope === 'all') {
-      return searchInboxItems(items, query, category, 'all')
+    const source = matches ?? items
+
+    if (!narrowBySection) {
+      return source
     }
 
-    let filtered = items
-
-    if (needsAttentionOnly) {
-      filtered = filterNeedsAttention(filtered)
-    }
-
-    return searchInboxItems(filtered, query, category, 'section')
-  }, [items, query, category, searchScope, needsAttentionOnly])
+    return needsAttentionOnly ? filterNeedsAttention(source) : filterByCategory(source, category)
+  }, [category, items, matches, narrowBySection, needsAttentionOnly])
 
   const loadDetails = useCallback(async (sessionKey: string) => {
     const seq = ++loadSeqRef.current
@@ -510,11 +513,21 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
   const handleNeedsAttentionClick = useCallback(() => {
     setNeedsAttentionOnly(true)
     setCategory('all')
-  }, [])
+    setNarrowDuringSearch(isSearching)
+  }, [isSearching])
 
   const handleCategoryClick = useCallback((cat: InboxCategory) => {
     setCategory(cat)
     setNeedsAttentionOnly(false)
+    // While searching, a section click narrows the matches; "All sessions" clears it.
+    setNarrowDuringSearch(isSearching && cat !== 'all')
+  }, [isSearching])
+
+  const handleQueryChange = useCallback((value: string) => {
+    setQuery(value)
+    if (!value.trim()) {
+      setNarrowDuringSearch(false)
+    }
   }, [])
 
   const openSession = useCallback((item: InboxItem) => {
@@ -550,15 +563,20 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
   const isLoading = snapshot === null && !inbox.error && !isUnsupported
 
   // Compute nav counts from items
-  const navCounts = useMemo(() => ({
-    all: items.length,
-    goals: countByCategory(items, 'goals'),
-    loops: countByCategory(items, 'loops'),
-    heartbeats: countByCategory(items, 'heartbeats'),
-    background_tasks: countByCategory(items, 'background_tasks'),
-    subagents: countByCategory(items, 'subagents'),
-    other: countByCategory(items, 'other')
-  }), [items])
+  // While searching the counts are match counts, so the rail reads as "where the hits are".
+  const navCounts = useMemo(() => {
+    const source = matches ?? items
+
+    return {
+      all: source.length,
+      goals: countByCategory(source, 'goals'),
+      loops: countByCategory(source, 'loops'),
+      heartbeats: countByCategory(source, 'heartbeats'),
+      background_tasks: countByCategory(source, 'background_tasks'),
+      subagents: countByCategory(source, 'subagents'),
+      other: countByCategory(source, 'other')
+    }
+  }, [items, matches])
 
   const navItems = useMemo(() => {
     const hasOther = navCounts.other > 0
@@ -581,16 +599,17 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
             aria-expanded={needsAttentionOnly}
             className={cn(
               'flex h-7 items-center gap-2 rounded-md px-2 text-[0.78rem] transition-colors',
-              needsAttentionOnly
+              needsAttentionOnly && narrowBySection
                 ? 'bg-accent/55 text-foreground font-medium'
-                : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+              isSearching && needsAttentionCount === 0 && 'opacity-45'
             )}
             onClick={handleNeedsAttentionClick}
             type="button"
           >
             <span className={cn('size-1.5 shrink-0 rounded-full', needsAttentionCount > 0 ? 'bg-destructive' : 'bg-muted-foreground/30')} />
             <span className="flex-1 text-left">Needs attention</span>
-            {needsAttentionCount > 0 && (
+            {(needsAttentionCount > 0 || isSearching) && (
               <span className="tabular-nums text-[0.62rem] text-muted-foreground/60">{needsAttentionCount}</span>
             )}
           </button>
@@ -599,7 +618,10 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
 
           {navItems.map(cat => {
             const count = navCounts[cat.id] ?? 0
-            const isActive = category === cat.id && !needsAttentionOnly
+            // While searching without a section narrow, "All sessions" is the active view.
+            const isActive = narrowBySection
+              ? category === cat.id && !needsAttentionOnly
+              : cat.id === 'all'
 
             return (
               <button
@@ -607,7 +629,8 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
                   'flex h-7 items-center gap-2 rounded-md px-2 text-[0.78rem] transition-colors',
                   isActive
                     ? 'bg-accent/55 text-foreground font-medium'
-                    : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                    : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+                  isSearching && count === 0 && 'opacity-45'
                 )}
                 key={cat.id}
                 onClick={() => handleCategoryClick(cat.id)}
@@ -615,7 +638,7 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
               >
                 <Codicon className="shrink-0 text-muted-foreground/55" name={cat.icon} size="0.85rem" />
                 <span className="flex-1 text-left">{cat.label}</span>
-                {count > 0 && (
+                {(count > 0 || isSearching) && (
                   <span className="tabular-nums text-[0.62rem] text-muted-foreground/60">{count}</span>
                 )}
               </button>
@@ -630,17 +653,9 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
             <SearchField
               aria-label="Search sessions"
               containerClassName="flex-1"
-              onChange={setQuery}
+              onChange={handleQueryChange}
               placeholder="Search title, key, or path…"
               value={query}
-            />
-            <SegmentedControl
-              onChange={setSearchScope}
-              options={[
-                { id: 'section', label: 'This section' },
-                { id: 'all', label: 'All sessions' }
-              ]}
-              value={searchScope}
             />
           </div>
 
@@ -707,7 +722,7 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
               </>
             ) : visibleItems.length === 0 && query.trim() ? (
               <PanelEmpty
-                description={`No sessions matching "${query.trim()}"${searchScope === 'section' ? ` in ${needsAttentionOnly ? 'needs attention' : category === 'all' ? 'all sessions' : category}` : ''}.`}
+                description={`No sessions matching "${trimmedQuery}"${narrowBySection ? ` in ${needsAttentionOnly ? 'needs attention' : category === 'all' ? 'all sessions' : category}` : ''}.`}
                 icon="search"
                 title="No results"
               />

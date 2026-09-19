@@ -912,14 +912,4 @@ export function countByCategory(items: InboxItem[], category: InboxCategory): nu
   return filterByCategory(items, category).length
 }
 
-/** Search scope: 'section' filters within category, 'all' bypasses category. */
-export function searchInboxItems(
-  items: InboxItem[],
-  query: string,
-  category: InboxCategory,
-  scope: 'all' | 'section'
-): InboxItem[] {
-  const filtered = scope === 'all' ? items : filterByCategory(items, category)
 
-  return filterInboxItems(filtered, query)
-}

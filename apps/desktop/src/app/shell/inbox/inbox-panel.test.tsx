@@ -217,11 +217,11 @@ describe('InboxPanel', () => {
     expect(goalsBtn?.textContent).toContain('1')
   })
 
-  it('shows search field with scope toggle', () => {
+  it('shows the search field; search spans all sections (no scope toggle)', () => {
     renderPanel(makeEntry())
     expect(screen.getByPlaceholderText('Search title, key, or path…')).toBeTruthy()
-    expect(screen.getByText('This section')).toBeTruthy()
-    expect(screen.getAllByText('All sessions').length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText('This section')).toBeNull()
+    expect(screen.getByText('All sessions')).toBeTruthy()
   })
 
   it('shows "All clear" for genuinely empty inbox', () => {
@@ -927,7 +927,7 @@ describe('InboxPanel', () => {
 
   // ── Scope & global-search regression tests ──────────────────────────────────
 
-  it('global search under needs-attention includes ordinary matching sessions', () => {
+  it('searching from a parked section still finds sessions everywhere', () => {
     const needsItem = makeItem({ lanes: ['needs_you'], session_key: 'sess-needs', title: 'Needs alpha' })
     const runningItem = makeItem({ lanes: ['running'], session_key: 'sess-running', title: 'Running beta' })
 
@@ -942,24 +942,98 @@ describe('InboxPanel', () => {
 
     renderPanel(entry)
 
-    // Activate needs-attention filter
+    // Park on needs-attention first…
     fireEvent.click(screen.getByText('Needs attention'))
     expect(screen.getByText('Needs alpha')).toBeTruthy()
     expect(screen.queryByText('Running beta')).toBeNull()
 
-    // Switch to global search scope — find the "All sessions" toggle in the segmented control
-    const allSessionButtons = screen.getAllByText('All sessions')
-    // The segmented control renders radio-style buttons; pick the one not inside the nav
-    const toggle = allSessionButtons.find(el => !el.closest('[class*="min-h-0"]'))
-      ?? allSessionButtons[allSessionButtons.length - 1]
-    fireEvent.click(toggle)
-
-    // Type a query that matches ONLY the non-needs-attention item
-    const searchInput = screen.getByPlaceholderText('Search title, key, or path…')
-    fireEvent.change(searchInput, { target: { value: 'beta' } })
-
-    // Global search must find "Running beta" even though needs-attention is active
+    // …then search: the query spans every section, so the running match surfaces.
+    fireEvent.change(screen.getByPlaceholderText('Search title, key, or path…'), { target: { value: 'beta' } })
     expect(screen.getByText('Running beta')).toBeTruthy()
+    expect(screen.queryByText('Needs alpha')).toBeNull()
+  })
+
+  it('search counts light up the rail per section, zero sections dim', () => {
+    const items = [
+      makeItem({ categories: ['goals'], lanes: ['running'], session_key: 'sess-g1', title: 'Deploy one' }),
+      makeItem({ categories: ['goals'], lanes: ['running'], session_key: 'sess-g2', title: 'Deploy two' }),
+      makeItem({ categories: ['loops'], lanes: ['running'], session_key: 'sess-l1', title: 'Deploy loop' })
+    ]
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 0, running: 3, waiting: 0, scheduled: 0, total: 3 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 3 },
+        items
+      }
+    })
+
+    renderPanel(entry)
+    fireEvent.change(screen.getByPlaceholderText('Search title, key, or path…'), { target: { value: 'deploy' } })
+
+    const button = (label: string) => screen.getByText(label).closest('button')!
+
+    expect(button('All sessions').textContent).toContain('3')
+    expect(button('Goals').textContent).toContain('2')
+    expect(button('Loops').textContent).toContain('1')
+    // A section with no matches stays visible but dims to 0.
+    expect(button('Heartbeats').textContent).toContain('0')
+    expect(button('Heartbeats').className).toContain('opacity-45')
+  })
+
+  it('clicking a section during a search narrows the matches; All sessions clears it', () => {
+    const items = [
+      makeItem({ categories: ['goals'], lanes: ['running'], session_key: 'sess-g1', title: 'Deploy one' }),
+      makeItem({ categories: ['goals'], lanes: ['running'], session_key: 'sess-g2', title: 'Deploy two' }),
+      makeItem({ categories: ['loops'], lanes: ['running'], session_key: 'sess-l1', title: 'Deploy loop' })
+    ]
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 0, running: 3, waiting: 0, scheduled: 0, total: 3 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 3 },
+        items
+      }
+    })
+
+    renderPanel(entry)
+    fireEvent.change(screen.getByPlaceholderText('Search title, key, or path…'), { target: { value: 'deploy' } })
+
+    // All matches show while no section is chosen…
+    expect(screen.getByText('Deploy one')).toBeTruthy()
+    expect(screen.getByText('Deploy loop')).toBeTruthy()
+
+    // …clicking a section narrows to its matches…
+    fireEvent.click(screen.getByText('Goals'))
+    expect(screen.getByText('Deploy one')).toBeTruthy()
+    expect(screen.getByText('Deploy two')).toBeTruthy()
+    expect(screen.queryByText('Deploy loop')).toBeNull()
+
+    // …and All sessions clears the narrow again.
+    fireEvent.click(screen.getByText('All sessions'))
+    expect(screen.getByText('Deploy loop')).toBeTruthy()
+  })
+
+  it('the empty search state names the narrow only when a section narrows it', () => {
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 0, running: 1, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [makeItem({ categories: ['goals'], lanes: ['running'], session_key: 'sess-g1', title: 'Deploy one' })]
+      }
+    })
+
+    renderPanel(entry)
+    const search = screen.getByPlaceholderText('Search title, key, or path…')
+
+    fireEvent.change(search, { target: { value: 'zzz' } })
+    expect(screen.getByText('No sessions matching "zzz".')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Goals'))
+    expect(screen.getByText('No sessions matching "zzz" in goals.')).toBeTruthy()
   })
 
   it('profile switch clears expanded detail (A→B→A does not resurrect stale cache)', async () => {

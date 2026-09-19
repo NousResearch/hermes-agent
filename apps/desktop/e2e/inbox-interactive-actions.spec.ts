@@ -322,7 +322,7 @@ test.describe('inbox view-only gallery', () => {
     await shot(p, 'collapsed-goals.png', 'expand', 'Collapsed')
   })
 
-  test('search within category vs all', async () => {
+  test('search spans all sections and the rail shows live match counts', async () => {
     const p = fixture.page
     await openInbox(p)
     await waitForRows(p)
@@ -332,13 +332,29 @@ test.describe('inbox view-only gallery', () => {
     const sf = p.getByRole('textbox', { name: /search/i })
     await sf.fill('Deploy')
     await p.waitForTimeout(300)
+
+    // Search spans every section: parked on Goals, it still finds the loop match,
+    // and the rail carries live per-section counts of the matches.
+    expect(await p.locator('[data-panel-row]').count()).toBe(2)
+    await expect(p.locator('button:has-text("Goals")').first()).toContainText('1')
+    await expect(p.locator('button:has-text("Loops")').first()).toContainText('1')
+
+    // A section with no matches dims to 0 instead of hiding the fact.
+    const heartbeats = p.locator('button:has-text("Heartbeats")').first()
+    await expect(heartbeats).toContainText('0')
+    expect(await heartbeats.getAttribute('class')).toContain('opacity-45')
+    await shot(p, 'search-live-counts.png', 'search', 'Search spans sections; rail shows live match counts')
+
+    // Clicking a section narrows the matches; All sessions clears the narrow.
+    await p.getByRole('button', { name: /Goals/i }).first().click()
+    await p.waitForTimeout(300)
     expect(await p.locator('[data-panel-row]').count()).toBe(1)
-    await shot(p, 'search-section.png', 'search', 'Search in Goals: 1 result')
+    await shot(p, 'search-narrowed.png', 'search', 'Section click narrows the matches')
 
     await p.getByRole('button', { name: /all sessions/i }).first().click()
     await p.waitForTimeout(300)
-    expect(await p.locator('[data-panel-row]').count()).toBeGreaterThanOrEqual(1)
-    await shot(p, 'search-all.png', 'search', 'Search in All: cross-category')
+    expect(await p.locator('[data-panel-row]').count()).toBe(2)
+    await shot(p, 'search-all.png', 'search', 'All sessions clears the narrow')
 
     await sf.fill('')
   })

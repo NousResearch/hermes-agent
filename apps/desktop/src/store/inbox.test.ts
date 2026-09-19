@@ -16,7 +16,6 @@ import {
   isInboxRequestCurrent,
   parseInboxSnapshot,
   refreshInbox,
-  searchInboxItems,
   selectInboxBadge,
   selectInboxNeedsCount
 } from './inbox'
@@ -398,18 +397,6 @@ describe('category filtering', () => {
     expect(countByCategory(parsed.items, 'loops')).toBe(0)
   })
 
-  it('searchInboxItems with section scope filters within category', () => {
-    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
-    const results = searchInboxItems(parsed.items, 'inbox', 'goals', 'section')
-    expect(results).toHaveLength(1)
-    expect(results[0].session_key).toBe('sess-1')
-  })
-
-  it('searchInboxItems with all scope bypasses category filter', () => {
-    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
-    const results = searchInboxItems(parsed.items, 'session', 'goals', 'all')
-    expect(results).toHaveLength(2)
-  })
 })
 
 describe('request details store', () => {

@@ -319,10 +319,17 @@ describe('sudo prompt store', () => {
 
 describe('secret prompt store', () => {
   it('carries env var and prompt, and clears on id match', () => {
-    setSecretRequest({ requestId: 'r1', envVar: 'OPENAI_API_KEY', prompt: 'Paste your key', sessionId: 's1' })
+    setSecretRequest({
+      requestId: 'r1',
+      destination: 'profile_env',
+      envVar: 'OPENAI_API_KEY',
+      prompt: 'Paste your key',
+      sessionId: 's1'
+    })
 
     expect($secretRequest.get()).toEqual({
       requestId: 'r1',
+      destination: 'profile_env',
       envVar: 'OPENAI_API_KEY',
       prompt: 'Paste your key',
       sessionId: 's1'
@@ -340,7 +347,7 @@ describe('clearAllPrompts', () => {
   it('drops every kind for one session at once (turn end / interrupt)', () => {
     setApprovalRequest({ command: 'x', description: 'd', sessionId: 's1' })
     setSudoRequest({ requestId: 'abc', sessionId: 's1' })
-    setSecretRequest({ requestId: 'r1', envVar: 'E', prompt: 'p', sessionId: 's1' })
+    setSecretRequest({ destination: 'profile_env', requestId: 'r1', envVar: 'E', prompt: 'p', sessionId: 's1' })
 
     clearAllPrompts('s1')
 

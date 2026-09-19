@@ -99,7 +99,11 @@ def load_env() -> Dict[str, str]:
 
 def set_secret_capture_callback(callback) -> None:
     global _secret_capture_callback
+    # Retain the process slot for external compatibility/introspection only. Runtime
+    # dispatch resolves the callback from the session's copied ContextVar.
     _secret_capture_callback = callback
+    from tools.secret_capture_tool import _set_context_secret_capture_callback
+    _set_context_secret_capture_callback(callback)
 
 
 def _skill_utils_delegate(attr: str):

@@ -250,6 +250,7 @@ honcho = ["honcho-ai==2.2.0"]
 # can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
+bitwarden = ["bitwarden-sdk==2.0.0"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -487,6 +488,7 @@ alibabacloud-dingtalk = false
 anthropic = false
 asyncpg = false
 azure-identity = false
+bitwarden-sdk = false
 boto3 = false
 brotlicffi = false
 certifi = false

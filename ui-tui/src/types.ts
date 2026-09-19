@@ -191,6 +191,7 @@ export interface SudoReq {
 }
 
 export interface SecretReq {
+  destination: string
   envVar: string
   prompt: string
   requestId: string

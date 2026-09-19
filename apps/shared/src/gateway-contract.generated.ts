@@ -3751,6 +3751,7 @@ export interface SecretRequestParams {
   session_id: string
   env_var: string
   prompt: string
+  destination?: string
   metadata?: Record<string, unknown> | null
 }
 export interface VaultUnlockRequestParams {
@@ -4858,7 +4859,7 @@ export interface ServerRequestMap {
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
-  /** Masked value for a named env var (skills / setup flows). */
+  /** Masked value for a named env var (agent capture, skills, and setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
   /** Masked sudo password for the terminal tool. */
   sudo: { params: SudoRequestParams; result: ValueResult }

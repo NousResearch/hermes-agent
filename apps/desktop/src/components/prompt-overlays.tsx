@@ -241,6 +241,14 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
           <DialogDescription>{request.prompt || copy.secretDesc}</DialogDescription>
         </DialogHeader>
 
+        <Field label="Storage destination">
+          <p className="text-sm text-(--ui-text-secondary)">
+            {request.destination === 'bitwarden_sm'
+              ? 'Configured Bitwarden Secrets Manager project'
+              : 'Active profile .env'}
+          </p>
+        </Field>
+
         <form className="grid gap-3" onSubmit={onSubmit}>
           <Input
             autoFocus

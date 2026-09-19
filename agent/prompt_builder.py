@@ -354,6 +354,16 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "user. Responses that only describe intentions without acting are not acceptable."
 )
 
+SECRET_CAPTURE_GUIDANCE = (
+    "# Secret handling\n"
+    "Never ask for or accept API keys, tokens, passwords, or vault secrets in chat, tool "
+    "arguments, shell commands, or argv. When a user needs to add, rotate, or replace a secret, call "
+    "`secret_capture` so the interactive surface collects it through masked input and stores it without returning "
+    "the value to you. This applies even when the named variable already exists. If secure capture is unavailable "
+    "on the current surface, tell the user to continue in a local CLI, TUI, or desktop session; do not offer a "
+    "plaintext fallback."
+)
+
 # "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls and the turn closes on
 # finish_reason=stop (#96550).
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")

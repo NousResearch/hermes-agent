@@ -1900,7 +1900,32 @@ class GatewayTurnMixin:
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
         status_code = getattr(e, "status_code", None)
-        if status_code in {400, 500} and len(prepared.history) > 50:
+        error_text = str(e or "").casefold()
+        # A long session plus HTTP 400/500 is not enough to call this context overflow.
+        # Providers also use 400 for unsupported models, entitlement/policy rejection,
+        # bad parameters, etc. Misclassifying those errors tells the user to /compact
+        # or /reset even though that cannot fix the provider failure, and the early
+        # return skips the ordinary failed-turn persistence path below.
+        context_overflow_markers = (
+            "context length",
+            "context window",
+            "maximum context",
+            "max context",
+            "too many tokens",
+            "payload too large",
+            "request too large",
+            "input too long",
+            "maximum number of tokens",
+            "token limit",
+        )
+        looks_like_context_overflow = any(
+            marker in error_text for marker in context_overflow_markers
+        )
+        if (
+            status_code in {400, 500}
+            and len(prepared.history) > 50
+            and looks_like_context_overflow
+        ):
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _CONTEXT_OVERFLOW_REPLY

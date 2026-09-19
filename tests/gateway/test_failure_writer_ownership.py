@@ -163,6 +163,79 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
     asyncio.run(check())
 
 
+def test_long_session_model_entitlement_400_is_not_mislabeled_as_context_overflow(tmp_path):
+    """Provider entitlement/policy HTTP 400 must not become /compact guidance only
+    because the session is long. The failed input follows normal persistence."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+
+        async def stop_typing(event, source):
+            return None
+
+        runner._hmwa_stop_typing_for_turn = stop_typing
+        source = SessionSource(platform=Platform.DISCORD, chat_id="entitlement", user_id="u")
+        entry = store.get_or_create_session(source)
+        db = store._db_for_session_id(entry.session_id)
+        prepared = runner._PreparedTurn(
+            [{"role": "user", "content": "x"}] * 94,
+            "", "x", "x", None, None, entry.session_id, "owner-entitlement",
+        )
+        err = RuntimeError(
+            "The model is not supported when using Codex with a ChatGPT account"
+        )
+        err.status_code = 400
+        before = db.message_count()
+        reply = await runner._hmwa_agent_error_reply(
+            err,
+            MessageEvent(text="x", source=source, message_id="m-entitlement"),
+            source, entry, entry.session_key, prepared,
+        )
+        assert "Session too large" not in reply
+        assert "/compact" not in reply
+        assert "request was rejected by the API" in reply
+        assert db.message_count() > before
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_long_session_generic_http_400_is_not_context_overflow():
+    import asyncio
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    runner = object.__new__(GatewayRunner)
+
+    async def stop_typing(event, source):
+        return None
+
+    runner._hmwa_stop_typing_for_turn = stop_typing
+    source = SessionSource(platform=Platform.DISCORD, chat_id="bad-request", user_id="u")
+    prepared = runner._PreparedTurn(
+        [{"role": "user", "content": "x"}] * 80, "", None, None, None, None
+    )
+    err = RuntimeError("unsupported model parameter")
+    err.status_code = 400
+
+    reply = asyncio.run(runner._hmwa_agent_error_reply(
+        err, MessageEvent(text="x", source=source), source, None, "k", prepared,
+    ))
+
+    assert "Session too large" not in reply
+    assert "/compact" not in reply
+    assert "request was rejected by the API" in reply
+
+
 def test_context_overflow_error_reply_carries_no_partial_effect_notice():
     """Overflow is a deterministic rejection (#107567); the reply must stay the /compress
     guidance alone rather than inherit the indeterminate "actions may have run" warning."""

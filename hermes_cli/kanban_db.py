@@ -109,6 +109,16 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+# Changes-requested rounds allowed on ONE card before it is parked for a human.
+# A review cycle is not self-limiting: nothing in the board stops implementer ->
+# reviewer -> implementer, and each extra round re-runs BOTH agents with their
+# full context. Measured 12/09/2026: one card took 18 runs / 10 review rounds for
+# 194.2M tokens (~$1.61) — ~35 % of that day's spend, for a change whose defect
+# classes were discovered round after round. Mirrors the block-loop guard above:
+# past the limit the card is parked `blocked` (needs_input) with a 'blocked'
+# event, so the ordinary notification chain reaches the origin instead of a
+# silent stop. Raising it is a one-line change here.
+REVIEW_ROUND_LIMIT = 3
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -3391,6 +3401,56 @@ def request_changes(
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+
+        # Review-round ceiling: past REVIEW_ROUND_LIMIT recorded rounds, the card
+        # is parked for a human instead of being handed back for one more round
+        # (the 4th round is refused, so its two runs are never paid for).
+        rounds = int(_row_get(conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = 'changes_requested'",
+            (task_id,),
+        ).fetchone(), "n") or 0)
+        if rounds >= REVIEW_ROUND_LIMIT:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'blocked',
+                       block_kind = 'needs_input',
+                       assignee = COALESCE(?, assignee),
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ? AND status = 'running' AND current_run_id = ?
+                """,
+                (implementer, task_id, int(current_run_id)),
+            )
+            if cur.rowcount != 1:
+                return False, "task changed during review handoff"
+            run_id = _end_run(
+                conn, task_id, outcome="changes_requested", status="blocked", summary=reason,
+            )
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {
+                    "reason": (
+                        f"review-round ceiling reached: {rounds} changes-requested rounds "
+                        f"recorded (limit {REVIEW_ROUND_LIMIT}) — a human decision is required "
+                        f"before another round. Last reviewer feedback: {reason}"
+                    ),
+                    "block_kind": "needs_input",
+                    "implementer": implementer,
+                    "reviewer": reviewer,
+                    "rounds": rounds,
+                    "limit": REVIEW_ROUND_LIMIT,
+                    "status": "blocked",
+                },
+                run_id=run_id,
+            )
+            return False, (
+                f"review-round ceiling reached ({REVIEW_ROUND_LIMIT} rounds): the card is parked "
+                f"blocked (needs_input) for a human decision instead of starting another round"
+            )
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is

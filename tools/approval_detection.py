@@ -7,6 +7,7 @@ prompting live here.
 import functools
 import logging
 import os
+import posixpath
 import re
 import shlex
 import tempfile
@@ -118,6 +119,11 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # In-place edits of the Hermes security policy / credential files are
+    # hardline too, but they are NOT expressible as a regex over the raw
+    # command text: deciding them correctly needs the real command word and
+    # the editor's option grammar. See _detect_hermes_inplace_edit() below,
+    # which detect_hardline_command() consults alongside these patterns.
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -171,6 +177,603 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+# =========================================================================
+# In-place edits of the Hermes security policy / credential files
+# =========================================================================
+#
+# ~/.hermes/config.yaml holds approvals.mode, yolo, and the permanent
+# allowlist; ~/.hermes/.env holds credentials.  Both are write-protected on
+# the file_tools side, and the smart-approval adjudicator has approved a
+# `sed -i` on config.yaml even while describing it correctly — so without a
+# terminal-side floor the agent can rewrite its own guardrails.
+#
+# This is deliberately NOT a regex over the command text.  A text search
+# gets both directions wrong, as the review of #60523 demonstrated:
+#
+#   * bypasses — `sed -e 's/a/b/' -i F` (the `i` is not in the first option
+#     token), `command sed -i F`, `env -i sed -i F`, `/usr/bin/sed -i F`.
+#     A pattern that hardcodes one spelling of the editor and one position
+#     for `-i` misses every equivalent spelling.
+#   * false positives — `sed -i 's|~/.hermes/config.yaml|config.yml|'
+#     README.md` (the protected path is inside the sed PROGRAM, the target
+#     is README.md) and `sed -i 's/a/b/' ~/.hermes/config.yaml.bak` (a
+#     backup copy, not the policy file).  Searching for the path anywhere
+#     after the options cannot tell an operand from program text.
+#
+# So resolve the command word for real, walk the editor's option grammar to
+# decide whether in-place mode is actually on, and compare the resulting
+# FILE OPERANDS against the protected paths as whole tokens.  Same
+# reasoning as _WRITE_TARGET_BOUNDARY above, which already keeps
+# `config.yaml.bak` out of the redirection deny.
+#
+# This runs its OWN wrapper resolution (_resolve_command_word below) rather
+# than reusing _iter_shell_command_word_spans' _COMMAND_WRAPPER_WORDS table:
+# that table is a best-effort heuristic for the softer execution-flag
+# detection (unrecognized options are skipped and guessed past), which is
+# the right tradeoff there but wrong for an unconditional floor — an
+# unrecognized wrapper option must never silently misresolve which word is
+# the editor. _resolve_command_word instead FAILS CLOSED (raises
+# _WrapperResolutionFailed) on any option shape it does not recognize; see
+# _unresolvable_segment_is_inplace_threat for how that exception is turned
+# into a block rather than a silent pass-through.
+#
+# Out of scope on purpose (unchanged from the DANGEROUS/smart level, and
+# matching how the xargs/find rm rules are drawn): indirect path delivery
+# via xargs, find -exec, or shell variable expansion.  Those never name the
+# target at a command position we can resolve statically.
+#
+# One precise instance of the same class: the `cd`-relative operand.
+#   cd ~/.hermes && sed -i 's/a/b/' config.yaml
+# After `cd` the relative operand `config.yaml` names the very same policy
+# file, but the guard sees only the bare relative token — it has no `.hermes/`
+# prefix and no CWD to resolve against, so whole-token matching cannot bind it
+# to the protected file. Closing that would require tracking the `cd` target
+# across the `&&` boundary (working-directory state), which is exactly the
+# indirect-delivery class this guard deliberately does not model.
+
+# Wrapper commands that prefix a real command without being one.
+_EDITOR_WRAPPERS = frozenset({
+    "sudo", "doas", "env", "exec", "nohup", "setsid", "time",
+    "command", "builtin", "stdbuf", "nice", "ionice",
+    # Command-position wrappers whose first operand is a mandatory POSITIONAL
+    # (not an option), so the command word sits after a fixed number of
+    # positionals. Covered by _WRAPPER_POSITIONAL below, not _WRAPPER_OPTS_WITH_ARG.
+    "timeout", "flock", "taskset", "chrt", "chroot",
+})
+# Wrapper options that consume the FOLLOWING token as their argument, so we
+# do not mistake that argument for the command word (`env -u PATH sed ...`).
+# Every entry verified against the tool's man page (2026-08-25: sudo 1.9.18,
+# doas OpenBSD, util-linux 2.43, coreutils 9.11, stdbuf(1)). The `=`-form
+# (`--user=root`) needs no separate-arg entry: the resolver already skips the
+# single token, which carries its own value. Attached short forms (`-n5`,
+# `-uPATH`) are skipped as a single token too. Only the separate-argument
+# spellings must be listed here.
+#
+# NOTE: for wrappers in _WRAPPER_POSITIONAL, an option listed here must be
+# recognized as argument-taking or its argument is consumed as the wrapper's
+# POSITIONAL and the resolver returns the wrong command word (the P2-1(a)
+# bypass class). The fail-closed rule in _resolve_command_word() refuses to
+# guess when an unrecognized option precedes a positional, but the tables
+# must still be complete.
+_WRAPPER_OPTS_WITH_ARG = {
+    "sudo": frozenset({"-u", "-g", "-h", "-p", "-C", "-U", "-D", "-R", "-T",
+                       "--user", "--group", "--host", "--prompt",
+                       "--close-from", "--chdir", "--chroot", "--other-user",
+                       "--command-timeout"}),
+    "doas": frozenset({"-u", "-C", "-a"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+    "ionice": frozenset({"-c", "-n", "-p", "-P", "-u",
+                         "--class", "--classdata", "--pid", "--pgid", "--uid"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    # timeout(1): -s/--signal, -k/--kill-after take separate arguments.
+    # -f/-p/-v are flags.
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    # flock(1): -w/--wait/--timeout, -E/--conflict-exit-code, -c/--command
+    # take separate arguments. -n/--nb/--nonblocking are aliases; -s/-e/-x/-F/-o/-u
+    # are flags. --start/--length take arguments too but only apply with --fcntl.
+    "flock": frozenset({"-w", "--wait", "--timeout", "-E", "--conflict-exit-code",
+                        "-c", "--command", "--start", "--length"}),
+    # taskset(1): -c/--cpu-list, -p/--pid take separate arguments. -a is a flag.
+    "taskset": frozenset({"-c", "--cpu-list", "-p", "--pid"}),
+    # chrt(1): -p/--pid, -T/--sched-runtime, -P/--sched-period,
+    # -D/--sched-deadline take separate arguments. Policy flags
+    # (-o/-f/-r/-b/-i/-d/-e) take none.
+    "chrt": frozenset({"-p", "--pid", "-T", "--sched-runtime",
+                       "-P", "--sched-period", "-D", "--sched-deadline"}),
+    # chroot(1) (coreutils): --groups=G_LIST, --userspec=USER:GROUP take
+    # separate arguments; --skip-chdir is a flag (see _WRAPPER_NOARG_FLAGS).
+    "chroot": frozenset({"--groups", "--userspec"}),
+}
+# Wrapper options that take NO argument (pure flags). Listed here so the
+# option loop in _resolve_command_word() recognizes them as options rather
+# than tripping the fail-closed rule that refuses to guess about
+# unrecognized option shapes. Verified against the same man pages.
+_WRAPPER_NOARG_FLAGS = {
+    "sudo": frozenset({"-A", "-B", "-b", "-E", "-e", "-H", "-i", "-K", "-k",
+                       "-l", "-N", "-n", "-P", "-S", "-s", "-V", "-v"}),
+    "doas": frozenset({"-L", "-n", "-s"}),
+    "env": frozenset({"-i", "-0", "--null", "--ignore-environment"}),
+    "nice": frozenset(),
+    # time(1): -a (append), -p (portability) are pure flags.
+    "time": frozenset({"-a", "--append", "-p", "--portability"}),
+    "ionice": frozenset({"-t", "--ignore"}),
+    "stdbuf": frozenset({"-L", "-q", "-h", "--line-buffered",
+                         "--quiet", "--help"}),
+    "timeout": frozenset({"-f", "--foreground", "-p", "--preserve-status",
+                          "-v", "--verbose"}),
+    "flock": frozenset({"-F", "--no-fork", "-e", "-x", "--exclusive",
+                        "-n", "--nb", "--nonblocking", "-o", "--close",
+                        "-s", "--shared", "-u", "--unlock", "--fcntl",
+                        "--verbose"}),
+    "taskset": frozenset({"-a", "--all-tasks"}),
+    "chrt": frozenset({"-o", "--other", "-f", "--fifo", "-r", "--rr",
+                       "-b", "--batch", "-i", "--idle", "-d", "--deadline",
+                       "-e", "--ext", "-G", "--reclaim-grub", "-O",
+                       "--deadline-overrun", "-R", "--reset-on-fork",
+                       "-a", "--all-tasks", "-m", "--max", "-v", "--verbose"}),
+    # setsid(1): -c/--ctty, -f/--fork, -w/--wait, -h/--help, -V/--version.
+    # nohup(1): --help, --version.  exec, command, builtin: no options.
+    "setsid": frozenset({"-c", "--ctty", "-f", "--fork", "-w", "--wait",
+                         "-h", "--help", "-V", "--version"}),
+    "nohup": frozenset({"--help", "--version"}),
+    "exec": frozenset(),
+    "command": frozenset(),
+    "builtin": frozenset(),
+    # chroot(1): --skip-chdir is the one pure flag.
+    "chroot": frozenset({"--skip-chdir"}),
+}
+# Command-position wrappers and how many POSITIONAL operands each consumes
+# before the command word. Verified against the man pages listed above.
+_WRAPPER_POSITIONAL = {
+    "timeout": 1,    # timeout DURATION command …
+    "flock": 1,      # flock FILE command …   (FILE is positional; the `flock 9` fd form is out of scope)
+    "taskset": 1,    # taskset MASK command …
+    "chrt": 1,       # chrt [OPTS] [SCHED_TYPE] PRIORITY command … (PRIORITY is the one positional)
+    "chroot": 1,     # chroot NEWROOT command …
+}
+# Wrappers whose single positional may be SUPPLIED BY AN OPTION ARGUMENT
+# instead: taskset(1) `taskset --cpu-list 0 command` — the cpu-list IS the
+# mask, so no separate mask positional follows. When such an option is
+# consumed by the option loop, the positional count drops by one.
+_WRAPPER_POSITIONAL_SUPPLIED_BY = {
+    "taskset": frozenset({"-c", "--cpu-list"}),
+}
+
+
+class _WrapperResolutionFailed(Exception):
+    """A wrapper in the command uses an option or operand shape the resolver
+    cannot account for.
+
+    Raised by `_resolve_command_word()` when it must refuse to guess which
+    token is the command word. Deliberately fail-closed: a wrong guess
+    returns the wrong editor and is exactly the hardline bypass class this
+    guard exists to prevent (P2-1(a)). `_detect_hermes_inplace_edit()` turns
+    this into an unconditional hardline block for any in-place editor in the
+    command.
+    """
+
+
+# Editors with an in-place mode, and the short options that take a separate
+# argument.  Case matters: ruby/perl `-I` (include dir, takes an argument)
+# must not be confused with `-i` (in-place), so option parsing runs on the
+# original-case text.
+_INPLACE_EDITOR_ARG_OPTS = {
+    "sed": frozenset({"e", "f", "l"}),
+    "perl": frozenset({"e", "E", "F", "I", "M", "m"}),
+    "ruby": frozenset({"e", "I", "r", "C", "F", "K", "E"}),
+}
+# Long options taking a separate argument when written without "=".
+_INPLACE_EDITOR_LONG_ARG_OPTS = {
+    "sed": frozenset({"--expression", "--file", "--line-length"}),
+    "perl": frozenset(),
+    "ruby": frozenset({"--encoding"}),
+}
+# Long options that select a script inline, so the first operand is a FILE
+# rather than the program text.
+_INPLACE_SCRIPT_OPTS = {
+    "sed": frozenset({"e", "f"}),
+    "perl": frozenset({"e", "E"}),
+    "ruby": frozenset({"e"}),
+}
+_INPLACE_SCRIPT_LONG_OPTS = frozenset({"--expression", "--file"})
+# The protected files, as the path token a shell would hand the editor.
+_HERMES_PROTECTED_BASENAMES = frozenset({"config.yaml", ".env"})
+_HERMES_HOME_PREFIXES = (
+    "~/.hermes/",
+    "$home/.hermes/",
+    "${home}/.hermes/",
+    "$hermes_home/",
+    "${hermes_home}/",
+)
+
+
+def _shell_word_split(segment: str) -> list:
+    """Split one command segment into shell words, dropping quote marks.
+
+    Forgiving by design — this runs on adversarial and half-normalized text,
+    so an unterminated quote must yield tokens rather than raise.  Quotes are
+    removed because the operand comparison wants the path the shell would
+    actually pass ("~/.hermes/config.yaml" -> ~/.hermes/config.yaml), and a
+    quoted sed program collapses to a single token, which is exactly how it
+    reaches the editor.
+
+    An unquoted ``<``/``>`` always ends the current word and starts its own
+    token, even with no surrounding whitespace: the shell parses redirection
+    that way, so `sed -i 's/a/b/' ~/.hermes/config.yaml>/tmp/out` hands sed
+    the clean operand `~/.hermes/config.yaml` with the redirect target as a
+    separate word. Without this, the two glued into one token that matched
+    neither the protected path nor anything else, and the edit went
+    undetected — the redirect target is irrelevant to sed's own arguments,
+    but the FILE OPERAND must still be recognized on its own.
+    """
+    tokens: list = []
+    current: list = []
+    quote = None
+    for ch in segment:
+        if quote is not None:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "<>":
+            if current:
+                tokens.append("".join(current))
+                current = []
+            tokens.append(ch)
+        elif ch.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _wrapper_operand_span(tokens: list, index: int, wrapper: str) -> int:
+    """Advance `index` past `wrapper`'s own options and mandatory positionals.
+
+    `tokens[index - 1]` is the wrapper. Returns the index of the next token
+    (the command word, or the following wrapper in a chain).
+
+    Raises _WrapperResolutionFailed when the option/positional shape is
+    ambiguous (unrecognized option, missing mandatory positional) — see the
+    module-level note above on why this guard fails closed rather than
+    reusing the softer _COMMAND_WRAPPER_WORDS heuristic.
+    """
+    limit = len(tokens)
+    takes_arg = _WRAPPER_OPTS_WITH_ARG.get(wrapper, frozenset())
+    noarg_flags = _WRAPPER_NOARG_FLAGS.get(wrapper, frozenset())
+    # --help / --version are universal GNU noarg options (every man page lists
+    # them); treat them as recognized noarg so they never trip the fail-closed
+    # rule.
+    noarg_flags = noarg_flags | {"--help", "--version"}
+    # Short letters that take an argument (`-u` -> 'u') and short letters that
+    # are pure flags (`-n` -> 'n').
+    arg_letters = {o[1] for o in takes_arg
+                   if len(o) == 2 and o.startswith("-") and not o.startswith("--")}
+    flag_letters = {o[1] for o in noarg_flags
+                    if len(o) == 2 and o.startswith("-") and not o.startswith("--")}
+    # How much of the wrapper's positional requirement an option argument
+    # already satisfies (taskset --cpu-list).
+    supplied_by = _WRAPPER_POSITIONAL_SUPPLIED_BY.get(wrapper, frozenset())
+    supplied = 0
+    # Pure flags actually seen (for the chrt optional-priority rule).
+    noarg_flags_seen = set()
+    # Consume the wrapper's own options.
+    while index < limit:
+        opt = tokens[index]
+        if not opt.startswith("-") or opt == "-":
+            break
+        if opt == "--":
+            index += 1
+            break
+        name = opt.split("=", 1)[0]
+        if name in takes_arg:
+            # `--user root`, `--user=root`, `-u root`, `-u=root`.
+            index += 1
+            if "=" not in opt and index < limit:
+                index += 1
+                if name in supplied_by:
+                    supplied += 1
+            continue
+        if name in noarg_flags:
+            noarg_flags_seen.add(name)
+            index += 1
+            continue
+        # Attached short form: `-n5` (nice), `-uPATH` (env), `-oL` (stdbuf).
+        # The option is recognized and its argument is glued to it, so only
+        # this one token is consumed.
+        if (len(name) > 2 and name.startswith("-") and not name.startswith("--")
+                and name[1] in arg_letters):
+            index += 1
+            if ("-" + name[1]) in supplied_by:
+                supplied += 1
+            continue
+        # A bundle of recognized pure flags (`-xn`): no arguments. Any bundle
+        # member that takes an argument makes the argument count ambiguous —
+        # refuse to guess (fail closed).
+        if (len(name) > 2 and name.startswith("-") and not name.startswith("--")
+                and all(ch in flag_letters for ch in name[1:])):
+            index += 1
+            continue
+        # Unrecognized shape (unknown option, unknown bundle member, or a
+        # malformed flag). We cannot tell how many tokens the wrapper
+        # consumes, so refusing to resolve is the only non-bypassable choice:
+        # a wrong guess returns the wrong command word and is the P2-1(a)
+        # bypass class. Fail closed.
+        raise _WrapperResolutionFailed(
+            f"unrecognized option {opt!r} for wrapper {wrapper!r}"
+        )
+    # Wrappers in _WRAPPER_POSITIONAL take a mandatory POSITIONAL before the
+    # command word (minus whatever an option argument already supplied, e.g.
+    # `taskset --cpu-list 0 command`).
+    required = _WRAPPER_POSITIONAL.get(wrapper, 0) - supplied
+    # chrt(1) is the one wrapper whose single positional (PRIORITY) is
+    # OPTIONAL once a policy flag (-o/-f/-r/-b/-i/-d/-e) is used: `chrt -b 80
+    # command` and `chrt -b command` are both legal. Disambiguation: the
+    # priority is numeric (0-99), the command word is not.
+    chrt_policy_flags = {"-o", "--other", "-f", "--fifo", "-r", "--rr",
+                         "-b", "--batch", "-i", "--idle", "-d", "--deadline",
+                         "-e", "--ext"}
+    chrt_policy_seen = wrapper == "chrt" and bool(
+        chrt_policy_flags & noarg_flags_seen
+    )
+    for _ in range(required):
+        if index >= limit:
+            if wrapper == "chrt" and chrt_policy_seen:
+                # Priority was optional; the command word simply was not
+                # given — nothing more to consume.
+                break
+            # The wrapper is missing its mandatory positional (e.g. bare
+            # `flock`): there is no resolvable command word behind it, so
+            # refuse rather than guess.
+            raise _WrapperResolutionFailed(
+                f"missing positional operand for wrapper {wrapper!r}"
+            )
+        if tokens[index].startswith("-") and tokens[index] != "-":
+            # A flag where the wrapper's mandatory positional was expected
+            # (e.g. `flock -w` with no seconds): the shell would hand the flag
+            # to the wrapper as the positional, so the command word is not
+            # where a positional would be. Refuse to resolve (fail closed).
+            raise _WrapperResolutionFailed(
+                f"option {tokens[index]!r} where wrapper {wrapper!r} "
+                "needs its positional operand"
+            )
+        if wrapper == "chrt":
+            is_numeric = tokens[index].replace(".", "", 1).isdigit()
+            if not is_numeric and not chrt_policy_seen:
+                # No policy flag was given, so this positional is the
+                # MANDATORY priority (chrt(1) always requires one in that
+                # case) and must be numeric. A non-numeric token here is not
+                # a valid priority, so we cannot trust that what follows is
+                # the command word either — refuse rather than guess, same
+                # as the "flag where positional expected" rule above.
+                raise _WrapperResolutionFailed(
+                    f"chrt: non-numeric priority {tokens[index]!r}"
+                )
+            if is_numeric:
+                # The (optional-if-policy-seen, otherwise mandatory)
+                # PRIORITY. The command word is the next token.
+                index += 1
+                if index >= limit:
+                    raise _WrapperResolutionFailed(
+                        "chrt: no command word after the priority"
+                    )
+            # Non-numeric (only reachable with chrt_policy_seen, where the
+            # priority is optional) or after skipping the priority: the
+            # command word is at index — stop here.
+            break
+        index += 1
+    return index
+
+
+def _resolve_command_word(tokens: list) -> tuple:
+    """Return (command_word, remaining_args) after stripping wrappers.
+
+    Resolves `/usr/bin/sed` to `sed` and steps over `sudo`/`env`/`command`
+    and friends, including their own options and `VAR=VAL` assignments, so
+    the caller sees the program that actually runs.
+
+    Raises _WrapperResolutionFailed when a wrapper uses an option we do not
+    recognize (or a bundle / malformed shape whose argument count is
+    ambiguous). Failing closed here — rather than guessing which token is
+    the command word — is deliberate: a wrong guess returns the wrong
+    editor and is exactly the hardline bypass class this guard exists to
+    prevent. The caller turns the exception into an unconditional block.
+    """
+    index = 0
+    limit = len(tokens)
+    while index < limit:
+        token = tokens[index]
+        if not token:
+            index += 1
+            continue
+        token = token.lstrip("(`{")
+        if not token:
+            index += 1
+            continue
+        if "=" in token and not token.startswith("-"):
+            name = token.split("=", 1)[0]
+            if name and (name[0].isalpha() or name[0] == "_") and all(
+                c.isalnum() or c == "_" for c in name
+            ):
+                index += 1
+                continue
+        base = token.replace("\\", "/").rsplit("/", 1)[-1]
+        if base in _EDITOR_WRAPPERS:
+            index = _wrapper_operand_span(tokens, index + 1, base)
+            continue
+        return (base, tokens[index + 1:])
+    return ("", [])
+
+
+def _is_protected_hermes_operand(token: str) -> bool:
+    """True when this operand names ~/.hermes/config.yaml or ~/.hermes/.env.
+
+    Whole-token comparison with an exact filename match, so `config.yaml.bak`
+    and `config.yaml.orig` — distinct files that carry no policy — stay out.
+
+    Before the match, canonicalize the path with pure string/``posixpath``
+    normalization (no filesystem access, no ``os.path.realpath`` — this runs
+    on adversarial input inside a guard): backslash-fold to ``/``, collapse
+    repeated separators, resolve ``.`` and ``..`` segments, and strip a
+    trailing separator. So the aliases `~/.hermes/./config.yaml`,
+    `~/.hermes//config.yaml`, `~/.hermes/sub/../config.yaml`, and the
+    trailing-separator form all name the very same policy file and are caught,
+    while `config.yaml.bak` / `config.yaml.orig` remain allowed.
+    """
+    candidate = token.strip().rstrip(")`;&|").replace("\\", "/").lower()
+    if not candidate:
+        return False
+    candidate = posixpath.normpath(candidate)
+    for prefix in _HERMES_HOME_PREFIXES:
+        if candidate.startswith(prefix):
+            if candidate[len(prefix):] in _HERMES_PROTECTED_BASENAMES:
+                return True
+    # Spelled-out home directory (/home/u/.hermes/config.yaml, and the
+    # /Users/u form on macOS). The tilde/$HOME spellings above are the ones
+    # an agent writes, but an absolute path mutates the very same file.
+    for basename in _HERMES_PROTECTED_BASENAMES:
+        if candidate.endswith("/.hermes/" + basename):
+            return True
+    return False
+
+
+def _editor_targets_protected_file(editor: str, args: list) -> bool:
+    """Walk an in-place editor's options; report a protected FILE operand.
+
+    Returns True only when in-place mode is genuinely enabled AND one of the
+    operands the editor would rewrite is a protected file.
+    """
+    short_arg_opts = _INPLACE_EDITOR_ARG_OPTS[editor]
+    long_arg_opts = _INPLACE_EDITOR_LONG_ARG_OPTS[editor]
+    script_opts = _INPLACE_SCRIPT_OPTS[editor]
+    in_place = False
+    have_script_option = False
+    operands: list = []
+    index = 0
+    limit = len(args)
+    end_of_options = False
+    while index < limit:
+        token = args[index]
+        index += 1
+        if not token:
+            continue
+        if end_of_options or not token.startswith("-") or token == "-":
+            operands.append(token)
+            continue
+        if token == "--":
+            end_of_options = True
+            continue
+        if token.startswith("--"):
+            name = token.split("=", 1)[0]
+            if name in ("--in-place", "--inplace"):
+                in_place = True
+                continue
+            if name in _INPLACE_SCRIPT_LONG_OPTS:
+                have_script_option = True
+            if name in long_arg_opts and "=" not in token and index < limit:
+                index += 1
+            continue
+        # Short option token, possibly a bundle: -ri, -i.bak, -ne, -pi
+        chars = token[1:]
+        position = 0
+        while position < len(chars):
+            letter = chars[position]
+            if letter == "i":
+                # Everything after `i` is the attached backup suffix.
+                in_place = True
+                break
+            if letter in short_arg_opts:
+                if letter in script_opts:
+                    have_script_option = True
+                # Attached argument, or the next token if nothing is attached.
+                if position + 1 >= len(chars) and index < limit:
+                    index += 1
+                break
+            position += 1
+    if not in_place:
+        return False
+    # Without an explicit script option the FIRST operand is the program
+    # text (`sed -i 's/a/b/' file`), not a file the editor rewrites.
+    files = operands if have_script_option else operands[1:]
+    return any(_is_protected_hermes_operand(operand) for operand in files)
+
+
+def _unresolvable_segment_is_inplace_threat(tokens: list) -> bool:
+    """Fail-closed fallback for a segment whose wrapper the resolver refused.
+
+    When `_resolve_command_word()` raises `_WrapperResolutionFailed`, we
+    cannot determine the real command word — so we cannot rule out that the
+    wrapper is hiding an in-place edit of a protected file. Block the segment
+    (return True) when it still names BOTH an in-place editor (sed/perl/ruby)
+    and a protected operand, and stay silent otherwise. This keeps the
+    fail-closed posture where it matters while not false-positiving on a read
+    (`flock --bogus /tmp/lock cat ~/.hermes/config.yaml`), an unrelated
+    command, or `--help`.
+    """
+    editor_words = {"sed", "perl", "ruby"}
+    has_editor = False
+    has_protected = False
+    for token in tokens:
+        base = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base in editor_words:
+            has_editor = True
+        if _is_protected_hermes_operand(token):
+            has_protected = True
+    return has_editor and has_protected
+
+
+def _detect_hermes_inplace_edit(command_variant: str) -> bool:
+    """True when this variant runs an in-place editor on a protected file."""
+    if not _HERMES_INPLACE_EDITOR_HINT_RE.search(command_variant):
+        # Cheap pre-filter: every path below (both the normal resolution and
+        # the fail-closed _unresolvable_segment_is_inplace_threat fallback)
+        # requires the literal word sed/perl/ruby to be present somewhere in
+        # the text, so the overwhelming majority of commands (which contain
+        # none of the three) can skip the per-segment tokenize-and-resolve
+        # work entirely. This runs once per command_variant, of which there
+        # are typically several per command execution.
+        return False
+    for segment in command_variant.split("\n"):
+        if not segment.strip():
+            continue
+        tokens = _shell_word_split(segment)
+        if not tokens:
+            continue
+        try:
+            editor, args = _resolve_command_word(tokens)
+        except _WrapperResolutionFailed:
+            # The wrapper's command word is not determinable. Fail closed:
+            # block this segment if it still plausibly edits a protected file
+            # in place (see _unresolvable_segment_is_inplace_threat).
+            if _unresolvable_segment_is_inplace_threat(tokens):
+                return True
+            continue
+        if editor in _INPLACE_EDITOR_ARG_OPTS and _editor_targets_protected_file(
+            editor, args
+        ):
+            return True
+    return False
+
+
+_HERMES_INPLACE_DESCRIPTION = (
+    "in-place edit of the Hermes approval policy / credential file "
+    "(~/.hermes/config.yaml, ~/.hermes/.env)"
+)
+# Cheap pre-filter for _detect_hermes_inplace_edit(): every one of the three
+# supported editors must appear as this literal substring somewhere in the
+# text for either detection path (normal resolution or the fail-closed
+# _unresolvable_segment_is_inplace_threat fallback) to ever return True.
+_HERMES_INPLACE_EDITOR_HINT_RE = re.compile(r'sed|perl|ruby', re.IGNORECASE)
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
     if _command_parser_limit_exceeded(command):
@@ -196,6 +799,11 @@ def detect_hardline_command(command: str) -> tuple:
                 )
             if pattern_re.search(masked_lower if quote_masked else variant_lower):
                 return (True, description)
+        # Option-grammar check, not a text search — see the block comment
+        # above _shell_word_split(). Runs on the original-case variant
+        # because ruby/perl `-I` and `-i` mean different things.
+        if _detect_hermes_inplace_edit(command_variant):
+            return (True, _HERMES_INPLACE_DESCRIPTION)
     return (False, None)
 
 
@@ -548,14 +1156,19 @@ _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
-_COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
+_COMMAND_WRAPPER_WORDS = {"sudo", "doas", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
 _SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
+# doas (OpenBSD) options that take a separate argument, for the same reason
+# sudo's are listed: so a wrapped `-c/-e` payload extraction (below) does not
+# mistake the option's own argument for the wrapped command word.
+_DOAS_OPTIONS_WITH_ARG = {"-u", "-C", "-a"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "chroot": {"--groups", "--userspec"},
     "sudo": _SUDO_OPTIONS_WITH_ARG,
+    "doas": _DOAS_OPTIONS_WITH_ARG,
     "env": {"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"},
     "exec": {"-a"}, "nice": {"-n", "--adjustment"},
     "time": {"-f", "--format", "-o", "--output"},
@@ -887,6 +1500,36 @@ def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
     return False, None
 
 
+def _flock_exec_payload(args: list[str]) -> tuple[bool, str | None]:
+    """Return whether flock's own ``-c`` occurs and the payload it owns.
+
+    flock(1) ``flock FILE [-c COMMAND]`` runs COMMAND through a shell itself
+    (``sh -c COMMAND``), so the payload is a shell string exactly like bash's
+    ``-c``. ``-c/--command`` and ``--command=…`` both own their payload.
+    Argument-taking flock options (``-w``, ``-E``, ``-c``, ``--start``,
+    ``--length``) consume the following token, so they are skipped first to
+    avoid mistaking their argument for the command word.
+    """
+    arg_options = {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code",
+                   "--start", "--length"}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            break
+        option, equals, payload = token.partition("=")
+        payload = payload if equals else None
+        if option in {"-c", "--command"}:
+            if payload is None and index + 1 < len(args):
+                payload = args[index + 1]
+            return payload is not None, payload
+        if option in arg_options and payload is None:
+            index += 2
+            continue
+        index += 1
+    return False, None
+
+
 def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     """Return (option, program) for a read-only tool's program-running flag."""
     flags = _READ_TOOL_EXEC_FLAGS[tool]
@@ -930,7 +1573,7 @@ def _execution_flag_findings(command: str):
             executable_name = os.path.basename(executable).lower()
             family = _interpreter_family(executable)
             if tokens is None:
-                if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS:
+                if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS or executable_name == "flock":
                     yield (_MALFORMED_EXEC_DESCRIPTION, None)
                 continue
             if not tokens:
@@ -945,6 +1588,10 @@ def _execution_flag_findings(command: str):
                     found, payload = _bash_exec_payload(args)
                     if found:
                         yield ("shell command via -c/-lc flag", payload)
+                if executable_name == "flock":
+                    found, payload = _flock_exec_payload(args)
+                    if found:
+                        yield ("shell command via flock -c flag", payload)
                 if executable_name in _READ_TOOL_EXEC_FLAGS:
                     finding = _read_tool_exec_flag(executable_name, args)
                     if finding:

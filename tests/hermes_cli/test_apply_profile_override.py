@@ -15,6 +15,29 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_explicit_profile_routing():
+    """Clear the process-global explicit -p record so each case is isolated.
+
+    _apply_profile_override remembers an explicit -p routing on sys to
+    survive the re-entrant import (see
+    test_main_profile_override_reroute.py); direct multi-call tests reset it
+    exactly like argv/env.
+    """
+    from hermes_cli.main import _EXPLICIT_PROFILE_ATTR
+    try:
+        delattr(sys, _EXPLICIT_PROFILE_ATTR)
+    except AttributeError:
+        pass
+    yield
+    try:
+        delattr(sys, _EXPLICIT_PROFILE_ATTR)
+    except AttributeError:
+        pass
+
 
 
 def _run_apply_profile_override(

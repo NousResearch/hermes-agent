@@ -179,12 +179,18 @@ weak `transport` ref to the receiving adapter. `"default"` is spelled out;
 raises `IdentityUnresolved` and the event is dropped.
 
 Adapters also carry `_owner_profile` (installed at adapter configuration time,
-before any inbound event) because adapter ingress runs before the runner pins
-the identity; `_session_key_profile` resolves identity → source stamp → owner
-profile → store resolver. Text/media batching, active-session tracking, and the
-busy-session guard are all keyed per lane, so two bots sharing a chat do not
-share a session lane. Copy a source with `session_identity.replace_source`, not
-`dataclasses.replace`, or the copy loses its transport and identity.
+before any inbound event). Every ingress path canonicalizes the identity FIRST
+— `BasePlatformAdapter._canonicalize` runs at `handle_message`, text/photo/album
+batching, the busy path and every adapter-derived session key; the runner's
+per-profile and default handlers, the auth-check callback and the shared
+`_handle_message` gate do the same — so no lane is keyed before the receiving
+bot is known. Text/media batching, active-session tracking, the busy-session
+guard, `/stop` `/new` `/reset` and clarify replies are all keyed per lane, so
+two bots sharing a chat do not share a session lane and a control command on one
+bot cannot reach the other's run. A route to an unserved profile is dropped with
+one WARNING at the first seam it reaches, never keyed into `agent:main`. Copy a
+source with `session_identity.replace_source`, not `dataclasses.replace`, or the
+copy loses its transport and identity.
 
 ## Control plane
 

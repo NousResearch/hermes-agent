@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -91,9 +92,18 @@ def _mtime_drift(shell_hooks, spec, entry) -> tuple[bool | None, str, str]:
     mtime_at = entry.get("script_mtime_at_approval")
     if not (mtime_now and mtime_at):
         return None, mtime_at, mtime_now
-    if mtime_now > mtime_at:
+    # Parse both ISO timestamps to datetime for proper comparison
+    try:
+        dt_now = datetime.fromisoformat(mtime_now.replace('Z', '+00:00'))
+        dt_at = datetime.fromisoformat(mtime_at.replace('Z', '+00:00'))
+    except (ValueError, AttributeError):
+        # Fall back to string comparison if parsing fails
+        if mtime_now > mtime_at:
+            return True, mtime_at, mtime_now
+        return (False if mtime_now == mtime_at else None), mtime_at, mtime_now
+    if dt_now > dt_at:
         return True, mtime_at, mtime_now
-    return (False if mtime_now == mtime_at else None), mtime_at, mtime_now
+    return (False if dt_now == dt_at else None), mtime_at, mtime_now
 
 
 # ---------------------------------------------------------------------------

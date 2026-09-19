@@ -12,7 +12,14 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
-import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
+import {
+  $busy,
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  $workspaceCwdOwner,
+  workspaceCwdBelongsToSelectedSession
+} from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -96,8 +103,20 @@ export const $reviewScopeCwd = atom<null | string>(null)
 export const $reviewScopeTarget = atom('main')
 
 /** The repo the pane is reading right now: its pinned scope, else the active
- *  session's cwd. Exported for pane helpers that join repo-relative paths. */
-export const reviewRepoCwd = (): null | string => $reviewScopeCwd.get()?.trim() || $currentCwd.get()?.trim() || null
+ *  session's cwd. Exported for pane helpers that join repo-relative paths.
+ *
+ *  The fallback is guarded like every other workspace-derived surface
+ *  (coding rail, right-sidebar tree): during a switch — or under a bare new
+ *  chat — `$currentCwd` still holds the PREVIOUS conversation's path until the
+ *  new session reports its own workspace, and `$workspaceCwdOwner` marks it as
+ *  not the selected conversation's. Reading it raw diffs another conversation's
+ *  uncommitted changes (and, in remote mode, hits a different gateway's
+ *  backend), so an unowned path yields null and the pane falls to its
+ *  "not a repo" state instead. */
+export const reviewRepoCwd = (): null | string =>
+  $reviewScopeCwd.get()?.trim() ||
+  (workspaceCwdBelongsToSelectedSession() ? $currentCwd.get()?.trim() : null) ||
+  null
 
 const repoCwd = reviewRepoCwd
 
@@ -613,6 +632,17 @@ let prevScopeCwd = $reviewScopeCwd.get()
 $reviewScopeCwd.subscribe(scope => {
   if (scope !== prevScopeCwd) {
     prevScopeCwd = scope
+    onReviewRepoMoved()
+  }
+})
+
+// Ownership of `$currentCwd` flipped without the path itself moving: a switch
+// released it to the previous conversation (untrusted now) or a resume settled
+// and adopted it for the selected one (trusted again). The `$currentCwd`
+// subscriber above can't fire here — the path didn't change — so this is the
+// only edge that re-evaluates an already-open pane on it.
+$workspaceCwdOwner.subscribe(() => {
+  if (!$reviewScopeCwd.get()) {
     onReviewRepoMoved()
   }
 })

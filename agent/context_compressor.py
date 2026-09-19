@@ -2312,17 +2312,23 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.debug("compression cancellation check failed", exc_info=True)
             return False
 
-    def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
-        """The trigger ``update_model`` would install for ``model``/``context_length``, without mutating
-        state — the model-switch guard quotes it in its preflight-compression warning. Ignores any
-        auxiliary-summariser ceiling: the post-switch feasibility probe re-derives that."""
+    def _derive_trigger(self, model: str, context_length: int, provider: str) -> tuple[float, float, int]:
+        """``(base_percent, effective_percent, threshold_tokens)`` for a model/window, from the raw config
+        value so a switch away from an overridden model falls back correctly. Pure: the one place the
+        trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
+        guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
+        ceiling, which the feasibility probe re-derives per runtime."""
         config_percent = getattr(self, "_config_threshold_percent", self.threshold_percent)
         base_percent = resolve_model_threshold(model, self.model_thresholds, config_percent, provider)
-        threshold_percent = self._effective_threshold_percent(context_length, base_percent)
-        threshold = self._compute_threshold_tokens(context_length, threshold_percent, self.max_tokens)
+        effective_percent = self._effective_threshold_percent(context_length, base_percent)
+        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
         if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
             threshold = min(threshold, self.threshold_tokens_cap, context_length)
-        return threshold
+        return base_percent, effective_percent, threshold
+
+    def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
+        """The trigger ``update_model`` would install, without mutating state."""
+        return self._derive_trigger(model, context_length, provider)[2]
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
@@ -2332,10 +2338,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         self.context_length = context_length
-        # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
-        _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct, provider)
-        self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
         if max_tokens is not None:
@@ -2345,7 +2347,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # main model); the caller re-runs the feasibility probe. A same-runtime recompute (overflow-reported
             # window, grown local window, tier cap) keeps it: the summariser did not change (#114707).
             self._aux_context_ceiling = None
-        self.threshold_tokens = self._compute_threshold_tokens(context_length, self.threshold_percent, self.max_tokens)
+        self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
+            model, context_length, provider)
         self._apply_threshold_tokens_cap()
         # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
         self._tail_token_budget = None

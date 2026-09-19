@@ -137,7 +137,7 @@ def _child_compression_cap_tokens(raw) -> "int | None":
 def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
     (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
-    compacts where its parent does (the global cap, 256K by default). The compressor applies the cap on first window resolution, which
+    compacts where its parent does. The compressor applies the cap on first window resolution, which
     happens after construction, so setting it here is exactly equivalent to config."""
     from agent.context_compressor import ContextCompressor
 

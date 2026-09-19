@@ -70,7 +70,10 @@ def test_merge_appends_to_existing_warning(monkeypatch):
     assert "preflight compression" in result.warning_message
 
 
-def test_default_cap_warns_before_large_window_ratio_threshold(monkeypatch):
+def test_cap_lowers_the_switch_warning_threshold_below_the_ratio(monkeypatch):
+    """The warning quotes the trigger the compressor will install: on a 1M target the ratio alone says
+    500K (no warning at 300K in-flight), the cap says less — the guard must warn with the capped number."""
+    cap = 256_000
     monkeypatch.setattr(
         "hermes_cli.context_switch_guard._estimate_tokens",
         lambda *a, **k: 300_000,
@@ -82,7 +85,7 @@ def test_default_cap_warns_before_large_window_ratio_threshold(monkeypatch):
     cc = _compressor(
         monkeypatch,
         context_length=200_000,
-        threshold_tokens_cap=256_000,
+        threshold_tokens_cap=cap,
     )
     agent = SimpleNamespace(
         context_compressor=cc,
@@ -95,9 +98,7 @@ def test_default_cap_warns_before_large_window_ratio_threshold(monkeypatch):
     merge_preflight_compression_warning(result, agent=agent)
 
     assert "preflight compression" in result.warning_message
-    assert "auto-compress at ~256,000" in result.warning_message
-
-
+    assert f"auto-compress at ~{cap:,}" in result.warning_message
 
 
 def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):

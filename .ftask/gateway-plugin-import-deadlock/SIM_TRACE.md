@@ -25,7 +25,7 @@ scenarios:
     observed: |
       
     verdict: pass
-code_diff_hash: 7cd1c375b4425e2bb687ce9add9f708b85c7a5817307ea7f31e00c6de3a68c4f
+code_diff_hash: c7f56d98fcd3d523dac69e9938bc7ed80ea14c1d83ca055a48c41643ce38fa1d
 ---
 
 # Simulation trace — gateway-plugin-import-deadlock
@@ -46,38 +46,38 @@ Verdict legend:
 ## Captured runs (ftask --capture audit trail; do NOT hand-edit — re-run --capture to refresh)
 
 - scenario_id: 1
-  at: 2026-09-19T04:47:48.736Z
+  at: 2026-09-19T04:49:52.231Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_is_not_backgrounded_for_gateway"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 398
+  duration_ms: 536
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.16s
+    1 passed in 0.22s
   stderr_tail: |
     (empty)
 
 - scenario_id: 2
-  at: 2026-09-19T04:47:50.710Z
+  at: 2026-09-19T04:49:54.557Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_runs_for_plain_chat"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 345
+  duration_ms: 383
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.17s
+    1 passed in 0.20s
   stderr_tail: |
     (empty)
 
 - scenario_id: 3
-  at: 2026-09-19T04:47:52.654Z
+  at: 2026-09-19T04:49:56.496Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_skipped_for_tui_launch"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 324
+  duration_ms: 329
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.16s
+    1 passed in 0.17s
   stderr_tail: |
     (empty)
 

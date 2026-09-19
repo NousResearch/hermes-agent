@@ -34,3 +34,21 @@ assumptions: |
 notes: |
   [rebase-refresh] Rebase-refresh delta: one canonical ci.yaml test caller renamed tests to full-suite and needs updated; no duplicate workflow, permission, concurrency, runner, or test behavior change. 20 focused tests pass.
 ---
+---
+recorded_at: 2026-09-19T04:50:11.031Z
+by: claude
+verdict: pass
+mode: delta
+finding_ids: none
+simulation_verdict: pass
+spec_hash: 9145c40a89a0
+code_patch_id: d6d0bbf6890ad2c91734257ac930d1febfdb8f3e3e528d6a4faa770e934aa40a
+code_diff_hash: c7f56d98fcd3d523dac69e9938bc7ed80ea14c1d83ca055a48c41643ce38fa1d
+head_sha: 1075f6b298735129b3e1f49536f2afb590289481
+confusion: |
+  None.
+assumptions: |
+  Separate workflow job namespaces remain valid GitHub Actions syntax.
+notes: |
+  [rebase-refresh] Rebase-refresh: canonical caller and reusable workflow both expose full-suite job ids in separate namespaces; needs references consistent; no runner, command, permission, concurrency, or trigger changes; no new p0.
+---

@@ -2413,6 +2413,8 @@ export interface Translations {
       reveal: string
       copyPath: string
       removeFromSidebar: string
+      hiddenFromSidebar: string
+      undoHide: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string

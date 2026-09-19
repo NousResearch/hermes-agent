@@ -51,6 +51,7 @@ import {
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  sessionIdentity,
   writeJsonLine,
 } from './bridge_helpers.js';
 
@@ -1132,6 +1133,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    session: sessionIdentity(SESSION_DIR),
     capabilities: { outboundMentions: true },
   });
 });

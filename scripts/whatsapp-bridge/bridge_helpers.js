@@ -3,6 +3,18 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { format } from 'util';
 
+/**
+ * Normalized absolute identity of a bridge's session directory, reported in
+ * /health as `session`. Uses path.resolve (NOT realpath) so both sides
+ * normalize `..` and make the path absolute without resolving symlinks —
+ * Python's os.path.abspath behaves the same way, and asymmetric symlink
+ * resolution (e.g. macOS /tmp -> /private/tmp) would produce false
+ * foreign-session verdicts.
+ */
+export function sessionIdentity(sessionDir) {
+  return path.resolve(sessionDir);
+}
+
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
   webp: 'image/webp', gif: 'image/gif',

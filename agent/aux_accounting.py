@@ -65,6 +65,7 @@ def record_aux_usage(
             return
 
         from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.model_metadata import resolve_probe_api_key
 
         usage = normalize_usage(raw_usage, provider=provider)
         if not (
@@ -76,7 +77,10 @@ def record_aux_usage(
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
         try:
-            cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
+            # Auth-gated providers 401 the /models probe without the configured key (#75479).
+            cost = estimate_usage_cost(
+                model, usage, provider=provider, base_url=base_url,
+                api_key=resolve_probe_api_key(provider, base_url))
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)
         except Exception:

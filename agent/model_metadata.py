@@ -22,7 +22,7 @@ import yaml
 if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
     import requests
 
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname, base_url_origin
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
@@ -1014,6 +1014,138 @@ def _parse_models_payload(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         if model_id:
             _add_model_aliases(cache, model_id, _endpoint_model_entry(model, model_id, _extract_first_int(model, _CONTEXT_LENGTH_KEYS)))
     return cache
+
+
+def _probe_env_secret(var: str) -> str:
+    """Dotenv-preferred env lookup for probe credentials; ``""`` on any failure."""
+    var = (var or "").strip()
+    if not var:
+        return ""
+    try:
+        from agent.credential_pool import get_env_prefer_dotenv
+        return (get_env_prefer_dotenv(var) or "").strip()
+    except Exception:
+        return ""
+
+
+def _probe_entry_secret(entry: Any) -> str:
+    """Configured secret from a provider config entry: ``api_key`` then ``key_env``."""
+    if not isinstance(entry, dict):
+        return ""
+    try:
+        from agent.command_token_source import materialize_probe_api_key
+        token = materialize_probe_api_key(entry.get("api_key"))
+    except Exception:
+        token = ""
+    if token:
+        return token
+    key_env = entry.get("key_env") or entry.get("api_key_env")
+    return _probe_env_secret(str(key_env)) if key_env else ""
+
+
+def resolve_probe_api_key(provider: Optional[str] = None, base_url: Optional[str] = None) -> str:
+    """Best-effort configured API key for an authenticated ``/models`` probe.
+
+    Pricing probes must authenticate like the real call or auth-gated providers 401
+    them (#75479). Only credentials belonging to the probed endpoint are returned —
+    config entries match by base URL and env vars are host-gated — so one provider's
+    key never leaks to an unrelated host. ``""`` when nothing usable resolves.
+    """
+    name = (provider or "").strip().lower()
+    norm = _normalize_base_url(base_url or "")
+    names = {n for n in (name, name.split(":", 1)[1] if name.startswith("custom:") else f"custom:{name}") if n}
+
+    def entry_url_ok(entry: Any) -> bool:
+        """The entry's configured URL is the probed endpoint (same trust boundary)."""
+        if not isinstance(entry, dict):
+            return False
+        entry_norm = _normalize_base_url(entry.get("base_url") or entry.get("url") or "")
+        if not norm or not entry_norm:
+            return False
+        if entry_norm == norm:
+            return True
+        # Same origin: the runtime may append /v1 (or the entry may carry it).
+        origin = base_url_origin(norm)
+        return origin != ("", "", 0) and origin == base_url_origin(entry_norm)
+
+    def registry_host_ok() -> bool:
+        """The probed host is the provider's own canonical host."""
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            pconfig = PROVIDER_REGISTRY.get(name)
+        except Exception:
+            return False
+        if pconfig is None or getattr(pconfig, "auth_type", "") != "api_key":
+            return False
+        hosts = {base_url_hostname(getattr(pconfig, "inference_base_url", "") or "")}
+        url_var = getattr(pconfig, "base_url_env_var", "") or ""
+        if url_var:
+            hosts.add(base_url_hostname(_probe_env_secret(url_var)))
+        return any(host and base_url_host_matches(norm, host) for host in hosts)
+
+    def named_entry_secret(entry: Any) -> str:
+        # A name-matched entry only authenticates its own endpoint: without a
+        # configured URL the registry host gate is the fallback binding.
+        if not isinstance(entry, dict):
+            return ""
+        if norm and not entry_url_ok(entry) and not registry_host_ok():
+            return ""
+        return _probe_entry_secret(entry)
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+    except Exception:
+        cfg = {}
+    if isinstance(cfg, dict):
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "").strip().lower() in names:
+            hit = named_entry_secret(model_cfg)
+            if hit:
+                return hit
+        providers = cfg.get("providers")
+        if isinstance(providers, dict):
+            lowered = {str(k).strip().lower(): v for k, v in providers.items()}
+            for key in names:
+                hit = named_entry_secret(lowered.get(key))
+                if hit:
+                    return hit
+            for entry in lowered.values():
+                if entry_url_ok(entry):
+                    hit = _probe_entry_secret(entry)
+                    if hit:
+                        return hit
+        custom = cfg.get("custom_providers")
+        if isinstance(custom, list):
+            for entry in custom:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("name") or "").strip().lower() in names:
+                    hit = named_entry_secret(entry)
+                elif entry_url_ok(entry):
+                    hit = _probe_entry_secret(entry)
+                else:
+                    continue
+                if hit:
+                    return hit
+    if norm and registry_host_ok():
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            pconfig = PROVIDER_REGISTRY.get(name)
+        except Exception:
+            pconfig = None
+        for var in getattr(pconfig, "api_key_env_vars", ()) or ():
+            hit = _probe_env_secret(str(var))
+            if hit:
+                return hit
+        try:
+            from hermes_cli.runtime_provider import _host_derived_api_key
+            hit = (_host_derived_api_key(norm) or "").strip()
+        except Exception:
+            hit = ""
+        if hit:
+            return hit
+    return ""
 
 
 def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:

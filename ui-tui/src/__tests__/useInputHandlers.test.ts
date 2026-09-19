@@ -9,7 +9,8 @@ import {
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldDetachEditedHistoryInput,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  stepEffortLevel
 } from '../app/useInputHandlers.js'
 
 const baseKey = {
@@ -75,6 +76,24 @@ describe('shouldDetachEditedHistoryInput', () => {
 
   it('does not detach an ordinary current draft', () => {
     expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
+  })
+})
+
+describe('stepEffortLevel', () => {
+  it('walks the ladder one rung per press', () => {
+    expect(stepEffortLevel('medium', 1)).toBe('high')
+    expect(stepEffortLevel('medium', -1)).toBe('low')
+  })
+
+  it('clamps at both ends', () => {
+    expect(stepEffortLevel('ultra', 1)).toBe('ultra')
+    expect(stepEffortLevel('minimal', -1)).toBe('minimal')
+  })
+
+  it('enters from the nearest end on unknown values', () => {
+    expect(stepEffortLevel('none', 1)).toBe('minimal')
+    expect(stepEffortLevel('', -1)).toBe('ultra')
+    expect(stepEffortLevel('HIGH', 1)).toBe('xhigh')
   })
 })
 

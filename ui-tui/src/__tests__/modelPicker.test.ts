@@ -1,9 +1,13 @@
 import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import { configuredProviders, providerIndexAfterClearingFilter } from '../components/modelPicker.js'
 
-const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
+const provider = (slug: string, name = slug, authenticated?: boolean): ModelOptionProvider => ({
+  authenticated,
+  name,
+  slug
+})
 
 describe('ModelPicker provider filtering', () => {
   it('keeps the selected provider when clearing the provider filter', () => {
@@ -48,5 +52,19 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
+})
+
+describe('configuredProviders', () => {
+  it('hides providers flagged authenticated === false', () => {
+    const rows = [provider('opencode-go', 'OpenCode Go', true), provider('xai', 'xAI', false)]
+
+    expect(configuredProviders(rows).map(p => p.slug)).toEqual(['opencode-go'])
+  })
+
+  it('keeps providers with unknown auth state', () => {
+    const rows = [provider('a'), provider('b', 'B', true)]
+
+    expect(configuredProviders(rows).map(p => p.slug)).toEqual(['a', 'b'])
   })
 })

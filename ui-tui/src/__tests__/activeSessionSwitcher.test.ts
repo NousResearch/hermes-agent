@@ -24,6 +24,8 @@ import {
   relativeSessionAge,
   resumableHistory,
   selectedSessionRowStyle,
+  resolveJumpIndex,
+  sectionDividerAt,
   sessionRowKindAt,
   sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
@@ -205,10 +207,31 @@ describe('unified Sessions overlay helpers', () => {
     expect(sessionsCountLabel(2, 7)).toBe('2 live · 7 resumable')
   })
 
+  it('places section dividers only when both sections are non-empty', () => {
+    expect(sectionDividerAt(0, 2, 7)).toBeNull()
+    expect(sectionDividerAt(1, 2, 7)).toBe('live')
+    expect(sectionDividerAt(2, 2, 7)).toBeNull()
+    expect(sectionDividerAt(3, 2, 7)).toBe('resumable')
+    expect(sectionDividerAt(4, 2, 7)).toBeNull()
+    expect(sectionDividerAt(1, 0, 7)).toBeNull()
+    expect(sectionDividerAt(1, 2, 0)).toBeNull()
+  })
+
+  it('resolves jump digits with accumulation and range guard', () => {
+    expect(resolveJumpIndex('', '3', 12)).toEqual({ buffer: '3', index: 3 })
+    expect(resolveJumpIndex('1', '2', 12)).toEqual({ buffer: '12', index: 12 })
+    expect(resolveJumpIndex('1', '9', 12)).toEqual({ buffer: '9', index: 9 })
+    expect(resolveJumpIndex('9', '9', 5)).toBeNull()
+    expect(resolveJumpIndex('', '0', 12)).toBeNull()
+    expect(resolveJumpIndex('', '3', 2)).toBeNull()
+  })
+
   it('renders relative session age, blank when unknown', () => {
     const nowSec = Math.floor(Date.now() / 1000)
 
-    expect(relativeSessionAge(nowSec)).toBe('today')
+    expect(relativeSessionAge(nowSec)).toBe('just now')
+    expect(relativeSessionAge(nowSec - 5 * 60)).toBe('5m ago')
+    expect(relativeSessionAge(nowSec - 2 * 3600)).toBe('2h ago')
     expect(relativeSessionAge(nowSec - 36 * 3600)).toBe('yesterday')
     expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
     expect(relativeSessionAge(undefined)).toBe('')

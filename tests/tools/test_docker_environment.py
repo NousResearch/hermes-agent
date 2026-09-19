@@ -750,12 +750,29 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
-    assert env._labels == {
+    assert {key: env._labels[key] for key in (
+        "hermes-agent", "hermes-task-id", "hermes-profile", "hermes-egress"
+    )} == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
     }
+    skill_fp = env._labels["hermes-skills-fingerprint"]
+    assert len(skill_fp) == 64
+    int(skill_fp, 16)
+
+
+def test_reuse_query_filters_on_skill_fingerprint(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = _make_dummy_env(task_id="skills-reuse")
+
+    ps_cmd = next(c[0] for c in calls if isinstance(c[0], list) and c[0][1] == "ps")
+    expected = f"label=hermes-skills-fingerprint={env._labels['hermes-skills-fingerprint']}"
+    assert expected in ps_cmd
 
 
 def test_shared_container_key_replaces_profile_identity(monkeypatch):

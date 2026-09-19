@@ -7,6 +7,7 @@ dirs, and host cache dirs to mount or sync in, at creation and before each comma
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import posixpath
@@ -194,13 +195,85 @@ def _walk_skill_tree(root: Path) -> Iterator[Tuple[Path, List[Path]]]:
         yield base, [f for f in (base / n for n in filenames) if not f.is_symlink() and f.is_file()]
 
 
+def _copy_regular_skill_tree(source: Path, destination: Path) -> None:
+    """Materialize regular skill-package files without following nested symlinks."""
+    import shutil
+
+    for base, files in _walk_skill_tree(source):
+        rel = base.relative_to(source)
+        (destination / rel).mkdir(parents=True, exist_ok=True)
+        for item in files:
+            shutil.copy2(str(item), str(destination / rel / item.name))
+
+
+def _symlink_skill_packages(target: Path) -> List[Tuple[Path, Path]]:
+    """Return skill-package roots exposed by a directory symlink.
+
+    A direct skill symlink (target/SKILL.md) materializes the whole package.
+    A category symlink materializes only descendant directories that contain
+    SKILL.md, never unrelated files beside those packages. Nested symlinks stay
+    excluded because _walk_skill_tree() never follows them.
+    """
+    if (target / "SKILL.md").is_file():
+        return [(target, Path())]
+
+    packages: List[Tuple[Path, Path]] = []
+    for dirpath, dirnames, filenames in os.walk(target, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_SKILL_DIRS)
+        base = Path(dirpath)
+        if "SKILL.md" in filenames:
+            packages.append((base, base.relative_to(target)))
+            # A skill package owns its subtree; don't discover nested packages
+            # through it and accidentally duplicate/cross materialization.
+            dirnames[:] = []
+    return packages
+
+
+def _skill_runtime_fingerprint(root: Path) -> str:
+    """Digest sandbox-visible skill content while ignoring mutable root bookkeeping."""
+    digest = hashlib.sha256()
+    for _base, files in _walk_skill_tree(root):
+        for item in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
+            rel = item.relative_to(root)
+            if rel.parts and rel.parts[0].startswith("."):
+                continue
+            digest.update(rel.as_posix().encode("utf-8", "surrogateescape"))
+            digest.update(b"\0")
+            with item.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[Dict[str, str]]:
     """Directory mount entries for all skill dirs (local + external + project).
 
     Bind mounts follow symlinks, so a dir containing any symlink is replaced by a sanitized
     temp copy (regular files only); symlink-free dirs are returned directly, zero overhead.
+    ``reuse_fingerprint`` lets persistent Docker containers detect when an immutable sanitized
+    copy no longer matches the current skill capability surface.
     """
-    return [_mount(_safe_skills_path(d), cp) for d, cp in _skill_dir_roots(container_base)]
+    mounts: list[Dict[str, str]] = []
+    for source, container_path in _skill_dir_roots(container_base):
+        safe_path = Path(_safe_skills_path(source))
+        if safe_path == source:
+            # Direct bind mounts are live: content edits are visible without recreating the
+            # container, but a configured source-path change must invalidate reuse.
+            try:
+                source_id = str(source.resolve())
+            except OSError:
+                source_id = str(source.absolute())
+            token = f"live:{source_id}"
+        else:
+            # Sanitized copies are immutable snapshots from Docker's point of view.
+            token = f"snapshot:{_skill_runtime_fingerprint(safe_path)}"
+        mounts.append({
+            "host_path": str(safe_path),
+            "container_path": container_path,
+            "reuse_fingerprint": token,
+        })
+    return mounts
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
@@ -210,9 +283,6 @@ def _safe_skills_path(skills_dir: Path) -> str:
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
         return str(skills_dir)
-    for link in symlinks:
-        logger.warning("credential_files: skipping symlink in skills dir: %s -> %s", link, os.readlink(link))
-
     import atexit
     import shutil
     import tempfile
@@ -221,10 +291,30 @@ def _safe_skills_path(skills_dir: Path) -> str:
         shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
     safe_dir = _safe_skills_tempdir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
 
-    for base, files in _walk_skill_tree(skills_dir):
-        (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
-        for item in files:
-            shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
+    # Copy the lexical tree first; _walk_skill_tree() deliberately excludes every
+    # symlink so ordinary file links can never escape the skills boundary.
+    _copy_regular_skill_tree(skills_dir, safe_dir)
+
+    # Host-side skill discovery supports symlinked skill/category directories.
+    # Preserve that contract for sandboxes by materializing only directories that
+    # are demonstrably skill packages (contain SKILL.md); nested links remain out.
+    for link in symlinks:
+        if not link.is_dir():
+            logger.warning("credential_files: skipping non-directory symlink in skills dir: %s -> %s", link, os.readlink(link))
+            continue
+        try:
+            target = link.resolve(strict=True)
+            packages = _symlink_skill_packages(target)
+        except (OSError, RuntimeError):
+            logger.warning("credential_files: skipping unresolved skill symlink: %s", link)
+            continue
+        if not packages:
+            logger.warning("credential_files: skipping directory symlink with no skill package: %s -> %s", link, target)
+            continue
+        link_dest = safe_dir / link.relative_to(skills_dir)
+        for package, rel in packages:
+            _copy_regular_skill_tree(package, link_dest / rel)
+        logger.info("credential_files: materialized %d skill package(s) from symlink %s -> %s", len(packages), link, target)
 
     atexit.register(lambda: safe_dir.is_dir() and shutil.rmtree(safe_dir, ignore_errors=True))
     logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)

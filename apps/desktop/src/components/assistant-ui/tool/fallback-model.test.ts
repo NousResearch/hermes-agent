@@ -1,4 +1,20 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, afterEach, describe, expect, it } from 'vitest'
+
+// Pin the ICU default locale for this suite (#96382): the formatters under
+// test intentionally format numbers in the HOST locale, but these
+// assertions are written against the en-US shapes ('1,234'). A Persian /
+// Indic host locale renders '۱٬۲۳۴' and would fail the suite regardless of
+// code correctness. Scope the pin to this file and restore afterwards.
+const _realToLocaleString = Number.prototype.toLocaleString
+beforeAll(() => {
+  Number.prototype.toLocaleString = function (...args: unknown[]) {
+    return _realToLocaleString.apply(this, ['en-US', ...args] as never)
+  } as typeof Number.prototype.toLocaleString
+})
+afterAll(() => {
+  Number.prototype.toLocaleString = _realToLocaleString
+})
+
 
 import { setRuntimeI18nLocale } from '@/i18n'
 

@@ -12,7 +12,7 @@ import sqlite3
 from hermes_state_errors import StateDbReplacedError
 from hermes_state_runtime import RuntimeStoreError, _text, admission_fingerprint
 
-VERSION = 1
+VERSION = 2
 MAX_BATCH = 256
 
 # No readiness marker is installed by DDL. Only explicit preparation can certify
@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS logical_attempt_dirty (
     PRIMARY KEY(source,admission_id)
 );
 CREATE INDEX IF NOT EXISTS logical_attempt_dirty_scope ON logical_attempt_dirty(session_id);
+-- Non-work generation anchor; empty session/source never denote an admission.
+INSERT INTO logical_attempt_dirty(source,admission_id,session_id)
+SELECT '',lower(hex(randomblob(32))),''
+WHERE NOT EXISTS(SELECT 1 FROM logical_attempt_dirty WHERE source='');
+CREATE TABLE IF NOT EXISTS logical_attempt_reconcile (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    cursor_source TEXT NOT NULL,
+    cursor_id TEXT NOT NULL,
+    ceiling_source TEXT NOT NULL,
+    ceiling_id TEXT NOT NULL
+);
 CREATE TRIGGER IF NOT EXISTS logical_attempt_no_replace BEFORE INSERT ON logical_attempts
 WHEN NEW.admission_id!='' AND EXISTS(SELECT 1 FROM logical_attempts WHERE admission_id=NEW.admission_id)
 BEGIN SELECT RAISE(ABORT,'logical attempt evidence is immutable'); END;
@@ -108,6 +119,20 @@ def _expected_ddl():
 _EXPECTED_DDL = _expected_ddl()
 
 
+def invalidate_before_schema(conn):
+    """Invalidate BEFORE ordinary open recreates a missing owned object.
+
+    Do not erase projections or holds, and never scan canonical inventory here.
+    Explicit preparation must re-establish coverage after any owned DDL loss.
+    Unrelated owners' schema changes have no bearing on this authority.
+    """
+    names = tuple(_EXPECTED_DDL)
+    rows = conn.execute(f'SELECT name,sql FROM sqlite_master WHERE name IN ({",".join("?" for _ in names)})', names).fetchall()
+    actual = {row[0]: ' '.join(row[1].split()) for row in rows}
+    if 'logical_attempt_coverage' in actual and actual != _EXPECTED_DDL:
+        conn.execute('DELETE FROM logical_attempt_coverage')
+
+
 def _schema_identity(conn):
     # Other owners legitimately install DDL after bootstrap. Validate only our
     # fixed schema objects, plus the non-reusable table generation anchor.
@@ -118,7 +143,20 @@ def _schema_identity(conn):
     anchor = conn.execute("SELECT payload_digest FROM logical_attempts WHERE admission_id='' AND principal_id='' AND session_id='' AND request_id='' AND intent='schema'").fetchone()
     if anchor is None or len(anchor[0]) != 64:
         raise RuntimeStoreError('storage_unavailable')
-    return hashlib.sha256((repr([tuple(row) for row in rows]) + anchor[0]).encode()).hexdigest()
+    dirty_anchor = conn.execute("SELECT admission_id FROM logical_attempt_dirty WHERE source='' AND session_id='' LIMIT 2").fetchall()
+    if len(dirty_anchor) != 1 or len(dirty_anchor[0][0]) != 64:
+        raise RuntimeStoreError('storage_unavailable')
+    return hashlib.sha256((repr([tuple(row) for row in rows]) + anchor[0] + dirty_anchor[0][0]).encode()).hexdigest()
+
+
+def _generation_key(value):
+    # SQLite INTEGER affinity preserves BLOB values without numeric coercion.
+    # Keep the exact v1 representation through signed-64 max so immutable erased
+    # projections need no rewrite. Above it use minimal unsigned big-endian bytes,
+    # not decimal str(), float, truncation, or a new wire-contract bound.
+    if type(value) is not int or value < 1:
+        raise RuntimeStoreError('invalid_params')
+    return value if value < 1 << 63 else value.to_bytes((value.bit_length() + 7) // 8, 'big')
 
 
 def _identity(row):
@@ -160,7 +198,8 @@ def _projection(row, *, erased=False):
                 _text(task)
                 if scope is None or type(generation) is not int or generation < 1:
                     raise RuntimeStoreError('storage_unavailable')
-    return values | dict(owner_scope=scope, task_id=task, execution_generation=generation)
+    return values | dict(owner_scope=scope, task_id=task,
+                         execution_generation=None if generation is None else _generation_key(generation))
 
 
 def project_admission(conn, row, *, migrating=False, erased=False):
@@ -240,6 +279,7 @@ def prepare_logical_attempt_index(db, *, batch_size=128):
         saved = conn.execute('SELECT * FROM logical_attempt_coverage WHERE singleton=1').fetchone()
         if saved is None or saved['version'] != VERSION or saved['schema_cookie'] != cookie:
             conn.execute("INSERT OR REPLACE INTO logical_attempt_coverage VALUES(1,?,?,'live',0,'',0)", (VERSION, cookie))
+            conn.execute('DELETE FROM logical_attempt_reconcile')
         state = dict(conn.execute('SELECT * FROM logical_attempt_coverage WHERE singleton=1').fetchone())
         processed = 0
         error = error_key = None
@@ -270,8 +310,7 @@ def prepare_logical_attempt_index(db, *, batch_size=128):
             if len(rows) < remaining:
                 state['phase'] = 'covered'
         if state['phase'] == 'covered' and processed < batch_size:
-            rows = conn.execute('SELECT * FROM logical_attempt_dirty ORDER BY source,admission_id LIMIT ?',
-                                (batch_size - processed,)).fetchall()
+            rows = _dirty_batch(conn, batch_size - processed)
             for pending in rows:
                 aid = pending['admission_id']
                 row = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?', (aid,)).fetchone()
@@ -290,17 +329,43 @@ def prepare_logical_attempt_index(db, *, batch_size=128):
                     else:
                         error, error_key = 'missing_canonical_evidence', aid
                 processed += 1
-                if error:
-                    break
+                # Failure retains its hold but spends its turn, not every turn.
+                conn.execute('UPDATE logical_attempt_reconcile SET cursor_source=?,cursor_id=? WHERE singleton=1',
+                             (pending['source'], aid))
         unknown = conn.execute('SELECT 1 FROM logical_attempt_dirty WHERE session_id IS NULL LIMIT 1').fetchone()
         complete = state['phase'] == 'covered' and unknown is None
         conn.execute('UPDATE logical_attempt_coverage SET phase=?,live_cursor=?,terminal_cursor=?,complete=? WHERE singleton=1',
                      (state['phase'], state['live_cursor'], state['terminal_cursor'], int(complete)))
-        pending = conn.execute('SELECT 1 FROM logical_attempt_dirty LIMIT 1').fetchone() is not None
+        pending = conn.execute("SELECT 1 FROM logical_attempt_dirty WHERE source!='' LIMIT 1").fetchone() is not None
         return dict(processed=processed, complete=complete and not pending, coverage_complete=complete,
                     pending=pending, error=error, error_key=error_key,
                     live_cursor=state['live_cursor'], terminal_cursor=state['terminal_cursor'])
     return db._execute_write(write)
+
+
+def _dirty_batch(conn, budget):
+    """Indexed sweep, bounded by a durable fixed high key, including failures.
+
+    New/replaced keys behind the cursor wait for the next sweep. A fixed ceiling
+    prevents concurrent tail growth postponing wrap forever. At most two range
+    queries (end of old sweep, start of new) and `budget` returned obligations.
+    The owning BEGIN IMMEDIATE serializes cursor progress with source writers.
+    """
+    for _ in range(2):
+        sweep = conn.execute('SELECT * FROM logical_attempt_reconcile WHERE singleton=1').fetchone()
+        if sweep is None:
+            last = conn.execute("SELECT source,admission_id FROM logical_attempt_dirty WHERE source>'' ORDER BY source DESC,admission_id DESC LIMIT 1").fetchone()
+            if last is None:
+                return []
+            conn.execute("INSERT INTO logical_attempt_reconcile VALUES(1,'','',?,?)", tuple(last))
+            sweep = conn.execute('SELECT * FROM logical_attempt_reconcile WHERE singleton=1').fetchone()
+        rows = conn.execute("SELECT * FROM logical_attempt_dirty WHERE source>'' AND (source,admission_id)>(?,?) "
+            'AND (source,admission_id)<=(?,?) ORDER BY source,admission_id LIMIT ?',
+            (sweep['cursor_source'], sweep['cursor_id'], sweep['ceiling_source'], sweep['ceiling_id'], budget)).fetchall()
+        if rows:
+            return rows
+        conn.execute('DELETE FROM logical_attempt_reconcile')
+    return []
 
 
 def lookup_logical_attempt(db, *, principal_id, session_id, owner_scope, task_id, execution_generation):
@@ -311,8 +376,7 @@ def lookup_logical_attempt(db, *, principal_id, session_id, owner_scope, task_id
     """
     for value in (principal_id, session_id, owner_scope, task_id):
         _text(value)
-    if type(execution_generation) is not int or execution_generation < 1:
-        raise RuntimeStoreError('invalid_params')
+    generation_key = _generation_key(execution_generation)
     try:
         db._halt_if_db_generation_changed()
         with db._read_ctx() as conn:
@@ -331,10 +395,13 @@ def lookup_logical_attempt(db, *, principal_id, session_id, owner_scope, task_id
                         raise RuntimeStoreError('storage_unavailable')
                 rows = conn.execute('SELECT * FROM logical_attempts WHERE principal_id=? AND session_id=? '
                     'AND owner_scope=? AND task_id=? AND execution_generation=? LIMIT 2',
-                    (principal_id, session_id, owner_scope, task_id, execution_generation)).fetchall()
+                    (principal_id, session_id, owner_scope, task_id, generation_key)).fetchall()
                 if len(rows) > 1:
                     raise RuntimeStoreError('storage_unavailable')
-                return dict(rows[0]) if rows else None
+                if not rows:
+                    return None
+                # Preserve the consumer API's Python integer identity.
+                return dict(rows[0]) | {'execution_generation': execution_generation}
             finally:
                 conn.execute('ROLLBACK')
     except (sqlite3.Error, StateDbReplacedError) as exc:

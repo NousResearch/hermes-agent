@@ -21,7 +21,7 @@ from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
-    runtime_status_heartbeat_age_s, runtime_status_is_stale)
+    runtime_status_heartbeat_age_s, runtime_status_hosts_live_gateway, runtime_status_is_stale)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_constants import get_process_hermes_home, profile_name_for_home
@@ -295,9 +295,18 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     gateway_exit_reason = None
     gateway_updated_at = None
     gateway_heartbeat_stale_s = None
+    hosted_pid = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
+        # Display-only trust (#116416): a fresh-heartbeat snapshot whose PID survives the reuse
+        # guard is being written by a live host that is not a ``gateway run`` process (the loop
+        # embedded in a dashboard/wrapper process). The strict ladder stays down — and with it
+        # ``gateway_running``, which drain/restart act on — but the readout keeps the snapshot's
+        # real state and platform map instead of flattening it to "stopped" while messaging is
+        # demonstrably live.
         if not gateway_running:
+            hosted_pid = runtime_status_hosts_live_gateway(runtime)
+        if not gateway_running and hosted_pid is None:
             # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
             # ``startup_failed`` / watchdog ``degraded`` (kept on disk for diagnostics), so the
             # overview does not alarm on it.
@@ -312,7 +321,8 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
             # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
             gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         gateway_platforms = _project_gateway_platforms(
-            runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
+            runtime.get("platforms") or {}, configured, gateway_running or hosted_pid is not None,
+            gateway_state)
         gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand
@@ -327,7 +337,8 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
     served = (liveness.runtime or {}).get("served_profiles")
     return {
-        "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
+        "runtime": runtime, "gateway_running": gateway_running,
+        "gateway_pid": liveness.pid if liveness.pid is not None else hosted_pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,

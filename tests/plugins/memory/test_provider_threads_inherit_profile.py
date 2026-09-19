@@ -37,7 +37,7 @@ def _retaindb(seen, tmp_path):
 
     p = retaindb.RetainDBMemoryProvider()
     p._client = MagicMock()
-    p._context_overlay = lambda query: {"context": seen.setdefault("home", get_hermes_home()) and "ctx"}
+    p._context_overlay = lambda query, **kwargs: {"context": seen.setdefault("home", get_hermes_home()) and "ctx"}
     p._client.ask_user.return_value = {"answer": ""}
     p._client.get_agent_model.return_value = {}
     p.queue_prefetch("what do you know")

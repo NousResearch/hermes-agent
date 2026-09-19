@@ -715,6 +715,10 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
     creds = spec.resolve()
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
+    # model.openai_runtime opt-in (#115169): the OAuth rung receives model_cfg directly, so apply
+    # the rewrite here too — ambient-config-only application at the resolve_runtime_provider
+    # choke point would not cover direct callers of this rung. Idempotent with that application.
+    api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=api_mode, model_cfg=model_cfg)
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
                     creds.get("api_key", ""), source=creds.get("source", spec.default_source),
                     **{spec.expiry_key: creds.get(spec.expiry_key)}, requested_provider=requested_provider)
@@ -913,6 +917,12 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    # model.openai_runtime opt-in: rewrite api_mode at the single choke point so every
+    # ladder rung (OAuth, explicit-key, pool, shortcuts) honors it, not just the pool
+    # rung's in-situ application below (#115169). Idempotent with that application.
+    runtime["api_mode"] = _maybe_apply_codex_app_server_runtime(
+        provider=runtime.get("provider", ""), api_mode=runtime.get("api_mode", ""),
+        model_cfg=_get_model_config())
     return runtime
 
 

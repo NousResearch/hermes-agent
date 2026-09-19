@@ -679,6 +679,7 @@ class PeerRunsHTTPClient:
         ttl_seconds: float = 24 * 60 * 60,
         capability_digest: str | None = None,
         execution_policy_digest: str | None = None,
+        verify_catalog=None,
     ) -> Mapping[str, Any]:
         """Renew dispatch access only while its frozen authority is unchanged."""
         self._require_room_grant(grant)
@@ -698,6 +699,8 @@ class PeerRunsHTTPClient:
             from gateway.hosted_room_peer import GatewayRoomCatalog
 
             catalog = GatewayRoomCatalog.from_mapping(probe.get("catalog"))
+            if verify_catalog is not None:
+                catalog = verify_catalog(grant, replacement, probe)
             if (
                 execution_policy_digest is not None
                 and catalog.execution_policy.policy_digest
@@ -728,7 +731,7 @@ class PeerRunsHTTPClient:
                     exc_info=True,
                 )
             raise
-        return {**refreshed, "catalog": probe.get("catalog")}
+        return {**refreshed, "catalog": catalog.as_mapping()}
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
         """Revoke this grant's exact room/home/target/profile scope."""

@@ -131,6 +131,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             raise RuntimeStoreError('permission_denied')
         return row[0]
 
+    def _tracked_peer_client(self, room_id, member_id, client, *, route=None, **kwargs):
+        from gateway.session_group_renewal import CanonicalPeerRenewal
+        route = route or self.peer_routes.get((room_id, member_id))
+        return super()._tracked_peer_client(room_id, member_id, client, route=route,
+            prepare_renewal=lambda grant: CanonicalPeerRenewal(self, room_id, member_id, route, client, grant),
+            **kwargs)
+
     def _refresh_peer_attachment_catalog(self, room_id, member_id, route, client):
         # Canonical targets expose operation-private Files readiness. Revalidate
         # the invitation and grant, never overwrite it from an idle capability GET.
@@ -160,10 +167,19 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 raise RuntimeStoreError('peer_setup_conflict')
             scope = dict(room_id=room_id, home_install_id=local, authority_gateway_id=local,
                          authority_epoch=room['authority_epoch'], member_id=member_id, target_profile=route.target_profile)
-            return stored, scope
-        stored, scope = current()
+            return stored, scope, self._owner(room_id), room['members']
+        snapshot = current()
+        stored, scope = snapshot[:2]
         verify_invited_catalog(client, route.grant, stored.catalog, scope)
-        if current() != (stored, scope):
+        transition = client.renewal_transition
+        if transition is not None:
+            from dataclasses import replace
+            previous, replacement = transition
+            if previous != stored:
+                raise RuntimeStoreError('peer_setup_conflict')
+            route = replace(route, grant=replacement.grant)
+            snapshot = (replacement, *snapshot[1:])
+        if current() != snapshot:
             raise RuntimeStoreError('peer_setup_conflict')
         return route
 

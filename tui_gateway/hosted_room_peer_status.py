@@ -63,6 +63,7 @@ class _RouteStatusPeerClient:
         execution_policy_digest="",
         before_admission=None,
         resolve_observer_grant=None,
+        prepare_renewal=None,
     ) -> None:
         self._client = client
         self._on_ready = on_ready
@@ -75,6 +76,8 @@ class _RouteStatusPeerClient:
         self._execution_policy_digest = str(execution_policy_digest or "")
         self._before_admission = before_admission
         self._resolve_observer_grant = resolve_observer_grant
+        self._prepare_renewal = prepare_renewal
+        self.renewal_transition = None
 
     def _notify(self, callback, grant):
         if self._initial_grant is None:
@@ -139,12 +142,14 @@ class _RouteStatusPeerClient:
                         )
                         refresh = getattr(self._client, "refresh_grant", None)
                         if callable(refresh):
+                            renewal = self._prepare_renewal(grant) if self._prepare_renewal else None
                             try:
                                 refreshed = refresh(
                                     grant=grant,
                                     capability_digest=capability_digest,
                                     execution_policy_digest=execution_policy_digest,
                                     **({"ttl_seconds": 3600} if name == "probe" else {}),
+                                    **({"verify_catalog": renewal.verify} if renewal is not None else {}),
                                 )
                             except Exception as exc:
                                 if bool(getattr(exc, "needs_reauthorization", False)):
@@ -191,7 +196,10 @@ class _RouteStatusPeerClient:
                                     if self._before_admission is not None:
                                         self._before_admission(grant)
                                     rotation_started = True
-                                    if self._initial_grant is None:
+                                    if renewal is not None:
+                                        self.renewal_transition = renewal.publish(replacement, refreshed_catalog)
+                                        self._current_grant = replacement
+                                    elif self._initial_grant is None:
                                         self._on_refreshed(replacement, refreshed_catalog)
                                     else:
                                         self._on_refreshed(

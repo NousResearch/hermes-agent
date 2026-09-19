@@ -933,6 +933,7 @@ class HostedRoomService:
         route: PeerMemberRoute | None = None,
         renewal_lease: driver.DriverLease | None = None,
         binding: HostedRoomBinding | None = None,
+        prepare_renewal=None,
     ) -> "_RouteStatusPeerClient":
         route = route or self.peer_routes.get((room_id, member_id))
         if route is None:
@@ -996,6 +997,7 @@ class HostedRoomService:
             capability_digest=route.capability_digest,
             execution_policy_digest=route.execution_policy_digest,
             before_admission=require_current,
+            prepare_renewal=prepare_renewal,
             resolve_observer_grant=resolve_observer_grant if binding is not None else None,
             on_ready=lambda **observation: self._set_route_status(
                 room_id, member_id, "ready", **observation

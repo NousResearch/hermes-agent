@@ -11,6 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
+from agent.effort_updates import effort_update
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
@@ -711,6 +712,12 @@ def convert_messages_to_anthropic(
     for m in messages:
         role = m.get("role", "user")
         if role == "system":
+            update = effort_update(m)
+            if update is not None:
+                # Per-message effort update (mid-conversation-output-config beta): an empty system
+                # message inside ``messages``; the adapter maps the effort and adds the beta header.
+                result.append({"role": "system", "content": [], "output_config": {"effort": update["effort"]}})
+                continue
             system = _convert_system_content(m.get("content", ""))
         elif role == "assistant":
             result.append(_convert_assistant_message(m))

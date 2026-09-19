@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional
 from utils import normalize_proxy_env_vars
 
 from agent.anthropic_credentials import _is_oauth_token
+from agent.effort_updates import (
+    ANTHROPIC_MID_CONVERSATION_EFFORT_BETA, effort_update, requested_effort, resolve_effort_updates,
+    strip_effort_updates,
+)
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
@@ -506,12 +510,16 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+def _thinking_kwargs(
+    reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int, top_level_effort: Optional[str] = None,
+) -> Dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
-    so "summarized" is requested to keep the activity feed populated."""
+    so "summarized" is requested to keep the activity feed populated. ``top_level_effort`` (the
+    session baseline when in-band effort markers carry the current effort) replaces the
+    configured effort in ``output_config``."""
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
@@ -519,18 +527,63 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
     if "haiku" in model.lower():
         return {}
-    effort = str(reasoning_config.get("effort", "medium")).lower()
+    effort = str(top_level_effort or reasoning_config.get("effort", "medium")).lower()
     if _supports_adaptive_thinking(model):
-        adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-        if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
-            adaptive_effort = "max"
-        return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": adaptive_effort}}
+        return {
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": _adaptive_effort(effort, model)},
+        }
     budget = THINKING_BUDGET.get(effort, 8000)
     return {
         "thinking": {"type": "enabled", "budget_tokens": budget},
         "temperature": 1,  # required when thinking is enabled on older models
         "max_tokens": max(effective_max_tokens, budget + 4096),
     }
+
+
+def _adaptive_effort(effort: str, model: str) -> str:
+    """Hermes effort -> ``output_config.effort`` for ``model`` (xhigh downgraded where unsupported)."""
+    adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+    if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
+        adaptive_effort = "max"
+    return adaptive_effort
+
+
+# Per-message effort updates (``mid-conversation-output-config-2026-07-01``): Opus 5+, Fable /
+# Mythos 5.1+ on the Claude API. Snapshot dates (``-20260901``) are not minor versions.
+_CLAUDE_VERSION_RE = re.compile(
+    r"(?:^|[./])claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[.-](?P<minor>\d{1,2}))?(?:$|[-:@])"
+)
+
+
+def _supports_effort_updates(model: str) -> bool:
+    match = _CLAUDE_VERSION_RE.search((model or "").lower())
+    if not match:
+        return False
+    family, major, minor = match.group("family"), int(match.group("major")), int(match.group("minor") or 0)
+    if family == "opus":
+        return major >= 5
+    return family in ("fable", "mythos") and (major > 5 or (major == 5 and minor >= 1))
+
+
+def _resolve_effort_markers(
+    messages: List[Dict], model: str, reasoning_config: Optional[Dict[str, Any]], base_url: str | None,
+) -> tuple[List[Dict], Optional[str], bool]:
+    """``(messages, top_level_effort, lowered)``. On a Claude API model that accepts in-band effort
+    updates the markers stay and the top-level effort freezes at the session baseline (the cached
+    prefix was built with it); everywhere else the markers are stripped and the configured effort
+    goes top-level as before. Third-party Anthropic-compatible endpoints (and Bedrock, which uses a
+    different beta) never see the marker; Nous Portal proxies the Claude API verbatim (live-probed:
+    an invalid in-band effort 400s there like a top-level one) and takes the native path."""
+    requested = requested_effort(reasoning_config)
+    if (
+        requested is None
+        or (_is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url))
+        or not (_supports_adaptive_thinking(model) and _supports_effort_updates(model))
+    ):
+        return strip_effort_updates(messages), None, False
+    resolved, top_level = resolve_effort_updates(messages, requested)
+    return resolved, top_level, resolved is messages and any(effort_update(m) for m in messages)
 
 
 # OpenAI tool_choice -> Anthropic; any other string is a forced tool name.
@@ -550,7 +603,10 @@ def build_anthropic_kwargs(
     "max_tokens too large given prompt" and retry smaller (parse_available_output_tokens_from_error).
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
-    ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
+    ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only.
+    Mid-conversation effort markers in ``messages`` (agent.effort_updates) are lowered in band on
+    Claude API models that accept them (top-level effort frozen at the baseline) and stripped elsewhere."""
+    messages, top_level_effort, effort_markers = _resolve_effort_markers(messages, model, reasoning_config, base_url)
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
@@ -589,7 +645,11 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens, top_level_effort))
+    if effort_markers:
+        for msg in anthropic_messages:
+            if msg.get("role") == "system" and isinstance(msg.get("output_config"), dict):
+                msg["output_config"]["effort"] = _adaptive_effort(msg["output_config"]["effort"], model)
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):
@@ -597,11 +657,17 @@ def build_anthropic_kwargs(
             kwargs.pop(key, None)
     # Fast mode: native Anthropic only — third-party providers reject the unknown beta/param and
     # Anthropic scopes it to the Claude API (not Bedrock/Vertex/Foundry). Per-request extra_headers
-    # OVERRIDE the client-level anthropic-beta header, so rebuild the full beta list.
+    # OVERRIDE the client-level anthropic-beta header, so rebuild the full beta list whenever a
+    # request-scoped beta (fast mode, in-band effort update) is needed.
+    extra_betas: list[str] = []
     if fast_mode and not _is_third_party_anthropic_endpoint(base_url) and _supports_fast_mode(model):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
+        extra_betas.append(_FAST_MODE_BETA)
+    if effort_markers:
+        extra_betas.append(ANTHROPIC_MID_CONVERSATION_EFFORT_BETA)
+    if extra_betas:
         betas = _common_betas_for_base_url(base_url, drop_context_1m_beta=drop_context_1m_beta)
-        kwargs["extra_headers"] = _beta_header(betas + (_OAUTH_ONLY_BETAS if is_oauth else []) + [_FAST_MODE_BETA])
+        kwargs["extra_headers"] = _beta_header(betas + (_OAUTH_ONLY_BETAS if is_oauth else []) + extra_betas)
     return kwargs
 
 

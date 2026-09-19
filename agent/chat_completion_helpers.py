@@ -31,6 +31,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.fast_mode import effective_request_overrides
+from agent.effort_updates import strip_effort_updates
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -1465,6 +1466,9 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     request_overrides = effective_request_overrides(agent)
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
+    # Only the Anthropic Messages adapter lowers effort markers natively; every other wire
+    # sends the current effort top-level exactly as before.
+    api_messages = strip_effort_updates(api_messages)
     if agent.api_mode == "bedrock_converse":
         return _build_bedrock_kwargs(agent, api_messages, tools_for_api)
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch

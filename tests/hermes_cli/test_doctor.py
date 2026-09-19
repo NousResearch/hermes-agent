@@ -1835,3 +1835,87 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls == [["/usr/bin/docker", "version"]]
+
+# ---------------------------------------------------------------------------
+# Named custom providers: key_env must actually be set
+# ---------------------------------------------------------------------------
+
+def _doctor_output_for_config(monkeypatch, tmp_path, config_text: str) -> str:
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+_KEY_ENV_CONFIG = (
+    "model:\n"
+    "  provider: mylocal\n"
+    "  default: gemma-4-e4b-it-mlx\n"
+    "providers:\n"
+    "  mylocal:\n"
+    "    base_url: http://127.0.0.1:1234/v1\n"
+    "    key_env: MYLOCAL_API_KEY\n"
+)
+_KEY_ENV_MESSAGE = "model.provider 'mylocal' reads its API key from MYLOCAL_API_KEY, which is not set"
+
+
+_LEGACY_KEY_ENV_CONFIG = (
+    "model:\n"
+    "  provider: mylocal\n"
+    "  default: gemma-4-e4b-it-mlx\n"
+    "custom_providers:\n"
+    "  - name: mylocal\n"
+    "    base_url: http://127.0.0.1:1234/v1\n"
+    "    key_env: MYLOCAL_API_KEY\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("config_text", "env_value", "flagged"),
+    [
+        (_KEY_ENV_CONFIG, None, True),
+        (_LEGACY_KEY_ENV_CONFIG, None, True),
+        (_KEY_ENV_CONFIG, "lm-secret", False),
+        (_KEY_ENV_CONFIG + "    api_key: inline-secret\n", None, False),
+        (_KEY_ENV_CONFIG + "    key_cmd: print-my-token\n", None, False),
+        (_KEY_ENV_CONFIG.replace("provider: mylocal", "provider: nous"), None, False),
+    ],
+    ids=["unset", "legacy-list", "variable-set", "inline-api-key", "key-cmd", "not-the-active-provider"],
+)
+def test_run_doctor_flags_an_unset_key_env_only_when_nothing_else_supplies_the_key(
+    monkeypatch, tmp_path, config_text, env_value, flagged,
+):
+    """The registry credential check skips named custom providers, and the runtime resolves their
+    key as key_env, then inline api_key, then key_cmd: an unset key_env with neither fallback passed
+    doctor and failed every request with an auth error."""
+    if env_value is None:
+        monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("MYLOCAL_API_KEY", env_value)
+
+    out = _doctor_output_for_config(monkeypatch, tmp_path, config_text)
+
+    assert ("MYLOCAL_API_KEY, which is not set" in out) is flagged
+    if flagged:
+        assert _KEY_ENV_MESSAGE in out and "declares key_env: MYLOCAL_API_KEY" in out

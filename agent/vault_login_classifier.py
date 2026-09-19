@@ -12,8 +12,10 @@ Scoring:
 - type=password (not new/confirm/create/repeat) .. 90
 - type=email / type=tel .......................... 85
 - label/name regex heuristics .................. 70-75
-Hard exclusions: autocomplete ``new-password`` / ``one-time-code``, and
-label/name text matching ``(new|confirm|create|repeat)\\s*password``.
+Hard exclusions: autocomplete ``one-time-code`` and label/name text matching
+``(new|confirm|create|repeat)\\s*password``. ``new-password`` remains excluded
+unless a password input has an explicitly generic ``Password`` label or name,
+which accommodates login forms that misdeclare their existing-password field.
 """
 
 from __future__ import annotations
@@ -47,8 +49,6 @@ _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:country)\b"), "country-name"),
 )
 
-_EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
-
 _RE_EXCLUDED_PASSWORD = re.compile(r"\b(?:new|confirm|create|repeat)\s*password\b")
 _RE_EMAIL = re.compile(r"\b(?:e[\s-]?mail|email address)\b")
 _RE_TEL = re.compile(r"\b(?:phone|telephone|mobile)\b")
@@ -60,6 +60,15 @@ _RE_USERNAME = re.compile(
 def _normalize_text(value: str) -> str:
     value = unicodedata.normalize("NFKD", value).lower()
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _is_generic_password_field(control: "LoginControl") -> bool:
+    """Whether page metadata describes this as a plainly named login password field."""
+    return any(
+        _normalize_text(value) == "password"
+        for value in (control.name, control.label)
+        if value
+    )
 
 
 @dataclass(frozen=True)
@@ -101,16 +110,22 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     autocomplete_tokens = [
         t for t in control.autocomplete.lower().split() if t
     ]
-    if any(t in _EXCLUDED_AUTOCOMPLETE for t in autocomplete_tokens):
+    searchable = _normalize_text(
+        " ".join(part for part in (control.name, control.label) if part)
+    )
+    if "one-time-code" in autocomplete_tokens:
+        return None
+    if "new-password" in autocomplete_tokens and not (
+        control.type == "password"
+        and _is_generic_password_field(control)
+        and not _RE_EXCLUDED_PASSWORD.search(searchable)
+    ):
         return None
 
     for token in LOGIN_AUTOFILL_TOKENS:
         if token in autocomplete_tokens:
             return ClassifiedLoginControl(control, 100, token)
 
-    searchable = _normalize_text(
-        " ".join(part for part in (control.name, control.label) if part)
-    )
     if _RE_EXCLUDED_PASSWORD.search(searchable):
         return None
     if control.type == "password":

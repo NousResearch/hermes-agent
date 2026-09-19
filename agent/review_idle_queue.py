@@ -95,8 +95,15 @@ class ReviewIdleQueue:
     def enqueue(self, agent: Any, session_key: str, kwargs: Dict[str, Any]) -> None:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
         enqueue time on coalesce so a busy session cannot push its age-out forever."""
+        kwargs = dict(kwargs)
+        kwargs.setdefault("_review_snapshot_created_at", self._now())
         with self._lock:
             existing = self._pending.get(session_key)
+            # A cancelled worker can unwind after the next turn queued a newer snapshot.
+            # Its retry keeps the original creation time; arrival order is not freshness.
+            if (existing is not None and kwargs["_review_snapshot_created_at"]
+                    < existing.kwargs["_review_snapshot_created_at"]):
+                return
             enqueued_at = existing.enqueued_at if existing is not None else self._now()
             self._pending[session_key] = _PendingReview(agent, session_key, kwargs, enqueued_at)
         self._ensure_thread()

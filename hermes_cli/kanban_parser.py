@@ -50,9 +50,9 @@ def _run_state_args(type_help: str):
     )
 
 
-def _triage_sweep_args(verb: str, Verb: str, noun: str):
+def _triage_sweep_args(verb: str, Verb: str, noun: str, *, rewrite_body: bool = False):
     """Shared ``specify`` / ``decompose`` arguments."""
-    return (
+    args = (
         _arg("task_id", nargs="?", help=f"Task id to {verb} (required unless --all is given)"),
         _arg("--all", dest="all_triage", action="store_true", help=f"{Verb} every task currently in the triage column"),
         _arg("--tenant", help="When used with --all, restrict the sweep to this tenant"),
@@ -60,6 +60,12 @@ def _triage_sweep_args(verb: str, Verb: str, noun: str):
              help=f"Author name recorded on the audit comment (default: $HERMES_PROFILE or '{noun}')"),
         _json_flag(help="Emit one JSON object per task on stdout"),
     )
+    if rewrite_body:
+        args += (_arg(
+            "--rewrite-body", action="store_true",
+            help="Replace each card body with auxiliary LLM output (default preserves the existing body)",
+        ),)
+    return args
 
 
 def _bulk_ids(verb: str):
@@ -406,9 +412,9 @@ _SPECS = [
          help="List known profiles + per-profile task counts (union of ~/.hermes/profiles/ and current assignees on the board)"),
     _cmd("context", [_TASK_ID],
          help="Print the full context a worker sees for a task (title + body + parent results + comments)."),
-    _cmd("specify", _triage_sweep_args("specify", "Specify", "specifier"),
-         help="Flesh out a triage-column task into a concrete spec (title + "
-              "body) and promote it to todo. Uses the auxiliary LLM "
+    _cmd("specify", _triage_sweep_args("specify", "Specify", "specifier", rewrite_body=True),
+         help="Flesh out a triage-column task and promote it to todo. Preserves "
+              "the existing body unless --rewrite-body is supplied. Uses the auxiliary LLM "
               "configured under auxiliary.triage_specifier."),
     _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer"),
          help="Decompose a triage-column task into a graph of child tasks "

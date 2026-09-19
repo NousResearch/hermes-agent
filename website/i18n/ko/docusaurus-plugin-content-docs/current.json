@@ -1,0 +1,250 @@
+{
+  "version.label": {
+    "message": "다음 버전",
+    "description": "The label for version current"
+  },
+  "sidebar.docs.category.Getting Started": {
+    "message": "시작하기",
+    "description": "The label for category 'Getting Started' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Using Hermes": {
+    "message": "Hermes 사용하기",
+    "description": "The label for category 'Using Hermes' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Secrets": {
+    "message": "시크릿",
+    "description": "The label for category 'Secrets' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Features": {
+    "message": "기능",
+    "description": "The label for category 'Features' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Core": {
+    "message": "핵심",
+    "description": "The label for category 'Core' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Automation": {
+    "message": "자동화",
+    "description": "The label for category 'Automation' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Media & Web": {
+    "message": "미디어와 웹",
+    "description": "The label for category 'Media & Web' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Management": {
+    "message": "관리",
+    "description": "The label for category 'Management' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Skills": {
+    "message": "스킬",
+    "description": "The label for category 'Skills' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Bundled": {
+    "message": "기본 제공",
+    "description": "The label for category 'Bundled' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-apple": {
+    "message": "apple",
+    "description": "The label for category 'apple' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-autonomous-ai-agents": {
+    "message": "autonomous-ai-agents",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-creative": {
+    "message": "creative",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-data-science": {
+    "message": "data-science",
+    "description": "The label for category 'data-science' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-dogfood": {
+    "message": "dogfood",
+    "description": "The label for category 'dogfood' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-email": {
+    "message": "email",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-github": {
+    "message": "github",
+    "description": "The label for category 'github' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-media": {
+    "message": "media",
+    "description": "The label for category 'media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-mlops": {
+    "message": "mlops",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-note-taking": {
+    "message": "note-taking",
+    "description": "The label for category 'note-taking' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-productivity": {
+    "message": "productivity",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-research": {
+    "message": "research",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-smart-home": {
+    "message": "smart-home",
+    "description": "The label for category 'smart-home' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-social-media": {
+    "message": "social-media",
+    "description": "The label for category 'social-media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-software-development": {
+    "message": "software-development",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-yuanbao": {
+    "message": "yuanbao",
+    "description": "The label for category 'yuanbao' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Optional": {
+    "message": "선택 사항",
+    "description": "The label for category 'Optional' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-autonomous-ai-agents": {
+    "message": "autonomous-ai-agents",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-blockchain": {
+    "message": "blockchain",
+    "description": "The label for category 'blockchain' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-communication": {
+    "message": "communication",
+    "description": "The label for category 'communication' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-creative": {
+    "message": "creative",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-devops": {
+    "message": "devops",
+    "description": "The label for category 'devops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-dogfood": {
+    "message": "dogfood",
+    "description": "The label for category 'dogfood' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-email": {
+    "message": "email",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-finance": {
+    "message": "finance",
+    "description": "The label for category 'finance' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-gaming": {
+    "message": "gaming",
+    "description": "The label for category 'gaming' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-health": {
+    "message": "health",
+    "description": "The label for category 'health' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mcp": {
+    "message": "mcp",
+    "description": "The label for category 'mcp' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-migration": {
+    "message": "migration",
+    "description": "The label for category 'migration' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mlops": {
+    "message": "mlops",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-payments": {
+    "message": "payments",
+    "description": "The label for category 'payments' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-productivity": {
+    "message": "productivity",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-research": {
+    "message": "research",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-security": {
+    "message": "security",
+    "description": "The label for category 'security' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-software-development": {
+    "message": "software-development",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-web-development": {
+    "message": "web-development",
+    "description": "The label for category 'web-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Messaging Platforms": {
+    "message": "메시징 플랫폼",
+    "description": "The label for category 'Messaging Platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Popular": {
+    "message": "인기",
+    "description": "The label for category 'Popular' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Microsoft 365": {
+    "message": "Microsoft 365",
+    "description": "The label for category 'Microsoft 365' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Chinese platforms": {
+    "message": "중국 플랫폼",
+    "description": "The label for category 'Chinese platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Other": {
+    "message": "기타",
+    "description": "The label for category 'Other' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Integrations": {
+    "message": "통합",
+    "description": "The label for category 'Integrations' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Guides & Tutorials": {
+    "message": "가이드와 튜토리얼",
+    "description": "The label for category 'Guides & Tutorials' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Developer Guide": {
+    "message": "개발자 가이드",
+    "description": "The label for category 'Developer Guide' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Architecture": {
+    "message": "아키텍처",
+    "description": "The label for category 'Architecture' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Extending": {
+    "message": "확장하기",
+    "description": "The label for category 'Extending' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Internals": {
+    "message": "내부 구조",
+    "description": "The label for category 'Internals' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Reference": {
+    "message": "레퍼런스",
+    "description": "The label for category 'Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Command Reference": {
+    "message": "명령어 레퍼런스",
+    "description": "The label for category 'Command Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Configuration Reference": {
+    "message": "설정 레퍼런스",
+    "description": "The label for category 'Configuration Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Tools & Skills Reference": {
+    "message": "도구와 스킬 레퍼런스",
+    "description": "The label for category 'Tools & Skills Reference' in sidebar 'docs'"
+  }
+}

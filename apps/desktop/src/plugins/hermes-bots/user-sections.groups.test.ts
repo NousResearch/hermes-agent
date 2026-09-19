@@ -34,7 +34,8 @@ vi.mock('./data', async () => {
   return {
     $botMeta,
     $lastRoster,
-    botRosterKey: (bot: { connectionId?: string; name?: string }) => `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`,
+    botRosterKey: (bot: { connectionId?: string; name?: string }) =>
+      `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`,
     saveBotMeta
   }
 })
@@ -97,7 +98,9 @@ describe('user sections — group chats', () => {
     // Unfiling clears the assignment on the room and persists the clear.
     moveGroupChatsToSection(['Team Chat'], null)
     expect(groupChatSectionId('Team Chat', $groupChats.get())).toBeNull()
-    expect((storage.get('group-chats') as Record<string, { sectionId?: null | string }>)['Team Chat']?.sectionId).toBeNull()
+    expect(
+      (storage.get('group-chats') as Record<string, { sectionId?: null | string }>)['Team Chat']?.sectionId
+    ).toBeNull()
   })
 
   it('grouping seats group rows per their room record section; unfiled or dangling groups fall to Unassigned', () => {

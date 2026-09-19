@@ -88,6 +88,10 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Set only by the gateway heartbeat scheduler after it has selected an idle watched session.
+    # It preserves trusted scheduler provenance without making the event internal: authorization
+    # and control-message handling still apply to scheduled heartbeats.
+    _trusted_scheduled_heartbeat: bool = field(default=False, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

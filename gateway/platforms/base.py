@@ -287,7 +287,7 @@ def resolve_proxy_url(
     platform_env_var: str | None = None, *,
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
     configured: str | None = None) -> str | None:
-    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
+    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``, either case) first, then the YAML
     value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
     case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
     None when nothing is found or NO_PROXY matches a target.
@@ -300,7 +300,14 @@ def resolve_proxy_url(
     bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
     process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
     from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
-    value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
+    value = ""
+    if platform_env_var:
+        # POSIX convention treats lowercase proxy vars as equivalent
+        # (the HTTPS_PROXY/https_proxy fallback below gets the same treatment).
+        for key in dict.fromkeys((platform_env_var, platform_env_var.lower())):
+            value = (_get_scoped_proxy_var(key, "") or "").strip()
+            if value:
+                break
     if not value:
         value = str(configured or "").strip()
     if not value:
@@ -323,6 +330,25 @@ def _aiohttp_socks_connector(proxy_url: str):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
                            "Run: pip install aiohttp-socks", proxy_url)
         return None
+
+
+def redact_proxy_url(url: str) -> str:
+    """Return *url* with any userinfo password masked, safe for logging.
+
+    Proxy URLs from env vars may embed credentials
+    (``http://user:pass@host:port``) which must not leak into logs.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.password is None:
+        return url
+    host = parts.hostname or ""
+    netloc = f"{parts.username or ''}:***@{host}"
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return parts._replace(netloc=netloc).geturl()
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:

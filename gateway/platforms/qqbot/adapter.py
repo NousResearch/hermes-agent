@@ -39,8 +39,9 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    redact_proxy_url, resolve_proxy_url,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
@@ -206,6 +207,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             # See #18451.
             from gateway.platforms._http_client_limits import platform_httpx_limits
             from tools.url_safety import create_ssrf_safe_async_client
+
+            # No client-level ``proxy=`` here: this client also fetches
+            # non-QQ hosts (attachment CDNs, configurable STT endpoints),
+            # and an explicit proxy would preempt httpx's per-request env
+            # handling — including NO_PROXY entries for those hosts.
             self._http_client = create_ssrf_safe_async_client(
                 timeout=30.0, follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
@@ -307,11 +313,40 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         await self._open_ws(gateway_url)
 
     async def _open_ws(self, gateway_url: str) -> None:
+        """Open a WebSocket connection to the QQ Bot gateway."""
+        # Only tears down WebSocket resources — _http_client stays alive for REST calls.
         await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
-        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
+
+        # Resolve proxy via the shared helper so QQBot honors HTTPS_PROXY,
+        # WSS_PROXY, ALL_PROXY *and* NO_PROXY. The previous code read env
+        # vars manually and passed ``proxy=`` explicitly, which bypasses
+        # aiohttp's own NO_PROXY handling entirely. Users behind a proxy
+        # that mishandles Tencent's WebSocket upgrade can set
+        # ``NO_PROXY=qq.com`` to force direct.
+        #
+        # The bypass decision considers only the host actually being dialed
+        # (standard NO_PROXY semantics). Suffix entries like ``qq.com``
+        # still match whatever gateway host Tencent returns; an entry for
+        # some other QQ host (e.g. ``bots.qq.com``) does not.
+        gateway_host = urlparse(gateway_url).hostname
+        ws_proxy = resolve_proxy_url("WSS_PROXY", target_hosts=gateway_host)
+        # No trust_env: aiohttp's default (False) is what this fix needs, so aiohttp
+        # cannot re-read HTTPS_PROXY and override the NO_PROXY decision made above.
+        # ``resolve_proxy_url`` is the single source of truth for the WS proxy.
+        # (Unlike the REST client, this session only ever dials the gateway host, so
+        # a connection-level decision is exactly right here.)
+        self._session = aiohttp.ClientSession()
+        if ws_proxy:
+            logger.info(
+                "[%s] WebSocket proxy: %s",
+                self._log_tag,
+                redact_proxy_url(ws_proxy),
+            )
+        else:
+            logger.info(
+                "[%s] WebSocket direct connect (no proxy or NO_PROXY matched)",
+                self._log_tag,
+            )
         self._ws = await self._session.ws_connect(
             gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
         )

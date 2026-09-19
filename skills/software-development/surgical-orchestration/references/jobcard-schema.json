@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "JobCard",
+  "description": "Orchestrator state ledger. Serialized form of the JobCard interface in references/orchestrator.ts — Map/Set become object/array on the wire.",
+  "type": "object",
+  "required": ["planId", "overallStatus", "jobs", "completedHashes"],
+  "additionalProperties": false,
+  "properties": {
+    "planId": {
+      "type": "string",
+      "description": "Identifier for this build plan run, e.g. BUILD-1754380000000"
+    },
+    "overallStatus": {
+      "type": "string",
+      "enum": ["IN_PROGRESS", "PLAYWRIGHT_TESTING", "COMPLETED", "ESCALATED", "FAILED"]
+    },
+    "jobs": {
+      "type": "object",
+      "description": "Keyed by job id (JOB-001, JOB-002, ...). One entry per parent folder.",
+      "additionalProperties": { "$ref": "#/definitions/folderJob" }
+    },
+    "completedHashes": {
+      "type": "array",
+      "description": "Registry of canonical debrief hashes already seen. A repeat means the worker redid identical work; the branch escalates instead of looping.",
+      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "uniqueItems": true
+    }
+  },
+  "definitions": {
+    "folderJob": {
+      "type": "object",
+      "required": ["id", "parentFolder", "status", "attempts", "debriefHistory"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "parentFolder": {
+          "type": "string",
+          "description": "The single directory this job's subagents are locked to."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "WORKER_ACTIVE",
+            "VERIFICATION_ACTIVE",
+            "VERIFIED",
+            "ESCALATED",
+            "FAILED"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Verifier rejections so far. At MAX_REVISION_CYCLES the job escalates."
+        },
+        "assignedWorkerId": { "type": "string" },
+        "assignedVerifierId": { "type": "string" },
+        "lastVerifierFeedback": {
+          "type": "string",
+          "description": "Rejection reason inlined into the next Worker prompt."
+        },
+        "debriefHistory": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["attempt", "agentRole", "debrief", "hash"],
+            "additionalProperties": false,
+            "properties": {
+              "attempt": { "type": "integer", "minimum": 1 },
+              "agentRole": {
+                "type": "string",
+                "enum": ["WORKER", "VERIFIER", "TEST_FIXER"]
+              },
+              "debrief": { "type": "string" },
+              "hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "Canonical hash computed at dispatch. Never recompute it downstream — the ledger must quote this exact value."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

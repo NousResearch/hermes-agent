@@ -398,11 +398,6 @@ def _replay_reasoning_items(
     return replayed
 
 
-def _turn_has_encrypted_reasoning(msg: Dict[str, Any]) -> bool:
-    """True when the stored assistant turn produced an encrypted ``reasoning`` item alongside its message."""
-    return any(isinstance(ri, dict) and ri.get("encrypted_content") for ri in _as_list(msg.get("codex_reasoning_items")))
-
-
 def _replay_message_items(
     msg: Dict[str, Any], *, is_github_responses: bool, current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -411,11 +406,14 @@ def _replay_message_items(
     A ``msg_*`` id minted in the same response as a ``reasoning`` item is bound to that item's ``rs_*`` id,
     which ``_replay_reasoning_items`` always strips (store=False). Replaying the message id alone is a
     deterministic HTTP 400 ("provided without its required 'reasoning' item", #97427/#97442), so the message
-    id is dropped whenever its turn carried encrypted reasoning — replayed, suppressed or foreign-issuer —
-    and the message goes out as content/status/phase only. Reasoning-free turns keep their id.
+    id is dropped whenever its turn carried encrypted reasoning — replayed, suppressed, foreign-issuer or
+    trimmed by the transport (``codex_reasoning_trimmed``) — and the message goes out as content/status/phase
+    only. Reasoning-free turns keep their id.
     """
     replayed: List[Dict[str, Any]] = []
-    linked_to_reasoning = _turn_has_encrypted_reasoning(msg)
+    linked_to_reasoning = bool(msg.get("codex_reasoning_trimmed")) or any(
+        isinstance(ri, dict) and ri.get("encrypted_content") for ri in _as_list(msg.get("codex_reasoning_items"))
+    )
     for raw_item in _as_list(msg.get("codex_message_items")):
         if not (isinstance(raw_item, dict) and raw_item.get("type") == "message" and raw_item.get("role") == "assistant"):
             continue

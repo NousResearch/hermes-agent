@@ -461,6 +461,39 @@ class TestCodexBuildKwargs:
         reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
         assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
 
+    def test_azure_trimmed_reasoning_turn_still_drops_its_message_id(self, transport):
+        """The older turn's reasoning is trimmed for Azure (#105369) but its ``msg_*`` id is still bound to a
+        ``rs_*`` id that is no longer on the wire; the id must go with it (#97427). The newest turn's id is
+        dropped too (its reasoning replays without id); a reasoning-free turn keeps its id."""
+        def _turn(text, *, reasoning):
+            msg = {
+                "role": "assistant", "content": text,
+                "codex_message_items": [{
+                    "type": "message", "role": "assistant", "status": "completed", "id": f"msg_{text}",
+                    "content": [{"type": "output_text", "text": text}],
+                }],
+            }
+            if reasoning:
+                msg["codex_reasoning_items"] = [{"type": "reasoning", "id": f"rs_{text}", "encrypted_content": f"sealed-{text}", "summary": []}]
+            return msg
+
+        messages = [
+            {"role": "user", "content": "first"}, _turn("old", reasoning=True),
+            {"role": "user", "content": "second"}, _turn("plain", reasoning=False),
+            {"role": "user", "content": "third"}, _turn("new", reasoning=True),
+            {"role": "user", "content": "fourth"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-6-astra", messages=messages, tools=[],
+            base_url="https://placeholder.openai.azure.com/openai/v1", replay_encrypted_reasoning=True,
+        )
+        reasoning = [i for i in kw["input"] if i.get("type") == "reasoning"]
+        assert [i["encrypted_content"] for i in reasoning] == ["sealed-new"]
+        by_text = {i["content"][0]["text"]: i for i in kw["input"] if i.get("type") == "message" and i.get("role") == "assistant"}
+        assert "id" not in by_text["old"] and "id" not in by_text["new"]
+        assert by_text["plain"]["id"] == "msg_plain"
+        assert "codex_reasoning_items" in messages[1]  # canonical history untouched
+
     def test_default_responses_new_turn_replays_all_reasoning(self, transport):
         """Non-Azure Responses endpoints keep cross-turn reasoning replay."""
         kw = transport.build_kwargs(

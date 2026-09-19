@@ -450,7 +450,8 @@ def _is_azure_responses(params: dict[str, Any]) -> bool:
 def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
     Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
-    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere."""
+    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere.
+    A trimmed row is marked ``codex_reasoning_trimmed`` so the converter still drops its ``msg_*`` id (#97427)."""
     out: list[dict[str, Any]] = []
     newest_kept = False
     for msg in reversed(messages):
@@ -458,7 +459,7 @@ def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any
         if isinstance(items, list) and any(isinstance(i, dict) and i.get("type") != "compaction" for i in items):
             if newest_kept:
                 checkpoints = [i for i in items if isinstance(i, dict) and i.get("type") == "compaction"]
-                msg = dict(msg)
+                msg = dict(msg, codex_reasoning_trimmed=True)
                 if checkpoints:
                     msg["codex_reasoning_items"] = checkpoints
                 else:

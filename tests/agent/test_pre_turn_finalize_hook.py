@@ -530,3 +530,76 @@ class TestPerTurnReset:
         assert hook.call_count == 2
         assert first["final_response"] == "final-one"
         assert second["final_response"] == "final-two"
+
+
+class TestDurableHistoryClassification:
+    """The synthetic nudge must stay out of durable history (review regression).
+
+    ``_append_interim_answer()`` flushes before ``_continue()`` appends the nudge,
+    so the next flush sees the internal user row as real unless the flag is
+    registered in the canonical classification lists: resumed sessions could
+    replay the plugin instruction as user input, and compression could select
+    the nudge as a real-user anchor.
+    """
+
+    def test_flag_registered_in_both_classification_lists(self):
+        from agent.conversation_compression import _SYNTHETIC_USER_FLAGS
+        from agent.session_persistence import (
+            _EPHEMERAL_SCAFFOLDING_FLAGS,
+            _is_ephemeral_scaffolding,
+        )
+
+        assert "_pre_turn_finalize_synthetic" in _EPHEMERAL_SCAFFOLDING_FLAGS
+        assert "_pre_turn_finalize_synthetic" in _SYNTHETIC_USER_FLAGS
+        assert _is_ephemeral_scaffolding(
+            {"role": "user", "content": "keep going", "_pre_turn_finalize_synthetic": True}
+        )
+
+    def test_db_flush_drops_the_nudge_keeps_real_rows(self):
+        """The session-db flush must skip the flagged nudge row (persistence regression)."""
+        from agent.session_persistence import SessionPersistenceMixin
+
+        class _FlushAgent(SessionPersistenceMixin):
+            _persist_disabled = False
+            session_id = "sess-pre-turn-finalize"
+            _session_db_created = True
+            _flushed_db_message_ids = set()
+            _last_flushed_db_idx = 0
+
+            def __init__(self):
+                self._session_db = MagicMock()
+
+        agent = _FlushAgent()
+        messages = [
+            {"role": "user", "content": "do the work"},
+            {"role": "assistant", "content": "attempted answer"},
+            {"role": "user", "content": "plugin: keep going", "_pre_turn_finalize_synthetic": True},
+            {"role": "assistant", "content": "final answer"},
+        ]
+
+        agent._flush_messages_to_session_db(messages, conversation_history=[])
+
+        persisted = [
+            msg.get("content")
+            for _args, kwargs in agent._session_db.append_messages_batch.call_args_list
+            for msg in kwargs["messages"]
+        ]
+        assert "do the work" in persisted
+        assert "attempted answer" in persisted
+        assert "final answer" in persisted
+        assert "plugin: keep going" not in persisted
+
+    def test_nudge_is_not_a_real_user_message_for_compression(self):
+        """Compression anchor restoration must not select the flagged row (compression regression)."""
+        from agent.conversation_compression import _is_real_user_message
+
+        nudge = {"role": "user", "content": "plugin: keep going", "_pre_turn_finalize_synthetic": True}
+        assert not _is_real_user_message(nudge)
+
+        messages = [
+            {"role": "user", "content": "do the work"},
+            {"role": "assistant", "content": "attempted answer"},
+            nudge,
+        ]
+        anchor = next((m for m in reversed(messages) if _is_real_user_message(m)), None)
+        assert anchor is messages[0]

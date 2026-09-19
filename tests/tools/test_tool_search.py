@@ -988,3 +988,73 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+# ---------------------------------------------------------------------------
+# Active context-length resolution (tool-search gate)
+# ---------------------------------------------------------------------------
+
+
+class TestActiveContextLengthResolution:
+    """``_resolve_active_context_length`` feeds ``should_activate``'s threshold gate.
+
+    It must agree with every other context-length consumer (AIAgent startup,
+    ``/model`` switch, ``resolve_display_context_length``, ``/info``), all of which
+    honor per-model ``custom_providers`` overrides — see #15779 — while preserving
+    the #46620 guarantee that CLI startup performs no endpoint probe.
+    """
+
+    CONFIG = {
+        "model": {
+            "default": "qwen3.6-35b-a3b@q4_k_s",
+            "provider": "custom:bigrickpc-lm-studio",
+        },
+        "custom_providers": [
+            {
+                "name": "BigRickPC LM Studio",
+                "base_url": "http://192.168.1.157:1234/v1",
+                "models": {"qwen3.6-35b-a3b@q4_k_s": {"context_length": 262144}},
+            }
+        ],
+    }
+
+    def _patch_config(self, monkeypatch):
+        """Point config + runtime resolution at CONFIG without touching the network."""
+        import hermes_cli.config as cfg_mod
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda *a, **k: self.CONFIG)
+        monkeypatch.setattr(
+            rp_mod, "resolve_runtime_provider",
+            lambda **k: {"base_url": "http://192.168.1.157:1234/v1", "api_key": ""},
+        )
+
+    def test_per_model_override_wins_over_registry_default(self, monkeypatch):
+        """End-to-end: the pinned 262144 is what the gate sees.
+
+        Before this change the gate called ``get_model_context_length`` without
+        ``custom_providers``, so its step-0c override lookup was skipped and the
+        generic registry default was used instead.
+        """
+        self._patch_config(monkeypatch)
+        import model_tools
+
+        assert model_tools._resolve_active_context_length() == 262144
+
+    def test_gate_forwards_custom_providers_to_the_resolver(self, monkeypatch):
+        """The plumbing itself: the list must reach the resolver, not default to None."""
+        self._patch_config(monkeypatch)
+        import agent.model_metadata as meta_mod
+        import model_tools
+
+        seen: List[Dict[str, Any]] = []
+
+        def _fake_get(model, **kwargs):
+            seen.append({"model": model, **kwargs})
+            return 131072
+
+        monkeypatch.setattr(meta_mod, "get_model_context_length", _fake_get)
+        model_tools._resolve_active_context_length()
+
+        assert seen, "get_model_context_length was never called"
+        assert seen[0]["custom_providers"] == self.CONFIG["custom_providers"]

@@ -948,6 +948,8 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
 
     if profile_home and is_container():
         return profile_home
+    if not current_home:
+        return repaired
     if _is_profile_home(current_home, profile_home):
         return repaired
     return None

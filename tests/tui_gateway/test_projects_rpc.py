@@ -797,6 +797,28 @@ def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path)
     assert launch_tree["scoped_session_ids"] == ["tree-launch-session"]
 
 
+def test_projects_tree_lanes_carry_no_session_rows(monkeypatch, tmp_path):
+    """``projects.tree`` is the lane overview: sessions are NOT hydrated into lanes (drill-in uses
+    ``projects.project_sessions``), so the tree stays cheap however many sessions a project holds."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "tree-lanes"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+    _create_project(launch_home, "Lanes", repo, use=True)
+    _create_session(launch_home, "lanes-session", repo)
+
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+        drill = _call("projects.project_sessions", {"project_id": tree["projects"][0]["id"]})
+
+    def lanes(project):
+        return [lane for repo in project.get("repos") or [] for lane in repo.get("groups") or []]
+
+    assert tree["scoped_session_ids"] == ["lanes-session"]
+    assert all(not lane["sessions"] for project in tree["projects"] for lane in lanes(project))
+    assert any(lane["sessions"] for lane in lanes(drill["project"]))
+
+
 def test_projects_tree_rows_keep_their_lineage_wire_names(monkeypatch, tmp_path):
     """``_lineage_root_id`` / ``_lineage_ids`` are aliases on the row model; the sidebar reads those
     names, so the result frame must dump by alias (a field-name dump silently dropped lineage)."""

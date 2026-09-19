@@ -13,10 +13,17 @@ from .contracts.config_free_tier_control import (
 )
 from .method_ctx import HandlerRegistry, bind_module
 from .contracts.projects_pets import (
+    DiscoveredRepo,
+    ProjectsDiscoverReposParams,
     ProjectsDiscoverReposResult,
+    ProjectsProjectSessionsParams,
     ProjectsProjectSessionsResult,
+    ProjectsRecordReposParams,
     ProjectsRecordReposResult,
+    ProjectsTreeParams,
     ProjectsTreeResult,
+    ProjectTreeNode,
+    RepoDiscoveryPolicy,
 )
 
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
@@ -45,11 +52,7 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 
 @_projects_handler("projects.discover_repos")
-def _(rid, params) -> "ProjectsDiscoverReposResult | dict":
-    from tui_gateway.contracts.projects_pets import (
-        DiscoveredRepo, ProjectsDiscoverReposParams, ProjectsDiscoverReposResult, RepoDiscoveryPolicy,
-    )
-    assert isinstance(params, ProjectsDiscoverReposParams)
+def _(rid, params: ProjectsDiscoverReposParams) -> "ProjectsDiscoverReposResult | dict":
     with srv._profile_db(params) as db:
         if db is None:
             return ProjectsDiscoverReposResult(repos=[], discovery_policy=None)
@@ -67,11 +70,7 @@ def _(rid, params) -> "ProjectsDiscoverReposResult | dict":
 
 
 @_projects_handler("projects.record_repos")
-def _(rid, params) -> "ProjectsRecordReposResult | dict":
-    from tui_gateway.contracts.projects_pets import (
-        DiscoveredRepo, ProjectsRecordReposParams, ProjectsRecordReposResult, RepoDiscoveryPolicy,
-    )
-    assert isinstance(params, ProjectsRecordReposParams)
+def _(rid, params: ProjectsRecordReposParams) -> "ProjectsRecordReposResult | dict":
     from hermes_cli import projects_db as pdb
     policy = srv._repo_discovery_policy()
     policy_key = srv._repo_discovery_policy_key(policy)
@@ -104,14 +103,12 @@ def _stamped_project_tree(db, params, **kwargs):
 
 
 @_projects_handler("projects.tree")
-def _(rid, params) -> "ProjectsTreeResult | dict":
-    from tui_gateway.contracts.projects_pets import ProjectTreeNode, ProjectsTreeParams, ProjectsTreeResult
-    assert isinstance(params, ProjectsTreeParams)
+def _(rid, params: ProjectsTreeParams) -> "ProjectsTreeResult | dict":
     with srv._profile_db(params) as db:
         if db is None:
             return ProjectsTreeResult(projects=[], active_id=None, scoped_session_ids=[])
         tree, active_id = srv._stamped_project_tree(
-            db, params, preview_limit=params.preview_limit or 3, hydrate=True,
+            db, params, preview_limit=params.preview_limit or 3, hydrate=False,
             session_limit=params.session_limit or 2000, include_discovered=True)
         return ProjectsTreeResult(
             projects=[ProjectTreeNode.model_validate(project) for project in tree["projects"]],
@@ -120,11 +117,7 @@ def _(rid, params) -> "ProjectsTreeResult | dict":
 
 
 @_projects_handler("projects.project_sessions")
-def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
-    from tui_gateway.contracts.projects_pets import (
-        ProjectsProjectSessionsParams, ProjectsProjectSessionsResult, ProjectTreeNode,
-    )
-    assert isinstance(params, ProjectsProjectSessionsParams)
+def _(rid, params: ProjectsProjectSessionsParams) -> "ProjectsProjectSessionsResult | dict":
     with srv._profile_db(params) as db:
         if db is None:
             return ProjectsProjectSessionsResult(project=None)
@@ -161,7 +154,7 @@ def _cfg_get_provider(params):
 
 def _cfg_get_project(params: ConfigGetParams):
     raw = str(params.cwd or (srv._load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
-    cwd = srv._completion_cwd({"cwd": raw} if raw else {})
+    cwd = srv._completion_cwd(cwd=raw or None)
     return {"cwd": cwd, "branch": srv.git_probe.branch(cwd)}
 
 

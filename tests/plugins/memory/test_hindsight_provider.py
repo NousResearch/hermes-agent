@@ -1325,6 +1325,76 @@ class TestUpdateModeAppendCapability:
 
 
 # ---------------------------------------------------------------------------
+# Retain-target resolution must never block the calling thread
+# ---------------------------------------------------------------------------
+
+
+class TestRetainTargetResolvedOffCallerThread:
+    """``_resolve_retain_target`` reads ``HindsightEmbedded.url``, and that property
+    calls ``_ensure_started()`` — it blocks for the daemon-startup timeout and
+    raises when readiness is not observed. It must therefore run on the retain
+    writer thread, never on a caller's: ``on_session_switch`` is invoked from
+    context compression's non-cancellable commit phase.
+    """
+
+    @staticmethod
+    def _embedded(provider):
+        """Point the provider at an embedded client whose ``url`` records the
+        thread that touched it and then fails like an unreachable daemon."""
+        provider._mode = "local_embedded"
+        touched: list[str] = []
+
+        class _StartupBlockingClient:
+            aretain_batch = provider._client.aretain_batch
+            aclose = provider._client.aclose
+
+            @property
+            def url(self):
+                touched.append(threading.current_thread().name)
+                raise RuntimeError("Failed to start daemon for profile 'test'")
+
+        provider._client = _StartupBlockingClient()
+        return touched
+
+    def test_session_switch_rotates_state_when_readiness_probe_fails(self, provider_with_config):
+        """A failed readiness probe must not cost the caller the rotation: the
+        switch still moves to the new session and clears the old buffers, and the
+        probe happens on the writer thread rather than the caller's."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+        old_doc, old_sid = p._document_id, p._session_id
+        touched = self._embedded(p)
+
+        p.on_session_switch("new-sid", parent_session_id=old_sid, reset=True)
+        p._retain_queue.join()
+
+        assert touched, "the queued flush never resolved its retain target"
+        assert threading.current_thread().name not in touched, (
+            f"daemon readiness was probed on the calling thread ({touched})"
+        )
+        # Rotation completed despite the failing flush.
+        assert p._session_id == "new-sid"
+        assert p._document_id != old_doc
+        assert p._document_id.startswith("new-sid-")
+        assert p._session_turns == []
+        assert p._turn_counter == 0
+
+    def test_sync_turn_does_not_probe_readiness_on_caller_thread(self, provider_with_config):
+        """Same contract on the per-turn path: enqueueing a retain must not touch
+        the daemon from the turn-completion thread."""
+        p = provider_with_config(retain_async=False)
+        touched = self._embedded(p)
+
+        p.sync_turn("hello", "hi")
+        p._retain_queue.join()
+
+        assert touched, "the queued retain never resolved its retain target"
+        assert threading.current_thread().name not in touched, (
+            f"daemon readiness was probed on the calling thread ({touched})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # System prompt tests
 # ---------------------------------------------------------------------------
 

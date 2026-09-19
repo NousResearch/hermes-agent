@@ -649,7 +649,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # -- retain target -----------------------------------------------------------
 
-    def _resolve_retain_target(self, fallback_document_id: str) -> tuple[str, str | None]:
+    def _resolve_retain_target(self, fallback_document_id: str, session_id: str) -> tuple[str, str | None]:
         """(document_id, update_mode) from live API capability: >= 0.5.0 reuses the
         stable session-scoped id with ``update_mode='append'``; older APIs get
         *fallback_document_id* (per-process unique) and no update_mode — the only
@@ -661,11 +661,20 @@ class HindsightMemoryProvider(MemoryProvider):
         APIs we fall back to *fallback_document_id* (the per-process unique ``f"{session_id}-{start_ts}"``
         minted at initialize / switch time) and don't pass ``update_mode`` at all — that's the only way the
         resume-overwrite fix (#6654) keeps working on legacy servers.
+
+        MUST run on the writer thread, never a caller's. Reading ``url`` off an
+        embedded client is not an accessor: ``HindsightEmbedded.url`` calls
+        ``_ensure_started()``, which blocks for the daemon-startup timeout (180s)
+        and raises when readiness is not observed. On the compression boundary
+        that stalled the non-cancellable commit phase for the full timeout and
+        then skipped session rotation entirely. *session_id* is an explicit
+        parameter so a job queued before rotation still targets the session
+        whose turns it carries.
         """
         url = getattr(self._client, "url", None) if self._mode == "local_embedded" else None
         probe_url = str(url) if url else (self._api_url or "")
-        if self._session_id and _check_api_supports_update_mode_append(probe_url, self._api_key):
-            return self._session_id, "append"
+        if session_id and _check_api_supports_update_mode_append(probe_url, self._api_key):
+            return session_id, "append"
         return fallback_document_id, None
 
     # -- lifecycle ---------------------------------------------------------------
@@ -1020,21 +1029,42 @@ class HindsightMemoryProvider(MemoryProvider):
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
-    def _make_turn_retain_job(self, turns: list[str], *, document_id: str, update_mode: str | None,
-                              label: str, track_ops: bool = True) -> Callable[[], None]:
+    def _make_turn_retain_job(self, turns: list[str], *, fallback_document_id: str,
+                              session_id: str, label: str, track_ops: bool = True,
+                              append_start: int = 0) -> Callable[[], None]:
         """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
-        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
-        content = "[" + ",".join(turns) + "]"
-        metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
-        lineage = (("session", self._session_id), ("parent", self._parent_session_id))
+        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id.
+
+        The (document_id, update_mode) pair is deliberately resolved INSIDE the job:
+        ``_resolve_retain_target`` can block on embedded-daemon readiness, which must
+        never happen on a caller's thread (compression's commit phase is one). Because
+        the mode is unknown until then, the caller hands over the whole buffer plus
+        *append_start* and the job trims: append-capable APIs ship only the turns from
+        that watermark on, legacy ones replace the document and need all of them.
+        """
+        turn_index = self._turn_index
+        lineage = (("session", session_id), ("parent", self._parent_session_id))
         tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
+        # Snapshot the identity metadata too: _build_metadata reads self._session_id
+        # (via _METADATA_ATTRS), which rotation has already advanced by the time the
+        # writer runs, so a flush would otherwise attribute the old session's turns
+        # to the new one. message_count depends on the post-trim payload, so build
+        # the base here and layer the count on inside the job.
+        base_metadata = self._build_metadata(message_count=0, turn_index=turn_index)
 
         def _job() -> None:
+            document_id, update_mode = self._resolve_retain_target(fallback_document_id, session_id)
+            to_ship = turns[append_start:] if update_mode == "append" else turns
+            if not to_ship:
+                logger.debug("Hindsight %s: skipped append retain; no new turns since last retain", label)
+                return
+            content = "[" + ",".join(to_ship) + "]"
+            metadata = {**base_metadata, "message_count": str(len(to_ship) * 2)}
             item = self._build_retain_kwargs(content, context=retain_context, metadata=metadata,
                                              tags=tags, update_mode=update_mode)
             logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
+                         label, bank_id, document_id, update_mode, retain_async, len(content), len(to_ship))
             resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
@@ -1061,19 +1091,15 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - remainder))
             return
 
-        document_id, update_mode = self._resolve_retain_target(self._document_id)
-        # Append-capable APIs get only the delta since the last retain; legacy /
-        # overwrite APIs need the whole session because each retain replaces the document.
-        start = self._last_retained_turn_count if update_mode == "append" else 0
-        turns_to_retain = self._session_turns[start:]
-        if not turns_to_retain:
-            logger.debug("sync_turn: skipped append retain; no new turns since last retain")
-            return
-        logger.debug("sync_turn: retaining %d/%d turns, payload %d chars",
-                     len(turns_to_retain), len(self._session_turns), sum(len(t) for t in turns_to_retain))
-
-        job = self._make_turn_retain_job(turns_to_retain, document_id=document_id,
-                                         update_mode=update_mode, label="retain")
+        # The append-vs-overwrite decision needs the live API capability, which
+        # _resolve_retain_target can only learn by touching the daemon — so the job
+        # resolves it on the writer thread. Ship the whole buffer and let the job
+        # trim to the delta once it knows the mode: append-capable APIs need only
+        # new turns, legacy ones replace the document and need everything.
+        job = self._make_turn_retain_job(list(self._session_turns),
+                                         fallback_document_id=self._document_id,
+                                         session_id=self._session_id, label="retain",
+                                         append_start=self._last_retained_turn_count)
         # Indicator fires only past every skip/buffer gate: solely on turns that persist.
         # Model-independent status line; no-op without retain_indicator/status channel.
         if self._retain_indicator and self._status_callback is not None:
@@ -1082,10 +1108,15 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 logger.debug("Retain indicator emit failed (non-fatal)", exc_info=True)
         self._enqueue_retain(job)
-        # Advance the watermark only after the delta is queued so a later retain
-        # doesn't re-ship turns already handed to the writer.
-        if update_mode == "append":
-            self._last_retained_turn_count = len(self._session_turns)
+        # Advance the watermark once the delta is queued so a later retain doesn't
+        # re-ship turns already handed to the writer. Safe without a lock: this
+        # field is written and read only on the caller thread, while each job ships
+        # the list snapshot + append_start frozen at ITS enqueue, so successive
+        # retains chain windows correctly and the single writer thread never
+        # interleaves two jobs. Unconditional (was append-only): legacy mode
+        # re-ships the whole snapshot and ignores append_start, so the watermark
+        # now means one thing everywhere — turns handed to the writer.
+        self._last_retained_turn_count = len(self._session_turns)
 
     def _enqueue_retain(self, job: Callable[[], None]) -> None:
         """Hand *job* to the (lazily started) writer and arm the atexit drain."""
@@ -1167,12 +1198,18 @@ class HindsightMemoryProvider(MemoryProvider):
         if not new_id:
             return
 
-        # 1. Flush buffered turns under the OLD identifiers, resolved BEFORE the
-        # rotation (legacy: per-process unique; >=0.5.0: session-scoped + append).
+        # 1. Flush buffered turns under the OLD identifiers. The job resolves its
+        # own (document_id, update_mode) on the writer thread — see
+        # _resolve_retain_target. Resolving it here blocked compression's commit
+        # phase on embedded-daemon readiness for the full 180s startup timeout,
+        # and the raise then skipped the whole rotation below (stale _session_id /
+        # _document_id, buffers never cleared). That raise is not a rare edge: an
+        # embedded daemon that binds a port the readiness probe does not check
+        # reports "not running" while healthy, so every switch hit it.
         if self._session_turns:
-            old_document_id, old_update_mode = self._resolve_retain_target(self._document_id)
-            job = self._make_turn_retain_job(list(self._session_turns), document_id=old_document_id,
-                                             update_mode=old_update_mode, label="flush-on-switch",
+            job = self._make_turn_retain_job(list(self._session_turns),
+                                             fallback_document_id=self._document_id,
+                                             session_id=self._session_id, label="flush-on-switch",
                                              track_ops=False)
 
             def _flush():

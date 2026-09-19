@@ -968,7 +968,8 @@ class TestMatrixAccessTokenAuth:
 
         # Patch Client constructor to return our mock
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+        olm_factory = MagicMock(return_value=mock_olm)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = olm_factory
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
@@ -979,6 +980,8 @@ class TestMatrixAccessTokenAuth:
 
         mock_client.whoami.assert_awaited_once()
         assert adapter._user_id == "@bot:example.org"
+        from plugins.platforms.matrix.adapter import _MautrixCryptoLogger
+        assert isinstance(olm_factory.call_args.kwargs["log"], _MautrixCryptoLogger)
 
         await adapter.disconnect()
 

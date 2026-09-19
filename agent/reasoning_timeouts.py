@@ -28,6 +28,15 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # Mythos-class named models (claude-fable-5): 1M ctx + 128K output, a heavier thinking
         # phase than the numbered line — otherwise the stale detector trips the circuit breaker.
         "claude-fable",
+        # Z.AI GLM-5 family: always-thinking on the Coding endpoint
+        # (#89241, #85904) - the thinking toggle is silently ignored, so
+        # the pre-first-token phase routinely exceeds the 90s non-stream
+        # stale default on mid-size contexts (24 kills/day reported).
+        # The family slug covers glm-5.2 / glm-5.3 via the separator
+        # right-anchor, including 5.2 requests rerouted to the 5.3
+        # backend; over-match is accepted as a patience ceiling (the
+        # table already accepts this for qwen3).
+        "glm-5",
     ),
     300: (
         "nemotron-3-nano", "nemotron-3.5-lightning", "qwq-32b", "o3-mini", "o4-mini",

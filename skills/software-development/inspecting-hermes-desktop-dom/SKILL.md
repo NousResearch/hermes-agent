@@ -66,18 +66,17 @@ their state. Launch your own isolated instance instead (below).
 
 ## Reading the DOM
 
-`apps/desktop/scripts/eval.mjs` is the one-liner:
+From the Hermes source checkout root, `apps/desktop/scripts/eval.mjs` is the one-liner:
 
 ```bash
-cd apps/desktop
-node scripts/eval.mjs "document.querySelectorAll('[data-slot]').length"
+node apps/desktop/scripts/eval.mjs "document.querySelectorAll('[data-slot]').length"
 ```
 
 For multi-step work use the shared client — it has target discovery and
 promise-aware eval:
 
 ```js
-import { CDP, SELECTORS } from './scripts/perf/lib/cdp.mjs'
+import { CDP, SELECTORS } from './apps/desktop/scripts/perf/lib/cdp.mjs'
 
 const cdp = await CDP.connect({ port: 9222, match: '5174' })
 const out = await cdp.eval(`JSON.stringify({
@@ -87,7 +86,7 @@ const out = await cdp.eval(`JSON.stringify({
 cdp.close()
 ```
 
-`SELECTORS` in `scripts/perf/lib/cdp.mjs` holds the stable `data-slot` hooks
+`SELECTORS` in `apps/desktop/scripts/perf/lib/cdp.mjs` holds the stable `data-slot` hooks
 (composer, thread viewport, assistant message, turn pair, profile rail). Prefer
 them over inventing a `querySelector` — they are updated as a unit when
 components move.
@@ -156,4 +155,4 @@ also want the perf harness.
 - **`cdp.eval` returns the value; raw `Runtime.evaluate` double-nests it**
   (`.result.result.value`). Use the wrapper.
 - **`import.meta.env.DEV` is `true` under `vite dev`** in this repo. The note in
-  `apps/desktop/scripts/profile-typing-lag.md` claiming otherwise is stale.
+  The repository-root `apps/desktop/scripts/profile-typing-lag.md` claiming otherwise is stale.

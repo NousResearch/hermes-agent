@@ -111,8 +111,8 @@ For non-deterministic bugs, the immediate goal is a higher reproduction rate, no
 # Run a specific failing test
 pytest tests/test_module.py::test_name -v
 
-# Or run a scripted repro
-python scripts/repro_bug.py
+# Or run a scripted repro you created in the working project
+python repro_bug.py
 
 # Or run a high-repetition flaky repro
 for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done

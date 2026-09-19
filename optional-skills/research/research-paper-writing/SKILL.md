@@ -1196,8 +1196,8 @@ Official implementation of "[Paper Title]" (Venue Year).
 [Exact commands to set up environment]
 
 ## Reproduction
-To reproduce Table 1: `bash scripts/reproduce_table1.sh`
-To reproduce Figure 2: `python scripts/make_figure2.py`
+To reproduce Table 1: `bash your-method/scripts/reproduce_table1.sh`
+To reproduce Figure 2: `python your-method/scripts/make_figure2.py`
 
 ## Citation
 [BibTeX entry]

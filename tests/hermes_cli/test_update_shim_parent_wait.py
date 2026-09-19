@@ -137,6 +137,20 @@ def test_update_child_outwaits_shim_parent_then_owns_the_lock_and_the_resume_tok
     assert seen["env_left"] == [] and seen["marker_after"] is False, seen
 
 
+def test_detached_child_env_falls_back_when_holder_helper_is_missing(monkeypatch):
+    """A lazily loaded hand-off must work with the eagerly cached pre-pull repair module."""
+    import hermes_cli.main_install_repair as repair
+
+    monkeypatch.delattr(repair, "_windows_shim_holder_pid")
+    monkeypatch.setattr(repair, "_venv_shim_matcher", lambda: object())
+    monkeypatch.setattr(repair, "_windows_shim_ancestor", lambda match: (Path("hermes.exe"), 4242))
+
+    env = update_handoff.detached_shim_child_env({"EXISTING": "1"})
+
+    assert env[update_handoff.SHIM_PARENT_PID_ENV] == "4242"
+    assert env["EXISTING"] == "1"
+
+
 def test_wait_is_bounded_and_skips_absent_garbage_and_recycled_pids(monkeypatch):
     def _sleeper(seconds: float) -> subprocess.Popen:
         return subprocess.Popen(

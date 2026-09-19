@@ -118,12 +118,28 @@ def post_swap_child_env() -> dict[str, str]:
     return env
 
 
+def _windows_shim_holder_pid() -> int:
+    """Return the shim-holder pid without requiring a post-pull symbol in a stale module.
+
+    ``main_install_repair`` is imported eagerly by the CLI, while this module is loaded lazily
+    at the post-swap boundary.  During an in-process update those module objects can therefore
+    come from different checkout revisions.  Reuse the newer helper when available; otherwise
+    compose the same result from the older helpers that predate the hand-off change.
+    """
+    from hermes_cli import main_install_repair
+
+    holder = getattr(main_install_repair, "_windows_shim_holder_pid", None)
+    if holder is not None:
+        return holder()
+    match = main_install_repair._venv_shim_matcher()
+    ancestor = main_install_repair._windows_shim_ancestor(match) if match is not None else None
+    return os.getpid() if ancestor is None else ancestor[1]
+
+
 def detached_shim_child_env(env: dict[str, str], gateway_resume: dict | None = None) -> dict[str, str]:
     """Env for a child that outlives this shim-run process: names the process holding the shim
     open (the ``hermes.exe`` launcher above us when psutil sees it, else this interpreter) and,
     for the legacy re-exec (no hand-off file), carries the Windows pause token."""
-    from hermes_cli.main_install_repair import _windows_shim_holder_pid
-
     env = {**env, SHIM_PARENT_PID_ENV: str(_windows_shim_holder_pid())}
     if gateway_resume is not None:
         env[GATEWAY_RESUME_ENV] = json.dumps(gateway_resume, default=_json_default)

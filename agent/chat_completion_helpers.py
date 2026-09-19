@@ -2168,6 +2168,48 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
+
+_PREVIOUS_TURN_HANDOFF_PREFIX = "Previous turn (earlier conversation, for continuity only):"
+_PREVIOUS_TURN_HANDOFF_MAX_CHARS = 4000
+
+
+def _previous_turn_handoff(messages: list) -> "dict | None":
+    """Single labelled summary of everything before the current user turn: flat
+    text of user questions and assistant replies only. Tool results are dropped —
+    the summary is asked what was accomplished, not handed the raw work log."""
+    lines = []
+    for msg in messages:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = flatten_message_text(msg.get("content")) or ""
+        text = text.strip()
+        if not text:
+            continue
+        lines.append(f"{role}: {text}")
+    if not lines:
+        return None
+    handoff = "\n\n".join(lines)
+    if len(handoff) > _PREVIOUS_TURN_HANDOFF_MAX_CHARS:
+        handoff = handoff[:_PREVIOUS_TURN_HANDOFF_MAX_CHARS] + "\n…(truncated)"
+    return {"role": "user", "content": f"{_PREVIOUS_TURN_HANDOFF_PREFIX}\n\n{handoff}"}
+
+
+def _summary_scope(agent, messages: list) -> list:
+    """Messages eligible for the terminal summary: a bounded, labelled handoff of
+    the earlier turns plus the live current turn, anchored at the re-anchored
+    ``_persist_user_message_idx`` (turn_context keeps it pointing at the current
+    user row across compaction rebuilds). None or a stale/bounds-violating index
+    (e.g. the post-adoption ``len(messages)`` sentinel) keeps the full list —
+    attribution scoping must never reduce the summary to silence."""
+    idx = getattr(agent, "_persist_user_message_idx", None)
+    if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(messages)):
+        return messages
+    handoff = _previous_turn_handoff(messages[:idx])
+    scoped = ([handoff] if handoff is not None else []) + messages[idx:]
+    return scoped or messages
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
@@ -2189,7 +2231,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
+        api_messages = _iteration_summary_api_messages(agent, _summary_scope(agent, messages))
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 

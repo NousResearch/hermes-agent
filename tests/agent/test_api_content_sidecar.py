@@ -1037,3 +1037,101 @@ class TestStaleConfirmationRedactionDropsSidecar:
         )
         assert cleaned[0]["content"] != "confirm forced restart"
         assert "api_content" not in cleaned[0]
+
+
+class TestMaxIterationsSummaryScope:
+    """The terminal summary must only see a labelled, bounded handoff of the
+    earlier turns plus the live current turn (anchored at
+    ``_persist_user_message_idx``); an old turn's tool result can never be
+    attributed as work of the current turn."""
+
+    def _run(self, agent, messages):
+        from agent.chat_completion_helpers import handle_max_iterations
+
+        captured = {}
+
+        class _Completions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return "RAW-RESPONSE"
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=_Completions())
+        )
+        transport = types.SimpleNamespace(
+            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
+        )
+        with patch.object(
+            agent, "_ensure_primary_openai_client", return_value=client
+        ), patch.object(agent, "_get_transport", return_value=transport):
+            out = handle_max_iterations(agent, messages, 5)
+        return out, captured
+
+    def _agent(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._cached_system_prompt = "SYS"
+        return agent
+
+    def test_old_turn_tool_result_stays_off_the_summary_wire(self):
+        agent = self._agent()
+        messages = [
+            {"role": "user", "content": "fetch the model catalog"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "content": "STALE_MODEL_CATALOG_RESULT", "tool_call_id": "c1"},
+            {"role": "assistant", "content": "catalog fetched"},
+            {"role": "user", "content": "Continue"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c2", "type": "function",
+                 "function": {"name": "list_dir", "arguments": "{}"}}]},
+            {"role": "tool", "content": "CURRENT_TURN_RESULT", "tool_call_id": "c2"},
+        ]
+        agent._persist_user_message_idx = 4
+
+        out, captured = self._run(agent, messages)
+        assert out == "SUMMARY"
+        wire_users = [m for m in captured["messages"] if m.get("role") == "user"]
+        assert "STALE_MODEL_CATALOG_RESULT" not in json.dumps(captured["messages"])
+        assert any("CURRENT_TURN_RESULT" in m.get("content", "") for m in wire_users) or any(
+            m.get("role") == "tool" and "CURRENT_TURN_RESULT" in m.get("content", "")
+            for m in captured["messages"])
+        # The handoff row is present, clearly labelled, first.
+        assert wire_users[0]["content"].startswith(
+            "Previous turn (earlier conversation, for continuity only):")
+        # Live transcript stays append-only: nothing before the anchor was rewritten.
+        assert messages[0]["content"] == "fetch the model catalog"
+
+    def test_no_anchor_index_falls_back_to_full_history(self):
+        agent = self._agent()
+        agent._persist_user_message_idx = None
+        messages = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+        out, captured = self._run(agent, messages)
+        assert out == "SUMMARY"
+        contents = json.dumps(captured["messages"])
+        assert "q1" in contents and "a1" in contents
+
+    def test_handoff_is_bounded(self):
+        agent = self._agent()
+        big = "x" * 10_000
+        messages = [
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+            {"role": "user", "content": "Continue"},
+        ]
+        agent._persist_user_message_idx = 2
+        _out, captured = self._run(agent, messages)
+        wire = json.dumps(captured["messages"])
+        from agent.chat_completion_helpers import _PREVIOUS_TURN_HANDOFF_MAX_CHARS
+        assert len(wire) < 3 * _PREVIOUS_TURN_HANDOFF_MAX_CHARS

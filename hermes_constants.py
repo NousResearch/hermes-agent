@@ -383,12 +383,22 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return _WINDOWS_NODE_SHIMS.get(base.lower(), [f"{base}.cmd", f"{base}.exe", base])
 
 
+def _file_probe(path: Path) -> bool | None:
+    """True for a regular file, False for a normal miss, None when stat is inaccessible."""
+    try:
+        return path.is_file()
+    except OSError:
+        return None
+
+
 def _iter_managed_node_candidates(names: list[str], home: Path | None = None):
     """Yield existing (and on POSIX, executable) ``<node-dir>/<name>`` files."""
     for directory in iter_hermes_node_dirs(home):
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
+            if _file_probe(candidate) is True and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
                 yield candidate
 
 
@@ -439,14 +449,18 @@ def node_tool_runnable(path: str | None) -> bool:
     """True only when *path* is a Node/npm/npx binary that actually runs (``--version`` probe)."""
     if not path:
         return False
-    present = Path(path).is_file() if sys.platform == "win32" else _is_executable_file(path)
+    present = _file_probe(Path(path)) is True if sys.platform == "win32" else _is_executable_file(path)
     return present and _version_probe_ok(path)
 
 
 def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
-    """Return True when any Hermes-managed node/npm/npx shim exists on disk."""
+    """Return True when a managed shim exists or its status is temporarily inaccessible."""
     names = [n for c in ("node", "npm", "npx") for n in _candidate_node_command_names(c)]
-    return next(_iter_managed_node_candidates(names, home), None) is not None
+    for directory in iter_hermes_node_dirs(home):
+        for name in names:
+            if _file_probe(directory / name) is not False:
+                return True
+    return False
 
 
 def _path_under_any(path: str, roots: list[str]) -> bool:

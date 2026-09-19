@@ -213,6 +213,50 @@ class TestHermesManagedNode:
 
 
     @pytest.mark.windows_only
+    def test_windows_locked_managed_npm_stat_does_not_crash_or_fall_back(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        managed_npm = home / "node" / "npm.cmd"
+        managed_npm.parent.mkdir(parents=True)
+        managed_npm.write_text("@echo off\n")
+        system_bin = tmp_path / "system-node"
+        system_bin.mkdir()
+        system_npm = system_bin / "npm.cmd"
+        system_npm.write_text("@echo off\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(system_bin))
+
+        real_is_file = Path.is_file
+
+        def locked_is_file(path):
+            if path == managed_npm:
+                raise OSError(1920, "The file cannot be accessed by the system", str(path))
+            return real_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", locked_is_file)
+
+        assert find_hermes_node_executable("npm") is None
+        assert hermes_managed_node_tree_present() is True
+        assert find_node_executable("npm") is None
+        assert find_node_executable("npm") != str(system_npm)
+
+
+    @pytest.mark.windows_only
+    def test_windows_locked_node_tool_probe_is_not_runnable(self, tmp_path, monkeypatch):
+        node = tmp_path / "node.exe"
+        node.write_bytes(b"stub")
+        real_is_file = Path.is_file
+
+        def locked_is_file(path):
+            if path == node:
+                raise OSError(1920, "The file cannot be accessed by the system", str(path))
+            return real_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", locked_is_file)
+
+        assert node_tool_runnable(str(node)) is False
+
+
+    @pytest.mark.windows_only
     def test_windows_skips_broken_managed_npm_without_path_fallback(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         managed_npm = home / "node" / "npm.cmd"

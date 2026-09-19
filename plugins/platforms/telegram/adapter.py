@@ -132,7 +132,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, normalize_telegram_rich_messages
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
@@ -451,11 +451,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages render what MarkdownV2 degrades (tables, task lists, <details>, block
-        # math). Opt-in: current clients make rich messages hard to copy as plain text. rich_drafts is a
-        # separate opt-in (Desktop can leave rich draft frames overlaid): off keeps native draft transport
-        # but skips rich draft rendering; the final reply still lands via sendRichMessage.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # One policy for final sends and finalized edits. Booleans retain the
+        # opt-in contract: true=auto, false=never. Safety guards still apply.
+        self._rich_message_mode = normalize_telegram_rich_messages(
+            (config.extra or {}).get("rich_messages")
+        )
+        self._rich_messages_enabled: bool = self._rich_message_mode != "never"
         # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
@@ -1280,7 +1281,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _needs_rich_rendering(self, content: str) -> bool:
         """True for constructs MarkdownV2 degrades: pipe tables, task lists, <details>, block math.
-        Ordinary replies stay on MarkdownV2 so clients render consistent font weight/spacing.
+        In auto mode, ordinary replies stay on MarkdownV2 for consistent font weight/spacing.
 
         The rich endpoint is reserved for constructs where raw markdown materially improves output: pipe
         tables (MarkdownV2 has no table syntax and rewrites them into bullet lists), GFM task lists,
@@ -1288,6 +1289,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not content:
             return False
+        if getattr(self, "_rich_message_mode", "auto") == "always":
+            return bool(content.strip())
         if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):

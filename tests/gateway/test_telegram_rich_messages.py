@@ -861,3 +861,65 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+@pytest.mark.parametrize('mode,ordinary_rich,table_rich', [
+    ('always', True, True), ('auto', False, True), ('never', False, False),
+    (True, False, True), (False, False, False), (None, False, False),
+    ('true', False, True), ('false', False, False),
+    ('on', False, True), ('off', False, False),
+    ('1', False, True), ('0', False, False),
+    (' ALWAYS ', True, True),
+])
+@pytest.mark.asyncio
+async def test_rich_mode_from_yaml_agrees_with_prompt_and_delivery(
+    tmp_path, monkeypatch, mode, ordinary_rich, table_rich,
+):
+    """Real YAML resolution must agree across gateway, prompt, and final send."""
+    import yaml
+    from gateway.config import load_gateway_config, Platform
+    from hermes_cli import config as config_module
+    from agent.system_prompt import _telegram_rich_messages_enabled
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(config_module, 'get_config_path', lambda: tmp_path / 'config.yaml')
+    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({
+        'gateway': {'platforms': {'telegram': {'extra': {'rich_messages': mode}}}},
+    }), encoding='utf-8')
+    config = load_gateway_config().platforms[Platform.TELEGRAM]
+    assert _telegram_rich_messages_enabled() is table_rich
+    for content, expect_rich in [('## Heading\n\nHello **there**', ordinary_rich),
+                                  (RICH_CONTENT, table_rich)]:
+        adapter = TelegramAdapter(config)
+        adapter._bot = _make_adapter()._bot
+        result = await adapter.send('12345', content)
+        assert result.success
+        assert adapter._bot.do_api_request.await_count == int(expect_rich)
+        assert adapter._bot.send_message.await_count == int(not expect_rich)
+
+
+@pytest.mark.parametrize('mode', ['alway', '', [], {}, 2])
+def test_invalid_rich_mode_is_a_configuration_error(mode):
+    with pytest.raises(ValueError, match='rich_messages'):
+        TelegramAdapter(PlatformConfig(extra={'rich_messages': mode}))
+
+
+@pytest.mark.asyncio
+async def test_always_preserves_preview_and_content_safety_guards():
+    adapter = _make_adapter(extra={'rich_messages': 'always'})
+    assert adapter._rich_eligible('## Heading\n\nOrdinary prose')
+    assert not adapter._should_attempt_rich('Hello', {'expect_edits': True})
+    assert not adapter._rich_eligible(' ')
+    assert not adapter._rich_eligible(DANGEROUS_DETAILS_MATH)
+    assert not adapter._rich_eligible('x' * (adapter.RICH_MESSAGE_MAX_CHARS + 1))
+    adapter._rich_send_disabled = True
+    assert not adapter._rich_eligible('Hello')
+
+
+@pytest.mark.asyncio
+async def test_always_finalizes_ordinary_stream_as_rich():
+    adapter = _make_adapter(extra={'rich_messages': 'always'})
+    result = await adapter.edit_message('12345', '1', '## Heading\n\nHello **there**', finalize=True)
+    assert result.success
+    assert adapter._bot.do_api_request.call_args.args[0] == 'editMessageText'
+    assert 'rich_message' in adapter._bot.do_api_request.call_args.kwargs['api_kwargs']

@@ -31,6 +31,8 @@ from agent.model_metadata import (
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
     estimate_request_tokens_rough,
+    _extract_pricing,
+    _parse_models_payload,
 )
 
 
@@ -2135,3 +2137,41 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+class TestEndpointMetadataParsingRobustness:
+    """`/models` payloads are arbitrary remote JSON, so the pricing extractor must stay total:
+    a non-scalar value under a pricing-alias name has to be skipped, never raised. When it
+    raised, `_parse_models_payload` propagated out and `fetch_endpoint_model_metadata` swallowed
+    it, so the metadata for EVERY model that endpoint serves was dropped — the failure surfaced
+    as confidently wrong context windows (a 1M model read as 128K) instead of a missing value.
+    """
+
+    def test_non_scalar_pricing_alias_is_skipped_not_raised(self):
+        # `modalities: {"input": [...]}` is a common OpenAI-compatible shape, and `input` is
+        # also a pricing alias — the list value used to reach a set-membership test (unhashable).
+        assert _extract_pricing({"modalities": {"input": ["text"], "output": ["text"]}}) == {}
+        assert _extract_pricing({"input": ["a", "b"]}) == {}
+        assert _extract_pricing({"request": {"nested": 1}}) == {}
+
+    def test_scalar_pricing_aliases_still_parse(self):
+        # The subject here is that a scalar under an alias is still PICKED UP, not what
+        # its value becomes: `_normalize_token_rates` owns the per-million-to-per-token
+        # conversion, so a bare quote is rewritten and a `per_token` unit is left alone.
+        # Asserting both spellings keeps this test about alias resolution even as that
+        # normalization changes.
+        assert _extract_pricing({"prompt": "0.000001"}) == {"prompt": "0.000001"}
+        assert _extract_pricing({"input": 1.5, "unit": "per_token"}) == {"prompt": 1.5}
+        assert _extract_pricing({"input": 1.5}) == {"prompt": "1.5e-06"}
+
+    def test_model_entry_survives_non_scalar_pricing_alias(self):
+        parsed = _parse_models_payload({
+            "data": [{
+                "id": "some/model",
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "context_window": 1_000_000,
+            }],
+        })
+        entry = parsed["some/model"]
+        assert entry["context_length"] == 1_000_000
+        assert "pricing" not in entry

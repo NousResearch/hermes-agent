@@ -1,0 +1,25 @@
+name: afterforge
+repo: https://github.com/ussyverse/afterforge
+sha: fa876d66df48fae3409737ea6a2f488f4358701f
+description: Local-first regression workbench turning agent failures and corrections into reviewed, evidence-backed checks.
+maintainer: ussyverse
+tier: community
+category: tools
+docs_url: https://github.com/ussyverse/afterforge/blob/fa876d66df48fae3409737ea6a2f488f4358701f/README.md
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - fixlab_status
+    - fixlab_scan
+    - fixlab_list_cases
+    - fixlab_inspect_case
+    - fixlab_review_case
+    - fixlab_build_regression
+    - fixlab_verify_regression
+    - fixlab_report
+  provides_hooks:
+    - post_tool_call
+    - on_session_end
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

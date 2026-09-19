@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
+import { $activeProjectId, $projects } from '@/store/projects'
 import { $connection, $selectedStoredSessionId, $workspaceCwdOwner, setCurrentCwd } from '@/store/session'
 
 import { resetProjectTreeState } from './files/use-project-tree'
@@ -19,6 +20,8 @@ describe('RightSidebarPane', () => {
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
+    $activeProjectId.set(null)
+    $projects.set([])
     resetProjectTreeState()
     readDir.mockReset()
     readDir.mockResolvedValue({ entries: [{ isDirectory: false, name: 'README.md', path: '/repo/README.md' }] })
@@ -30,6 +33,8 @@ describe('RightSidebarPane', () => {
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
+    $activeProjectId.set(null)
+    $projects.set([])
     setCurrentCwd('')
     resetProjectTreeState()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -59,6 +64,37 @@ describe('RightSidebarPane', () => {
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('shows every configured folder for the active multi-root project', async () => {
+    setCurrentCwd('/repo-one')
+    $activeProjectId.set('p_multi')
+    $projects.set([
+      {
+        archived: false,
+        board_slug: null,
+        color: null,
+        created_at: 0,
+        description: null,
+        folders: [
+          { added_at: 0, is_primary: true, label: null, path: '/repo-one' },
+          { added_at: 0, is_primary: false, label: null, path: '/repo-two' }
+        ],
+        icon: null,
+        id: 'p_multi',
+        name: 'Multi root',
+        primary_path: '/repo-one',
+        slug: 'multi-root'
+      }
+    ])
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    await waitFor(() => {
+      expect(readDir).toHaveBeenCalledWith('/repo-one')
+      expect(readDir).toHaveBeenCalledWith('/repo-two')
+    })
+    expect(screen.getAllByRole('button', { name: 'Refresh tree' })).toHaveLength(2)
   })
 
   it('shows no tree for a detached chat (no working dir)', async () => {

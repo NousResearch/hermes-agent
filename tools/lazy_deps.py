@@ -397,6 +397,13 @@ def _is_present(spec: str) -> bool:
     return _installed_version(spec) is not None
 
 
+def spec_installed(spec: str) -> bool:
+    """Is the spec's package installed at ANY version? Lets a caller tell a dependency the user
+    activated from an optional one they never installed (:func:`_is_satisfied` also checks the
+    declared range, which is the wrong question for that decision)."""
+    return _is_present(spec)
+
+
 def _core_constraints_file() -> Optional[Path]:
     """Temp ``--constraint`` file pinning every core-venv package to its installed version for
     durable-target installs: shared deps resolve as satisfied (store stays minimal) and a conflicting
@@ -508,18 +515,21 @@ def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dr
 
 
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
-                      dry_run: bool = False) -> _InstallResult:
+                      dry_run: bool = False, upgrade: bool = False) -> _InstallResult:
     """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
     ``--target`` (constrained to core versions) when :data:`_LAZY_TARGET_ENV` is set. Independent of
     ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
 
     *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
-    can never move a core package out of range); *dry_run* resolves without installing."""
+    can never move a core package out of range); *dry_run* resolves without installing; *upgrade* moves
+    an already-installed package forward within its spec's range instead of resolving it as satisfied."""
     if not specs:
         return _InstallResult(True, "", "")
     target = _lazy_install_target()
     constraints: Optional[Path] = None
-    extra_args: list[str] = ["--dry-run"] if dry_run else []
+    extra_args: list[str] = ["--upgrade"] if upgrade else []
+    if dry_run:
+        extra_args.append("--dry-run")
     if target is not None:
         if err := _ensure_target_ready(target):
             return _InstallResult(False, "", err)
@@ -672,11 +682,14 @@ class InstallSpecsResult:
 
 
 def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
-                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False) -> InstallSpecsResult:
+                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False,
+                  upgrade: bool = False) -> InstallSpecsResult:
     """Install data-driven pip specs (plugin manifest ``pip_dependencies``) with the same routing and
     gating as :func:`ensure`, but unknown packages are allowed — the caller owns manifest trust, this
     owns spec hygiene. *constraints* are requirement lines the resolver must honour; *dry_run* only
-    resolves. Never raises; inspect the :class:`InstallSpecsResult`."""
+    resolves. ``upgrade`` forces the resolver to move an already-installed package forward within the
+    spec's declared range (``hermes update`` re-applying a plugin dependency must not settle for
+    whatever version landed first). Never raises; inspect the :class:`InstallSpecsResult`."""
     cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
     if not cleaned:
         return InstallSpecsResult(ok=True, command="")
@@ -690,10 +703,11 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
                   "and no writable install target is configured (HERMES_LAZY_INSTALL_TARGET)"
                   ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
         return InstallSpecsResult(ok=False, blocked=True, reason=reason)
-    display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
-    logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
+    display = "uv pip install " + ("--upgrade " if upgrade else "") + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
+    logger.info("%s pip specs %s (target=%s, upgrade=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv", upgrade)
     try:
-        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run)
+        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run,
+                                   upgrade=upgrade)
     except Exception as exc:
         logger.warning("install_specs failed unexpectedly: %s", exc)
         return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")

@@ -263,3 +263,56 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+describe('host.composer draft facade', () => {
+  const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+  it('routes insertText by address: tile for a session, resolved-active for null', async () => {
+    const seen: { mode: string; target: string }[] = []
+
+    const off = (event: Event) => {
+      const { mode, target } = (event as CustomEvent).detail
+
+      seen.push({ mode, target })
+    }
+
+    window.addEventListener('hermes:composer-insert', off)
+    host.composer.insertText('sess-1', ' snippet ', { mode: 'inline' })
+    host.composer.insertText(null, 'to active')
+    await flush()
+    window.removeEventListener('hermes:composer-insert', off)
+
+    expect(seen).toEqual([
+      { mode: 'inline', target: 'tile:sess-1' },
+      { mode: 'block', target: 'main' }
+    ])
+  })
+
+  it('reads the live draft through a bus reply', async () => {
+    const reply = (event: Event) => {
+      const { token } = (event as CustomEvent<{ token: number }>).detail
+
+      window.dispatchEvent(new CustomEvent('hermes:composer-draft-reply', { detail: { text: 'live text', token } }))
+    }
+
+    window.addEventListener('hermes:composer-get-draft', reply)
+    const text = await host.composer.getDraft(null)
+    window.removeEventListener('hermes:composer-get-draft', reply)
+
+    expect(text).toBe('live text')
+  })
+
+  it('falls back to the persisted stash when no surface answers', async () => {
+    const { stashSessionDraft } = await import('@/store/composer')
+
+    stashSessionDraft('sess-stash', 'stashed draft', [])
+
+    await expect(host.composer.getDraft('sess-stash')).resolves.toBe('stashed draft')
+    // Never-stashed + unanswered → null (timeout), never a wrong-session read.
+    await expect(host.composer.getDraft('sess-never')).resolves.toBeNull()
+  })
+
+  it('reports a setDraft failure when no surface answers', async () => {
+    await expect(host.composer.setDraft('sess-ghost', 'hello')).resolves.toBe(false)
+  })
+})

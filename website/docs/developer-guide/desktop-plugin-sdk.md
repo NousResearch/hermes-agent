@@ -412,6 +412,43 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+### Composer draft API — read and write the live input
+
+For everything the composer areas can't do — put text INTO the input, replace
+what's there, read the current draft, or send it — use `host.composer`. This
+is the supported door; reaching for the ProseMirror DOM, `[data-composer-target]`
+lookups, or synthetic `InputEvent`s is out of the plugin surface (catalog rule 8)
+and breaks the moment the app's markup moves. Addressing: `null` = the composer
+the user is typing in; a session id (stored or runtime) = that session's
+composer, in the primary pane or a tile; `'new'` = the fresh draft that has no
+session id yet.
+
+```javascript
+import { host } from '@hermes/plugin-sdk'
+
+// Append to the active composer (modes: 'block' | 'inline' | 'prefix';
+// 'prefix' seats a slash command at the start).
+host.composer.insertText(null, 'draft note', { mode: 'inline' })
+
+// Replace a session's whole draft — '@'-ref and '/command' tokens hydrate
+// into chips exactly like an official paste. False when no mounted surface
+// answers (an unmounted session is never half-written).
+const ok = await host.composer.setDraft('sess-1', 'plan:\n- @file:src/app.ts')
+
+// Read the live draft: the mounted surface's in-DOM text (unsaved keystrokes
+// included), falling back to the debounced persisted stash. Null when nothing
+// holds it.
+const text = await host.composer.getDraft('sess-1')
+
+// Send as if the user typed + pressed Enter. Fail-closed like the app's own
+// panels: no visible surface for the address → false, never a broadcast.
+const sent = host.composer.submit('sess-1', 'ship it')
+```
+
+A multi-session plugin keeps its per-session state on its side (which session
+its panel is editing) and passes that id here; the bus guarantees one
+plugin write can never land in another session's composer.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

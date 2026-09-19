@@ -318,6 +318,184 @@ export const requestComposerInsertRefs = (
 export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
   subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
 
+// ── Draft read/write bus (plugin SDK `host.composer`) ─────────────────────
+//
+// A synchronous request/reply pair over the same CustomEvent bus as the
+// mutations above: mounted composers answer for their own sessions, the
+// requester times out to `null`/`false` when none does. Deferral is NOT used
+// for the request (the reply path is already async for the caller); handlers
+// run inline, matching the submit bus's preserve-the-visible-surface rule.
+
+/** Durable or runtime ids a mounted composer answers for (primary: both;
+ *  tile: its stored id; plus the queue-edit key the draft stash is keyed by).
+ *  `active` addresses the composer the bus currently routes to, whatever
+ *  session it holds — the read/write cousin of the mutations' 'active' target. */
+export interface DraftRequestDetail {
+  token: number
+  ids: string[]
+  active?: boolean
+  /** Set-draft payload; absent on read requests. */
+  text?: string
+}
+
+interface DraftReplyDetail {
+  ids?: string[]
+  ok?: boolean
+  text?: null | string
+  token: number
+}
+
+const GET_DRAFT_EVENT = 'hermes:composer-get-draft'
+const SET_DRAFT_EVENT = 'hermes:composer-set-draft'
+const DRAFT_REPLY_EVENT = 'hermes:composer-draft-reply'
+const DRAFT_REPLY_TIMEOUT_MS = 50
+
+let draftToken = 0
+
+const draftRequests =
+  typeof window === 'undefined'
+    ? null
+    : {
+        get: new Map<number, (reply: DraftReplyDetail | null) => void>(),
+        set: new Map<number, (reply: DraftReplyDetail | null) => void>()
+      }
+
+const requestDraftOnce = (
+  channel: 'get' | 'set',
+  event: string,
+  detail: DraftRequestDetail
+): null | Promise<DraftReplyDetail | null> => {
+  const pending = draftRequests?.[channel]
+
+  if (!pending) {
+    return null
+  }
+
+  return new Promise<DraftReplyDetail | null>(resolve => {
+    pending.set(detail.token, resolve)
+
+    window.dispatchEvent(new CustomEvent<DraftRequestDetail>(event, { detail }))
+
+    // A subscriber that never replies (unmounted, input disabled, mid-teardown)
+    // must not strand the promise: settle null, drop the slot.
+    window.setTimeout(() => {
+      if (pending.get(detail.token) === resolve) {
+        pending.delete(detail.token)
+        resolve(null)
+      }
+    }, DRAFT_REPLY_TIMEOUT_MS)
+  })
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(DRAFT_REPLY_EVENT, event => {
+    const reply = (event as CustomEvent<DraftReplyDetail>).detail
+
+    if (!reply?.token) {
+      return
+    }
+
+    const channel = reply.text === undefined ? 'set' : 'get'
+    const pending = draftRequests?.[channel]
+    const resolve = pending?.get(reply.token)
+
+    if (resolve) {
+      pending?.delete(reply.token)
+      resolve(reply)
+    }
+  })
+}
+
+/** Read a mounted composer's LIVE draft (the stash only holds the last
+ *  debounced persist). `ids` are the session ids to answer for; the first
+ *  relevant surface replies. Resolves null when no mounted composer answers —
+ *  callers fall back to `takeSessionDraft` for the persisted copy. */
+export const requestComposerGetDraft = (
+  ids: string[],
+  opts?: { active?: boolean }
+): Promise<null | { text: null | string }> => {
+  const cleaned = [...new Set(ids.map(id => id?.trim()).filter(Boolean))] as string[]
+  const active = opts?.active === true
+  const token = ++draftToken
+
+  const promise =
+    cleaned.length || active
+      ? requestDraftOnce('get', GET_DRAFT_EVENT, { active, ids: cleaned, token })
+      : null
+
+  if (!promise) {
+    return Promise.resolve(null)
+  }
+
+  return promise.then(reply => (reply ? { text: reply.text ?? '' } : null))
+}
+
+/** Replace a mounted composer's draft (the app's own paint path — the text
+ *  re-renders through `renderComposerContents`, so `@`-ref / `/`-command
+ *  tokens hydrate as chips exactly like official paste). Returns false when
+ *  no mounted surface answers; never writes another session's composer. */
+export const requestComposerSetDraft = (
+  ids: string[],
+  text: string,
+  opts?: { active?: boolean }
+): Promise<boolean> => {
+  const cleaned = [...new Set(ids.map(id => id?.trim()).filter(Boolean))] as string[]
+  const active = opts?.active === true
+  const token = ++draftToken
+
+  const promise =
+    cleaned.length || active
+      ? requestDraftOnce('set', SET_DRAFT_EVENT, { active, ids: cleaned, text, token })
+      : null
+
+  return promise ? promise.then(reply => reply?.ok === true) : Promise.resolve(false)
+}
+
+/** Subscribe one mounted composer to draft read/write requests. `getIds` is
+ *  consulted per request (the surface's session identity changes as the user
+ *  navigates); `isActive` reports whether the focus bus currently routes to
+ *  this composer. Requests this surface owns — it is the active target, or
+ *  they name one of its ids — are answered; the rest are ignored so N mounted
+ *  composers coexist on the bus. `read` answers with the live text; `write`
+ *  replaces the draft and reports success. */
+export const onComposerDraftRequests = (
+  address: { getIds: () => string[]; isActive: () => boolean },
+  handlers: { read: () => null | string; write: (text: string) => boolean }
+) => {
+  if (typeof window === 'undefined') {
+    return () => undefined
+  }
+
+  const listener = (event: Event) => {
+    const e = event as CustomEvent<DraftRequestDetail>
+    const ids = address.getIds()
+
+    if (!e.detail || (!e.detail.active && !e.detail.ids?.some(id => ids.includes(id)))) {
+      return
+    }
+
+    if (e.type === GET_DRAFT_EVENT) {
+      window.dispatchEvent(
+        new CustomEvent<DraftReplyDetail>(DRAFT_REPLY_EVENT, {
+          detail: { text: handlers.read(), token: e.detail.token }
+        })
+      )
+    } else if (e.type === SET_DRAFT_EVENT) {
+      const ok = handlers.write(e.detail.text ?? '')
+
+      window.dispatchEvent(new CustomEvent<DraftReplyDetail>(DRAFT_REPLY_EVENT, { detail: { ok, token: e.detail.token } }))
+    }
+  }
+
+  window.addEventListener(GET_DRAFT_EVENT, listener)
+  window.addEventListener(SET_DRAFT_EVENT, listener)
+
+  return () => {
+    window.removeEventListener(GET_DRAFT_EVENT, listener)
+    window.removeEventListener(SET_DRAFT_EVENT, listener)
+  }
+}
+
 /** Submit a prompt through a composer as if the user typed + sent it. Lets
  * external panels (e.g. the review pane's "let the agent ship it" button) hand
  * the agent a task without the user round-tripping through the input. */

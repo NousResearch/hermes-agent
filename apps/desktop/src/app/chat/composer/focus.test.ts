@@ -8,11 +8,14 @@ import {
   getActiveComposer,
   markActiveComposer,
   onComposerDictationRequest,
+  onComposerDraftRequests,
   onComposerFocusRequest,
   onComposerModelMenuRequest,
   releaseActiveComposer,
   requestComposerDictation,
   requestComposerFocus,
+  requestComposerGetDraft,
+  requestComposerSetDraft,
   requestModelMenuToggle
 } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -333,5 +336,82 @@ describe('requestComposerDictation', () => {
     off()
 
     expect(targets).toEqual(['tile:front'])
+  })
+})
+
+/**
+ * The plugin SDK's draft read/write bus (`host.composer`). A mounted composer
+ * answers for its own sessions and the active composer answers `active`
+ * requests; unaddressed surfaces must stay silent so a plugin addressing one
+ * session never reads or writes another's draft.
+ */
+describe('composer draft requests', () => {
+  const disposer: (() => void)[] = []
+
+  afterEach(() => {
+    disposer.splice(0).forEach(off => off())
+  })
+
+  function mountDraft(id: string, text: string, active = false) {
+    const state = { text, wrote: null as null | string }
+    disposer.push(
+      onComposerDraftRequests(
+        { getIds: () => [id], isActive: () => active },
+        {
+          read: () => state.text,
+          write: next => {
+            if (next.trim() === '') {
+              return false
+            }
+
+            state.wrote = next
+
+            return true
+          }
+        }
+      )
+    )
+
+    return state
+  }
+
+  it('reads the draft of the addressed session', async () => {
+    mountDraft('sess-a', 'draft A')
+    mountDraft('sess-b', 'draft B')
+
+    expect(await requestComposerGetDraft(['sess-b'])).toEqual({ text: 'draft B' })
+  })
+
+  it('answers an active request only from the composer the bus routes to', async () => {
+    markActiveComposer('main')
+    mountSurface('main')
+    const active = mountDraft('sess-live', 'on screen', true)
+    mountDraft('sess-dead', 'buried', false)
+
+    expect(active.wrote).toBeNull()
+    expect(await requestComposerSetDraft([], 'type here', { active: true })).toBe(true)
+    expect(active.wrote).toBe('type here')
+  })
+
+  it('writes only the addressed session and reports success', async () => {
+    const a = mountDraft('sess-a', 'x')
+    const b = mountDraft('sess-b', 'y')
+
+    expect(await requestComposerSetDraft(['sess-a'], 'new text')).toBe(true)
+    expect(a.wrote).toBe('new text')
+    expect(b.wrote).toBeNull()
+  })
+
+  it('resolves null / false when no surface answers', async () => {
+    mountDraft('sess-a', 'x')
+
+    expect(await requestComposerGetDraft(['nobody'])).toBeNull()
+    expect(await requestComposerSetDraft(['nobody'], 'hi')).toBe(false)
+  })
+
+  it('surfaces a write refused by the owner (a blank paint is a no-op)', async () => {
+    mountDraft('sess-a', 'x')
+
+    expect(await requestComposerSetDraft(['sess-a'], '   ')).toBe(false)
   })
 })

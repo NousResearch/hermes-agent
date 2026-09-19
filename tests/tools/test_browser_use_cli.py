@@ -954,7 +954,8 @@ class TestSkillTextDescription:
 
     def test_digest_names_core_helpers(self):
         for helper in ("new_tab(", "page_info()", "js(", "fill_input(",
-                       "click_at_xy(", "capture_screenshot()", "cdp("):
+                       "click_at_xy(", "capture_screenshot()", "cdp(",
+                       "snapshot()", "snapshot_table()", "find_entry(", "point(", "page_changed("):
             assert helper in bu_cli._HELPERS_DIGEST
 
     def test_static_fallback_carries_digest_and_install_hint(self):

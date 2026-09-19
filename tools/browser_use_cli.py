@@ -735,10 +735,12 @@ _HELPERS_DIGEST = (
     "state, js(expr) evaluates a JS expression and returns its value (js('document.title'); wrap function "
     "bodies as js('(() => {...})()') — a bare '() => {...}' returns the function itself, uncalled), "
     "fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks viewport coordinates, "
-    "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
-    "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
-    "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
-    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
+    "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP. "
+    "snapshot() reads all visible controls (role, name, value, geometry, occlusion) in ONE round trip, "
+    "capped by max_elements (default 120); snapshot_table() renders it, find_entry(snap, needle) finds "
+    "controls, point(entry) gives click_at_xy coordinates, page_changed(snap) checks freshness in one "
+    "call; re-snapshot after acting (cdp AX tree only for shadow DOM, iframes, canvas). "
+    "ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
     "credentials; see the vault note below if present, otherwise stop and ask the user."
 )
 

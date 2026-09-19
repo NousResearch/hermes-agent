@@ -9,6 +9,7 @@ the dist has no index.html, and proceed when it does.
 Design credit: PR #17845 (@Caelier).
 """
 
+import os
 import sys
 import types
 
@@ -140,6 +141,39 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
 # ---------------------------------------------------------------------------
 
 
+def test_desktop_child_dashboard_drops_packaged_renderer(main_mod, monkeypatch):
+    """A browser dashboard must not trust Desktop identity inherited by a child."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert "HERMES_WEB_DIST" not in os.environ
+    assert "HERMES_SERVE_HEADLESS" not in os.environ
+
+
+def test_desktop_headless_serve_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The real Desktop backend remains distinguished by the `serve` entry path."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=True)
+
+    assert os.environ["HERMES_WEB_DIST"] == packaged
+
+
+def test_dashboard_keeps_caller_managed_web_dist(main_mod, monkeypatch, tmp_path):
+    """Only Electron-packaged renderer paths are removed from dashboards."""
+    custom_dist = tmp_path / "app.asar-cache" / "dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", str(custom_dist))
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert os.environ["HERMES_WEB_DIST"] == str(custom_dist)
 
 
 

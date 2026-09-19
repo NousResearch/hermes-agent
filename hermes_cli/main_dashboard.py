@@ -748,7 +748,11 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     """
     if not path:
         return False
-    return "app.asar" in path.replace("\\", "/")
+    parts = path.replace("\\", "/").rstrip("/").split("/")
+    return len(parts) >= 2 and parts[-1] == "dist" and parts[-2] in {
+        "app.asar",
+        "app.asar.unpacked",
+    }
 
 
 def _route_named_profile_dashboard(

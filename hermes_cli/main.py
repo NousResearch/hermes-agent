@@ -2540,14 +2540,15 @@ def _dashboard_sanitize_desktop_env(headless_backend) -> None:
     HERMES_SERVE_HEADLESS=1). A shell inheriting those then running
     `hermes dashboard` would serve the desktop renderer ("Desktop IPC bridge
     is unavailable", #52945) or disable the SPA. Only Electron-packaged
-    WEB_DIST contamination is stripped — caller-managed overrides (dev /
-    custom builds) must still work, and the desktop-spawned backend itself
-    (HERMES_DESKTOP=1) keeps its dist. Headless `serve` re-sets
-    HERMES_SERVE_HEADLESS itself.
+    WEB_DIST contamination is stripped from browser dashboards — caller-managed
+    overrides (dev / custom builds) must still work, while headless `serve`
+    keeps the packaged path used by the Desktop backend. Headless `serve`
+    re-sets HERMES_SERVE_HEADLESS itself.
     """
-    if os.environ.get("HERMES_DESKTOP") != "1":
-        if _is_electron_packaged_web_dist(os.environ.get("HERMES_WEB_DIST", "")):
-            os.environ.pop("HERMES_WEB_DIST", None)
+    if not headless_backend and _is_electron_packaged_web_dist(
+        os.environ.get("HERMES_WEB_DIST", "")
+    ):
+        os.environ.pop("HERMES_WEB_DIST", None)
     if not headless_backend:
         os.environ.pop("HERMES_SERVE_HEADLESS", None)
 

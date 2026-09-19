@@ -723,6 +723,15 @@ describe('reconcileResumeMessages', () => {
     expect(reconciled[1]).toMatchObject({ id: 'assistant-stream-live', pending: false })
     expect(chatMessageText(reconciled[1])).toBe('streamed body')
   })
+
+  it('keeps a non-empty optimistic user body over an empty hydrate twin (#101310)', () => {
+    const previous = [msg('user-123-abc', 'user', 'Grok please answer this submitted prompt')]
+    const next = [msg('user-stored-empty', 'user', '')]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(chatMessageText(reconciled[0])).toBe('Grok please answer this submitted prompt')
+  })
 })
 
 describe('preserveLocalPendingTurnMessages', () => {

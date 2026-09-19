@@ -96,6 +96,31 @@ describe('terminal error message.complete frames', () => {
     expect(bubble?.errorSurface).toEqual({ layer: 'provider', code: 'rate_limit', retryable: true })
   })
 
+  it('still paints an error bubble when Grok fails before any delta (#101310)', async () => {
+    mountStream()
+    act(() => {
+      const current = stream.state()
+      stream.states.set(SID, {
+        ...current,
+        messages: [
+          { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'submitted prompt stays' }] },
+          ...current.messages
+        ],
+        busy: true,
+        awaitingResponse: true
+      })
+    })
+
+    await completeWithError({ error: 'API call failed after 3 retries: capacity', text: '' })
+
+    const state = getState()
+    const user = state.messages.find(m => m.id === 'user-1')
+    expect(user).toBeTruthy()
+    expect(chatMessageText(user!)).toBe('submitted prompt stays')
+    expect(lastAssistant()?.error).toContain('API call failed')
+    expect(state.busy).toBe(false)
+  })
+
   it('ignores a garbled error_surface payload (older/foreign backends)', async () => {
     mountStream()
     await start()

@@ -1185,10 +1185,55 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
         _report_pair(c, *_github_publish(path, name, repo, auth))
     elif target == "clawhub":
-        c.print("[yellow]ClawHub publishing is not yet supported. "
-                "Submit manually at https://clawhub.ai/submit[/]\n")
+        c.print(f"[bold]Publishing '{name}' to ClawHub...[/]")
+        _report_pair(c, *_clawhub_publish(path, name, fm))
     else:
         c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
+
+
+def _clawhub_publish(skill_path: Path, skill_name: str, frontmatter: dict) -> tuple:
+    """Upload a scanned skill bundle to the ClawHub publish endpoint."""
+    import os
+
+    import httpx
+
+    from tools.skills_guard import _load_skill_ignore
+
+    token = os.environ.get("CLAWHUB_TOKEN")
+    if not token:
+        return False, "ClawHub authentication required; set CLAWHUB_TOKEN in the environment."
+
+    ignore = _load_skill_ignore(skill_path)
+    files = [
+        ("payload", (None, json.dumps({
+            "slug": skill_name,
+            "displayName": frontmatter.get("displayName", skill_name),
+            "version": frontmatter.get("version", "1.0.0"),
+            "changelog": frontmatter.get("changelog", ""),
+            "tags": frontmatter.get("tags", ["latest"]),
+            "acceptLicenseTerms": True,
+        }), "application/json")),
+    ]
+    for file_path in skill_path.rglob("*"):
+        if file_path.is_file() and not ignore(file_path.relative_to(skill_path).as_posix()):
+            files.append(("files", (file_path.relative_to(skill_path).as_posix(), file_path.read_bytes(),
+                                     "application/octet-stream")))
+
+    try:
+        response = httpx.post(
+            "https://clawhub.ai/api/v1/skills",
+            headers={"Authorization": f"Bearer {token}"},
+            files=files,
+            timeout=30,
+        )
+    except httpx.HTTPError as exc:
+        return False, f"Network error publishing to ClawHub: {exc}"
+
+    if response.status_code in {200, 201}:
+        return True, f"Published '{skill_name}' to ClawHub."
+    if response.status_code in {401, 403}:
+        return False, "ClawHub authentication failed; check CLAWHUB_TOKEN."
+    return False, f"ClawHub API error: {response.status_code}"
 
 
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -> tuple:

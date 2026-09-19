@@ -1191,6 +1191,68 @@ def test_reassign_endpoint_switches_profile(client):
 
 
 # ---------------------------------------------------------------------------
+# Model/provider override exposure in the board & task payloads (t_5cdb999d)
+#
+# The Kanban board UI renders a small model chip next to the @assignee badge
+# (e.g. "@default · sonnet"). That chip is driven entirely by
+# task['model_override'] / task['provider_override'] as already produced by
+# _task_dict()'s asdict(task) -- these tests pin that data shape so the
+# frontend contract can't silently regress.
+# ---------------------------------------------------------------------------
+
+
+def test_task_dict_includes_null_model_and_provider_override_by_default(client):
+    """A freshly created task has no override set: both keys are present
+    and explicitly null (never omitted), so the UI can reliably decide to
+    hide the model chip rather than guess."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "plain task"})
+    assert r.status_code == 200, r.text
+    task = r.json()["task"]
+    assert "model_override" in task
+    assert "provider_override" in task
+    assert task["model_override"] is None
+    assert task["provider_override"] is None
+
+
+def test_task_dict_surfaces_model_override_set_via_db(client):
+    """Once a model override is set on the task, /board and task detail
+    payloads must both surface it (model only, no provider)."""
+    conn = kbc.connect()
+    try:
+        t = kb.create_task(conn, title="needs a model pin")
+        assert kb.set_model_override(conn, t, "claude-sonnet-4-5")
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    ready = next(c for c in data["columns"] if c["name"] == "ready")
+    card = next(c for c in ready["tasks"] if c["id"] == t)
+    assert card["model_override"] == "claude-sonnet-4-5"
+    assert card["provider_override"] is None
+
+
+def test_task_dict_surfaces_model_and_provider_override_together(client):
+    """When both model and provider overrides are set, both must appear in
+    the payload (this is what drives the 'provider · model' chip text)."""
+    conn = kbc.connect()
+    try:
+        t = kb.create_task(conn, title="needs a pinned provider+model")
+        assert kb.set_model_override(conn, t, "gpt-5", provider="openai")
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    ready = next(c for c in data["columns"] if c["name"] == "ready")
+    card = next(c for c in ready["tasks"] if c["id"] == t)
+    assert card["model_override"] == "gpt-5"
+    assert card["provider_override"] == "openai"
+
+
+# ---------------------------------------------------------------------------
 # Diagnostics endpoint (/api/plugins/kanban/diagnostics)
 # ---------------------------------------------------------------------------
 

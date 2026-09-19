@@ -3,11 +3,12 @@ validation, migration, and the ``hermes config`` command."""
 
 # Stale-module bridge — must run before ANY import below can bind a root-level symbol.
 # A pre-handoff updater purges only package prefixes after the pull, so a root module
-# (``utils``) stays cached from the OLD tree; the first fresh consumer of its new symbols
-# dies with ImportError before any later heal point is reached. See hermes_cli.stale_modules.
-from hermes_cli.stale_modules import drop_stale_root_modules
+# (``utils``) stays cached from the OLD tree and the ``hermes_cli`` package keeps its pre-pull
+# submodule attributes; the first fresh consumer of their new symbols dies before any later
+# heal point is reached. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_modules
 
-drop_stale_root_modules()
+drop_stale_modules()
 
 import copy
 import difflib

@@ -1277,13 +1277,35 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
         provider = _plugin_aliases().get(provider, provider)
+        base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if provider == "custom" or provider.startswith("custom:"):
             return model_cfg, "custom"
+        # ``openrouter`` is a first-class aggregator identity in resolve_provider() but, like
+        # ``custom``, it is intentionally absent from PROVIDER_REGISTRY (runtime_provider relies on
+        # that absence). A config that pins ``model.provider: openrouter`` is explicit intent and
+        # must read the same as a registry pin here, otherwise the boot inventory treats it as
+        # "nothing configured" and the dashboard parks sessions on Setup Required (#109397).
+        # A non-openrouter ``base_url`` under the openrouter pin is NOT contradictory: the runtime
+        # treats it as a deliberate mirror/proxy (runtime_provider_backends.py #10622, pinned by
+        # test_explicit_openrouter_honors_config_base_url_mirror), so carry that intent forward
+        # regardless of the mirror host.
+        if provider == "openrouter":
+            return model_cfg, "openrouter"
         if provider in PROVIDER_REGISTRY:
             return model_cfg, provider
+        # A bare name matching an enabled ``providers:`` / ``custom_providers:`` entry is the same
+        # explicit intent, spelled by name instead of by the ``custom:<name>`` form. The runtime
+        # resolver already routes it (``hermes chat`` works), so without this rung the two paths
+        # disagree and the dashboard parks on Setup Required for a working config — the #109397
+        # symptom, one rung over. has_named_custom_provider() is the runtime's own lookup: it
+        # ignores disabled entries and entries without a usable endpoint, and covers both the
+        # current ``providers:`` and the legacy ``custom_providers:`` spellings.
+        if provider:
+            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            if has_named_custom_provider(provider):
+                return model_cfg, "custom"
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
         # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
-        base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if base_url:
             from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
             if _config_base_url_trustworthy_for_bare_custom(base_url, provider):

@@ -44,6 +44,15 @@ def isolated_home(tmp_path, monkeypatch):
             "model:\n  default: qwen3\n  base_url: http://localhost:8080/v1\n",
             id="loopback-base-url-only",
         ),
+        pytest.param(
+            "model:\n  default: openrouter/auto\n  provider: openrouter\n",
+            id="provider-openrouter",
+        ),
+        pytest.param(
+            "model:\n  default: openrouter/auto\n  provider: openrouter\n"
+            "  base_url: https://openrouter-mirror.example.com/api/v1\n",
+            id="provider-openrouter-mirror",
+        ),
     ],
 )
 def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_block):
@@ -51,19 +60,62 @@ def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_
     from hermes_cli.auth import resolve_provider
     from hermes_cli.free_tier_bootstrap import run_bootstrap
 
+    assert resolve_provider("auto") in ("custom", "openrouter")
+    record = run_bootstrap(announce=False)
+    assert record.provider_configured is True
+    assert record.other_providers is True
+
+
+def test_configured_openrouter_pin_resolves_as_a_provider(isolated_home):
+    """``model.provider: openrouter`` is explicit intent like a registry pin, not "nothing
+    configured".
+
+    Regression for #109397: ``_config_model_provider()`` recognised ``custom`` but not
+    ``openrouter`` (both are intentionally absent from PROVIDER_REGISTRY), so the boot inventory
+    parked dashboard sessions on Setup Required for openrouter-pinned installs.
+    """
+    (isolated_home / "config.yaml").write_text(
+        "model:\n  default: openrouter/auto\n  provider: openrouter\n", encoding="utf-8",
+    )
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
+    assert resolve_provider("auto") == "openrouter"
+    record = run_bootstrap(announce=False)
+    assert record.provider_configured is True
+    assert record.other_providers is True
+    assert record.inference_provider == "openrouter"
+
+
+def test_named_provider_pin_resolves_as_a_provider(isolated_home):
+    """A bare ``model.provider`` naming a ``providers:`` entry is explicit intent too.
+
+    Sibling of the openrouter rung above: ``has_named_custom_provider()`` already routes this
+    config at runtime (``hermes chat`` works against ``providers.CPA``), but the boot inventory
+    discarded the bare name, so ``setup.status`` reported ``provider_configured: False`` and the
+    dashboard parked sessions on Setup Required for a working endpoint.
+    """
+    (isolated_home / "config.yaml").write_text(
+        "model:\n  default: test-model\n  provider: CPA\n\n"
+        "providers:\n  CPA:\n    api: http://127.0.0.1:8317/v1\n    default_model: test-model\n",
+        encoding="utf-8",
+    )
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
     assert resolve_provider("auto") == "custom"
     record = run_bootstrap(announce=False)
     assert record.provider_configured is True
     assert record.other_providers is True
-    assert record.inference_provider == "custom"
 
 
 def test_stale_remote_base_url_without_a_custom_pin_is_not_a_provider(isolated_home):
     """The URL rung follows the runtime's own trust rule: a non-loopback ``base_url`` left behind
-    under another provider's pin is not custom intent (#14676), so a blank machine still reads
-    as unconfigured."""
+    under a bare (unpinned) provider is not custom intent (#14676), so a blank machine still reads
+    as unconfigured. (A ``provider: openrouter`` pin is excluded from this guard — a non-openrouter
+    ``base_url`` under it is a deliberate mirror/proxy, #10622/#109397.)"""
     (isolated_home / "config.yaml").write_text(
-        "model:\n  default: some/model\n  provider: openrouter\n  base_url: https://api.z.ai/v1\n",
+        "model:\n  default: some/model\n  base_url: https://api.z.ai/v1\n",
         encoding="utf-8",
     )
     from hermes_cli.auth import AuthError, resolve_provider

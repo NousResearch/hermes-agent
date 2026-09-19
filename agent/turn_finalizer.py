@@ -671,4 +671,7 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+    from agent.files_live_context import prune_files_context, safe_files_result
+    result = safe_files_result(agent, result)
+    prune_files_context(agent, messages, finish=True)
     return result

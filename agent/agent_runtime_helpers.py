@@ -1270,6 +1270,16 @@ def dump_api_request_debug(
 ) -> Optional[Path]:
     """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
     try:
+        if getattr(agent, "_files_request_expanded", False) is True:
+            from agent.session_persistence import _safe_session_filename_component
+            safe_sid = _safe_session_filename_component(agent.session_id)
+            dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+            atomic_json_write(dump_file, {
+                "session_id": agent.session_id,
+                "files_payload_omitted": True,
+                "notice": "Private Files request and error details omitted; not provider-exact data",
+            })
+            return dump_file
         body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
         api_key = None
         try:

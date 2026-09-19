@@ -51,6 +51,8 @@ class TurnFacadeMixin:
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
         from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
+        from agent.files_live_context import safe_files_result
+        from agent.session_persistence import FilesUserTranscript
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -90,7 +92,9 @@ class TurnFacadeMixin:
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
-                return admission.early_result
+                return safe_files_result(self, admission.early_result,
+                                         force=isinstance(persist_user_message, FilesUserTranscript),
+                                         trusted_carry=True)
             lease = admission.lease
             conversation_history = admission.conversation_history
 
@@ -148,6 +152,7 @@ class TurnFacadeMixin:
                     # the interrupt clear itself waits for the thread join in the outer finally.
                     if lease is not None:
                         lease.stop_refresher()
+            result = safe_files_result(self, result)
             terminal = result if isinstance(result, dict) else {}
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True

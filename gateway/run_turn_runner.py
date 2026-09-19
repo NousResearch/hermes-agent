@@ -574,6 +574,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
         if api is not None and api['history'] is not None:
+            from agent.files_live_context import retire_files_context
+            retire_files_context(agent)
             from gateway.run import _collect_history_media_paths
             history = api['history']
             return history, None, _collect_history_media_paths(history)
@@ -581,8 +583,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
         # sequences. Telegram observed=True rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
+        from agent.files_live_context import FilesReplayBindings, prune_files_context
+        files_bindings = FilesReplayBindings(agent, ctx.history, ctx.session_id) if reused_cached_agent else None
         agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            files_bindings=files_bindings,
         )
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
         # while the SAME cached agent still holds the live conversation (same-session amnesia). Only
@@ -602,6 +607,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # the full canonicalization so no replay transform can slip through.
                 agent_history = canonicalize_replay_history(selected)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
+        if files_bindings is not None:
+            files_bindings.commit(agent_history)
+        else:
+            prune_files_context(agent, [])
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
     def _prepend_pending_note(self, attr: str) -> None:
@@ -746,11 +755,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                       getattr(agent, 'session_completion_tokens', 0) or 0)
             if api is not None and "files_persist_user_message" in api:
                 from agent.session_persistence import files_user_message_persistence
-                with files_user_message_persistence(agent, kwargs["persist_user_message"]) as transcript:
+                with files_user_message_persistence(agent, kwargs["persist_user_message"],
+                        admission_id=kwargs.get("persist_user_platform_id")) as transcript:
                     kwargs["persist_user_message"] = transcript
                     result = agent.run_conversation(api_message, **kwargs)
+                    from agent.files_live_context import safe_files_result
+                    result = safe_files_result(agent, result, force=True)
             else:
                 result = agent.run_conversation(api_message, **kwargs)
+            from agent.files_live_context import safe_files_result
+            result = safe_files_result(agent, result)
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

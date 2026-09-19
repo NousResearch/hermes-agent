@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -29,6 +30,10 @@ from agent.turn_author import parse_turn_author
 
 logger = logging.getLogger(__name__)
 
+# Scalar pricing hint only; never retains an owner, row or private payload. The
+# existing cheap compaction gate otherwise sees labels rather than Files cost.
+_files_preflight_required = ContextVar('files_preflight_required', default=False)
+
 
 def _str_attr(agent: Any, name: str) -> str:
     """``getattr(agent, name, "") or ""`` — route facts read off partial agents/doubles."""
@@ -40,7 +45,11 @@ def _preflight_request_tokens(
 ) -> int:
     """Token estimate for automatic preflight compression: a valid provider usage anchor,
     else the checkpoint-pruned native wire payload, else the generic estimator."""
-    anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    from agent.files_live_context import files_estimate_view
+    priced_messages = files_estimate_view(agent, messages)
+    anchored = (anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+                if priced_messages is messages else None)
+    messages = priced_messages
     agent._request_pressure_anchored = anchored is not None
     if anchored is not None:
         return anchored
@@ -265,6 +274,10 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
     if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
         return result
     messages = result.get("messages")
+    from agent.session_persistence import FilesUserTranscript
+    if isinstance(getattr(agent, "_persist_user_message_override", None), FilesUserTranscript):
+        # Files boundaries are stamped from the original row before snapshotting.
+        return result
     turn_id = str(getattr(agent, "_current_turn_id", "") or "")
     if not isinstance(messages, list) or not turn_id or user_message is None:
         return result
@@ -347,7 +360,8 @@ def _should_run_preflight_estimate(
     case). The estimator undercounts by design (omits system/tools) so one large base64
     image is not mistaken for ~250K tokens."""
     return (
-        len(messages) > protect_first_n + protect_last_n + 1
+        _files_preflight_required.get()
+        or len(messages) > protect_first_n + protect_last_n + 1
         or estimate_messages_tokens_rough(messages) >= threshold_tokens
     )
 
@@ -553,6 +567,9 @@ def _stage_turn_user_message(
     matches this turn (a stale handoff must not replace later input; voice turns
     compare the clean override). Returns ``(user_msg, pending_cli_message)``."""
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+    from agent.session_persistence import FilesUserTranscript
+    is_files = isinstance(persist_user_message, FilesUserTranscript)
+    canonical_content = str(persist_user_message) if is_files else user_message
     expected_persist_content = (
         persist_user_message if persist_user_message is not None else user_message
     )
@@ -563,9 +580,9 @@ def _stage_turn_user_message(
         user_msg = pending_cli_message
         # CLI-staged value is the clean text; restore the API-facing variant (e.g. voice
         # prefix) on the same dict, keeping any close-path durable marker.
-        user_msg["content"] = user_message
+        user_msg["content"] = canonical_content
     else:
-        user_msg = {"role": "user", "content": user_message}
+        user_msg = {"role": "user", "content": canonical_content}
         if isinstance(pending_cli_message, dict):
             agent._pending_cli_user_message = None
     # CLI input is stamped when staged; gateway input may carry the platform event
@@ -582,9 +599,10 @@ def _stage_turn_user_message(
     # recovery dedups via ``has_platform_message_id`` against this row.
     if persist_user_platform_id is not None:
         user_msg["platform_message_id"] = persist_user_platform_id
-    from agent.session_persistence import FilesUserTranscript
-    if isinstance(persist_user_message, FilesUserTranscript):
-        persist_user_message.bind(user_msg)
+    if is_files:
+        from agent.files_live_context import stage_files_context
+        user_msg.pop("api_content", None)
+        stage_files_context(agent, persist_user_message, user_msg, user_message)
     return user_msg, pending_cli_message
 
 
@@ -736,6 +754,10 @@ def _merge_gateway_notes(
     )
     if not _turn_notes:
         return plugin_user_context
+    from agent.files_live_context import merge_files_gateway_notes
+    if (0 <= current_turn_user_idx < len(messages)
+            and merge_files_gateway_notes(agent, messages[current_turn_user_idx], _turn_notes)):
+        return plugin_user_context
     _gw_turn_content = (
         messages[current_turn_user_idx].get("content")
         if 0 <= current_turn_user_idx < len(messages)
@@ -803,6 +825,9 @@ def _stamp_api_content_sidecar(
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
+    from agent.files_live_context import files_entry
+    if files_entry(agent, _turn_user_msg) is not None:
+        return
     live_content = _turn_user_msg.get("content")
     from agent.session_persistence import _persist_lock, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
@@ -918,7 +943,8 @@ def build_turn_context(
     )
     _reset_per_turn_agent_state(agent)
 
-    _preview_text = summarize_user_message_for_log(user_message)
+    _preview_text = summarize_user_message_for_log(
+        str(persist_user_message) if isinstance(persist_user_message, FilesUserTranscript) else user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
     logger.info(
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -929,6 +955,8 @@ def build_turn_context(
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
+    from agent.files_live_context import prune_files_context, require_current_files_context, seal_files_context
+    prune_files_context(agent, messages)
     user_msg, pending_cli_message = _stage_turn_user_message(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
@@ -984,16 +1012,28 @@ def build_turn_context(
     ):
         agent._flush_messages_to_session_db(conversation_history, conversation_history)
 
-    compaction = run_turn_start_compaction(
-        agent, messages=messages, system_message=system_message,
-        active_system_prompt=active_system_prompt, conversation_history=conversation_history,
-        current_turn_user_idx=current_turn_user_idx, user_message=user_message,
-        effective_task_id=effective_task_id,
-    )
+    from agent.files_live_context import files_estimate_view
+    priced = files_estimate_view(agent, messages)
+    pricing_token = _files_preflight_required.set(priced is not messages)
+    del priced  # no private copy survives into the compression worker
+    try:
+        compaction = run_turn_start_compaction(
+            agent, messages=messages, system_message=system_message,
+            active_system_prompt=active_system_prompt, conversation_history=conversation_history,
+            current_turn_user_idx=current_turn_user_idx, user_message=user_message,
+            effective_task_id=effective_task_id,
+        )
+    finally:
+        _files_preflight_required.reset(pricing_token)
     messages = compaction.messages
     active_system_prompt = compaction.active_system_prompt
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
+    files_current = require_current_files_context(agent, messages)
+    if files_current is not None:
+        current_turn_user_idx = next(i for i, row in enumerate(messages) if row is files_current.row)
+        agent._persist_user_message_idx = current_turn_user_idx
+    prune_files_context(agent, messages)
 
     plugin_user_context = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
@@ -1006,6 +1046,7 @@ def build_turn_context(
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    seal_files_context(agent, messages, ext_prefetch_cache, plugin_user_context)
 
     # Sidecar skipped for codex_app_server/MoA.
     if (
@@ -1087,6 +1128,10 @@ def build_api_messages(
     turn_now = agent._current_turn_timestamp
     split = current_turn_user_idx if has_current else 0
     canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
+    from agent.files_live_context import require_current_files_context, files_provider_content, prune_files_context
+    require_current_files_context(agent, canonical_messages)
+    prune_files_context(agent, canonical_messages)
+    agent._files_request_expanded = False
 
     api_messages = []
     for idx, msg in enumerate(canonical_messages):
@@ -1103,7 +1148,11 @@ def build_api_messages(
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
-        if msg is current_turn_message and msg.get("role") == "user":
+        files_found, files_content = files_provider_content(agent, msg)
+        if files_found:
+            api_msg["content"] = files_content
+            agent._files_request_expanded = True
+        elif msg is current_turn_message and msg.get("role") == "user":
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.

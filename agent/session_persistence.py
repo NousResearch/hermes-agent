@@ -67,18 +67,17 @@ def _safe_session_filename_component(session_id: str) -> str:
 class FilesUserTranscript(str):
     """Trusted current Files turn only; never a wire field or a session setting.
 
-    The gateway creates this after verified preparation. Binding the exact newly
-    staged user dict (not an index or instance flag) also covers a close-thread
-    flush. The original model content remains live until the request finishes;
-    only the safe transcript may enter SQLite or subsequent replay.
+    The gateway creates this after verified preparation. The bound canonical row
+    is safe from staging onward; private content belongs to the live agent only.
     """
 
-    def __new__(cls, text):
+    def __new__(cls, text, *, admission_id=None):
         from agent.message_sanitization import _sanitize_surrogates
         if not isinstance(text, str):
             raise TypeError("Files transcript must be text")
         value = super().__new__(cls, _sanitize_surrogates(text))
         value.message = None
+        value.admission_id = admission_id
         return value
 
     def bind(self, message):
@@ -87,23 +86,26 @@ class FilesUserTranscript(str):
         self.message = message
 
     def finish(self):
-        if self.message is not None:
-            self.message["content"] = str(self)
-            self.message.pop("api_content", None)
+        """End staging without rewriting the already-safe canonical transcript."""
+
+    def __deepcopy__(self, memo):
+        return str(self)
 
 
 @contextmanager
-def files_user_message_persistence(agent, transcript):
+def files_user_message_persistence(agent, transcript, *, admission_id=None):
     """Bounded gateway-to-agent handoff; reset on success and BaseException.
 
     Safe saved replay deliberately cannot reproduce the private Files bytes of
     the original request. Never rewrite earlier history to hide that boundary.
     """
-    projection = FilesUserTranscript(transcript)
+    projection = FilesUserTranscript(transcript, admission_id=admission_id)
     try:
         yield projection
     finally:
         projection.finish()
+        from agent.files_live_context import prune_files_context
+        prune_files_context(agent, getattr(agent, "_session_messages", ()) or (), finish=True)
         if getattr(agent, "_persist_user_message_override", None) is projection:
             agent._persist_user_message_override = None
 
@@ -124,6 +126,10 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     clean transcript, the live content is what the wire sent — so when they differ and nothing else was
     injected, the live bytes ARE the sidecar. Shared by the flush and the turn-start stamp so the stamp
     matches the row the flush wrote."""
+    from agent.files_live_context import files_entry
+    entry = files_entry(agent, msg)
+    if entry is not None:
+        return entry.safe, None
     override = getattr(agent, "_persist_user_message_override", None)
     if isinstance(override, FilesUserTranscript):
         return (str(override), None) if override.message is msg else (content, api_content)
@@ -197,11 +203,15 @@ def _db_flush_scan_start(agent, messages: List[Dict]) -> int:
 
 def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any]:
     """Build the session-db row for ``msg``, applying the persist override to THIS row only."""
+    from agent.files_live_context import files_entry
+    files = files_entry(agent, msg)
     role = msg.get("role", "unknown")
     content = msg.get("content")
     # api_content sidecar: exact bytes sent to the API when they differ from clean content (replay parity).
     api_content = msg.get("api_content") if isinstance(msg.get("api_content"), str) else None
     timestamp = msg.get("timestamp")
+    if files is not None:
+        content, api_content = files.safe, None
     if is_current_turn_user and role == "user":
         content, api_content = durable_user_row_content(agent, msg, content, api_content)
         ov_timestamp = getattr(agent, "_persist_user_message_timestamp", None)
@@ -213,6 +223,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     if (
         api_content is None and role in ("user", "assistant") and isinstance(content, str) and content
         and sanitize_context(content).strip() != content.strip()
+        and files is None
     ):
         api_content = content
     # Key order is the divert-JSONL wire order (divert_session_transcript_jsonl).
@@ -269,6 +280,8 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
+    from agent.files_live_context import capture_files_row_ids
+    capture_files_row_ids(agent)
 
 
 def _db_flush_adopt_compression_tip(agent) -> bool:
@@ -443,11 +456,6 @@ class SessionPersistenceMixin:
             return
         override = getattr(self, "_persist_user_message_override", None)
         if isinstance(override, FilesUserTranscript):
-            # Trajectories are serialized before finalization cleans the live row.
-            messages = [
-                {**{k: v for k, v in m.items() if k != "api_content"}, "content": str(override)}
-                if m is override.message else m for m in messages
-            ]
             user_query = str(override)
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)

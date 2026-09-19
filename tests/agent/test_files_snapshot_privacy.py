@@ -36,6 +36,11 @@ def test_files_live_snapshot_trajectory_after_scope_is_private(tmp_path, monkeyp
             result = agent.run_conversation(live, conversation_history=prior['messages'],
                                             persist_user_message=transcript)
         assert sent and snapshots
+        assert '/private/copied-files-document.txt' in json.dumps(sent[-1])
+        assert '/private/copied-files-document.txt' not in json.dumps(snapshots)
+        assert 'data:image/' not in json.dumps(snapshots)
+        if native:
+            assert 'data:image/' in json.dumps(sent[-1])
         assert agent._persist_user_message_override is None
         assert result['messages'][2]['content'] == safe
         assert db.get_messages('snapshot')[2]['content'] == safe

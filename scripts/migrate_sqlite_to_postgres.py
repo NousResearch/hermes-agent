@@ -19,6 +19,7 @@ _TABLES = (
     'system_prompts', 'sessions', 'messages', 'session_model_usage',
     'state_meta', 'gateway_routing', 'gateway_hygiene_state', 'conversation_generations',
     'telegram_dm_topic_mode', 'telegram_dm_topic_bindings',
+    'delivery_obligations',
 )
 
 

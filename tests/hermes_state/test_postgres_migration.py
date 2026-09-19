@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import time
 from contextlib import closing
 
 import pytest
@@ -61,6 +62,20 @@ def sqlite_source(postgres_home):
         source.try_acquire_session_turn_lease("child", "old-process")
         source.try_acquire_compression_lock("child", "old-process")
         source.register_backend_heartbeat(backend_id="old-process", pid=123, started_at=1.0)
+    from gateway.delivery_ledger import _initialize_schema as initialize_delivery_schema
+    with closing(sqlite3.connect(path)) as source:
+        initialize_delivery_schema(source)
+        now = time.time()
+        source.execute(
+            """INSERT INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id, content,
+                state, attempts, created_at, updated_at, owner_pid, owner_started_at,
+                last_error, adapter_profile)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("owed-response", "peer", "telegram", "chat", "topic", "Undelivered answer",
+             "attempting", 1, now, now, 123, 1, None, "work"),
+        )
+        source.commit()
     return path
 
 
@@ -74,6 +89,7 @@ def test_migration_preserves_history_and_metadata_across_small_batches(sqlite_so
                 "system_prompts", "sessions", "messages", "session_model_usage", "state_meta",
                 "gateway_routing", "gateway_hygiene_state", "conversation_generations",
                 "telegram_dm_topic_mode", "telegram_dm_topic_bindings",
+                "delivery_obligations",
             )
         }
     assert expected["sessions"][0]["parent_session_id"] == expected["sessions"][1]["id"]
@@ -94,6 +110,10 @@ def test_migration_preserves_history_and_metadata_across_small_batches(sqlite_so
                 for row in [*rows, *actual]:
                     for column in ("display_identity", "display_order", "search_vector"):
                         row.pop(column, None)
+            if table == "delivery_obligations":
+                for row in actual:
+                    row.pop("owner_token", None)
+                    row.pop("lease_expires_at", None)
             assert sorted(actual, key=repr) == sorted(rows, key=repr), table
         for table in ("compression_locks", "session_turn_leases", "gateway_heartbeats"):
             assert connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] == 0
@@ -102,6 +122,9 @@ def test_migration_preserves_history_and_metadata_across_small_batches(sqlite_so
     assert postgres_db.is_telegram_topic_mode_enabled(chat_id="chat", user_id="user", profile_name="work")
     assert postgres_db.get_telegram_topic_binding_by_session(session_id="parent")["thread_id"] == "topic"
     assert postgres_db.get_messages("parent", include_compacted=True)
+    from gateway.delivery_ledger import sweep_recoverable
+    recovered = sweep_recoverable(deliverable_platforms={"telegram"})
+    assert [row["obligation_id"] for row in recovered] == ["owed-response"]
     next_id = postgres_db.append_message("child", "user", "New PostgreSQL message")
     assert next_id > max(row["id"] for row in expected["messages"])
     assert sqlite_source.read_bytes() == source_bytes

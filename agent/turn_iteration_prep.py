@@ -353,13 +353,7 @@ def begin_iteration(
     agent._api_call_count = api_call_count
     agent._touch_activity(f"starting API call #{api_call_count}")
 
-    # Grace call: budget exhausted but the model gets one more call. Consume the
-    # flag so the loop exits after this iteration regardless of outcome.
-    if agent._budget_grace_call:
-        # Exhaustion retains one toolless grace call regardless of whether an opt-in
-        # checkpoint was emitted; the warning never extends the hard budget.
-        agent._budget_grace_call = False
-    elif not agent.iteration_budget.consume():
+    if not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
         if not agent.quiet_mode:
             agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)", diagnostic=True)

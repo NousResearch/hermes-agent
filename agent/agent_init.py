@@ -551,7 +551,6 @@ _TURN_STATE: Dict[str, Any] = {
     # remain opt-in. Dispatcher workers receive a bounded completion checkpoint.
     "_iteration_budget_warning_injected": False,
     "_budget_exhausted_injected": False,
-    "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
     # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and

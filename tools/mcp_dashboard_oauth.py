@@ -63,7 +63,17 @@ class DashboardOAuthFlow:
             raise ValueError("OAuth authorization URL did not include state")
         with self._lock:
             if self.status in {"approved", "error"}:
-                raise RuntimeError("OAuth flow already ended")
+                # A plain RuntimeError classifies as "transient" (tools.mcp_tool_errors), so the
+                # initial-connect ladder burns all its retries hitting this same dead end before
+                # parking with a generic connection-failure message. This flow can never un-end
+                # itself, so the failure is permanent; OAuthNonInteractiveError is already
+                # recognised as an auth error, which parks on the first attempt with the existing
+                # actionable "re-authenticate with `hermes mcp login`" guidance (#114739).
+                from tools.mcp_oauth import OAuthNonInteractiveError
+
+                raise OAuthNonInteractiveError(
+                    "Dashboard OAuth flow already ended (approved, cancelled, or expired)."
+                )
             self.expected_state = state
             self.authorization_url = url
             self.status = "authorization_required"

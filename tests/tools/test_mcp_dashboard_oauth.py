@@ -48,6 +48,29 @@ def test_dashboard_flow_preserves_rfc9207_iss():
     assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1", "https://mcp.cloudflare.com")
 
 
+def test_publish_authorization_url_on_ended_flow_parks_immediately_not_after_3_retries():
+    """A retried initial-connect attempt that lands on an already-ended dashboard flow (approved,
+    cancelled, or expired — #114739) must not be classified as a retryable failure: that burns all
+    3 initial-connect attempts on a guaranteed-repeat dead end before parking with a generic
+    connection-failure message instead of the actionable auth one."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from tools.mcp_oauth import OAuthNonInteractiveError
+    from tools.mcp_tool_errors import _classify_mcp_failure
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-ended",
+        server_name="asana",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-ended",
+    )
+    flow.mark_error("Cancelled by user")
+
+    with pytest.raises(OAuthNonInteractiveError) as excinfo:
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s1"))
+    assert _classify_mcp_failure(excinfo.value) == "permanent"
+
+
 def test_dashboard_flow_accepts_only_one_concurrent_callback():
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 

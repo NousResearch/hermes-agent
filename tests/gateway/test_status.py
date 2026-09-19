@@ -383,6 +383,75 @@ class TestGatewayRuntimeStatus:
         cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
         assert status._command_line_belongs_to_profile(cmdline, home) is True
 
+    def test_command_line_belongs_to_profile_rejects_longer_sibling_home(self):
+        """A substring test let ``HERMES_HOME=/root/profiles/ops2`` satisfy the ``ops``
+        profile's predicate, so a stale state record could borrow the sibling's live
+        gateway identity (same shape as the ``-p ops`` vs ``-p ops-2`` token rule)."""
+        home = Path("/fixture/profiles/ops")
+        for cmdline in (
+            "HERMES_HOME=/fixture/profiles/ops2 hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops-backup hermes gateway run",
+        ):
+            assert not status._command_line_belongs_to_profile(cmdline, home), cmdline
+
+    def test_command_line_belongs_to_profile_default_rejects_sibling_home(self):
+        """The default-home branch had the same substring hole: an explicit
+        ``HERMES_HOME`` extending the default home's path is a different home."""
+        home = Path("/opt/hermes-data")
+        assert (
+            status._command_line_belongs_to_profile(
+                "HERMES_HOME=/opt/hermes-data2 hermes gateway run", home
+            )
+            is False
+        )
+        # A non-conflicting assignment still matches; no assignment still matches (env-borne).
+        assert (
+            status._command_line_belongs_to_profile(
+                "HERMES_HOME=/opt/hermes-data hermes gateway run", home
+            )
+            is True
+        )
+        assert status._command_line_belongs_to_profile("hermes gateway run", home) is True
+
+    def test_command_line_belongs_to_profile_matches_quoted_home(self):
+        """``HERMES_HOME="/path with space"`` (ps/wmic re-quoting): the value is
+        quote-delimited, so a token-bound comparison must strip the quotes."""
+        home = Path("/opt/data/profiles/coder with space")
+        cmdline = 'hermes_home="/opt/data/profiles/coder with space" hermes gateway run'
+        assert status._command_line_belongs_to_profile(cmdline, home) is True
+
+    def test_command_line_belongs_to_profile_accepts_trailing_separator(self):
+        """A supervisor can export the home with a trailing separator (systemd ``Environment=``,
+        a ``sh -c 'HERMES_HOME=.../ gateway run'`` wrapper); that spelling is the same home, so
+        stripping one separator on both sides keeps the match without re-opening the sibling hole."""
+        home = Path("/fixture/profiles/ops")
+        assert (
+            status._command_line_belongs_to_profile(
+                "HERMES_HOME=/fixture/profiles/ops/ hermes gateway run", home
+            )
+            is True
+        )
+        # ... while a separator-plus-suffix is still a different (sibling) home.
+        assert not status._command_line_belongs_to_profile(
+            "HERMES_HOME=/fixture/profiles/ops/2 hermes gateway run", home
+        )
+        # Default-profile branch strips the same way.
+        home = Path("/opt/hermes-data")
+        assert (
+            status._command_line_belongs_to_profile(
+                "HERMES_HOME=/opt/hermes-data/ hermes gateway run", home
+            )
+            is True
+        )
+
+    def test_command_line_belongs_to_profile_ignores_embedded_assignment_name(self):
+        """``FOO=hermes_home=/x`` embeds the name inside another token: it is not a HERMES_HOME
+        assignment (the name must be token-bounded, like the value)."""
+        home = Path("/fixture/profiles/ops")
+        assert not status._command_line_belongs_to_profile(
+            "FOO=hermes_home=/fixture/profiles/ops hermes gateway run", home
+        )
+
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

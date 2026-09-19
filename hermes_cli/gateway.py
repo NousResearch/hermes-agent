@@ -574,11 +574,16 @@ def _scan_gateway_pids(
     # Strict matcher shared with gateway.status: requires a real ``gateway run`` argv, so
     # ``gateway status``/``dashboard`` siblings and ``python -m tui_gateway`` don't match.
     from gateway.status import (
-        looks_like_gateway_command_line, looks_like_gateway_runtime_command_line, profile_flag_value,
+        looks_like_gateway_command_line,
+        looks_like_gateway_runtime_command_line,
+        profile_flag_value,
+        hermes_home_assignments,
     )
     current_home = str(get_hermes_home().resolve())
-    # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status).
-    current_home_lc = current_home.lower().replace("\\", "/")
+    # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
+    # trailing separator: the assignments parser strips one, so the systemd ``Environment=``
+    # spelling (``HERMES_HOME=/root/.hermes/``) compares equal to the resolved home.
+    current_home_lc = current_home.lower().replace("\\", "/").rstrip("/")
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
     current_profile_name_lc = current_profile_name.lower()
@@ -587,10 +592,9 @@ def _scan_gateway_pids(
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
-            return (
-                profile_flag_value(command_lc) == current_profile_name_lc
-                or f"hermes_home={current_home_lc}" in command_lc
-            )
+            if profile_flag_value(command_lc) == current_profile_name_lc:
+                return True
+            return current_home_lc in hermes_home_assignments(command_lc)
 
         # Default profile: accept unless argv advertises another profile in any spelling the CLI
         # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
@@ -598,7 +602,8 @@ def _scan_gateway_pids(
         # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
         if profile_flag_value(command_lc) is not None:
             return False
-        return not ("hermes_home=" in command_lc and f"hermes_home={current_home_lc}" not in command_lc)
+        assignments = hermes_home_assignments(command_lc)
+        return not (assignments and current_home_lc not in assignments)
 
     def _consider(pid: int, command: str) -> None:
         matches_runtime = looks_like_gateway_command_line(command) or (

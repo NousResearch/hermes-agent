@@ -165,10 +165,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
-# Highest ``manifest_version`` this installer understands; breaking schema changes bump it.
-_SUPPORTED_MANIFEST_VERSION = 1
-
-
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
     plugins = get_hermes_home() / "plugins"
@@ -595,11 +591,14 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         raise PluginOperationError(
             f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer).",
         ) from None
-    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+    # Shared with the runtime loader so the installer can never drift behind what the loader
+    # accepts (#85879): a private cap here refused v2 manifests the runtime happily loads.
+    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION
+    if mv_int > SUPPORTED_MANIFEST_VERSION:
         from hermes_cli.config import recommended_update_command
         raise PluginOperationError(
             f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"but this Hermes supports up to {SUPPORTED_MANIFEST_VERSION}. "
             f"Run {recommended_update_command()} to update Hermes.",
         ) from None
 

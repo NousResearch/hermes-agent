@@ -348,6 +348,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
         return _err(f"kanban: {exc}", 2)
     if branch_name and ws_kind != "worktree":
         return _err("kanban: --branch is only valid with --workspace worktree", 2)
+    start_ref = getattr(args, "start_ref", None)
+    if start_ref and ws_kind is not None and ws_kind != "worktree":
+        return _err("kanban: --start-ref is only valid with --workspace worktree", 2)
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
@@ -356,25 +359,29 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
-    with kbc.connect_closing() as conn:
-        task_id = kb.create_task(
-            conn, title=args.title, body=args.body, assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
-            project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
-            parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
-            provider_override=getattr(args, "provider_override", None),
-            goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
-            completion_contract=getattr(args, "completion_contract", None),
-            initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
-        )
-        task = kb.get_task(conn, task_id)
+    try:
+        with kbc.connect_closing() as conn:
+            task_id = kb.create_task(
+                conn, title=args.title, body=args.body, assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
+                start_ref=start_ref,
+                project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
+                parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries, model_override=getattr(args, "model_override", None),
+                provider_override=getattr(args, "provider_override", None),
+                goal_mode=bool(getattr(args, "goal_mode", False)),
+                goal_max_turns=getattr(args, "goal_max_turns", None),
+                completion_contract=getattr(args, "completion_contract", None),
+                initial_status=getattr(args, "initial_status", "running"),
+                creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
+                                 if is_dispatcher_owned_worker_context() else None),
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
     else:
@@ -507,6 +514,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         field("branch", task.branch_name)
+    if task.start_ref:
+        field("start-ref", task.start_ref)
     if task.skills:
         field("skills", ", ".join(task.skills))
     if task.model_override:

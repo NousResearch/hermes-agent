@@ -422,6 +422,11 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Absolute path for 'dir' or 'worktree' workspace. "
                 "Relative paths are rejected at dispatch."
         )),
+        "start_ref": _prop("string", (
+                "Optional commit or Git ref for a worktree task. It is "
+                "resolved to an exact commit in the target repository before "
+                "the task branch is created."
+        )),
         "project": _prop("string", (
                 "Optional project id or slug to link the task to. When "
                 "set, the task becomes a git worktree under the project's "

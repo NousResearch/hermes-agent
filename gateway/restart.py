@@ -67,6 +67,10 @@ SYSTEMD_TIMEOUT_STOP_SEC_FLOOR = 60.0
 # unclean-exit half of the state.db corruption class.
 LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S = 60
 LAUNCHD_STOP_CLEANUP_RESERVE_S = 10.0
+# How far before launchd's SIGKILL the thread watchdog must fire so its
+# faulthandler dump + os._exit actually land (the dump is sub-second; the
+# margin covers a slow disk).
+LAUNCHD_WATCHDOG_DUMP_MARGIN_S = 2.0
 
 _LAUNCHD_EXIT_TIMEOUT_RE = re.compile(r"^\s*exit timeout\s*=\s*(\d+)\s*$", re.MULTILINE)
 
@@ -183,6 +187,35 @@ def effective_stop_drain_timeout(runner: object) -> float:
     if not getattr(runner, "_stop_requested_by_signal", False):
         return drain
     return resolve_launchd_capped_drain(drain, getattr(runner, "_launchd_exit_timeout_s", None))
+
+
+def effective_stop_watchdog_delay(runner: object, watchdog_delay: float) -> float:
+    """Thread-watchdog leash for the stop in progress on ``runner``.
+
+    ``watchdog_delay`` is the supervisor-agnostic leash (effective drain +
+    grace). Under launchd a signal-driven stop is SIGKILLed at the live
+    ``ExitTimeOut`` — with a 60s budget the default leash (50 + 60 = 110s)
+    can never fire, so the forensic stack dump and ``os._exit`` the watchdog
+    exists for are lost. Clamp the leash to ``ExitTimeOut -
+    LAUNCHD_WATCHDOG_DUMP_MARGIN_S`` so the dump lands before SIGKILL. Same
+    duck-typing / fail-open rules as :func:`effective_stop_drain_timeout`.
+    """
+    try:
+        leash = max(float(watchdog_delay), 0.0)
+    except (TypeError, ValueError):
+        leash = 0.0
+    if not getattr(runner, "_stop_requested_by_signal", False):
+        return leash
+    budget = getattr(runner, "_launchd_exit_timeout_s", None)
+    if budget is None:
+        return leash
+    try:
+        budget = float(budget)
+    except (TypeError, ValueError):
+        return leash
+    if budget <= 0.0:
+        return leash
+    return min(leash, max(budget - LAUNCHD_WATCHDOG_DUMP_MARGIN_S, 0.0))
 
 
 _TRUTHY = {"1", "true", "yes", "on"}

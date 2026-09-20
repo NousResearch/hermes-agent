@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, Optional
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
-    effective_stop_drain_timeout, resolve_cron_drain_budget
+    effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
@@ -2042,7 +2042,7 @@ class GatewayShutdownMixin:
             "restart_drain_timeout": self._restart_drain_timeout,
             "effective_drain_timeout": effective_stop_drain_timeout(self),
             "launchd_exit_timeout_s": getattr(self, "_launchd_exit_timeout_s", None),
-            "watchdog_delay_s": resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self)),
+            "watchdog_delay_s": effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self))),
             "phase_elapsed_s": ctx.elapsed() if ctx.started_at is not None else None,
         }
 
@@ -2062,7 +2062,7 @@ class GatewayShutdownMixin:
         )
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             arm_shutdown_watchdog(
-                resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self)), done_event=_watchdog_done,
+                effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self))), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
         try:

@@ -83,16 +83,7 @@ class _RuntimeStatusWriter:
         """Block until ``generation`` (or a later snapshot) is persisted; ``False`` on timeout/failure."""
         deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
         with self._condition:
-            while self._successful_generation < generation:
-                no_more_work = (
-                    self._completed_generation >= generation
-                    and self._writing_generation == 0
-                    and self._pending is None
-                )
-                if no_more_work:
-                    if timeout is None and self._last_error is not None:
-                        raise self._last_error
-                    return False
+            while (state := self.settled(generation)) is None:
                 if deadline is None:
                     self._condition.wait()
                     continue
@@ -100,7 +91,9 @@ class _RuntimeStatusWriter:
                 if remaining <= 0:
                     return False
                 self._condition.wait(timeout=remaining)
-            return True
+            if not state and timeout is None and self._last_error is not None:
+                raise self._last_error
+            return state
 
     def flush(self, timeout: float = 2.0) -> bool:
         with self._condition:
@@ -191,33 +184,8 @@ async def flush_runtime_status_async(timeout: float = 2.0) -> bool:
     writer = _runtime_status_writer
     if writer is None:
         return True
-    with writer._condition:
-        generation = writer._submitted_generation
-    if generation == 0:
-        return True
-    if (state := writer.settled(generation)) is not None:
-        return state
-    # Park a daemon thread on the writer's Condition and hand the outcome back through a
-    # future: the writer thread notifies it the moment the generation lands, so the loop is
-    # woken by the event rather than polling. A daemon thread (not the default executor)
-    # so a write wedged past the timeout never blocks interpreter exit.
-    loop = asyncio.get_running_loop()
-    landed: asyncio.Future[bool] = loop.create_future()
-
-    def _relay() -> None:
-        with writer._condition:
-            while (state := writer.settled(generation)) is None:
-                writer._condition.wait()
-        try:
-            loop.call_soon_threadsafe(lambda: landed.done() or landed.set_result(state))
-        except RuntimeError:  # loop closed while we waited
-            pass
-
-    threading.Thread(target=_relay, daemon=True, name="gateway-runtime-status-waiter").start()
-    try:
-        return await asyncio.wait_for(asyncio.shield(landed), timeout=max(timeout, 0.0))
-    except asyncio.TimeoutError:
-        return False
+    # ``flush()`` returns at its deadline, so the worker thread is bounded.
+    return await asyncio.to_thread(writer.flush, timeout=max(float(timeout), 0.0))
 
 
 class StormInfo(NamedTuple):

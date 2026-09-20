@@ -497,13 +497,19 @@ class TestNousTagsScoping:
 
 
 class TestNormalizeAuxProvider:
-    def test_maps_opencode_family(self):
-        assert _normalize_aux_provider("opencode") == "opencode-zen"
-        assert _normalize_aux_provider("zen") == "opencode-zen"
-        assert _normalize_aux_provider("go") == "opencode-go"
-        assert _normalize_aux_provider("opencode-go-sub") == "opencode-go"
+    def test_main_provider_opencode_resolves_an_aux_client(self, monkeypatch):
+        """``model.provider: opencode`` (the alias the main path accepts) must resolve an aux client
+        exactly like ``opencode-zen`` does, instead of ``(None, None)`` (#115006)."""
+        monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-test-not-real")
+        alias_client, alias_model = resolve_provider_client("opencode", model="glm-5.3", task="approval")
+        canon_client, canon_model = resolve_provider_client("opencode-zen", model="glm-5.3", task="approval")
+        assert canon_client is not None
+        assert alias_client is not None
+        assert str(alias_client.base_url) == str(canon_client.base_url)
+        assert alias_model == canon_model
 
     def test_covers_every_alias_the_main_path_resolves(self):
+        """Every alias hermes_cli.auth resolves also resolves in aux — drift becomes a red test (#115006)."""
         from hermes_cli.auth import _PROVIDER_ALIASES as auth_table
         for alias, canonical in auth_table.items():
             assert _normalize_aux_provider(alias) == canonical, alias

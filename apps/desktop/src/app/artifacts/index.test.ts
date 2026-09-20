@@ -251,6 +251,50 @@ ${payload}
     ])
   })
 
+  it('does not index extension-less bare paths from prose or tool keys', () => {
+    const messages: SessionMessage[] = [
+      {
+        content: 'Wrote the note to E:\\Suphi\'s Memory\\_Inbox\\capture and synced the placeholder at /srv/jerv/state/sync',
+        role: 'assistant',
+        timestamp: 1_781_774_001
+      },
+      {
+        content: 'WhatsApp ingestion file: C:\\Users\\example\\AppData\\Local\\Temp\\whatsapp-ingest',
+        role: 'assistant',
+        timestamp: 1_781_774_002
+      },
+      {
+        content: JSON.stringify({ file_path: '/srv/jerv/dropbox/Dropbox/SSOT/state-dir', success: true }),
+        role: 'tool',
+        timestamp: 1_781_774_003,
+        tool_name: 'write_file'
+      }
+    ]
+
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'noise-session' }), messages)
+
+    expect(artifacts).toHaveLength(0)
+  })
+
+  it('keeps openable bare paths (pdf/images) from prose', () => {
+    const messages: SessionMessage[] = [
+      {
+        // .html is intentionally absent from the upstream FILE_EXT_RE, so html
+        // prose mentions stay un-indexed even with the gate — use pdf/images.
+        content: 'Report ready at E:\\Dropbox\\SSOT\\Reports\\Rapor.pdf and shot at /tmp/shot.png',
+        role: 'assistant',
+        timestamp: 1_781_774_001
+      }
+    ]
+
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'openable-session' }), messages)
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([
+      '/tmp/shot.png',
+      'E:\\Dropbox\\SSOT\\Reports\\Rapor.pdf'
+    ])
+  })
+
   it('normalizes epoch-second message timestamps', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

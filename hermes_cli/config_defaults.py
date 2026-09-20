@@ -2562,7 +2562,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 45,  # Config schema version - bump this when adding new required fields
+    "_config_version": 46,  # Config schema version - bump this when adding new required fields
 }
 
 
@@ -2653,9 +2653,14 @@ OPTIONAL_ENV_VARS = {
     "KIMI_BASE_URL": _base_url("Kimi / Moonshot", "Kimi"),
     "KIMI_CN_API_KEY": _prov("Kimi / Moonshot China API key", "Kimi (China) API key",
         "https://platform.moonshot.cn/"),
-    "STEPFUN_API_KEY": _prov("StepFun Step Plan API key", "StepFun Step Plan API key",
+    "STEPFUN_API_KEY": _prov("StepFun API key — international (api.stepfun.ai)", "StepFun API key",
+        "https://platform.stepfun.ai/"),
+    "STEPFUN_CN_API_KEY": _prov("StepFun API key — China (api.stepfun.com)", "StepFun (China) API key",
         "https://platform.stepfun.com/"),
-    "STEPFUN_BASE_URL": _base_url("StepFun Step Plan"),
+    "STEPFUN_BASE_URL": _base_url("StepFun standard chat", "StepFun"),
+    "STEPFUN_CN_BASE_URL": _base_url("StepFun standard chat, China", "StepFun (China)"),
+    "STEPFUN_STEP_PLAN_BASE_URL": _base_url("StepFun Step Plan"),
+    "STEPFUN_CN_STEP_PLAN_BASE_URL": _base_url("StepFun Step Plan, China"),
     "ARCEEAI_API_KEY": _prov("Arcee AI API key", "Arcee AI API key", "https://chat.arcee.ai/"),
     "ARCEE_BASE_URL": _base_url("Arcee AI", "Arcee"),
     "GMI_API_KEY": _prov("GMI Cloud API key", "GMI Cloud API key", "https://www.gmicloud.ai/"),

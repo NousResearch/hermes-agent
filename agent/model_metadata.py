@@ -402,6 +402,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "MiniMaxAI/MiniMax-M2.5": 204800, "XiaomiMiMo/MiMo-V2-Flash": 262144,
     "mimo-v2-pro": 1048576, "mimo-v2.5-pro": 1048576, "mimo-v2.5": 1048576, "mimo-v2-omni": 262144, "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
+    # StepFun (live /models max_input_tokens; models.dev rounds the step-3.x family to 256,000)
+    "step-5-preview": 1_024_000, "step-5": 1_024_000, "step-3.7": 262_144, "step-3.5": 262_144,
 }
 # xAI Grok models that ACCEPT `reasoning.effort` (verified live against
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
@@ -469,7 +471,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
     "api.z.ai": "zai", "open.bigmodel.cn": "zai",
     "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
-    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
+    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun-cn", "api.arcee.ai": "arcee", "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",

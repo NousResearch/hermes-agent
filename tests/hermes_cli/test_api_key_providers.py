@@ -17,6 +17,7 @@ from hermes_cli.auth import (
     KIMI_CODE_BASE_URL,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
+    STEPFUN_STD_INTL_BASE_URL,
     _resolve_kimi_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
@@ -37,7 +38,10 @@ class TestProviderRegistry:
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
-        ("stepfun", "StepFun Step Plan", "api_key"),
+        ("stepfun", "StepFun", "api_key"),
+        ("stepfun-cn", "StepFun (China)", "api_key"),
+        ("stepfun-plan", "StepFun Step Plan", "api_key"),
+        ("stepfun-plan-cn", "StepFun Step Plan (China)", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
@@ -77,6 +81,10 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["stepfun"]
         assert pconfig.api_key_env_vars == ("STEPFUN_API_KEY",)
         assert pconfig.base_url_env_var == "STEPFUN_BASE_URL"
+        # Regional accounts: the China ids carry their own key var (see test_stepfun_providers.py).
+        plan_cn = PROVIDER_REGISTRY["stepfun-plan-cn"]
+        assert plan_cn.api_key_env_vars == ("STEPFUN_CN_API_KEY",)
+        assert plan_cn.base_url_env_var == "STEPFUN_CN_STEP_PLAN_BASE_URL"
 
     def test_minimax_cn_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax-cn"]
@@ -108,7 +116,8 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
-        assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STD_INTL_BASE_URL
+        assert PROVIDER_REGISTRY["stepfun-plan"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
@@ -187,7 +196,7 @@ class TestResolveProvider:
         assert resolve_provider("moonshot") == "kimi-coding"
 
     def test_alias_step(self):
-        assert resolve_provider("step") == "stepfun"
+        assert resolve_provider("step") == "stepfun-plan"
 
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
@@ -394,7 +403,23 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("stepfun")
         assert creds["provider"] == "stepfun"
         assert creds["api_key"] == "stepfun-secret-key"
-        assert creds["base_url"] == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        assert creds["base_url"] == STEPFUN_STD_INTL_BASE_URL
+
+        plan = resolve_api_key_provider_credentials("stepfun-plan")
+        assert plan["api_key"] == "stepfun-secret-key"
+        assert plan["base_url"] == STEPFUN_STEP_PLAN_INTL_BASE_URL
+
+    def test_resolve_stepfun_cn_needs_the_china_key(self, monkeypatch):
+        """A China id must not authenticate with the international key — it would 401."""
+        monkeypatch.setenv("STEPFUN_API_KEY", "intl-key")
+        monkeypatch.delenv("STEPFUN_CN_API_KEY", raising=False)
+        # Same posture as minimax-cn: no key resolves to empty, never to the other region's key.
+        assert resolve_api_key_provider_credentials("stepfun-cn")["api_key"] == ""
+
+        monkeypatch.setenv("STEPFUN_CN_API_KEY", "china-key")
+        creds = resolve_api_key_provider_credentials("stepfun-cn")
+        assert creds["api_key"] == "china-key"
+        assert creds["base_url"] == "https://api.stepfun.com/v1"
 
 
 

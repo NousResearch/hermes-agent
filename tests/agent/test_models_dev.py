@@ -103,7 +103,8 @@ class TestProviderMapping:
     def test_known_providers_mapped(self):
         assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
-        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
+        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun-ai"
+        assert PROVIDER_TO_MODELS_DEV["stepfun-cn"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 

@@ -602,6 +602,60 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
+def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+    # 45 → 46: the single `stepfun` id became four, one per (region x endpoint family). The id is
+    # chosen by the endpoint the config ACTUALLY reached — model.base_url, else STEPFUN_BASE_URL,
+    # else the pre-46 default of international Step Plan. A China config's key also moves to
+    # STEPFUN_CN_API_KEY (accounts are regional), or every request after the upgrade 401s.
+    _c = _cfg()
+    config = read_raw_config()
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict) or model_cfg.get("provider") != "stepfun":
+        return
+
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    env_override = str(_c.get_env_value("STEPFUN_BASE_URL") or "").strip()
+    # The pre-46 default was international Step Plan, so an unset endpoint means exactly that.
+    effective = (base_url or env_override or "https://api.stepfun.ai/step_plan/v1").lower()
+    is_plan = "/step_plan/" in effective
+    is_cn = "api.stepfun.com" in effective
+    new_provider = ("stepfun-plan-cn" if is_cn else "stepfun-plan") if is_plan else (
+        "stepfun-cn" if is_cn else "stepfun")
+
+    model_cfg["provider"] = new_provider
+    config["model"] = model_cfg
+    notes: List[str] = []
+
+    # Re-home the base-url override onto the new id's own variable, but only when it carried a
+    # value (the default endpoint needs no override) and the target is still unset.
+    target_env = {
+        "stepfun": "STEPFUN_BASE_URL", "stepfun-cn": "STEPFUN_CN_BASE_URL",
+        "stepfun-plan": "STEPFUN_STEP_PLAN_BASE_URL",
+        "stepfun-plan-cn": "STEPFUN_CN_STEP_PLAN_BASE_URL"}[new_provider]
+    try:
+        if env_override and target_env != "STEPFUN_BASE_URL" and not _c.get_env_value(target_env):
+            _c.save_env_value(target_env, env_override)
+            _c.save_env_value("STEPFUN_BASE_URL", "")
+            notes.append(f"env STEPFUN_BASE_URL → {target_env}")
+        # A China config's key is a China account key; the new id reads STEPFUN_CN_API_KEY.
+        if is_cn:
+            existing_key = str(_c.get_env_value("STEPFUN_API_KEY") or "").strip()
+            if existing_key and not _c.get_env_value("STEPFUN_CN_API_KEY"):
+                _c.save_env_value("STEPFUN_CN_API_KEY", existing_key)
+                _c.save_env_value("STEPFUN_API_KEY", "")
+                notes.append("env STEPFUN_API_KEY → STEPFUN_CN_API_KEY (China account key)")
+    except Exception:
+        # Best effort: a failed .env write must not abort the provider rename.
+        pass
+
+    suffix = f" ({'; '.join(notes)})" if notes else ""
+    _commit(
+        config, results, quiet,
+        f"model.provider stepfun → {new_provider}{suffix}",
+        f"  ✓ StepFun config migrated to provider '{new_provider}' — same endpoint, explicit region"
+        + (f"\n    ✓ {chr(10) + '    ✓ '.join(notes)}" if notes else ""))
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -722,6 +776,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
+    # 45 → 46: `stepfun` splits into stepfun / stepfun-cn / stepfun-plan / stepfun-plan-cn.
+    (46, _migrate_to_46),
 )
 
 

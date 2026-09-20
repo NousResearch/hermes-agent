@@ -3,10 +3,10 @@
 
 Usage:
     python fal_music.py --list
-    python fal_music.py --model elevenlabs-music --prompt "warm lofi hip hop, vinyl crackle" --duration 30 -o /tmp/track.mp3
+    python fal_music.py --model elevenlabs-music --prompt "warm lofi hip hop, vinyl crackle" --duration 30 -o track.mp3
     python fal_music.py --model minimax-music-3 --prompt "upbeat synthpop, female vocals" \
-        --lyrics "[verse]\\nNeon lights..." --duration 90 -o /tmp/song.wav
-    python fal_music.py --model elevenlabs-sfx --prompt "heavy wooden door creaks open" --duration 4 -o /tmp/door.mp3
+        --lyrics "[verse]\\nNeon lights..." --duration 90 -o song.wav
+    python fal_music.py --model elevenlabs-sfx --prompt "heavy wooden door creaks open" --duration 4 -o door.mp3
     python fal_music.py --model lyria3 --prompt "cinematic orchestral swell" --dry-run   # print payload, no call
 
 Requires ``FAL_KEY`` (https://fal.ai/dashboard/keys) and the ``fal-client`` package
@@ -116,6 +116,11 @@ MODELS: Dict[str, Dict[str, Any]] = {
         "kind": "~30s music clips, higher fidelity", "lyrics": False,
         "notes": "Google Lyria 3 Pro. Same prompt-only surface as lyria3.",
     },
+    "lyria3.5": {
+        "endpoint": "google/lyria-3.5", "build": _lyria3, "duration": None, "ext": "mp3",
+        "kind": "music clips, newest Lyria", "lyrics": False,
+        "notes": "Google Lyria 3.5 (fal, Sep 2026). Same prompt-only surface as lyria3; negative prompts are declared but documented as unsupported.",
+    },
     "stable-audio-3": {
         "endpoint": "fal-ai/stable-audio-3/medium/text-to-audio", "build": _stable_audio_3, "duration": (1, 380), "ext": "mp3",
         "kind": "instrumental music, long form", "lyrics": False,
@@ -202,7 +207,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--instrumental", action="store_true", help="no vocals (elevenlabs-music, minimax-music-2.6)")
     p.add_argument("--loop", action="store_true", help="seamless loop (elevenlabs-sfx only)")
     p.add_argument("--dry-run", action="store_true", help="print the endpoint + payload and exit without calling fal")
-    p.add_argument("-o", "--output", help="output file path (default /tmp/fal-music-<model>.<ext>)")
+    p.add_argument("-o", "--output", help="output file path (default ./fal-music-<model>.<ext> in the current directory)")
     a = p.parse_args(argv)
 
     if a.list:
@@ -221,7 +226,7 @@ def main(argv: Optional[list] = None) -> int:
     if a.dry_run:
         print(json.dumps({"endpoint": MODELS[a.model]["endpoint"], "payload": payload}, indent=2))
         return 0
-    output = a.output or f"/tmp/fal-music-{a.model}.{MODELS[a.model]['ext']}"
+    output = a.output or os.path.join(os.getcwd(), f"fal-music-{a.model}.{MODELS[a.model]['ext']}")
     print(json.dumps(generate(a.model, payload, output), indent=2))
     return 0
 

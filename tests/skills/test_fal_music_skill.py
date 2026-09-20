@@ -19,6 +19,7 @@ DECLARED = {
     "minimax-music-2.6": {"prompt", "lyrics", "is_instrumental", "audio_setting", "lyrics_optimizer"},
     "lyria3": {"prompt", "negative_prompt", "image_url"},
     "lyria3-pro": {"prompt", "negative_prompt", "image_url"},
+    "lyria3.5": {"prompt", "negative_prompt", "image_url"},
     "stable-audio-3": {"prompt", "duration", "seed", "negative_prompt", "output_format", "num_inference_steps",
                        "enable_prompt_expansion", "enable_safety_checker", "guidance_scale", "bitrate", "sync_mode"},
     "ace-step": {"tags", "lyrics", "duration", "seed", "guidance_scale", "minimum_guidance_scale", "scheduler",

@@ -43,6 +43,7 @@ generation (use `heartmula` or `audiocraft-audio-generation`).
 | `minimax-music-3` | `minimax/music-3` | 1–300 s | yes, `[verse]`/`[chorus]` tags | full songs with your lyrics, WAV out, seedable |
 | `minimax-music-2.6` | `fal-ai/minimax-music/v2.6` | model-decided | yes | cheaper MiniMax tier, `--instrumental` flag |
 | `lyria3` / `lyria3-pro` | `fal-ai/lyria3[/pro]` | ~30 s fixed | no | Google Lyria clips; prompt only |
+| `lyria3.5` | `google/lyria-3.5` | model-decided | no | newest Lyria (Sep 2026); same prompt-only surface, MP3 + optional lyrics text |
 | `stable-audio-3` | `fal-ai/stable-audio-3/medium/text-to-audio` | 1–380 s | no | long instrumentals, licensed training data, `--negative-prompt`, `--seed` |
 | `ace-step` | `fal-ai/ace-step` | 5–240 s | yes | cheapest ($0.0002 / s ≈ 83 min per $1); prompt is a comma-separated tag list |
 | `elevenlabs-sfx` | `fal-ai/elevenlabs/sound-effects/v2` | 0.5–22 s | n/a | sound effects, `--loop` for seamless loops |
@@ -78,22 +79,22 @@ API; the rest bill per fal's dashboard rate card.
      --prompt "warm lofi hip hop, dusty drums, mellow Rhodes, vinyl crackle, 80 BPM" \
      --duration 45 --instrumental --dry-run
    python "$SKILL_DIR/scripts/fal_music.py" --model elevenlabs-music \
-     --prompt "..." --duration 45 --instrumental -o /tmp/lofi.mp3
+     --prompt "..." --duration 45 --instrumental -o lofi.mp3
    ```
    Lyrics-driven song:
    ```bash
    python "$SKILL_DIR/scripts/fal_music.py" --model minimax-music-3 \
      --prompt "upbeat synthpop, bright female vocals, 120 BPM" \
      --lyrics $'[verse]\nNeon lights on empty streets\n[chorus]\nRun with me tonight' \
-     --duration 90 -o /tmp/song.wav
+     --duration 90 -o song.wav
    ```
    Sound effect:
    ```bash
    python "$SKILL_DIR/scripts/fal_music.py" --model elevenlabs-sfx \
-     --prompt "heavy wooden door creaks open slowly, stone hallway reverb" --duration 4 -o /tmp/door.mp3
+     --prompt "heavy wooden door creaks open slowly, stone hallway reverb" --duration 4 -o door.mp3
    ```
 5. The script prints JSON with `output`, `url`, and any extra fields the endpoint
-   returned (`seed`, `duration`, `lyrics`). Return the file with `MEDIA:/tmp/lofi.mp3`
+   returned (`seed`, `duration`, `lyrics`). Return the file with `MEDIA:<absolute path of lofi.mp3>`
    and mention the seed when the model returned one so the user can iterate.
 6. Iterate by changing one thing at a time (prompt wording, duration, seed). For a
    longer piece than the model allows, generate sections and concatenate with
@@ -102,7 +103,7 @@ API; the rest bill per fal's dashboard rate card.
 ## Pitfalls
 
 - **`--duration` is clamped, never rejected** — 500 s on `minimax-music-3` becomes
-  300 s. Models with no length knob (`lyria3`, `minimax-music-2.6`) drop it and
+  300 s. Models with no length knob (`lyria3`, `lyria3.5`, `minimax-music-2.6`) drop it and
   the script prints a `note: ... ignored` line on stderr; the `--list` table shows
   each model's range. `elevenlabs-sfx` without `--duration` lets the model infer
   length from the prompt.
@@ -124,5 +125,5 @@ API; the rest bill per fal's dashboard rate card.
 
 - `python fal_music.py --list` prints all eight models.
 - `--dry-run` shows the exact endpoint + payload before any billable call.
-- After generation, `ffprobe -hide_banner /tmp/out.mp3` reports a duration close to
+- After generation, `ffprobe -hide_banner out.mp3` reports a duration close to
   the requested one (ElevenLabs/MiniMax may land ±10 %).

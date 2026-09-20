@@ -78,7 +78,7 @@ def _archive_answer(archive: str) -> str | None:
     if "## Response" not in archive:
         return archive
     answer = archive.rpartition("## Response")[2].strip()
-    if not answer or _sched.is_cron_silence_response(answer):
+    if not answer or _sched._is_cron_silence_response(answer):
         return None
     return answer
 

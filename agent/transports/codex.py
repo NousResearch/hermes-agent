@@ -151,16 +151,40 @@ def _alias_reserved_tools(
     return rewritten, alias_map
 
 
+def _required_web_provider_forbids_native_search() -> bool:
+    """Keep mandatory mediation on Hermes's client-side dispatch path.
+
+    Provider-native search executes outside ``WebSearchProvider.search`` and
+    would bypass the required provider's admission, accounting, cache, and
+    retry contract. A policy read failure is equally non-projectable: retain
+    the client tool so its normal dispatch returns the fail-closed error.
+    """
+    try:
+        from agent.web_required_provider import required_provider_name
+
+        return required_provider_name() is not None
+    except Exception as exc:  # noqa: BLE001 — inability to prove absence forbids bypass
+        logger.debug("Required web-provider policy blocks native search: %s", exc)
+        return True
+
+
 def _xai_prefers_native_web_search() -> bool:
     """True when xAI Responses should use Grok's native ``web_search`` built-in.
 
-    Web-search registry first, then the legacy ``_get_search_backend`` probe; fails closed to native (True).
+    Mandatory mediation always keeps Hermes's client-side tool. Otherwise,
+    consult the web-search registry and then the legacy ``_get_search_backend``
+    probe; unrelated resolution failures preserve the historical xAI native
+    fallback.
 
     Delegates to the web-search registry's provider resolution (which reads ``web.search_backend`` /
     ``web.backend`` from config) and checks whether the resolved provider is xAI. On any resolution failure,
     returns True (fail-closed to native — preserves the #48108 incomplete-hang fix rather than risk
     reintroducing it).
     """
+    if _required_web_provider_forbids_native_search():
+        return False
+    from agent.web_required_provider import RequiredWebProviderError
+
     try:
         from agent.web_search_registry import get_active_search_provider
 
@@ -171,6 +195,12 @@ def _xai_prefers_native_web_search() -> bool:
         from tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "xai"
+    except RequiredWebProviderError as exc:
+        # The required-policy read above and registry resolution are separate
+        # calls. If policy becomes mandatory or unreadable between them, never
+        # reinterpret that fail-closed result as permission for native search.
+        logger.debug("Required web-provider policy blocks xAI native search: %s", exc)
+        return False
     except Exception:
         return True
 
@@ -197,6 +227,8 @@ def _openai_prefers_native_web_search() -> bool:
     Only consulted for the Codex backend (``chatgpt.com/backend-api/codex``); a custom
     OpenAI-compatible endpoint does not implement the server-side tool.
     """
+    if _required_web_provider_forbids_native_search():
+        return False
     try:
         from agent.web_search_registry import get_active_search_provider
 

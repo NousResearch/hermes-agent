@@ -89,6 +89,15 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     available capable provider; then the availability-filtered legacy walk;
     then the keyless free-tier walk; else None.
     """
+    from agent.web_required_provider import get_required_provider
+
+    # A mandatory-policy failure is not equivalent to "no provider". Let it
+    # propagate so callers cannot enter legacy or provider-native fallback
+    # paths after policy drift, unload, replacement, or malformed config.
+    required = get_required_provider(capability)
+    if required is not None:
+        return required
+
     snapshot = _registry.merged()
 
     def _capable(p: WebSearchProvider) -> bool:

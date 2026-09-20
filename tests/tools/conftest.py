@@ -56,6 +56,23 @@ def _materialize_mcp_sdk_symbols():
 
 
 @pytest.fixture(autouse=True)
+def _no_jev_screen_shadow_subprocess():
+    """`_scan_cron_prompt` fires a background `jev screen` shadow call (see
+    tools.threat_patterns._jev_screen_shadow) on every invocation. It's a no-op for the scanner's
+    real behavior, but the many tests in this directory call `_scan_cron_prompt` directly and must
+    not spawn a thread that shells out to `jev` on every run; tests that want to exercise the shadow
+    path patch it back in explicitly.
+    """
+    try:
+        import tools.cronjob_prompt_scan as cronjob_prompt_scan
+    except Exception:
+        yield
+        return
+    with patch.object(cronjob_prompt_scan, "_cron_jev_screen_shadow", lambda *a, **k: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clear_web_result_cache():
     """Reset the web_search TTL memo between tests.
 

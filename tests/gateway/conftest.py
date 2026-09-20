@@ -35,9 +35,25 @@ import ast
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_jev_screen_shadow_subprocess():
+    """`_scan_cron_prompt` fires a background `jev screen` shadow call (see
+    tools.threat_patterns._jev_screen_shadow) on every invocation. It's a no-op for the scanner's
+    real behavior, but the REST cron endpoint tests here call `_scan_cron_prompt` through real HTTP
+    handlers and must not spawn a thread that shells out to `jev` on every run.
+    """
+    try:
+        import tools.cronjob_prompt_scan as cronjob_prompt_scan
+    except Exception:
+        yield
+        return
+    with patch.object(cronjob_prompt_scan, "_cron_jev_screen_shadow", lambda *a, **k: None):
+        yield
 
 
 @pytest.fixture(scope="session", autouse=True)

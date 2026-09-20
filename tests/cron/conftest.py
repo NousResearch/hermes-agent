@@ -14,6 +14,24 @@ inside the test, which overrides this fixture's value for that scope.
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_jev_screen_shadow_subprocess():
+    """`_scan_cron_prompt` fires a background `jev screen` shadow call (see
+    tools.threat_patterns._jev_screen_shadow) on every invocation. It's a no-op for the scanner's
+    real behavior, but cron tests that exercise prompt scanning must not spawn a thread that shells
+    out to `jev` on every run; tests that want to exercise the shadow path patch it back in
+    explicitly.
+    """
+    from unittest.mock import patch
+    try:
+        import tools.cronjob_prompt_scan as cronjob_prompt_scan
+    except Exception:
+        yield
+        return
+    with patch.object(cronjob_prompt_scan, "_cron_jev_screen_shadow", lambda *a, **k: None):
+        yield
+
+
 @pytest.fixture()
 def make_cron_provider():
     """Factory for minimal CronScheduler test doubles.

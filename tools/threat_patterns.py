@@ -9,8 +9,13 @@ in legitimate AGENTS.md); filler between tokens is the bounded ``_FILLER``."""
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import threading
+import time
 import unicodedata
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
@@ -128,6 +133,61 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     normalised = unicodedata.normalize("NFKC", content)
     findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
     return findings
+
+
+# Shadow-mode comparison log for `jev screen` (TypeSafe CLI) — a second, purely informational signal
+# used only where callers opt in (see _jev_screen_shadow). Never wired into scan_for_threats itself:
+# these deterministic regex patterns remain the only real authority everywhere.
+_JEV_SCREEN_SHADOW_LOG = Path(__file__).resolve().parents[1] / "cron" / "logs" / "jev-shadow-screen-threats.jsonl"
+_JEV_SCREEN_TIMEOUT_SECONDS = 8.0
+
+
+def _append_jev_screen_shadow_log(record: dict) -> None:
+    """Append one JSON line. Never raises: a log-write failure must not affect the caller, which is
+    itself already inside a best-effort shadow path."""
+    try:
+        _JEV_SCREEN_SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_JEV_SCREEN_SHADOW_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _jev_screen_shadow(content: str, source: str, regex_findings: List[str]) -> None:
+    """Best-effort second opinion via `jev screen` (TypeSafe CLI), for callers that want it as a
+    complementary, non-blocking signal alongside the deterministic regex scan above.
+
+    This NEVER blocks the caller (runs on a daemon thread), NEVER modifies anything, and NEVER
+    changes what the regex scanners already decided — those patterns stay the sole real authority.
+    Only a discrepancy where jev flags something the regex missed (``regex_findings`` empty but jev
+    recommends "review" or "block") is written to ``_JEV_SCREEN_SHADOW_LOG``, for later human review —
+    not for any automated action. Any failure (binary missing, timeout, malformed output) is
+    swallowed silently; this must never raise into or slow down a security-path caller.
+    """
+    if not content or not content.strip():
+        return
+
+    def _run() -> None:
+        try:
+            proc = subprocess.run(
+                ["jev", "screen", "--json", "--timeout", str(int(_JEV_SCREEN_TIMEOUT_SECONDS * 1000))],
+                input=content[:MAX_SCAN_CHARS], capture_output=True, text=True,
+                timeout=_JEV_SCREEN_TIMEOUT_SECONDS + 2,
+            )
+            if proc.returncode != 0:
+                return
+            data = json.loads(proc.stdout)
+            action = (data.get("recommendation") or {}).get("action")
+            if not regex_findings and action in ("block", "review"):
+                _append_jev_screen_shadow_log({
+                    "timestamp": time.time(), "source": source, "jev_action": action,
+                    "jev_injection_probability": (data.get("probabilities") or {}).get("injection"),
+                    "content_chars": len(content),
+                })
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True, name="jev-shadow-screen-threats").start()
 
 
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:

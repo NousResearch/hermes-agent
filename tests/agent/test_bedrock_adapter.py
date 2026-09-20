@@ -916,12 +916,65 @@ class TestDiscoverBedrockModels:
             ],
         }
         mock_client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        mock_client.list_marketplace_model_endpoints.return_value = {"marketplaceModelEndpoints": []}
 
         with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
             models = discover_bedrock_models("us-east-1", provider_filter=["anthropic"])
 
         assert len(models) == 1
         assert models[0]["id"] == "anthropic.claude-v2"
+
+    def test_includes_only_registered_in_service_marketplace_endpoints(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        ready_arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/frontier-ready"
+        pending_arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/frontier-pending"
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {"modelSummaries": []}
+        mock_client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        mock_client.list_marketplace_model_endpoints.return_value = {
+            "marketplaceModelEndpoints": [
+                {"endpointArn": ready_arn, "status": "REGISTERED",
+                 "modelSourceIdentifier": "arn:aws:sagemaker:us-east-1:aws:hub-content/SageMakerPublicHub/Model/Nvidia-Frontier/1.0"},
+                {"endpointArn": pending_arn, "status": "REGISTERED",
+                 "modelSourceIdentifier": "arn:aws:sagemaker:us-east-1:aws:hub-content/SageMakerPublicHub/Model/Nvidia-Pending/1.0"},
+            ]
+        }
+        mock_client.get_marketplace_model_endpoint.side_effect = [
+            {"marketplaceModelEndpoint": {"endpointStatus": "InService"}},
+            {"marketplaceModelEndpoint": {"endpointStatus": "Creating"}},
+        ]
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        assert [model["id"] for model in models] == [ready_arn]
+        assert models[0]["provider"] == "nvidia"
+
+    def test_marketplace_denial_does_not_hide_foundation_models(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [{
+                "modelId": "anthropic.claude-frontier",
+                "modelName": "Claude Frontier",
+                "providerName": "Anthropic",
+                "inputModalities": ["TEXT"],
+                "outputModalities": ["TEXT"],
+                "responseStreamingSupported": True,
+                "modelLifecycle": {"status": "ACTIVE"},
+            }]
+        }
+        mock_client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        mock_client.list_marketplace_model_endpoints.side_effect = Exception("AccessDenied")
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        assert [model["id"] for model in models] == ["anthropic.claude-frontier"]
 
     def test_caches_results(self):
         from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
@@ -940,6 +993,7 @@ class TestDiscoverBedrockModels:
             }],
         }
         mock_client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        mock_client.list_marketplace_model_endpoints.return_value = {"marketplaceModelEndpoints": []}
 
         with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
             first = discover_bedrock_models("us-east-1")

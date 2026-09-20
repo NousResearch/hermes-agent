@@ -1122,9 +1122,44 @@ def _list_inference_profiles(client, filter_set: set, models: List[Dict[str, Any
         seen_ids.add(profile_id.lower())
 
 
+def _list_marketplace_model_endpoints(client, filter_set: set, models: List[Dict[str, Any]]) -> None:
+    """Append registered, in-service Bedrock Marketplace endpoints (paginated)."""
+    endpoints, next_token = [], None
+    while True:
+        response = client.list_marketplace_model_endpoints(
+            **({"nextToken": next_token} if next_token else {})
+        )
+        if not isinstance(response, dict):
+            return
+        endpoints.extend(response.get("marketplaceModelEndpoints", []))
+        if not (next_token := response.get("nextToken")):
+            break
+
+    seen_ids = {m["id"].lower() for m in models}
+    for endpoint in endpoints:
+        endpoint_arn = (endpoint.get("endpointArn") or "").strip()
+        source_arn = (endpoint.get("modelSourceIdentifier") or "").strip()
+        provider = _extract_marketplace_provider(source_arn)
+        if (not endpoint_arn or endpoint.get("status") != "REGISTERED"
+                or endpoint_arn.lower() in seen_ids
+                or (filter_set and provider.lower() not in filter_set)):
+            continue
+        details = client.get_marketplace_model_endpoint(endpointArn=endpoint_arn).get(
+            "marketplaceModelEndpoint", {}
+        )
+        if details.get("endpointStatus", "").lower() != "inservice":
+            continue
+        name = endpoint_arn.rsplit("/", 1)[-1].replace("-", " ").strip()
+        models.append(_model_entry(endpoint_arn, name, provider, ["TEXT"], ["TEXT"]))
+        seen_ids.add(endpoint_arn.lower())
+
+
 def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Foundation models + inference profiles (cached 1h per region/filter), ``global.`` profiles first then
-    by name; [] when the client cannot be built."""
+    """Discover Bedrock foundation models, inference profiles, and Marketplace endpoints.
+
+    Results are cached for one hour per region/filter. ``global.`` profiles sort first;
+    an unavailable account-scoped discovery API does not hide the other model classes.
+    """
     # The list is account-scoped (whichever credentials the control client signs with), so a routed
     # profile gets its own entry; unscoped keeps the region:filter key byte-for-byte.
     from hermes_constants import get_hermes_home_override, hermes_home_key
@@ -1144,6 +1179,7 @@ def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = 
     for step, log, message in (
         (_list_foundation_models, logger.warning, "Failed to list Bedrock foundation models: %s"),
         (_list_inference_profiles, logger.debug, "Skipping inference profile discovery: %s"),
+        (_list_marketplace_model_endpoints, logger.debug, "Skipping Marketplace endpoint discovery: %s"),
     ):
         try:
             step(client, filter_set, models)
@@ -1152,6 +1188,15 @@ def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = 
     models.sort(key=lambda m: (0 if m["id"].startswith("global.") else 1, m["name"].lower()))
     _discovery_cache[cache_key] = {"timestamp": time.time(), "models": models}
     return models
+
+
+def _extract_marketplace_provider(source_arn: str) -> str:
+    """Extract a stable provider label from a SageMaker public hub model ARN."""
+    match = re.search(r"/Model/([^/]+)", source_arn)
+    if not match:
+        return "marketplace"
+    name = match.group(1).strip().lower()
+    return name.split("-", 1)[0] or "marketplace"
 
 
 def _extract_provider_from_arn(arn: str) -> str:

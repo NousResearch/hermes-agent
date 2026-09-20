@@ -764,7 +764,7 @@ class AIAgent(
             return False
         return not self._has_natural_response_ending(visible_text)
 
-    _looks_like_codex_intermediate_ack = _forward("agent.agent_runtime_helpers", "looks_like_codex_intermediate_ack")
+    _looks_like_codex_intermediate_ack = _forward("agent.intent_ack", "looks_like_codex_intermediate_ack")
     _extract_reasoning = _forward("agent.agent_runtime_helpers", "extract_reasoning")
     _cleanup_task_resources = _forward("agent.chat_completion_helpers", "cleanup_task_resources")
 

@@ -16,8 +16,8 @@ from typing import Union
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
-    looks_like_codex_intermediate_ack,
 )
+from agent.intent_ack import looks_like_codex_intermediate_ack
 
 
 def _agent(

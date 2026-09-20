@@ -179,6 +179,9 @@ These tools modify agent state directly and return synthetic tool results withou
 
 ### Iteration Budget
 
+Intent-acknowledgment detection lives in `agent/intent_ack.py`; the text-response
+boundary in `agent/turn_final_response.py` owns its bounded continuation.
+
 The agent tracks iterations via `IterationBudget`:
 
 - Default: 500 iterations (configurable via `agent.max_turns`)

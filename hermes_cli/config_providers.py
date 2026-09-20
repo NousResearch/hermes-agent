@@ -535,20 +535,19 @@ def get_custom_provider_context_length(
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url:
         return None
-    # Self-resolve the route from config when the caller never loaded the provider list (aux
-    # fallback screening, CLI/TUI context-reference estimators, gateway /status, vision auto-detect).
-    # Without this, step 0c of get_model_context_length skips the per-model override on those paths
-    # and falls to the 256K/272K defaults, while run_agent's startup path — which DOES pass the list —
-    # honours the same setting. Same self-resolution pattern as _resolve_moa_context_length.
-    # load_config() is cached on the config file signature, so the hot-path cost is minimal.
-    if custom_providers is None and config is None:
-        from hermes_cli.config import get_compatible_custom_providers
+    if custom_providers is None:
         try:
-            custom_providers = get_compatible_custom_providers()
+            # Step 0c now runs for every route with a base_url; the read-only loader skips the
+            # per-call deepcopy load_config() pays (same pattern as get_custom_provider_model_capability).
+            custom_providers = get_compatible_custom_providers(load_config_readonly() if config is None else config)
         except Exception:
-            return None
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
 
     def _positive_int(raw: Any) -> Optional[int]:
         try:

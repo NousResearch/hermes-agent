@@ -356,6 +356,49 @@ class TestDefaultContextLengths:
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
 
+    @pytest.mark.parametrize("model, advertised", [
+        ("step-5-preview", 1_024_000),
+        ("step-3.7-flash", 262_144),
+        ("step-router-v1", 262_144),
+    ])
+    def test_stepfun_uses_the_endpoint_advertised_window(self, model, advertised):
+        """StepFun is a *known* provider (``_URL_TO_PROVIDER`` maps api.stepfun.com/.ai), so step 2's
+        custom-endpoint probe never runs for it; without the provider-aware branch every Step Plan
+        model resolved to the 256K fallback — step-5-preview (1M, 2026-09) came out 4x too small.
+        Contract: the endpoint's advertised window wins, per model (1M and 256K live side by side)."""
+        catalog = {
+            "step-5-preview": {"name": "step-5-preview", "context_length": 1_024_000},
+            "step-3.7-flash": {"name": "step-3.7-flash", "context_length": 262_144},
+            "step-router-v1": {"name": "step-router-v1", "context_length": 262_144},
+        }
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value=catalog), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_context_length(
+                model, provider="stepfun", base_url="https://api.stepfun.com/step_plan/v1", api_key="k"
+            ) == advertised
+        assert advertised != DEFAULT_FALLBACK_CONTEXT
+
+    def test_stepfun_model_outside_the_endpoint_catalog_keeps_falling_through(self):
+        """The Step Plan catalog also carries speech SKUs with no window field. A model the endpoint
+        does not size must keep falling through the normal chain — it must not inherit a sibling's
+        advertised window (the 256K fallback is what the chain ends on)."""
+        catalog = {
+            "step-5-preview": {"name": "step-5-preview", "context_length": 1_024_000},
+            "step-3.7-flash": {"name": "step-3.7-flash", "context_length": 262_144},
+        }
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value=catalog), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            resolved = get_model_context_length(
+                "stepaudio-2.5-chat", provider="stepfun", base_url="https://api.stepfun.com/step_plan/v1", api_key="k"
+            )
+        assert resolved == DEFAULT_FALLBACK_CONTEXT
+
     @staticmethod
     def _upstage_ctx(model):
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \

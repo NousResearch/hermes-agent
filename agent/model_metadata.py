@@ -2122,9 +2122,10 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
             if base_url and source == persist_on:
                 save_context_length(model, base_url, ctx)
             return ctx
-    if effective_provider in {"gmi", "commandcode", "commandcode-anthropic"} and base_url:
-        # GMI and CommandCode expose authoritative context_length via /models (e.g. muse-spark 1M) but are
-        # not in models.dev, and as known providers they skip step 2's probe — else they fell to 256K.
+    if effective_provider in {"gmi", "commandcode", "commandcode-anthropic", "stepfun"} and base_url:
+        # GMI, CommandCode and StepFun expose authoritative context_length via /models (muse-spark 1M;
+        # StepFun's max_input_tokens: step-5-preview 1M, step-3.7/3.5-flash 256K) but are not in
+        # models.dev, and as known providers they skip step 2's probe — else they fell to 256K.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx

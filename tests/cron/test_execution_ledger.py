@@ -532,3 +532,33 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_discard_unstarted_execution_removes_only_exact_owned_claim(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("overlap", source="builtin")
+
+    assert executions.discard_unstarted_execution(record["id"]) is True
+    assert executions.get_execution(record["id"]) is None
+
+
+def test_discard_unstarted_execution_refuses_started_foreign_and_terminal_rows(
+    monkeypatch, tmp_path
+):
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    started = executions.create_execution("started", source="builtin")
+    assert executions.mark_execution_running(started["id"]) is not None
+    assert executions.discard_unstarted_execution(started["id"]) is False
+    assert executions.get_execution(started["id"])["status"] == "running"
+
+    terminal = executions.create_execution("terminal", source="builtin")
+    assert executions.finish_execution(terminal["id"], success=True) is not None
+    assert executions.discard_unstarted_execution(terminal["id"]) is False
+    assert executions.get_execution(terminal["id"])["status"] == "completed"
+
+    foreign = executions.create_execution("foreign", source="builtin")
+    monkeypatch.setattr(executions, "_PROCESS_ID", "other-process")
+    monkeypatch.setattr(executions.os, "getpid", lambda: int(foreign["pid"]) + 1)
+    assert executions.discard_unstarted_execution(foreign["id"]) is False
+    assert executions.get_execution(foreign["id"])["status"] == "claimed"

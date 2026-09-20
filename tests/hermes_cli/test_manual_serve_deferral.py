@@ -1,5 +1,14 @@
 """Manual serve restart obligations survive gateway completion and receipt rotation (#107224)."""
 
+def _write_legacy_marker(expected_sha: str) -> None:
+    path = fleet._fleet_restart_pending_marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"started=1789863402.0\npid=18316\nexpected_sha={expected_sha}\n",
+        encoding="utf-8",
+    )
+
+
 import json
 from dataclasses import asdict
 
@@ -84,9 +93,8 @@ def test_historical_manual_obligation_does_not_block_healthy_gateway(monkeypatch
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [{"profile": "default", "state": "current", "code_sha": "new"}] if gateway_present else [])
     if marker:
-        fleet._write_fleet_restart_pending_marker(expected_sha="new")
-    # Legacy markers cannot inherit inventory from any historical receipt, even with a nonempty current fleet.
-    pending = marker
+        _write_legacy_marker("new")
+    pending = marker and not gateway_present
     assert fleet._pending_fleet_restart_needed() is pending
     fleet._warn_pending_fleet_restart_on_startup()
     warning = capsys.readouterr().err

@@ -702,6 +702,71 @@ def _patch_marker_sha(monkeypatch, disk_sha):
     monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
 
 
+def _write_inventoryless_marker(expected_sha: str) -> None:
+    path = update_cmd._fleet_restart_pending_marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"started=1789863402.0\npid=18316\nexpected_sha={expected_sha}\n",
+        encoding="utf-8",
+    )
+
+
+def _current_fleet_rows(disk_sha: str):
+    return lambda **kwargs: [
+        {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fleet_rows", "checkout_sha", "discharges"),
+    [
+        (_current_fleet_rows("e" * 40), "e" * 40, True),
+        (lambda **k: [{"profile": "default", "pid": 42, "code_sha": "0" * 40, "code_version": "0.21.0", "state": "current"}], "e" * 40, False),
+        (_current_fleet_rows("9" * 40), "9" * 40, False),
+        (lambda **k: [], "e" * 40, False),
+    ],
+    ids=["fleet-current", "fleet-row-stale", "checkout-moved", "fleet-empty"],
+)
+def test_inventoryless_marker_settlement(monkeypatch, fleet_rows, checkout_sha, discharges):
+    """#116614: a marker with no inventory settles exactly when the whole live
+    fleet serves its expected SHA at the current checkout."""
+    disk_sha = "e" * 40
+    _write_inventoryless_marker(disk_sha)
+    _patch_marker_sha(monkeypatch, checkout_sha)
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", fleet_rows)
+
+    assert update_cmd._pending_fleet_restart_needed() is not discharges
+    assert update_cmd._fleet_restart_pending_marker_path().exists() is not discharges
+
+
+@pytest.mark.parametrize(
+    ("blocked_storage", "alive"), [(False, True), (True, True), (False, None)]
+)
+def test_inventoryless_marker_discharge_defers_live_manual_serves(monkeypatch, blocked_storage, alive):
+    disk_sha = "e" * 40
+    _write_inventoryless_marker(disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions", _current_fleet_rows(disk_sha)
+    )
+    import hermes_cli.process_identity as process_identity
+
+    monkeypatch.setattr(
+        process_identity,
+        "ledger_entries",
+        lambda: [{"pid": 900, "purpose": "serve", "create_time": 1000.0}],
+    )
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
+    if blocked_storage:
+        (get_hermes_home() / "serve_restart_pending").write_text("not a directory")
+
+    handoff_ok = not blocked_storage
+    assert update_cmd._pending_fleet_restart_needed() is not handoff_ok
+    assert update_cmd._fleet_restart_pending_marker_path().exists() is not handoff_ok
+    if handoff_ok:
+        assert list((get_hermes_home() / "serve_restart_pending").glob("*.json"))
+
+
 def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     disk_sha = "e" * 40
     update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])

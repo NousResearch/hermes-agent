@@ -27,6 +27,15 @@ CASES = [
 ]
 
 
+def _write_legacy_marker(expected_sha: str) -> None:
+    path = fleet._fleet_restart_pending_marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"started=1789863402.0\npid=18316\nexpected_sha={expected_sha}\n",
+        encoding="utf-8",
+    )
+
+
 def seed(monkeypatch, old, marker, live, alive=True):
     root = get_hermes_home() / "logs" / "update_receipts"
     root.mkdir(parents=True, exist_ok=True)
@@ -37,7 +46,7 @@ def seed(monkeypatch, old, marker, live, alive=True):
     monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: live)
     if marker is not None:
-        fleet._write_fleet_restart_pending_marker(expected_sha=marker)
+        _write_legacy_marker(marker)
     return target
 
 
@@ -136,6 +145,14 @@ def test_new_marker_cannot_borrow_old_alpha_receipt(monkeypatch, capsys, legacy,
     if not legacy:
         with marker.open("a") as stream:
             stream.write("inventory=" + json.dumps({"version": 1, "runtimes": [GATEWAY, dict(GATEWAY, profile="beta")]}) + "\n")
+    if legacy:
+        receipt_before = target.read_bytes()
+        fleet._warn_pending_fleet_restart_on_startup()
+        assert "hermes gateway restart" not in capsys.readouterr().err
+        assert not fleet._pending_fleet_restart_needed()
+        assert not marker.exists()
+        assert target.read_bytes() == receipt_before
+        return
     receipt_before, marker_before = target.read_bytes(), marker.read_bytes()
     fleet._warn_pending_fleet_restart_on_startup()
     assert "hermes gateway restart" in capsys.readouterr().err

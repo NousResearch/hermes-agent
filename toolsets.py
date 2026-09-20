@@ -117,10 +117,18 @@ TOOLSETS = {
         "trigger scheduled tasks",
         ["cronjob_manage"],
     ),
+    # Read and write are separate toolsets so a review/research role can keep
+    # `file` and drop `file_write`. Bundled, the only choices were all four tools
+    # or none, and dropping the bundle took read_file/search_files with it —
+    # leaving "read-only" enforceable by prompt text alone. Same subtraction
+    # sharp edge as the browser/web_search note above (#17309, #64503).
     "file": _ts(
-        "File manipulation tools: read, write, patch (with fuzzy matching), and "
-        "search (content + files)",
-        ["read_file", "write_file", "patch", "search_files"],
+        "File reading tools: read and search (content + files)",
+        ["read_file", "search_files"],
+    ),
+    "file_write": _ts(
+        "File mutation tools: write and patch (with fuzzy matching)",
+        ["write_file", "patch"],
     ),
     "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
     "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
@@ -167,7 +175,7 @@ TOOLSETS = {
     ),
 
     # Scenario-specific toolsets
-    "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
+    "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file", "file_write"]),
     "safe": _ts("Safe toolkit without terminal access", [], includes=["web", "vision", "image_gen"]),
 
     # Coding posture, auto-selected in a code workspace (agent/coding_context.py).

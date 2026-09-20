@@ -47,7 +47,7 @@ from hermes_cli.runtime_provider import resolve_runtime_provider
 rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-fable-5.1")
 sid = f"f0wire_{arm}_{int(time.time())}"
 ag = AIAgent(model="anthropic/claude-fable-5.1", provider="nous", base_url=rt.get("base_url"), api_key=rt.get("api_key"),
-             api_mode=rt.get("api_mode"), session_id=sid, quiet_mode=True, enabled_toolsets=["file", "terminal"],
+             api_mode=rt.get("api_mode"), session_id=sid, quiet_mode=True, enabled_toolsets=["file", "file_write", "terminal"],
              platform="cli", max_iterations=10, skip_context_files=True, skip_memory=True,
              reasoning_config={"enabled": True, "effort": "medium"})
 work = os.path.join(tempfile.gettempdir(), "f0wire")

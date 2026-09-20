@@ -20,7 +20,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "cronjob_manage",  # no scheduling more work in the parent's name
     ]
 )
-DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_TOOLSETS = ["terminal", "file", "file_write", "web"]
 
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""

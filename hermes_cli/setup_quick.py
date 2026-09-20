@@ -162,12 +162,12 @@ def _print_macos_fda_tip() -> None:
 
 
 def _blank_slate_minimal_toolsets(config: dict):
-    """Write the minimal toolset state for a Blank Slate install: only ``file``, ``terminal``,
+    """Write the minimal toolset state for a Blank Slate install: only ``file``, ``file_write``, ``terminal``,
     ``vision`` (``read_file`` can't read images) and ``skills`` (the seeded ``hermes-agent`` skill
     needs ``skill_view``) stay on. Two layers enforce it: ``platform_toolsets["cli"]`` (explicit,
     so defaults aren't re-expanded) and ``agent.disabled_toolsets`` (hard-suppression applied last
     in ``_get_platform_tools``, overriding the recovery that would re-add e.g. ``kanban``)."""
-    keep = {"file", "terminal", "vision", "skills"}
+    keep = {"file", "file_write", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
         from toolsets import TOOLSETS
@@ -251,7 +251,7 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     save_config(config)
     print()
     print_success("Minimal baseline applied:")
-    print_info("  Toolsets: file, terminal, vision, skills (everything else off)")
+    print_info("  Toolsets: file, file_write, terminal, vision, skills (everything else off)")
     print_info("  Compression, memory, checkpoints, smart routing: off")
 
     # The fork: stop here, or walk through enabling things

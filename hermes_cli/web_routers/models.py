@@ -260,19 +260,28 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             problems = validate_moa_payload(raw)
             if problems:
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
-            normalized = normalize_moa_config(raw)
 
             # Read the raw profile file because the effective config contains defaults and
             # ``merge_existing=True`` deep-merges dicts, which resurrects omitted preset names.
             # Keep unknown MoA keys and sibling sections by rebuilding only the MoA section on
             # the raw document, while treating the submitted named map as authoritative.
             raw_cfg = read_raw_config()
-            moa_section = dict(raw_cfg.get("moa") or {})
-            moa_section.update(normalized)
+            existing_moa = raw_cfg.get("moa")
+            if isinstance(existing_moa, dict) and "privacy_filter" in existing_moa:
+                # ``privacy_filter`` is emitted by the normalizer but is not declared by
+                # MoaConfigPayload; an editor round-trip must not reset it.
+                raw["privacy_filter"] = existing_moa["privacy_filter"]
+            normalized = normalize_moa_config(raw)
+            from hermes_cli import config as config_mod
+            updated = config_mod._merge_partial_save(raw_cfg, {"moa": normalized})
             if body.presets:
-                moa_section["presets"] = normalized["presets"]
-            raw_cfg["moa"] = moa_section
-            save_config(raw_cfg)
+                # ``_merge_partial_save`` retains undeclared metadata on surviving presets;
+                # filter after that merge so omitted names are authoritative deletions.
+                merged_presets = updated["moa"]["presets"]
+                updated["moa"]["presets"] = {
+                    name: merged_presets[name] for name in normalized["presets"]
+                }
+            save_config(updated)
             return {"ok": True, **normalized}
 
 

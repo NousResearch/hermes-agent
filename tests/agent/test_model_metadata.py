@@ -292,6 +292,35 @@ class TestDefaultContextLengths:
                     base_url=base_url,
                 ) == 1_000_000
 
+    def test_deepseek_v41_flash_dotted_slug_does_not_fall_through_to_128k(self):
+        """The dotted ``deepseek-v4.1-flash`` id must resolve to 1M, not 128K.
+
+        ``test_deepseek_v4_models_1m_context`` covers the hyphenated family
+        ids, but the dotted minor version is a distinct match case: the family
+        key ``deepseek-v4-flash`` is NOT a substring of
+        ``deepseek-v4.1-flash`` — the ``.1`` breaks the longest-key-first scan
+        — so this slug silently resolved to the generic 128K ``deepseek``
+        catch-all until it got its own entry. Window verified against the
+        DeepSeek API docs (context 1M / max output 384K) and OpenRouter live
+        metadata (1,048,576 for deepseek/deepseek-v4.1-flash, 2026-09).
+        """
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            for model in ("deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash"):
+                assert get_model_context_length(
+                    model, base_url="https://ezr.sh/v1", provider="custom"
+                ) == 1_000_000
+
+            # The generic ``deepseek`` entry must remain the 128K fallback for
+            # older / unknown DeepSeek ids on custom endpoints.
+            assert get_model_context_length(
+                "deepseek-legacy-unknown", base_url="https://ezr.sh/v1",
+                provider="custom",
+            ) == 128_000
+
     def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
         """The bare ``k3`` slug's 1 Mi context must not leak to unverified endpoints.
 

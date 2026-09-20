@@ -4,6 +4,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Mapping
 
 from hermes_cli.config import DEFAULT_CONFIG
@@ -93,6 +94,8 @@ def launchd_service_label(environ: Mapping[str, str] | None = None) -> str | Non
     ``exit timeout = 1`` for them — treating those as a budget would cap the
     drain to 0 for a gateway Ctrl+C'd in such a terminal.
     """
+    if sys.platform != "darwin":
+        return None
     env = os.environ if environ is None else environ
     label = str(env.get("XPC_SERVICE_NAME", "") or "").strip()
     if not label.startswith("ai.hermes"):
@@ -110,7 +113,7 @@ def read_launchd_exit_timeout_s(
     """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.
 
     Returns ``None`` — meaning "no launchd budget applies" — when the process
-    is not launchd-owned (no ``XPC_SERVICE_NAME``), ``launchctl`` is missing
+    is not launchd-owned (non-darwin, or no ``ai.hermes`` ``XPC_SERVICE_NAME``), ``launchctl`` is missing
     or fails, or the print output carries no ``exit timeout`` line. Callers
     must treat ``None`` as fail-open: the configured drain stands unchanged.
     """
@@ -118,11 +121,7 @@ def read_launchd_exit_timeout_s(
     if not label:
         return None
     if uid is None:
-        # launchd is macOS-only; Windows has no os.getuid, so resolve it via getattr.
-        _getuid = getattr(os, "getuid", None)
-        if _getuid is None:
-            return None
-        uid = _getuid()
+        uid = os.getuid()  # only reachable on darwin: launchd_service_label() is None elsewhere
     domain = "system" if uid == 0 else f"gui/{uid}"
     try:
         proc = run(

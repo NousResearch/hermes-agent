@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import gateway.restart as restart_mod
 from gateway.restart import (
     LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout,
@@ -28,14 +29,17 @@ from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
 
 @pytest.mark.parametrize(
-    "label, expected",
+    "platform, label, expected",
     [
-        ("ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
+        ("darwin", "ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
         # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged.
-        ("application.com.example.ide.123", 180.0),
+        ("darwin", "application.com.example.ide.123", 180.0),
+        # launchd is darwin-only (same predicate as control_socket): a leaked label elsewhere is ignored.
+        ("linux", "ai.hermes.gateway", 180.0),
     ],
 )
-def test_capped_drain_fits_inside_launchd_budget_minus_reserve(label, expected):
+def test_capped_drain_fits_inside_launchd_budget_minus_reserve(monkeypatch, platform, label, expected):
+    monkeypatch.setattr(restart_mod.sys, "platform", platform)
     # The incident shape: configured 180s, launchd clamps to 60s.
     assert resolve_launchd_capped_drain(180.0, 60.0) == 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
     # Never extends a short drain; no launchd budget leaves the configured drain alone.

@@ -89,20 +89,21 @@ def is_self_uninstall_doc(finding: Finding, line: str) -> bool:
 # plugin rejects them. They are still scanned — ``from .tests import evil`` would run — but a
 # finding there steps down once, so a fixture cannot hard-block and a string-only fixture is
 # a note. A root-level test dir (``tests/``, ``fixtures/``) or the unambiguous dunder names at any
-# depth (``src/__tests__/``), plus test-file naming (``foo.test.js``, ``test_foo.py``); a nested
-# ``src/spec/handler.py`` is runtime code and gets no cap.
+# depth (``src/__tests__/``), plus test-file naming (``foo.test.js``, ``test_foo.py``, and the
+# plural ``tests_state.py`` / ``state_tests.py`` a single-module plugin uses when it has no
+# ``tests/`` dir); a nested ``src/spec/handler.py`` is runtime code and gets no cap.
 TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
 _TEST_DIRS_ANY_DEPTH = {"__tests__", "__fixtures__", "__mocks__"}
-_TEST_FILE_NAME = re.compile(r"^(?:test_[^/]*|[^/]*_test\.[^./]+|[^/]*\.(?:test|spec)\.[^./]+)$", re.IGNORECASE)
+_TEST_FILE_NAME = re.compile(r"^(?:tests?_[^/]*|[^/]*_tests?\.[^./]+|[^/]*\.(?:test|spec)\.[^./]+)$", re.IGNORECASE)
 
 
 # In a test file, a hostile string that is only DATA — quoted, with no exec verb on the line
 # (``verdict_for("rm -rf /")``, ``("/etc/passwd", "DENY")``) — is a note; a fixture file that is
-# not code at all (``corpus.json``) likewise. ``os.system('rm -rf /')`` in a test still steps
-# down only once: the line executes when imported.
+# not code at all (``corpus.json``) likewise. ``os.system('rm -rf /')`` or ``open('/etc/passwd')``
+# in a test still steps down only once: the line executes when imported.
 _EXEC_ON_LINE = re.compile(
     r"\b(?:system|popen|run|call|check_output|check_call|Popen|exec|execv\w*|spawn\w*|eval|execSync|execFile\w*"
-    r"|spawnSync|child_process|source|os\.startfile)\s*\(|\$\(|(?<![\w\\])`", re.IGNORECASE)
+    r"|spawnSync|child_process|source|os\.startfile|open)\s*\(|\$\(|(?<![\w\\])`", re.IGNORECASE)
 
 
 def is_inert_fixture_line(finding: Finding, line: str, is_code: bool) -> bool:
@@ -167,8 +168,11 @@ def is_base64_media(line: str) -> bool:
 LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
-    r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[a-z]*)"""  # js regex literal
+    r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
 )
+# The regex-literal branch accepts only real JS flags: with ``[a-z]*`` a bare Unix path lexed as a
+# literal (``/etc/`` + flags ``passwd``) and an unquoted ``cat /etc/passwd | curl …`` in a test
+# script scored as inert data.
 _PATTERN_TOKEN = {"sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|")}
 
 

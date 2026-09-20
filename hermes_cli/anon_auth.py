@@ -55,6 +55,10 @@ GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
+# Used after retries are exhausted on the anonymous inference host. Keep this separate from
+# structured refusal copy: a transport outage has no actionable sign-in or route verdict.
+FREE_TIER_OUTAGE_COPY = ("The free model is having trouble responding right now. "
+                         "Try sending your message again in a minute.")
 ANON_GATE_CLOSED = "anon_gate_closed"
 ANON_GATE_PAUSED = "anon_gate_paused"
 ANON_RATE_LIMITED = "anon_rate_limited"
@@ -655,7 +659,8 @@ def welcome_refusal_copy(
     if reason == "feature_not_free":
         return f"This feature isn't on the Nous free tier. {signin}".rstrip()
     if reason == "at_capacity":
-        return f"The Nous free tier is at capacity; please try again in {wait}. {signin}".rstrip()
+        return ("Chatting without signing in is really busy right now. Sign in to skip the queue, "
+                f"it's free, or try again in {wait}. {signin}").rstrip()
     if reason == "admission_closed":
         return f"The Nous free tier isn't admitting new sessions right now. Try again in {wait}. {signin}".rstrip()
     if reason == "rate_limited":

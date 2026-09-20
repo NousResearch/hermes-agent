@@ -127,13 +127,51 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         logger.warning(
             "nous: refusing non-https inference URL scheme %r from Portal response", parsed.scheme)
         return None
-    if parsed.hostname not in _ALLOWED_NOUS_INFERENCE_HOSTS:
+    if not _nous_inference_host_allowed(parsed.hostname):
         logger.warning(
             "nous: refusing inference URL host %r from Portal response "
             "(not in allowlist); falling back to default",
             parsed.hostname)
         return None
     return cleaned.rstrip("/")
+
+
+def _nous_inference_host_allowed(hostname: Optional[str]) -> bool:
+    """Allow production hosts, or the exact host named by this profile's operator.
+
+    A Portal response is network-provenance and cannot authorize a new bearer recipient by
+    itself. In staging, the operator's profile-scoped override is the authority; the response
+    is accepted only when its hostname agrees with that configured destination.
+    """
+    if hostname in _ALLOWED_NOUS_INFERENCE_HOSTS:
+        return True
+    if not hostname:
+        return False
+    override = _nous_inference_env_override()
+    if not override:
+        return False
+    try:
+        override_host = urlparse(override).hostname
+    except ValueError:
+        return False
+    return bool(override_host) and override_host.lower().rstrip(".") == hostname.lower().rstrip(".")
+
+
+def _scoped_operator_override(*names: str) -> Optional[str]:
+    """Resolve a routing override from the active profile, never another profile's env."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        for name in names:
+            value = get_secret(name)
+            if value:
+                return value
+        return None
+    except UnscopedSecretError:
+        logger.warning(
+            "nous: %s unreadable without a profile secret scope; treating the override as absent",
+            "/".join(names))
+        return None
 
 
 def _nous_inference_env_override() -> Optional[str]:
@@ -145,12 +183,7 @@ def _nous_inference_env_override() -> Optional[str]:
     profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("NOUS_INFERENCE_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(_scoped_operator_override("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:
@@ -161,14 +194,8 @@ def _nous_portal_env_override() -> Optional[str]:
     NETWORK-provided values persisted to auth.json, not operator config.
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("HERMES_PORTAL_BASE_URL") or get_secret("NOUS_PORTAL_BASE_URL")
-    except UnscopedSecretError:
-        # The launch profile's unscoped CLI/bootstrap path still uses its process environment;
-        # routed profile work must enter its profile scope before reading this override.
-        override = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
-    return _optional_base_url(override)
+    return _optional_base_url(
+        _scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -804,8 +831,7 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
     """
     from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
     portal_url = (
-        _optional_base_url(state.get("portal_base_url")) or os.getenv("HERMES_PORTAL_BASE_URL")
-        or os.getenv("NOUS_PORTAL_BASE_URL") or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        _optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
     # A persisted/stale portal_base_url is where the refresh token gets POSTed — reject any host
     # outside the allowlist so a poisoned value can't exfiltrate the bearer, healing to the
     # default. Trusted operator env overrides bypass this network-value gate.

@@ -184,15 +184,16 @@ _REGISTRATION_KINDS = {
 _EXCLUDED_SCAN_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", "test", "tests", "_test", "_tests"})
 
 
-def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
+def _scan_capabilities(plugin_dir: Path, *, model_provider: bool = False) -> Tuple[Optional[dict], str]:
     """Inspect literal registration calls without running candidate code.
 
     Dynamic names cannot establish admission declarations and fail closed. Calls in
     helpers and conditional branches are included conservatively, not claimed to run.
     """
-    recorded = {"tools": [], "hooks": [], "middleware": [], "commands": []}
+    recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "model_providers": []}
     entry = plugin_dir / "__init__.py"
     has_register = False
+    has_provider_profile_registration = False
     for path in sorted(plugin_dir.rglob("*.py")):
         if any(part in _EXCLUDED_SCAN_DIRS for part in path.relative_to(plugin_dir).parts):
             continue
@@ -213,6 +214,22 @@ def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
                     has_register = True
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, (ast.Name, ast.Attribute))
+                    and (node.func.id if isinstance(node.func, ast.Name) else node.func.attr) == "register_provider"):
+                args = [*node.args, *(kw.value for kw in node.keywords)]
+                profiles = [
+                    isinstance(arg, ast.Call)
+                    and isinstance(arg.func, (ast.Name, ast.Attribute))
+                    and (arg.func.id if isinstance(arg.func, ast.Name) else arg.func.attr) == "ProviderProfile"
+                    for arg in args
+                ]
+                profile_calls = [arg for arg, is_profile in zip(args, profiles) if is_profile]
+                has_provider_profile_registration |= bool(profile_calls)
+                for profile in profile_calls:
+                    profile_name = next((kw.value for kw in profile.keywords if kw.arg == "name"), None)
+                    if isinstance(profile_name, ast.Constant) and isinstance(profile_name.value, str):
+                        recorded["model_providers"].append(profile_name.value)
             if isinstance(node, ast.Attribute) and node.attr in _REGISTRATION_KINDS:
                 parent = parents.get(node)
                 if not isinstance(parent, ast.Call) or parent.func is not node:
@@ -230,7 +247,9 @@ def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
             if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
                 return None, f"dynamic {node.func.attr} name requires manual capability review ({path.name}:{node.lineno})"
             recorded[kind].append(name.value)
-    if not has_register:
+    if model_provider and not has_provider_profile_registration:
+        return None, "model-provider plugin registered no ProviderProfile"
+    if not has_register and not model_provider:
         return None, "no statically defined register() function"
     return recorded, ""
 
@@ -257,11 +276,15 @@ def _check_capabilities(
         report.add("capability probe", True, "skipped (no __init__.py)")
         return None
 
-    recorded, error = _scan_capabilities(plugin_dir)
+    recorded, error = _scan_capabilities(plugin_dir, model_provider=manifest.get("kind") == "model-provider")
     if recorded is None:
         report.add("capability probe", False, error)
         return None
-    report.add("capability probe", True, "literal registration calls inspected without execution")
+    if manifest.get("kind") == "model-provider":
+        provider_names = ", ".join(recorded.get("model_providers") or [])
+        report.add("capability probe", True, f"statically registered ProviderProfile(s): {provider_names}")
+    else:
+        report.add("capability probe", True, "literal registration calls inspected without execution")
     report.warn("Static inspection only: runtime behavior, imported registrations, capability completeness, and plugin safety are not verified.")
 
     for kind, manifest_key in (

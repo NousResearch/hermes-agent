@@ -8,6 +8,7 @@ silently drops tools); bridge calls route through ``model_tools.handle_function_
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import logging
@@ -48,6 +49,9 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # Tools that never defer (``tools.tool_search.eager``), e.g. a small MCP read tool used
+    # daily (Notion fetch), so the model skips a tool_describe round trip.
+    eager_tools: frozenset = frozenset()
 
     @property
     def effective_defer_tools(self) -> frozenset:
@@ -61,6 +65,7 @@ class ToolSearchConfig:
             raw = {"enabled": "off" if raw is False else "auto"}
         max_search_limit = _clamped_int(raw.get("max_search_limit"), 25, 1, 50)
         defer_raw = raw.get("defer")
+        eager_raw = raw.get("eager")
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -70,7 +75,9 @@ class ToolSearchConfig:
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
-                         if isinstance(defer_raw, (list, tuple, set)) else None))
+                         if isinstance(defer_raw, (list, tuple, set)) else None),
+            eager_tools=(frozenset(str(n).strip() for n in eager_raw if str(n).strip())
+                         if isinstance(eager_raw, (list, tuple, set)) else frozenset()))
 
 
 _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
@@ -102,16 +109,38 @@ def _config_from_loader(loader_name: str) -> ToolSearchConfig:
     """Tool-search config via ``hermes_cli.config.<loader_name>`` (defaults on any failure)."""
     try:
         import hermes_cli.config as _cfg_mod
-        tools_cfg = (getattr(_cfg_mod, loader_name)() or {}).get("tools")
+        raw = getattr(_cfg_mod, loader_name)() or {}
+        tools_cfg = raw.get("tools")
         tools_cfg = tools_cfg if isinstance(tools_cfg, dict) else {}
-        return ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
+        config = ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
+        eager_servers = _eager_mcp_toolsets(raw.get("mcp_servers"))
+        if eager_servers:
+            config = dataclasses.replace(config, eager_tools=config.eager_tools | eager_servers)
+        return config
     except Exception as e:
         logger.debug("Failed to load tool-search config: %s", e)
         return ToolSearchConfig.from_raw(None)
 
 
+def _eager_mcp_toolsets(mcp_servers: Any) -> frozenset[str]:
+    """Toolset names (``mcp-<server>``) of servers pinned inline with ``mcp_servers.<name>.defer: false``.
+    Per-server granularity: a small, every-turn server stays in ``tools[]`` while a tool-heavy one keeps
+    deferring. Only an explicit boolean ``False`` pins — a missing or truthy key keeps the default."""
+    if not isinstance(mcp_servers, dict):
+        return frozenset()
+    return frozenset(f"mcp-{name}" for name, entry in mcp_servers.items()
+                     if isinstance(entry, dict) and entry.get("defer") is False)
+
+
 load_config = functools.partial(_config_from_loader, "load_config")
 load_config_readonly = functools.partial(_config_from_loader, "load_config_readonly")  # no copy
+
+
+def _eager_tool_names() -> frozenset:
+    try:
+        return load_config_readonly().eager_tools
+    except Exception:
+        return frozenset()
 
 
 def _core_tool_names() -> frozenset[str]:
@@ -143,14 +172,18 @@ _DEFAULT_DEFERRED_TOOLS = frozenset({
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
-    plugin tool). Bridge names never defer."""
+    plugin tool). Bridge names never defer; neither does a tool pinned eager by name or by its
+    whole toolset (``tools.tool_search.eager`` / ``mcp_servers.<name>.defer: false``)."""
     if name in BRIDGE_TOOL_NAMES:
+        return False
+    toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
+    eager = _eager_tool_names()
+    if name in eager or (toolset is not None and toolset in eager):
         return False
     if defer_tools is not None and name in defer_tools:
         return True
     if name in _core_tool_names():
         return False
-    toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
     return toolset is not None and (
         toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
 

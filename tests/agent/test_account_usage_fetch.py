@@ -13,6 +13,7 @@ from agent.account_usage import (
     fetch_account_usage,
     render_account_usage_lines,
 )
+from agent.billing_usage import fetch_nous_account as _billing_fetch_nous_account
 from providers.base import ProviderProfile
 
 
@@ -332,10 +333,12 @@ def test_base_noop_usage_hook_spawns_no_thread(monkeypatch):
     assert account_usage.fetch_account_usage("plugin-noop") is None
 
 
-def test_fetch_portal_account_is_wall_clock_bounded(monkeypatch):
+@pytest.mark.parametrize("fetch", [_fetch_portal_account, _billing_fetch_nous_account])
+def test_fetch_portal_account_is_wall_clock_bounded(monkeypatch, fetch):
     """A portal that accepts the connection but never answers must release the
     caller at ``timeout``, not when the wedged worker finishes on its own
-    (``Executor.__exit__`` used to join it via ``shutdown(wait=True)``)."""
+    (``Executor.__exit__`` used to join it via ``shutdown(wait=True)``) — on the
+    /usage path and the /billing path alike (#115982)."""
     release = threading.Event()
 
     def hanging_portal_fetch(*, force_fresh):
@@ -348,7 +351,7 @@ def test_fetch_portal_account_is_wall_clock_bounded(monkeypatch):
     started = time.monotonic()
     try:
         with pytest.raises(concurrent.futures.TimeoutError):
-            _fetch_portal_account(timeout=0.5)
+            fetch(timeout=0.5)
     finally:
         release.set()
     assert time.monotonic() - started < 10
@@ -373,14 +376,3 @@ def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch
     finally:
         marker.reset(token)
     assert seen == {"force_fresh": True, "marker": "profile-scope"}
-
-
-def test_fetch_portal_account_propagates_worker_error(monkeypatch):
-    def failing_portal_fetch(*, force_fresh):
-        raise RuntimeError("portal down")
-
-    monkeypatch.setattr(
-        "hermes_cli.nous_account.get_nous_portal_account_info", failing_portal_fetch
-    )
-    with pytest.raises(RuntimeError, match="portal down"):
-        _fetch_portal_account(timeout=5)

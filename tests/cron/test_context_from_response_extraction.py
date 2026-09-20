@@ -118,6 +118,57 @@ class TestUnusableAnswersFallThrough:
         assert prompt == "Report"
 
 
+class TestPromptHalfCarryingTheHeading:
+    """The assembled prompt half can itself contain a literal ``## Response`` heading
+    (a skill documenting its response format, an injected previous answer quoting it).
+    The writer appends the response section last, so the LAST occurrence is the
+    boundary — an early split would inject the prompt tail plus the answer."""
+
+    def test_heading_inside_prompt_half_does_not_split_early(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(prompt="Run the daily check", schedule="0 8 * * *", context_from="self")
+        _write_archive(
+            cron_env, job["id"], "2026-09-19_08-00-00.md",
+            "# Cron Job: probe\n\n## Prompt\n\n"
+            "Use this format:\n\n## Response\n\nSKILL-DOCUMENTED-FORMAT\n"
+            "\nEnd of format spec.\n\n## Response\n\nREAL-RUN-ANSWER-7\n",
+        )
+
+        prompt = _build_job_prompt(job)
+
+        assert "REAL-RUN-ANSWER-7" in prompt
+        assert "SKILL-DOCUMENTED-FORMAT" not in prompt  # prompt-half copy is dropped
+
+
+class TestBracketlessSilenceFallsThrough:
+    """The delivery lane suppresses more than the literal ``[SILENT]`` — bracketless
+    ``SILENT`` / ``NO_REPLY`` forms too (#46917, #51438). An archive whose answer is one
+    of those forms carries no usable continuity either, and must not be injected."""
+
+    @pytest.mark.parametrize("silent_answer", ["SILENT", "NO_REPLY", "[SILENT] No changes today"])
+    def test_bracketless_silent_answer_falls_through(self, cron_env, silent_answer):
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+        _write_archive(
+            cron_env, job["id"], "2026-09-18_08-00-00.md",
+            "# Cron Job: probe\n\n## Prompt\n\ndo the thing\n\n## Response\n\nOLDER-REAL-ANSWER\n",
+        )
+        _write_archive(
+            cron_env, job["id"], "2026-09-19_08-00-00.md",
+            "# Cron Job: probe\n\n## Prompt\n\ndo the thing\n\n## Response\n\n" + silent_answer + "\n",
+        )
+
+        prompt, injected = _inject_context_from(job, "Report")
+
+        assert injected is True
+        assert "OLDER-REAL-ANSWER" in prompt
+        assert silent_answer not in prompt
+
+
 class TestScriptModeArchives:
     """Archives without a ## Response heading (script-mode) stay whole-document."""
 

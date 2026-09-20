@@ -53,9 +53,9 @@ def _job_skill_names(job: dict) -> list[str]:
 _MAX_CONTEXT_CHARS = 8000
 
 _SELF_CONTEXT_INTRO = (
-    "The following is this job's most recent output from its previous run. Use it for "
-    "continuity: avoid repeating what was already reported, and continue where the last run "
-    "left off."
+    "The following is this job's most recent non-silent output from a previous run. Use it "
+    "for continuity: avoid repeating what was already reported, and continue where the last "
+    "run left off."
 )
 _UPSTREAM_CONTEXT_INTRO = (
     "The following is the most recent output from a preceding cron job. Use it as context for "
@@ -64,17 +64,21 @@ _UPSTREAM_CONTEXT_INTRO = (
 
 
 def _archive_answer(archive: str) -> str | None:
-    """The reusable answer of a stored run: the text after ``## Response``.
+    """The reusable answer of a stored run: the text after the last ``## Response``.
 
-    Archives without the heading (script-mode runs) stay whole-document.
-    ``None`` marks "no usable answer" — a ``[SILENT]`` or blank response — so
-    the caller falls through to an older archive instead of injecting prompt
-    noise the job already has.
+    Archives without the heading (script-mode runs) stay whole-document. The LAST
+    occurrence is the writer's boundary — the assembled prompt half can itself carry
+    the literal heading (a skill documenting its response format, an injected previous
+    answer quoting it), so an early split would re-inject the prompt noise this
+    extraction exists to drop.
+    ``None`` marks "no usable answer" — a blank or silent response (any form the
+    delivery lane itself suppresses) — so the caller falls through to an older
+    archive instead of injecting prompt noise the job already has.
     """
     if "## Response" not in archive:
         return archive
-    answer = archive.partition("## Response")[2].strip()
-    if answer in ("", "[SILENT]"):
+    answer = archive.rpartition("## Response")[2].strip()
+    if not answer or _sched._is_cron_silence_response(answer):
         return None
     return answer
 

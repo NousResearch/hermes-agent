@@ -149,7 +149,9 @@ def test_child_shell_can_write_a_kanban_board_outside_its_lineage_root(tmp_path,
         finally:
             terminal.cleanup()
     output = result.get("output", "")
-    row = json.loads(next(line.split("SCOPE_RESULT=", 1)[1] for line in output.splitlines() if "SCOPE_RESULT=" in line))
+    row_line = next((line for line in output.splitlines() if "SCOPE_RESULT=" in line), None)
+    assert row_line is not None, f"child shell did not emit SCOPE_RESULT (rc={result.get('returncode')}):\n{output}"
+    row = json.loads(row_line.split("SCOPE_RESULT=", 1)[1])
     assert row["marker"] and row["marker"] != "1", row
     assert row["lineage"].startswith("fenced"), row
     assert row["scratch"], row

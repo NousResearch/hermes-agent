@@ -16006,8 +16006,8 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    # _profile_db uses _open_session_db_at_path for read-only; mock it to return our ProfileDB.
-    monkeypatch.setattr("hermes_cli.web_server_sessions._open_session_db_at_path", ProfileDB)
+    # Writer handles use the shared SessionDB registry, not the read-only web-session opener.
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
 
     resp = server.handle_request(
         {
@@ -16480,8 +16480,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
     assert seen.get("title") == "My Parent Session #2"
-    # Production now uses set_session_title (not set_auto_title) for branch titles.
-    assert seen.get("title_set") is True
+    assert seen.get("title_source") == "derived"
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
@@ -16900,7 +16899,8 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
             seen["title_set"] = True
             return True
 
-        def set_auto_title(self, _key, _title, *, source="llm"):
+        def set_auto_title(self, key, title, *, source="llm"):
+            seen["title"] = (key, title)
             seen["title_source"] = source
             return True
 
@@ -16958,8 +16958,9 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
-        # Production now uses set_session_title (not set_auto_title) for branch titles.
-        assert seen.get("title_set") is True
+        branch_key = response["result"]["stored_session_id"]
+        assert seen.get("title") == (branch_key, response["result"]["title"])
+        assert seen.get("title_source") == "derived"
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",
@@ -21779,6 +21780,9 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
     server._sessions["sid"] = _session(history=_branch_history())
     try:
         db.create_session("session-key", source="tui")
+        db.set_session_title("session-key", "Parent Session")
+        parent_title = db.get_session_title("session-key")
+        parent_title_source = db.get_session_title_source("session-key")
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_new_session_key", lambda: "branch-key")
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -21798,8 +21802,10 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        # Production now uses set_session_title (explicit user-set), not set_auto_title (derived).
-        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_USER
+        assert db.get_session_title("branch-key") == "Parent Session #2"
+        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_DERIVED
+        assert db.get_session_title("session-key") == parent_title
+        assert db.get_session_title_source("session-key") == parent_title_source
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT

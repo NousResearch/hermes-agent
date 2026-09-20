@@ -709,7 +709,10 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            client_surface=(params.get("surface") if params.get("surface") in {"hud", "voice-live"} else ""),
+            voice_live_context=(str(params.get("voice_context") or "")
+                                if params.get("surface") == "voice-live" else ""))
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")

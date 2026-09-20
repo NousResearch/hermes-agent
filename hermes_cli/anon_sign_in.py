@@ -25,6 +25,8 @@ UPGRADE_REASON_COPY = {
     "account_not_anonymous": "Your session ended before the sign-in finished. A new one starts on its own; "
                              "sign in again whenever you're ready.",
     "account_busy": "Something's still finishing up on your account. Give it a few seconds, then try signing in again.",
+    "expired_token": "That sign-in code expired. Start again with `hermes portal`.",
+    "access_denied": "Sign-in was denied. Restart with `hermes portal` or choose another provider with `hermes model`.",
 }
 _RETIRED_REASONS = frozenset({"account_retired", "account_not_anonymous"})
 # Reasons a later attempt can succeed at: the desktop offers "try again" after the named wait.
@@ -274,6 +276,8 @@ def _outcome_state(outcome: Dict[str, Any], anon_token: str) -> SignInState:
 
     status = str(outcome.get("status") or "unknown")
     reason = str(outcome.get("reason") or "")
+    if reason in {"expired_token", "access_denied"}:
+        return Failed(reason=reason)
     if status == "timeout":
         return TimedOut()
     if reason in _RETIRED_REASONS:

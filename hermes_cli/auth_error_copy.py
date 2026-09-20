@@ -9,7 +9,7 @@ def _details(error: BaseException) -> str:
 
 
 def sign_in_failure_lines(
-    error: BaseException, *, service_host: str, retry_command: str,
+    error: BaseException, *, service_host: str, retry_command: str = "hermes portal",
 ) -> list[str]:
     """Explain a failed sign-in and give its provider-aware retry command."""
     return [

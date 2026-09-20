@@ -20,7 +20,7 @@ import pytest
 
 
 @pytest.fixture
-def served_root(tmp_path, monkeypatch):
+def served_root(tmp_path, monkeypatch, real_live_default_gateway_pid):
     root = tmp_path / "hermes"
     for name in ("coder", "other"):
         (root / "profiles" / name).mkdir(parents=True)
@@ -38,6 +38,12 @@ def served_root(tmp_path, monkeypatch):
     from hermes_cli import gateway_multiplex_served
     monkeypatch.setattr(gateway_multiplex_served, "live_default_gateway_pid", lambda: os.getpid())
     return root
+
+
+@pytest.fixture
+def real_live_default_gateway_pid():
+    from hermes_cli import gateway_multiplex_served
+    return gateway_multiplex_served.live_default_gateway_pid
 
 
 def test_probe_trusts_live_record_over_cli_side_config(served_root):
@@ -117,14 +123,18 @@ def test_setup_gateway_service_step_skips_install_for_served_profile(served_root
     assert calls == ["install", "start"]
 
 
-def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_root):
+def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(
+    served_root, monkeypatch, real_live_default_gateway_pid,
+):
     """A stale default record whose PID now belongs to an unrelated process (start time differs, command
     line is not a gateway's) must not make its ``served_profiles`` authoritative: bare PID existence
     once did, so `hermes -p coder gateway start` exited 78 for a multiplexer that was long gone."""
     import subprocess
     import gateway.status as status
+    from hermes_cli import gateway_multiplex_served
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    monkeypatch.setattr(gateway_multiplex_served, "live_default_gateway_pid", real_live_default_gateway_pid)
     child = subprocess.Popen(["sleep", "60"])
     try:
         stale_start = (status._get_process_start_time(child.pid) or 10**9) - 4242
@@ -132,7 +142,7 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
             (served_root / name).write_text(json.dumps({
                 "pid": child.pid, "hermes_home": str(served_root), "gateway_state": "running",
                 "start_time": stale_start, "served_profiles": ["default", "coder"]}))
-        assert live_default_gateway_pid() is None
+        assert gateway_multiplex_served.live_default_gateway_pid() is None
         assert recorded_served_profiles(served_root) is None
         assert named_profile_served_by_running_multiplexer("coder") is False
     finally:

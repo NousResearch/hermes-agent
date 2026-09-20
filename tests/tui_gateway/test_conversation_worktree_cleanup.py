@@ -77,7 +77,7 @@ def call(params):
 
 
 def install(monkeypatch, manager, db, manager_calls=None):
-    monkeypatch.setattr(server, "_profile_db", lambda _params: nullcontext(db))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, *, writer=False: nullcontext(db))
 
     def build_manager(*, profile_home=None, db=None, session_cwd=None):
         if manager_calls is not None:
@@ -257,7 +257,7 @@ def test_close_and_delete_never_imply_worktree_cleanup(monkeypatch, tmp_path):
         raise AssertionError("ordinary session lifecycle called worktree cleanup")
 
     monkeypatch.setattr(server, "_conversation_worktree_manager", cleanup_must_not_be_built)
-    monkeypatch.setattr(server, "_profile_db", lambda _params: nullcontext(db))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, *, writer=False: nullcontext(db))
     monkeypatch.setattr(server, "get_hermes_home", lambda: tmp_path)
 
     closed = server._methods["session.close"]("close", {"session_id": "missing"})

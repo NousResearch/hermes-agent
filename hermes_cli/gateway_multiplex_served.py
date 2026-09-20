@@ -28,12 +28,17 @@ def live_default_gateway_pid() -> Optional[int]:
             return pid
         # Pre-multiplex Hermes versions wrote only gateway.pid and had no lock file. Keep
         # the historical probe during upgrade; current records use the strict path above.
-        from gateway.status import _pid_exists, _pid_from_record, _read_pid_record
+        from gateway.status import (
+            _live_pid_from_record, _pid_from_record, _read_pid_record,
+            _record_matches_live_gateway_pid,
+        )
         if (default_root / "gateway.lock").exists():
             return None
         record = _read_pid_record(default_root / "gateway.pid")
         pid = _pid_from_record(record) if record else None
-        return pid if pid and _pid_exists(pid) else None
+        if pid is None or _live_pid_from_record(record) != pid:
+            return None
+        return pid if _record_matches_live_gateway_pid(record, pid, expected_home=default_root) else None
     except Exception:
         logger.debug("default gateway identity probe failed", exc_info=True)
         return None

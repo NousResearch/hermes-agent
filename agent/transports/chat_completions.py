@@ -124,7 +124,12 @@ def _has_positive_completion_tokens(usage: Any) -> bool:
 
 def router_timeout_shim_may_follow(text: str) -> bool:
     """True while streamed text is still a prefix of the shim sentinel (hold it back until judged)."""
-    return bool(text) and _ROUTER_TIMEOUT_SHIM.startswith(text.lstrip())
+    candidate = text.lstrip()
+    return bool(candidate) and (
+        _ROUTER_TIMEOUT_SHIM.startswith(candidate)
+        or (candidate.startswith(_ROUTER_TIMEOUT_SHIM)
+            and candidate[len(_ROUTER_TIMEOUT_SHIM):].isspace())
+    )
 
 
 def is_router_timeout_shim(response: Any) -> bool:

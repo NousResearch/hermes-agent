@@ -362,7 +362,7 @@ def test_no_nudge_after_handoff_tool(clear_kanban_env, tool_name, who):
                 }
             ],
         },
-        {"role": "tool", "name": tool_name, "tool_call_id": "1", "content": "ok"},
+        {"role": "tool", "name": tool_name, "tool_call_id": "1", "content": '{"ok": true}'},
     ]
     assert session_called_kanban_terminal(messages) is True, who
     assert build_kanban_stop_nudge(messages=messages) is None

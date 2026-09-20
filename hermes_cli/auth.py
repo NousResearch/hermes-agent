@@ -234,9 +234,6 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     # Qwen 3.7: Anthropic Messages under /v1/messages). Keep the base at /v1; api_mode is per-model.
     ("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ("OPENCODE_GO_API_KEY",),
      "OPENCODE_GO_BASE_URL"),
-    # Deliberately NO api_key_env_vars: the free tier is served anonymously (any unrecognized bearer
-    # is a 401), so there is no secret to configure. Select via `hermes model` / `/model free`.
-    ("opencode-free", "OpenCode Free", "https://opencode.ai/zen/v1", ()),
     ("kilocode", "Kilo Code", "https://api.kilo.ai/api/gateway", ("KILOCODE_API_KEY",), "KILOCODE_BASE_URL"),
     ("huggingface", "Hugging Face", "https://router.huggingface.co/v1", ("HF_TOKEN",), "HF_BASE_URL"),
     ("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", ("XIAOMI_API_KEY",), "XIAOMI_BASE_URL"),
@@ -451,7 +448,8 @@ def format_auth_error(error: Exception) -> str:
         # Rate-limit / quota errors are not credential problems: never append "re-authenticate".
         return str(error)
     if error.relogin_required:
-        return f"{error} Run `hermes model` to re-authenticate."
+        from hermes_constants import profile_cli_selector
+        return f"{error} Run `hermes {profile_cli_selector()}model` to re-authenticate."
     if error.code in _ENTITLEMENT_ERROR_CODES:
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
@@ -1284,6 +1282,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "x-ai": "xai", "x.ai": "xai", "grok": "xai",
     "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
     "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+    "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
     "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -1300,7 +1299,6 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
     "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
     "opencode": "opencode-zen", "zen": "opencode-zen",
-    "free": "opencode-free", "opencode_free": "opencode-free",
     "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
     "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
     "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
@@ -1395,6 +1393,14 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
+        if provider == "custom" or provider in {"ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp"}:
+            return model_cfg, "custom"
+        if provider in {"", "auto"} and isinstance(model_cfg, dict):
+            base_url = str(model_cfg.get("base_url") or "").strip()
+            if base_url:
+                from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+                if _config_base_url_trustworthy_for_bare_custom(base_url, provider):
+                    return model_cfg, "custom"
         return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
@@ -1458,6 +1464,14 @@ def resolve_provider(
     if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
+        normalized = _PROVIDER_ALIASES.get(normalized, normalized)
+        if normalized == "openai-codex":
+            return normalized
+        if normalized in {"opencode-free", "free", "opencode_free"}:
+            raise AuthError(
+                "OpenCode Free is no longer available. Use `opencode-zen` or `opencode-go` instead.",
+                code="invalid_provider",
+            )
         hint = _get_config_hint_for_unknown_provider(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "
                 "or run 'hermes doctor' to diagnose config issues.")
@@ -1516,11 +1530,13 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
-    raise AuthError(
-        "No inference provider configured. Run 'hermes model' to choose a "
-        "provider and model, or set an API key (OPENROUTER_API_KEY, "
-        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
-        code="no_provider_configured")
+    if _scoped_key_env("GITHUB_TOKEN") or _scoped_key_env("GH_TOKEN"):
+        message = "A GitHub token is available, but you are not connected to any AI provider."
+    else:
+        from hermes_constants import display_hermes_home
+        message = (f"No provider configured. Run `hermes model`, `/login`, or "
+                   f"`hermes auth add <provider>`, or set an API key in {display_hermes_home()}/.env.")
+    raise AuthError(message, code="no_provider_configured")
 
 
 # ── Timestamp / TTL helpers ─────────────────────────────────────────────────────────────────────────
@@ -1826,7 +1842,8 @@ def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth (pool first, then legacy provider state)."""
     return _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
-        resolve=resolve_codex_runtime_credentials, on_pool_miss=_codex_pool_rate_limited_status)
+        resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
+        on_pool_miss=_codex_pool_rate_limited_status)
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:

@@ -37,7 +37,9 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
+from agent.message_sanitization import (
+    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
+)
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -226,11 +228,13 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
     raw_text = str(getattr(error, "doc", "") or "").strip()
     safe_text = redact_sensitive_text(_sanitize_surrogates(raw_text), force=True)
     safe_text = safe_text[:_PROVIDER_STREAM_ERROR_TEXT_LIMIT]
+    from agent.error_classifier import PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE
+    code = PROVIDER_STREAM_NON_JSON_ERROR_CODE if safe_text else PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
     return ProviderStreamError(
         status_code=None,
         body=_provider_error_body(
-            {"code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-                "message": safe_text or "Provider stream returned non-JSON SSE data."},
+            {"code": code,
+                "message": safe_text or "Provider returned an empty SSE keepalive frame."},
             None,
         ),
         raw_text=safe_text,
@@ -1343,6 +1347,10 @@ def _reasoning_config_for_wire(agent):
         ):
             return None
         return cfg
+    if getattr(agent, "_reasoning_effort_rejected", False) and isinstance(cfg, dict) and cfg.get("enabled") is not False:
+        # Some Responses-compatible routes reject a specific enabled effort. Retry using
+        # the route default rather than projecting the same rejected effort onto the wire.
+        return None
     if ephemeral_off:
         cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
     return cfg
@@ -1534,6 +1542,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
     reasoning_config = _reasoning_config_for_wire(agent)
+    agent._wire_reasoning_config = reasoning_config
     if tools_for_api is None:
         tools_for_api = agent.tools
     # The one place request_overrides are consumed: static /fast values are already pinned
@@ -1978,6 +1987,7 @@ def _update_fallback_context_compressor(agent) -> None:
     compressor = getattr(agent, "context_compressor", None)
     if not compressor:
         return
+    feasibility_was_checked = bool(getattr(agent, "_compression_feasibility_checked", False))
     from agent.model_metadata import get_model_context_length
     fb_context_length = get_model_context_length(
         agent.model, base_url=agent.base_url,
@@ -1990,6 +2000,9 @@ def _update_fallback_context_compressor(agent) -> None:
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
     )
+    if feasibility_was_checked:
+        from agent.conversation_compression import revalidate_compression_feasibility
+        revalidate_compression_feasibility(agent)
 
 
 def _reresolve_fallback_reasoning_config(agent) -> None:
@@ -2362,6 +2375,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
             ),
             retry_count=retry_count,
         )
+        from agent.transports.chat_completions import is_router_timeout_shim
+        if is_router_timeout_shim(response):
+            return ""
         return _summary_text(agent, response)
     return _attempt
 
@@ -2414,7 +2430,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        failure_detail = ""
+        from agent.llm_egress_firewall import EgressBlocked
+        if isinstance(e, EgressBlocked):
+            reason_codes = ", ".join(e.decision.reason_codes) or "policy_denied"
+            failure_detail = f" The request was blocked by the egress policy ({reason_codes})."
+        final_response = (
+            f"I reached the max_iterations limit ({agent.max_iterations}) but couldn't summarize."
+            f"{failure_detail} Please continue from the last response."
+        )
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
@@ -2895,7 +2919,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._fire_stream_delta(text)
         # Whitespace can be forwarded to preserve streaming fidelity, but it is
         # not user-visible delivery and is safe to retry without duplication.
-        if text.strip():
+        if text.strip() and self.agent._has_stream_consumers():
             self.deltas_were_sent["yes"] = True
 
     def _emit_reasoning(self, text: str) -> None:
@@ -3042,6 +3066,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        reasoning_details: list = []
         refusal_parts: list[str] = []
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
@@ -3106,17 +3131,28 @@ class _StreamingCall(StreamingWaitMonitor):
             delta = choice.delta
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
-            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            raw_finish_reason = getattr(choice, "finish_reason", None)
+            if raw_finish_reason is not None:
+                finish_reason = _normalize_finish_reason(
+                    str(raw_finish_reason) if isinstance(raw_finish_reason, int) else raw_finish_reason
+                ) or finish_reason
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            if not reasoning_text:
+                model_extra = getattr(delta, "model_extra", None)
+                if isinstance(model_extra, dict):
+                    reasoning_text = model_extra.get("reasoning_content") or model_extra.get("reasoning")
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
                 self._emit_reasoning(reasoning_text)
+            for detail in getattr(delta, "reasoning_details", None) or ():
+                from agent.reasoning_summaries import append_streamed_reasoning_detail
+                append_streamed_reasoning_detail(reasoning_details, detail)
 
             refusal_text = getattr(delta, "refusal", None)
             if refusal_text:
@@ -3129,13 +3165,15 @@ class _StreamingCall(StreamingWaitMonitor):
                 content_parts.append(delta_content)
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
-                elif pending_text_parts or _provider_stream_text_may_be_sse(delta_content):
-                    pending_text_parts.append(delta_content)
-                    if not _provider_stream_text_may_be_sse("".join(pending_text_parts)):
-                        _flush_pending_stream_text()
-                    continue
                 else:
-                    self._emit_text(delta_content)
+                    from agent.transports.chat_completions import router_timeout_shim_may_follow
+                    pending_text_parts.append(delta_content)
+                    pending_text = "".join(pending_text_parts)
+                    if (_provider_stream_text_may_be_sse(pending_text)
+                            or router_timeout_shim_may_follow(pending_text)):
+                        continue
+                    _flush_pending_stream_text()
+                    continue
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
@@ -3156,7 +3194,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
-            response_id=response_id, upstream_provider=upstream_provider,
+            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal="".join(refusal_parts) or None)
 
     def _adopt_final_response(self, final_response):
@@ -3170,6 +3208,10 @@ class _StreamingCall(StreamingWaitMonitor):
         message = getattr(choices[0] if isinstance(choices, (list, tuple)) and choices else None, "message", None)
         if message is not None:
             reasoning_text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+            if not reasoning_text:
+                model_extra = getattr(message, "model_extra", None)
+                if isinstance(model_extra, dict):
+                    reasoning_text = model_extra.get("reasoning_content") or model_extra.get("reasoning")
             if isinstance(reasoning_text, str) and reasoning_text:
                 self._emit_reasoning(reasoning_text)
             content = getattr(message, "content", None)
@@ -3206,7 +3248,8 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, refusal=None):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None,
+        reasoning_details=None, refusal=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -3239,14 +3282,19 @@ class _StreamingCall(StreamingWaitMonitor):
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))
         if provider_stream_error is not None:
             raise provider_stream_error
-        flush_pending()
         message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls,
             reasoning_content=full_reasoning, refusal=refusal)
+        if reasoning_details:
+            message.reasoning_details = reasoning_details
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
         # look a request up. Fabricated only when the stream never sent one.
-        return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
+        response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
             choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+        from agent.transports.chat_completions import is_router_timeout_shim
+        if not is_router_timeout_shim(response):
+            flush_pending()
+        return response
 
     # ── anthropic_messages wire ─────────────────────────────────────────
 
@@ -3373,6 +3421,15 @@ class _StreamingCall(StreamingWaitMonitor):
         """Flip to non-streaming when the provider rejects streaming outright or
         AnthropicBedrock IAM lacks InvokeModelWithResponseStream."""
         _err_lower = str(e).lower()
+        error_body = getattr(e, "body", None)
+        error_info = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+        from agent.error_classifier import PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
+        if isinstance(error_info, dict) and error_info.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE:
+            self.agent._disable_streaming = True
+            self.agent._emit_warning(
+                "⚠ Provider returned only empty SSE keepalive frames; switching to non-streaming."
+            )
+            return
         _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
         _is_bedrock_stream_denied = False
         if not _is_stream_unsupported and "invokemodelwithresponsestream" in _err_lower:
@@ -3404,7 +3461,14 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
-        _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
+        error_body = getattr(e, "body", None)
+        error_info = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+        from agent.error_classifier import PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
+        _is_empty_frame = (isinstance(error_info, dict)
+                           and error_info.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE)
+        _is_transient = not _is_empty_frame and (
+            _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
+        )
 
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
             # Nothing streamed yet: drop the usage extension for this session and re-open.
@@ -3428,7 +3492,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 return False
             # Marker explains the re-streamed preamble (``_emit_stream_drop`` logs the WARNING);
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
-            self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
+            if self.agent._warning_presentation_enabled():
+                self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
             self._quiet(self.agent._reset_stream_delivery_tracking)
             if self.agent.api_mode == "anthropic_messages" and _is_stream_parse_err:
                 tools = self.api_kwargs.get("tools")
@@ -3597,7 +3662,8 @@ class _StreamingCall(StreamingWaitMonitor):
             _warn = (f"\n\n⚠ Stream stalled mid tool-call ({_name_str}); the action was not executed. "
                      f"Ask me to retry if you want to continue.")
             _partial_text = (_partial_text or "") + _warn
-            self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
+            if self.agent._warning_presentation_enabled():
+                self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)

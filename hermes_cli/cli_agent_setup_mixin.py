@@ -4,11 +4,29 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
 
 from utils import base_url_host_matches
+
+
+def _remote_kanban_private_work(provider, fallbacks=None) -> bool:
+    """Whether a dispatched Kanban task can reach a protected remote provider."""
+    if not os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        return False
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
+    routes = [provider]
+    if isinstance(fallbacks, (list, tuple)):
+        routes.extend(item.get("provider") for item in fallbacks if isinstance(item, dict))
+    return any(provider_uses_egress_firewall(route) for route in routes)
+
+
+def _remote_kanban_toolsets(_toolsets) -> list[str]:
+    """Minimal shell/file/web toolsets available to protected remote Kanban work."""
+    return ["terminal", "file", "web"]
 
 
 def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:

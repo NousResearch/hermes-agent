@@ -252,7 +252,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         db.append_messages_batch(
             new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
                        **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
-        db.set_session_title(new_key, title)
+        db.set_auto_title(new_key, title, source="derived")
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -1305,6 +1305,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("llm.oneshot")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend."""
     template = (params.get("template") or "").strip() or None
@@ -1452,8 +1453,9 @@ def _(rid, params: dict, session: dict) -> dict:
     # inside would key its workspace pin on the backend's cwd and overwrite the session's pin.
     tokens = _set_session_context(session["session_key"])
     try:
-        from agent.context_breakdown import compute_session_context_breakdown
-        return _ok(rid, compute_session_context_breakdown(agent, history))
+        with _session_profile_runtime_scope(session):
+            from agent.context_breakdown import compute_session_context_breakdown
+            return _ok(rid, compute_session_context_breakdown(agent, history))
     except Exception as exc:
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
     finally:
@@ -2179,7 +2181,6 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
                                            cwd_override=branch_cwd,
-                                           auth_user_id=_session_auth_user_id(session),
                                            context_cwd_is_launch_artifact=(
                                                False if conversation_worktree
                                                else _context_cwd_is_launch_artifact(session)),

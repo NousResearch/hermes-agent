@@ -111,7 +111,8 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id, *, expected_session_id=None):
+    def _switch_session(session_key, target_session_id, *, expected_session_id=None,
+                        conversation_kind="interactive", persisted_cwd=None):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -120,7 +121,7 @@ def _make_runner(session_db=None):
             platform=Platform.TELEGRAM,
             chat_type="dm",
             origin=None,
-            cwd=kwargs.get("persisted_cwd"),
+            cwd=persisted_cwd,
             conversation_worktree={},
         )
     runner.session_store.switch_session = MagicMock(side_effect=_switch_session)

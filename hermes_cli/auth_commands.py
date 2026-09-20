@@ -75,7 +75,8 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 
 _PROVIDER_ALIASES = {
-    "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
+    "or": "openrouter", "open-router": "openrouter", "chatgpt": "openai-codex",
+    "chatgpt-codex": "openai-codex", "grok-oauth": "xai-oauth",
     "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
 
 
@@ -354,7 +355,9 @@ def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise SystemExit(
+            f"Unknown provider '{getattr(args, 'provider', provider)}'. Did you mean `openai-codex`? "
+            "Run `hermes auth` or `hermes model`.")
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
@@ -611,11 +614,9 @@ def auth_refresh_command(args) -> None:
             "Reauthenticate with `hermes auth add nous --type oauth`.")
     refreshed = pool.try_refresh_matching(credential_id=matched.id)
     if refreshed is None:
-        after = next((e for e in pool.entries() if e.id == matched.id), None)
-        state = "removed from pool" if after is None else (after.last_status or "unknown")
         raise SystemExit(
-            f"Could not renew {provider} credential #{index} ({matched.label}); "
-            f"status now: {state}.")
+            f"Could not renew {provider} credential #{index} ({matched.label}). "
+            f"Run `hermes auth add {provider} --type oauth` to sign in again.")
     status = refreshed.last_status or "ok"
     if status == "ok":
         print(f"Refreshed {provider} credential #{index} ({refreshed.label}); status: ok")

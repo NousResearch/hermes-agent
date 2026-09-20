@@ -71,26 +71,49 @@ def _stream_attempt_stub(enabled):
 def test_stream_reconnect_marker_delta_honors_policy(enabled):
     """The '⚠ Connection dropped mid tool-call; reconnecting…' delta is presentation only; the
     tracking reset and retry bookkeeping run regardless."""
-    import inspect
+    import httpx
     from agent import chat_completion_helpers as cch
-    src = inspect.getsource(cch)
-    i = src.index("Connection dropped mid tool-call; reconnecting")
-    window = src[i - 400:i]
-    assert "_warning_presentation_enabled()" in window, "reconnect marker must be behind the presentation gate"
-    j = src.index("_reset_stream_delivery_tracking", i)
-    assert "if self.agent._warning_presentation_enabled()" not in src[i:j], "tracking reset must stay unconditional"
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = MagicMock()
+    call.agent._warning_presentation_enabled.return_value = enabled
+    call.agent.api_mode = "chat_completions"
+    fired = []
+    reset = []
+    call.agent._fire_stream_delta.side_effect = fired.append
+    call.agent._reset_stream_delivery_tracking.side_effect = lambda: reset.append(True)
+    call.api_kwargs = {}
+    call.result = {"partial_tool_names": ["read_file"]}
+    call.deltas_were_sent = {"yes": True}
+    call.provider_tool_in_flight = {"yes": True}
+    call.first_delta_fired = {"done": True}
+    call._request_cancelled = {"value": False}
+    call._retry_after_drop = lambda *a, **k: None
+
+    assert call._handle_stream_error(httpx.ReadTimeout("dropped"), 0, 1) is True
+    assert (len(fired) == 1) is enabled
+    assert reset == [True]
+    assert call.result["partial_tool_names"] == []
 
 
 def test_stream_stall_warning_kept_in_result_but_delta_gated():
-    import inspect
     from agent import chat_completion_helpers as cch
-    src = inspect.getsource(cch)
-    i = src.index("Stream stalled mid tool-call")
-    seg = src[i:i + 700]
-    assert "_partial_text = (_partial_text or \"\") + _warn" in seg, "model/result bookkeeping stays"
-    assert "if self.agent._warning_presentation_enabled():" in seg
-    assert seg.index("_partial_text = (_partial_text or \"\") + _warn") < seg.index("if self.agent._warning_presentation_enabled():")
-    assert "logger.warning(" in seg
+    agent = MagicMock()
+    agent.model = "m"
+    agent.provider = "custom"
+    agent._current_streamed_assistant_text = "working"
+    agent._warning_presentation_enabled.return_value = False
+    fired = []
+    agent._fire_stream_delta.side_effect = fired.append
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = agent
+    call.result = {"error": RuntimeError("connection dropped"), "partial_tool_names": ["read_file"]}
+
+    stub = call._partial_stream_stub()
+
+    content = stub.choices[0].message.content
+    assert "action was not executed" in content
+    assert "working" in content
+    assert fired == []
 
 
 # --- agent/agent_init.py invalid config int + autoraise notice ---------------------------------

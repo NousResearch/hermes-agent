@@ -87,7 +87,10 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     auth_store = _load_auth_store_maybe_locked(_lock)
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
-        raise _codex_err(_NO_CREDENTIALS_MSG, "codex_auth_missing", relogin=True)
+        from hermes_constants import profile_cli_selector
+        raise _codex_err(
+            f"No Codex credentials stored. Run `hermes {profile_cli_selector()}auth add openai-codex --type oauth` to authenticate.",
+            "codex_auth_missing", relogin=True)
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise _codex_err(
@@ -142,7 +145,8 @@ def _sync_codex_pool_entries(
         _clear_pool_entry_status(entry)
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
+def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None,
+                       *, expected_tokens: Optional[Dict[str, str]] = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     from hermes_cli.auth import (
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
@@ -156,6 +160,10 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         # tell legacy singleton-aliases (refresh) from independent ``auth add`` accounts (keep).
         previous_singleton_tokens = (
             state.get("tokens") if isinstance(state.get("tokens"), dict) else None)
+        if expected_tokens is not None and previous_singleton_tokens != expected_tokens:
+            raise _codex_err(
+                "Codex credentials changed while recovery was in progress; keeping the newer login.",
+                "codex_auth_changed_during_recovery", relogin=False)
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
         if label and str(label).strip():
             state["label"] = str(label).strip()
@@ -165,17 +173,33 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+def _recover_codex_tokens_from_cli(
+    reason: str, *, expected_tokens: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, str]]:
     """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
     from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
+    from agent.credential_sources import adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        return None
     imported = _import_codex_cli_tokens()
     # Require BOTH tokens before adopting: persisting a payload without a usable refresh_token
     # would only break the next refresh cycle.
     if not (imported and _stripped(imported.get("access_token"))
             and _stripped(imported.get("refresh_token"))):
         return None
+    if expected_tokens:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+        old_auth = _decode_jwt_claims(expected_tokens.get("access_token") or "").get(
+            "https://api.openai.com/auth", {})
+        new_auth = _decode_jwt_claims(imported.get("access_token") or "").get(
+            "https://api.openai.com/auth", {})
+        old_account = old_auth.get("chatgpt_account_id") if isinstance(old_auth, dict) else None
+        new_account = new_auth.get("chatgpt_account_id") if isinstance(new_auth, dict) else None
+        if old_account and new_account and old_account != new_account:
+            logger.warning("Refusing Codex CLI recovery because it belongs to a different ChatGPT workspace.")
+            return None
     logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
+    _save_codex_tokens(imported, expected_tokens=expected_tokens)
     return dict(imported)
 
 
@@ -354,11 +378,12 @@ def _codex_refresh_failure_error(response: "httpx.Response") -> AuthError:
     except Exception:
         pass
     if code == "refresh_token_reused":
+        from hermes_constants import profile_cli_selector
         message = (
             "Codex refresh token was already consumed by another client "
             "(e.g. Codex CLI or VS Code extension). "
             "Run `codex` in your terminal to generate fresh tokens, "
-            "then run `hermes auth` to re-authenticate.")
+            f"then run `hermes {profile_cli_selector()}auth add openai-codex --type oauth` to re-authenticate.")
     # A 401/403 from the token endpoint always means the refresh token is invalid/expired —
     # force relogin even if the body error code wasn't one of the known strings.
     relogin_required = (
@@ -421,7 +446,8 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
         if not getattr(exc, "relogin_required", False):
             raise
         imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}",
+            expected_tokens=tokens)
         if not imported:
             raise
         return imported
@@ -455,7 +481,7 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
 
 
 def resolve_codex_runtime_credentials(
-    *, force_refresh: bool = False, refresh_if_expiring: bool = True,
+    *, force_refresh: bool = False, refresh_if_expiring: bool = True, read_only: bool = False,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store.
 
@@ -470,23 +496,26 @@ def resolve_codex_runtime_credentials(
     """
     from hermes_cli.auth import (
         _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
-        _read_codex_tokens)
+        _read_codex_tokens, _load_auth_store, _load_provider_state)
     read_error: Optional[AuthError] = None
     data = None
     try:
-        data = _read_codex_tokens()
+        data = _read_codex_tokens(_lock=not read_only)
     except AuthError as exc:
         read_error = exc
+        observed_state = _load_provider_state(_load_auth_store(), "openai-codex") or {}
+        observed_tokens = observed_state.get("tokens") if isinstance(observed_state.get("tokens"), dict) else {}
         if exc.relogin_required and exc.code in {
             "codex_auth_missing_access_token", "codex_auth_missing_refresh_token",
-            "codex_auth_invalid_shape"}:
-            imported = _recover_codex_tokens_from_cli(str(exc.code or "auth_error"))
+            "codex_auth_invalid_shape"} and not read_only:
+            imported = _recover_codex_tokens_from_cli(str(exc.code or "auth_error"),
+                                                      expected_tokens=observed_tokens)
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
         pool_token = _pool_codex_access_token()
         if pool_token:
-            if force_refresh:
+            if force_refresh and not read_only:
                 from agent.credential_pool import load_pool
                 pool = load_pool("openai-codex")
                 refreshed = pool.try_refresh_matching(api_key_hint=pool_token) if pool is not None else None
@@ -502,7 +531,7 @@ def resolve_codex_runtime_credentials(
                 )
             return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None)
         pool_rate_limit = _codex_pool_rate_limit_status()
-        if pool_rate_limit:
+        if pool_rate_limit and not read_only:
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
             # reset early (banked reset redeemed, plan upgraded): ``last_error_reset_at`` can be
             # days in the future while the account is already usable again.
@@ -529,7 +558,7 @@ def resolve_codex_runtime_credentials(
         return bool(force_refresh) or (
             refresh_if_expiring and _codex_access_token_is_expiring(token, refresh_skew_seconds))
 
-    if _should_refresh(access_token):
+    if _should_refresh(access_token) and not read_only:
         # Re-read under lock to avoid racing with other Hermes processes
         lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
         with _auth_store_lock(timeout_seconds=lock_timeout):

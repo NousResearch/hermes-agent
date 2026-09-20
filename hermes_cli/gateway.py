@@ -6392,6 +6392,13 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
+    if not stop_all and not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+        suffix = _profile_suffix()
+        print_error(
+            f"Profile '{suffix}' is served by the default gateway multiplexer and has no standalone gateway to stop."
+        )
+        print("  Stop the multiplexer from the default profile with: hermes gateway stop")
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
     if stop_all and getattr(args, "drain", False):
         from hermes_cli.gateway_desktop_drain import desktop_profile_homes, drain_all_desktop_work
         # Register cleanup before the s6 dispatch: the supervisor path returns

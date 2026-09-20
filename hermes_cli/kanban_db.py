@@ -217,13 +217,9 @@ def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> No
     out or import this module); the invariant lives here so every ``write_txn``
     user and board-metadata mutator fails closed before touching durable state.
     """
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
-
-        delegated = is_delegated_child_process_context()
-    except Exception:
-        delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
-    if delegated:
+    from agent.delegation_context import kanban_path_is_fenced
+    target = path if path is not None else kanban_db_path()
+    if kanban_path_is_fenced(target):
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
 
 
@@ -629,9 +625,9 @@ def _lifecycle_board(conn: sqlite3.Connection, board: Optional[str] = None) -> s
 def set_current_board(slug: str) -> Path:
     """Persist ``slug`` as the active board; returns the file written. Does NOT
     check the board exists — callers do (so ``boards switch <typo>`` errors)."""
-    _assert_not_delegated_child_mutation()
     normed = _require_slug(slug)
     path = current_board_path()
+    _assert_not_delegated_child_mutation(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(normed + "\n", encoding="utf-8")
     return path
@@ -639,7 +635,7 @@ def set_current_board(slug: str) -> Path:
 
 def clear_current_board() -> None:
     """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
-    _assert_not_delegated_child_mutation()
+    _assert_not_delegated_child_mutation(current_board_path())
     with contextlib.suppress(FileNotFoundError):
         current_board_path().unlink()
 
@@ -759,8 +755,8 @@ def write_board_metadata(
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
     "" = clear (``project_id`` is not validated here)."""
-    _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
+    _assert_not_delegated_child_mutation(board_dir(slug))
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
     meta.pop("db_path", None)
@@ -828,8 +824,8 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Archive (to ``boards/_archived/<slug>-<ts>/``) or delete a board;
     ``default`` cannot be removed. Returns ``{"slug", "action", "new_path"}``."""
-    _assert_not_delegated_child_mutation()
     normed = _require_slug(slug)
+    _assert_not_delegated_child_mutation(board_dir(normed))
     if normed == DEFAULT_BOARD:
         raise ValueError("the 'default' board cannot be removed")
     d = board_dir(normed)
@@ -2114,11 +2110,15 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if att is None:
             return None
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
+        still_referenced = conn.execute(
+            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1", (att.stored_path,),
+        ).fetchone() is not None
         _append_event(conn, att.task_id, "attachment_removed", {"filename": att.filename})
-    with contextlib.suppress(OSError):
-        p = Path(att.stored_path)
-        if p.is_file():
-            p.unlink()
+    if not still_referenced:
+        with contextlib.suppress(OSError):
+            p = Path(att.stored_path)
+            if p.is_file():
+                p.unlink()
     return att
 
 
@@ -2297,13 +2297,15 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
     if not row:
         return False
-    return row["kind"] == "blocked"
+    if row["kind"] in {"blocked", "unblocked"}:
+        return row["kind"] == "blocked"
+    return bool(_json_dict(_row_get(row, "payload")).get("sticky"))
 
 
 def _latest_event(
@@ -3642,13 +3644,14 @@ def request_review(
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
-                "SELECT assignee, status, claim_lock, current_run_id "
+                "SELECT assignee, status, claim_lock, current_run_id, worker_pid, worker_started_at "
                 "FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
             if (trow["status"], trow["current_run_id"]) != initial_state:
                 return _ret(False, "task changed while review policy was running")
+            from hermes_cli.kanban_db_dispatch import _worker_alive
             # Refuse to clear a live worker's claim without proof of ownership
             # (expected_run_id) or an explicit human override (force=True).
             if (
@@ -3656,6 +3659,7 @@ def request_review(
                 and not force
                 and trow["status"] == "running"
                 and trow["claim_lock"] is not None
+                and _worker_alive(trow["worker_pid"], _row_get(trow, "worker_started_at"))
             ):
                 return _ret(
                     False, "task is running under a live claim; pass expected_run_id "

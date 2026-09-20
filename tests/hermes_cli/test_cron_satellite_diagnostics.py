@@ -103,6 +103,9 @@ def test_satellite_list_and_create_require_own_heartbeat(served_root, capsys, mo
 def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch, capsys, home_kind):
     from hermes_cli.cron import cron_status
 
+    # This contract is the standalone/no-host branch. The shared fixture models a live default
+    # multiplexer, whose distinct guidance is covered by test_status_preserves_profile_health_contract.
+    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
     homes = {"default": served_root, "custom": served_root.parent / "custom", "named": served_root / "profiles/probe"}
     home = homes[home_kind]
     home.mkdir(exist_ok=True)

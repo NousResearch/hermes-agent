@@ -593,6 +593,18 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
 # Sentinel from _fixed_temperature_for_model(): callers strip ``temperature`` entirely.
 # Kimi/Moonshot manage it server-side — any value can conflict with gateway mode selection.
 OMIT_TEMPERATURE: object = object()
+# Providers sometimes reject sampling parameters only for a particular model on an
+# otherwise shared endpoint. Remember the route/model pair so later auxiliary calls
+# skip the known-invalid field without imposing a global model-family rule.
+_TEMPERATURE_REJECTED_ROUTES: set[tuple[str, str, str]] = set()
+
+
+def _temperature_route_key(provider: Optional[str], model: Optional[str], base_url: Optional[str]) -> tuple[str, str, str]:
+    return (
+        str(provider or "").strip().lower(),
+        _bare_model(model),
+        str(base_url or "").strip().rstrip("/").lower(),
+    )
 
 
 def _bare_model(model: Optional[str]) -> str:
@@ -650,9 +662,16 @@ def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> boo
 
 
 def _fixed_temperature_for_model(
-    model: Optional[str], base_url: Optional[str] = None
+    model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
 ) -> "Optional[float] | object":
     """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot), a fixed ``float``, or ``None``."""
+    if _temperature_route_key(provider, model, base_url) in _TEMPERATURE_REJECTED_ROUTES:
+        return OMIT_TEMPERATURE
+    bare = _bare_model(model)
+    if bare.startswith(("o3", "o4")) or (
+        bare.startswith("gpt-5") and not bare.startswith("gpt-5-chat")
+    ):
+        return OMIT_TEMPERATURE
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
@@ -3365,7 +3384,8 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     err_lower = str(exc).lower()
     return param_lower in err_lower and _contains_any(err_lower, (
         "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
-        "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
+        "doesn't support", "unknown parameter", "unrecognized request argument", "unrecognized parameter",
+        "invalid parameter", "deprecated",
     ))
 
 
@@ -5045,6 +5065,11 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _explicit_api_key_value(value: Any) -> Any:
+    """Trim literal API-key overrides while preserving deferred callable credentials."""
+    return value.strip() if isinstance(value, str) else value
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -5053,16 +5078,17 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     # /anthropic/chat/completions). Empty means "use custom_base".
     custom_base = custom_key = wrap_base = ""
     if req.explicit_base_url:
+        explicit_api_key = _explicit_api_key_value(req.explicit_api_key)
         custom_base = _to_openai_base_url(req.explicit_base_url).strip()
         if req.original_provider in _LOCAL_SERVER_ALIASES and not urlparse(custom_base).path.strip("/"):
             custom_base = custom_base.rstrip("/") + "/v1"
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         if req.original_provider in _LOCAL_SERVER_ALIASES:
-            custom_key = (req.explicit_api_key or "").strip() or "no-key-required"
+            custom_key = explicit_api_key or "no-key-required"
         else:
             custom_key = (
-                (req.explicit_api_key or "").strip()
+                explicit_api_key
                 or _scoped_key_env("OPENAI_API_KEY")
                 or _read_main_api_key_if_same_host(custom_base)
                 or "no-key-required"
@@ -5076,7 +5102,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
         # the main agent already solved this, we just need to reuse its answer. (#45472)
         _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-        _main_key = str(main_runtime.get("api_key") or "").strip()
+        _main_key = _explicit_api_key_value(main_runtime.get("api_key")) or ""
         if _main_base and _main_key:
             custom_base, custom_key = _main_base, _main_key
     if custom_base and custom_key:
@@ -5143,7 +5169,10 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
-    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
+    custom_key = (
+        _explicit_api_key_value(req.explicit_api_key)
+        or _named_custom_api_key(custom_entry, provider, custom_base)
+    )
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -5213,7 +5242,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
     if req.explicit_api_key:
-        api_key = req.explicit_api_key.strip() or api_key
+        api_key = _explicit_api_key_value(req.explicit_api_key) or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
@@ -6589,7 +6618,7 @@ def _build_call_kwargs(
         reasoning_config, provider_norm, effective_base, model, task=task)
     # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
     # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
-    fixed_temperature = _fixed_temperature_for_model(model, effective_base)
+    fixed_temperature = _fixed_temperature_for_model(model, effective_base, provider_norm)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
@@ -6646,6 +6675,10 @@ def _validate_llm_response(
     """
     if response is None:
         raise RuntimeError(f"Auxiliary {task or 'call'}: LLM returned None response")
+    from agent.transports.chat_completions import is_router_timeout_shim
+    if is_router_timeout_shim(response):
+        _fail_relay_auxiliary_call()
+        raise RuntimeError(f"Auxiliary {task or 'call'}: provider returned a router timeout shim")
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
@@ -7050,6 +7083,10 @@ class _ChatStreamAccumulator:
             self.content_parts.append(piece)
             made_progress = True
         reasoning_piece = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+        if reasoning_piece is None:
+            model_extra = getattr(delta, "model_extra", None)
+            if isinstance(model_extra, dict):
+                reasoning_piece = model_extra.get("reasoning") or model_extra.get("reasoning_content")
         reasoning_piece = flatten_message_text(reasoning_piece, sep="")
         if reasoning_piece:
             self.reasoning_parts.append(reasoning_piece)
@@ -7388,6 +7425,10 @@ def _ladder_parameter_rungs(
         if ("temperature" not in attempted and "temperature" in kwargs
                 and _is_unsupported_parameter_error(first_err, "temperature")):
             attempted.add("temperature")
+            route_url = route.resolved_base_url or route.base_info or getattr(client, "base_url", None)
+            _TEMPERATURE_REJECTED_ROUTES.add(
+                _temperature_route_key(route.resolved_provider, route.final_model or route.resolved_model,
+                                       str(route_url) if route_url else None))
             retry_kwargs = {k: v for k, v in kwargs.items() if k != "temperature"}
             logger.info("Auxiliary %s%s: provider rejected temperature; retrying once without it",
                         task or "call", tag)

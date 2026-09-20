@@ -161,8 +161,14 @@ def _nous_portal_env_override() -> Optional[str]:
     NETWORK-provided values persisted to auth.json, not operator config.
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(
-        os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL"))
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        override = get_secret("HERMES_PORTAL_BASE_URL") or get_secret("NOUS_PORTAL_BASE_URL")
+    except UnscopedSecretError:
+        # The launch profile's unscoped CLI/bootstrap path still uses its process environment;
+        # routed profile work must enter its profile scope before reading this override.
+        override = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
+    return _optional_base_url(override)
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -448,7 +454,7 @@ def _quarantine_forensics(state: Dict[str, Any], error: AuthError, reason: str) 
     12-char SHA-256 prefix correlates to NAS's refreshTokenHash without leaking the secret;
     provenance is client_id + agent_key_id (Nous state has no session_id).
     """
-    from hermes_cli.auth import _auth_file_path
+    from hermes_cli.auth import _auth_file_path, read_credential_pool
     forensic: Dict[str, Any] = {
         "reason": reason, "error_code": error.code, "client_id": state.get("client_id"),
         "agent_key_id": state.get("agent_key_id"),
@@ -987,10 +993,12 @@ def resolve_nous_runtime_credentials(
         return _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
             force_refresh=force_refresh, stale_access_token=stale_access_token)
-    except AnonCredentialDead:
+    except AnonCredentialDead as exc:
         from hermes_cli.auth import get_provider_auth_state
         dead = get_provider_auth_state("nous") or {}
         clear_dead_guest("anon_credential_dead", dead_token=dead.get("anon_token"))
+        if getattr(exc, "code", None) == "anon_account_locked":
+            raise
         if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
             raise
         return _resolve_nous_runtime_credentials(
@@ -1232,21 +1240,19 @@ def _pool_first_oauth_status(
     Pool first (where `hermes auth` / `hermes model` store device_code tokens), then
     *on_pool_miss* for a pool-derived degraded status, then the legacy state via *resolve*.
     """
-    from hermes_cli.auth import _auth_file_path
+    from hermes_cli.auth import _auth_file_path, read_credential_pool
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.select()
+        entries = read_credential_pool(provider_id)
+        if entries:
+            entry = next((candidate for candidate in entries
+                          if isinstance(candidate, dict) and candidate.get("last_status") != "dead"), None)
             if entry is not None:
-                api_key = (
-                    getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", ""))
+                api_key = entry.get("runtime_api_key") or entry.get("access_token") or entry.get("api_key") or ""
                 if api_key and not is_expiring(api_key, 0):
                     return {
                         "logged_in": True, "auth_store": str(_auth_file_path()),
-                        "last_refresh": getattr(entry, "last_refresh", None),
-                        "auth_mode": auth_mode,
-                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key}
+                        "last_refresh": entry.get("last_refresh"), "auth_mode": auth_mode,
+                        "source": f"pool:{entry.get('label', 'unknown')}", "api_key": api_key}
             if on_pool_miss is not None and (degraded := on_pool_miss()):
                 return degraded
     except Exception:
@@ -1550,5 +1556,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         print("\nLogin cancelled.")
         raise SystemExit(130)
     except Exception as exc:
-        print(f"Login failed: {exc}")
+        from hermes_cli.auth_error_copy import sign_in_failure_lines
+        from urllib.parse import urlparse
+        host = urlparse(getattr(args, "portal_url", None) or "https://portal.nousresearch.com").hostname
+        for line in sign_in_failure_lines(exc, service_host=host or "Nous Portal", retry_command="hermes portal"):
+            print(line)
         raise SystemExit(1)

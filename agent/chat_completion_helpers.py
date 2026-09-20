@@ -661,7 +661,20 @@ def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     explicit = get_provider_stale_timeout(agent.provider, agent.model)
     if explicit is not None:
         return explicit
-    return _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
+    timeout = _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
+    if os.getenv("HERMES_STREAM_STALE_TIMEOUT") is not None:
+        return timeout
+    # Match non-streaming patience: leave time for recovery near the run deadline,
+    # without changing explicit settings or the separate local-provider branch.
+    run_budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not run_budget or not started:
+        return timeout
+    try:
+        remaining = float(run_budget) - (time.time() - float(started))
+    except (TypeError, ValueError):
+        return timeout
+    return min(timeout, max(60.0, remaining * 0.5))
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":

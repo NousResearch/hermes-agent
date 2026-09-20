@@ -364,7 +364,7 @@ _INGRESS_DISPATCH_STALL_HEARTBEATS = 2
 # to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0
 # Text send used to hang forever on a shielded httpcore socket (NordVPN/Telegram sticky IP).
-# A wedged send froze getUpdates on the same loop. Bound every Bot API write.
+# A wedged send froze getUpdates on the same loop. Bound every text send/edit and media upload.
 _TEXT_SEND_DEADLINE = 30.0
 # Wall-clock cap on one media upload (whole request: pool wait + connect + body upload + server
 # processing). NOT `_MEDIA_SEND_READ_TIMEOUT`: that is httpx's per-phase stall budget (time-to-first-byte

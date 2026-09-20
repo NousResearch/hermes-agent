@@ -831,6 +831,8 @@ export interface Translations {
       keepAwakeDesc: string
       disableF12Title: string
       disableF12Desc: string
+      historyArrowsTitle: string
+      historyArrowsDesc: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string

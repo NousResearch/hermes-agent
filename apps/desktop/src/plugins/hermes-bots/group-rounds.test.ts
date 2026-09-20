@@ -763,6 +763,29 @@ describe('turn prompt', () => {
     expect(peer).toMatch(/group chat with @hermes/)
   })
 
+  // The room contract asks for chat, not reports: prose only, terse
+  // acknowledgements are real replies, and substance survives — but the old
+  // "full quality and length" escape hatch is gone (it invited status dumps).
+  it('keeps member replies conversational — prose, no report formatting', async () => {
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
+
+    const prompt = buildGroupChatTurnPrompt({
+      deltaLines: ['You (user): any update?'],
+      groupName: 'Core',
+      members: [
+        { name: 'default', title: '' },
+        { name: 'builder', title: '' }
+      ],
+      viewer: { name: 'builder', title: '' }
+    })
+
+    expect(prompt).toMatch(/Talk like a person in a group chat/)
+    expect(prompt).toMatch(/No headings, no bullet or numbered lists/)
+    expect(prompt).toMatch(/A one-liner IS a real reply/)
+    expect(prompt).toMatch(/keep the substance/)
+    expect(prompt).not.toMatch(/full quality and length/)
+  })
+
   // #89720: a renamed primary is @bobby to the roster, autocomplete and the
   // mention resolver; introducing it to itself as @hermes made it treat
   // `@bobby …` as someone else's message and pass.
@@ -794,7 +817,9 @@ describe('turn prompt', () => {
     expect(peer).toMatch(/group chat with Bobby \(@bobby\)/)
   })
 
-  it('asks for full-quality results and short chatter, not short results', async () => {
+  // The contract changed shape, not intent: replies stay chat-sized, but the
+  // substance the user asked for still arrives — in sentences, not a report.
+  it('asks for real substance in chat-sized replies, not thin filler', async () => {
     const { rounds } = await loadRoom()
     const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
 
@@ -808,8 +833,8 @@ describe('turn prompt', () => {
       viewer: { name: 'research', title: '' }
     })
 
-    expect(prompt).toMatch(/never thin out real content/i)
-    expect(prompt).toMatch(/Keep chatter short/i)
+    expect(prompt).toMatch(/keep the substance/i)
+    expect(prompt).toMatch(/never pad a short answer into a long one/i)
   })
 })
 

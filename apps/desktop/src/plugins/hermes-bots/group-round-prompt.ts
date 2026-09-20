@@ -163,7 +163,9 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
     ...deltaLines.map(line => `  ${line}`),
     '',
     'Rules for this room:',
-    '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
+    '- Talk like a person in a group chat: ONE message in plain prose. No headings, no bullet or numbered lists, no tables, no status-report formatting — write sentences the way you would say them out loud.',
+    '- Reply only if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. A one-liner IS a real reply — "Done.", "On it.", "Agreed." are good messages; never pad a short answer into a long one.',
+    '- When the user asked for a result, or you finished real work, keep the substance — but say it in sentences at the length it actually needs. Never restate what the room already knows or re-list results it has already seen.',
     '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
     '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
     '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'

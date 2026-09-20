@@ -8,9 +8,11 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
@@ -65,6 +67,39 @@ def _with_discovery_context(exc: Exception, failures: list[str]):
     failure, since the 404 on the guessed ``/register`` URL is only its consequence (#113771)."""
     return type(exc)(f"{_DISCOVERY_CONTEXT_LEAD} ({'; '.join(failures)}); dynamic client registration "
                      f"then fell back to a guessed endpoint on the MCP host and failed: {exc}")
+
+
+def _canonicalize_issuer(issuer: str) -> str:
+    """Canonicalize only the root-path slash of an HTTPS/HTTP issuer.
+
+    RFC 8414 requires the metadata issuer to match the discovery issuer. Some
+    providers advertise ``https://host/`` in protected-resource metadata and
+    return ``https://host`` in authorization-server metadata (or vice versa).
+    These are the same origin with the default root path, but a slash on a
+    path-based issuer is meaningful and must remain strict.
+    """
+    try:
+        parsed = urlsplit(str(issuer))
+    except ValueError:
+        return str(issuer)
+    if (parsed.scheme in {"http", "https"} and parsed.netloc
+            and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment):
+        return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    return str(issuer)
+
+
+class _BufferedOAuthMetadataResponse:
+    """Small response proxy whose body is replaced after issuer canonicalization."""
+
+    def __init__(self, response: Any, content: bytes):
+        self._response = response
+        self._content = content
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._response, name)
+
+    async def aread(self) -> bytes:
+        return self._content
 
 
 
@@ -228,7 +263,8 @@ class HermesProviderMixin:
                     # feed the inner generator None. Async generators have no
                     # `yield from`, hence the manual pump.
                     try:
-                        sent = yield out
+                        incoming = yield out
+                        sent = await self._normalize_metadata_response(out, incoming)
                     except GeneratorExit:
                         await inner.aclose()
                         raise
@@ -242,6 +278,39 @@ class HermesProviderMixin:
                             sent = await self._hermes_accept_origin_issued_metadata(sent)
             finally:
                 await self._hermes_release_refresh_fence()
+
+    async def _normalize_metadata_response(self, request: Any, response: Any) -> Any:
+        """Align root issuer slashes before the SDK performs its strict comparison.
+
+        The MCP SDK validates the parsed metadata against ``context.auth_server_url``
+        inside its generator, so this hook must run while bridging the response
+        back into the SDK. It changes only the JSON ``issuer`` field on an
+        authorization-server metadata response; all other response fields and
+        validation behavior remain intact.
+        """
+        auth_server_url = getattr(self.context, "auth_server_url", None)
+        request_url = str(getattr(request, "url", ""))
+        if (not auth_server_url or not any(marker in request_url for marker in (
+                "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"))):
+            return response
+        canonical_expected = _canonicalize_issuer(auth_server_url)
+        self.context.auth_server_url = canonical_expected
+        if getattr(response, "status_code", None) != 200:
+            return response
+        try:
+            content = await response.aread()
+            payload = json.loads(content)
+        except (AttributeError, TypeError, ValueError):
+            return response
+        if not isinstance(payload, dict) or not isinstance(payload.get("issuer"), str):
+            return _BufferedOAuthMetadataResponse(response, content)
+        canonical_issuer = _canonicalize_issuer(payload["issuer"])
+        if canonical_issuer == payload["issuer"]:
+            return _BufferedOAuthMetadataResponse(response, content)
+        payload["issuer"] = canonical_issuer
+        return _BufferedOAuthMetadataResponse(
+            response, json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
 
     async def _refresh_token(self):
         """Take the refresh fence, then build the request from the token we own.
@@ -479,7 +548,7 @@ def _metadata_issuer(context: Any) -> str | None:
     """Discovered authorization-server issuer from the SDK auth context, without trailing slash."""
     meta = getattr(context, "oauth_metadata", None)
     issuer = getattr(meta, "issuer", None) if meta is not None else None
-    return (str(issuer).rstrip("/") or None) if issuer else None
+    return (_canonicalize_issuer(str(issuer)) or None) if issuer else None
 
 
 def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
@@ -538,7 +607,7 @@ def enforce_refresh_token_issuer(context: Any) -> None:
     current = _metadata_issuer(context)
     if current is None:  # not discovered yet; the SDK's 401-branch discovery + _store_tokens stamp it later
         return
-    stored = (storage.loaded_issuer or "").rstrip("/") or None
+    stored = _canonicalize_issuer(storage.loaded_issuer) if storage.loaded_issuer else None
     if stored is None:
         storage.stamp_issuer(current)
         return

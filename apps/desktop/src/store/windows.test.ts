@@ -7,6 +7,7 @@ import {
   canOpenNewWindow,
   canOpenSessionWindow,
   isPeerInstanceWindow,
+  isProfilePinnedWindow,
   openBrowserInNewWindow,
   openNewWindow,
   openSessionInNewWindow
@@ -68,6 +69,15 @@ describe('isPeerInstanceWindow', () => {
     expect(isPeerInstanceWindow('?peer=0')).toBe(false)
     expect(isPeerInstanceWindow('?win=secondary')).toBe(false)
     expect(isPeerInstanceWindow('')).toBe(false)
+  })
+})
+
+describe('isProfilePinnedWindow', () => {
+  it('is set only by an explicit profile-window launch, not by an inherited peer route', () => {
+    expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=&profileWindow=1')).toBe(true)
+    expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=remote')).toBe(false)
+    expect(isProfilePinnedWindow('?profileWindow=0')).toBe(false)
+    expect(isProfilePinnedWindow('')).toBe(false)
   })
 })
 

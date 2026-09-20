@@ -23,25 +23,47 @@ class DeviceOAuthMetadata(OAuthMetadata):
 
 
 async def _discover(client, provider):
+    from mcp.client.auth.exceptions import OAuthFlowError
     from mcp.client.auth.utils import (
-        build_oauth_authorization_server_metadata_discovery_urls,
         build_protected_resource_metadata_discovery_urls,
         extract_resource_metadata_from_www_auth,
         handle_protected_resource_response,
-        validate_metadata_issuer,
     )
     context = provider.context
     response = await client.get(context.server_url)
     challenge = extract_resource_metadata_from_www_auth(response)
+    prm = None
     for url in build_protected_resource_metadata_discovery_urls(challenge, context.server_url):
         response = await client.get(url)
         prm = await handle_protected_resource_response(response)
         if prm:
             await provider._validate_resource_match(prm)
             context.protected_resource_metadata = prm
-            context.auth_server_url = str(prm.authorization_servers[0])
             break
-    for url in build_oauth_authorization_server_metadata_discovery_urls(context.auth_server_url, context.server_url):
+    # RFC 9728 lets a resource advertise several authorization servers; a browser-only
+    # server often comes first and the device-code one later, so try each in order.
+    servers = [str(url) for url in prm.authorization_servers] if prm else [None]
+    failures = []
+    for auth_server_url in servers:
+        try:
+            metadata = await _device_metadata(client, context.server_url, auth_server_url)
+        except (RuntimeError, OAuthFlowError, ValueError) as exc:
+            failures.append((auth_server_url, exc))
+            continue
+        context.auth_server_url = auth_server_url
+        context.oauth_metadata = metadata
+        return
+    if len(failures) == 1:
+        raise failures[0][1]
+    raise RuntimeError("No advertised authorization server supports device login: "
+                       + "; ".join(f"{url}: {exc}" for url, exc in failures))
+
+
+async def _device_metadata(client, server_url, auth_server_url):
+    """Issuer-bound device metadata of one authorization server; raises when it is unusable."""
+    from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls, validate_metadata_issuer
+
+    for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, server_url):
         response = await client.get(url)
         if response.status_code == 404:
             continue
@@ -49,13 +71,12 @@ async def _discover(client, provider):
         if not data.get("device_authorization_endpoint"):
             raise RuntimeError("Server does not advertise device authorization; use --flow browser if supported")
         metadata = DeviceOAuthMetadata.model_validate(data)
-        if context.auth_server_url:
-            validate_metadata_issuer(metadata, context.auth_server_url)
+        if auth_server_url:
+            validate_metadata_issuer(metadata, auth_server_url)
         grants = metadata.grant_types_supported
         if grants is not None and DEVICE_GRANT not in grants:
             raise RuntimeError("Server does not advertise the device_code grant")
-        context.oauth_metadata = metadata
-        return
+        return metadata
     raise RuntimeError("No OAuth authorization server metadata found")
 
 

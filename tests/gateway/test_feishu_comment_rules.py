@@ -154,5 +154,34 @@ class TestPairingStore(unittest.TestCase):
         self.assertIn("ou_new", approved)
 
 
+class TestRulesFollowActiveProfile(unittest.TestCase):
+    """The multiplexed gateway serves every profile from one process: the rules/pairing files and
+    their mtime caches must follow the context-local HERMES_HOME override, one slot per profile."""
+
+    def test_rules_and_pairing_follow_home_override(self):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from plugins.platforms.feishu import feishu_comment_rules as fcr
+
+        def under(home, fn):
+            token = set_hermes_home_override(str(home))
+            try:
+                return fn()
+            finally:
+                reset_hermes_home_override(token)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prof_a, prof_b = Path(tmp) / "A", Path(tmp) / "B"
+            for home, enabled in ((prof_a, True), (prof_b, False)):
+                home.mkdir()
+                (home / "feishu_comment_rules.json").write_text(json.dumps({"enabled": enabled}))
+            self.assertTrue(under(prof_a, fcr.load_config).enabled)  # warm A's slot
+            self.assertFalse(under(prof_b, fcr.load_config).enabled)
+            self.assertTrue(under(prof_a, fcr.load_config).enabled)  # A's slot survives B
+            self.assertTrue(under(prof_b, lambda: fcr.pairing_add("ou_b")))
+            self.assertTrue((prof_b / "feishu_comment_pairing.json").exists())
+            self.assertFalse((prof_a / "feishu_comment_pairing.json").exists())
+            self.assertNotIn("ou_b", under(prof_a, fcr.pairing_list))
+
+
 if __name__ == "__main__":
     unittest.main()

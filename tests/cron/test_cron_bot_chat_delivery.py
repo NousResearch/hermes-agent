@@ -6,7 +6,11 @@ preflight exemption, create-time validation, the subprocess delivery lane,
 and the delivery-targets listing used by UI pickers.
 """
 
+import os
 import subprocess
+import sys
+import textwrap
+import time
 from unittest import mock
 
 import pytest
@@ -21,6 +25,7 @@ from cron.scheduler_delivery import (
     parse_bot_chat_deliver_token,
 )
 from cron.scheduler_preflight import _preflight_check_delivery
+from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
 
 
 # ── token parsing ────────────────────────────────────────────────────────────
@@ -114,8 +119,8 @@ def test_create_validation_accepts_bare_and_existing():
 
 # ── delivery lane ────────────────────────────────────────────────────────────
 
-def _completed(returncode=0, stderr=""):
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
+def _completed(returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 def test_deliver_runs_canonical_bot_chat_lane():
@@ -123,19 +128,19 @@ def test_deliver_runs_canonical_bot_chat_lane():
     chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>."""
     calls = {}
 
-    def fake_run(argv, **kwargs):
-        calls["argv"] = argv
-        calls["kwargs"] = kwargs
+    def fake_run(argv, env, report_path, timeout):
+        calls["argv"], calls["env"], calls["report_path"] = argv, env, report_path
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
 
     assert err is None
     argv = calls["argv"]
-    assert argv[0] == "/usr/bin/hermes"
-    assert "-p" not in argv  # own profile: subprocess inherits HERMES_HOME
+    # The running install's interpreter, not whatever `hermes` PATH names (same order as /update).
+    assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
+    assert argv[3:5] == ["-p", "default"]  # do not follow active_profile
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv
@@ -143,40 +148,68 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert "--query-file" in argv
     # Message rides a temp file, never inline argv (quote/expansion safety).
     assert not any("the output" in str(a) for a in argv)
-
-
-def test_deliver_named_profile_uses_p_flag_and_clears_home():
-    calls = {}
-
-    def fake_run(argv, **kwargs):
-        calls["argv"] = argv
-        calls["kwargs"] = kwargs
-        return _completed()
-
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
-
-    assert err is None
-    argv = calls["argv"]
-    assert argv[1:3] == ["-p", "research"]
-    # -p owns resolution; the scheduler's own HERMES_HOME must not leak in.
-    assert "HERMES_HOME" not in calls["kwargs"]["env"]
+    # The child reports its turn outcome here so the cap bounds the turn, not the exit linger.
+    assert calls["env"][TURN_REPORT_FILE_ENV] == calls["report_path"]
 
 
 def test_deliver_failure_returns_error_string():
     with mock.patch.object(
-        sched.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
+        sched_delivery, "_run_bot_chat_turn", return_value=_completed(returncode=1, stderr="boom")
     ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
     assert "boom" in err
 
 
+def test_deliver_failure_reports_both_streams_labeled():
+    """A failed turn must keep stderr AND stdout, labeled — ``stderr or
+    stdout`` discarded half the signal (#104056)."""
+    with mock.patch.object(
+        sched_delivery, "_run_bot_chat_turn",
+        return_value=_completed(returncode=1, stdout="banner out", stderr="boom-err"),
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is not None
+    assert "stderr: boom-err" in err
+    assert "stdout: banner out" in err
+
+
+def test_deliver_failure_banner_only_stdout_names_exit_code_not_banner():
+    """The reported shape: empty stderr, stdout holding only the resume
+    banner — the recorded error must say what happened (exit code, banner-only
+    stdout) instead of echoing the banner as if it were a reason (#104056)."""
+    banner = ('↻ Resumed session 20260905_121420_8084c7 "Bot Chat" (1 user message, 1 total messages)'
+              '\n\nsession_id: 20260905_121420_8084c7')
+    with mock.patch.object(
+        sched_delivery, "_run_bot_chat_turn",
+        return_value=_completed(returncode=1, stdout=banner, stderr=""),
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is not None
+    assert "exit code 1" in err
+    assert "stdout was only the resume banner" in err
+    assert "Resumed session" not in err
+    assert "stderr:" not in err
+
+
+def test_deliver_failure_persisted_stdout_tail_is_short_and_redacted():
+    """``last_delivery_error`` lands in jobs.json / the ledger: the model's
+    answer on stdout is capped to a short tail and secrets are scrubbed."""
+    answer = "x" * 5000 + "\nToken: sk-ant-api03-" + "A" * 80 + " done"
+    with mock.patch.object(
+        sched_delivery, "_run_bot_chat_turn",
+        return_value=_completed(returncode=1, stdout=answer, stderr="boom-err"),
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is not None
+    stdout_part = err.split("stdout: ", 1)[1]
+    assert len(stdout_part) <= 200
+    assert "sk-ant-api03-" + "A" * 80 not in err
+
+
 def test_deliver_timeout_returns_error_string():
     with mock.patch.object(
-        sched.subprocess, "run",
+        sched_delivery, "_run_bot_chat_turn",
         side_effect=subprocess.TimeoutExpired(cmd="hermes", timeout=600),
     ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
@@ -188,19 +221,68 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
     """The injected turn must self-identify as scheduled output, not the user."""
     captured = {}
 
-    def fake_run(argv, **kwargs):
+    def fake_run(argv, env, report_path, timeout):
         qf = argv[argv.index("--query-file") + 1]
         with open(qf, encoding="utf-8") as fh:
             captured["message"] = fh.read()
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the payload", "")
 
     assert 'Cronjob "Daily digest" output' in captured["message"]
     assert "not the user" in captured["message"]
     assert "the payload" in captured["message"]
+
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(sched_delivery.__file__)))
+
+
+def _child_env() -> dict:
+    """The stand-in child imports ``hermes_cli`` from this checkout, like the real ``-m hermes_cli.main``."""
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p)}
+
+
+def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
+    """The cap bounds the TURN: a child that reported its turn and then lingers for a nested
+    notify_on_complete reply (bounded by oneshot_completion_wait_seconds, default == the cap) is
+    booked from the report promptly and is NOT killed (#113608)."""
+    report = tmp_path / "turn.json"
+    child = textwrap.dedent("""
+        import os, time
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        write_turn_report(os.environ.pop(TURN_REPORT_FILE_ENV), exit_code=0)
+        time.sleep(30)
+        """)
+    procs, real_popen = [], subprocess.Popen
+
+    def spy(*args, **kwargs):
+        procs.append(real_popen(*args, **kwargs))
+        return procs[-1]
+
+    started = time.monotonic()
+    try:
+        with mock.patch.object(sched_delivery.subprocess, "Popen", side_effect=spy):
+            result = sched_delivery._run_bot_chat_turn(
+                [sys.executable, "-c", child], {**_child_env(), TURN_REPORT_FILE_ENV: str(report)}, str(report), timeout=10)
+        elapsed = time.monotonic() - started
+        assert result.returncode == 0
+        assert elapsed < 8, elapsed
+        assert procs[0].poll() is None, "the lingering child must survive the booking"
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
+def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
+    """Control: with no turn report the cap stays the guard it always was."""
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        sched_delivery._run_bot_chat_turn(
+            [sys.executable, "-c", "import time; time.sleep(30)"], _child_env(), str(tmp_path / "turn.json"), timeout=1)
+    assert time.monotonic() - started < 8
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

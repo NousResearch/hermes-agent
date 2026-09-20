@@ -65,7 +65,7 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 
@@ -162,7 +162,7 @@ class TestMcpRemove:
         token_dir = tmp_path / "mcp-tokens"
         token_dir.mkdir()
         token_file = token_dir / "oauth-srv.json"
-        token_file.write_text("{}")
+        token_file.write_text("{}", encoding="utf-8")
 
         from hermes_cli.mcp_config import cmd_mcp_remove
 
@@ -302,6 +302,35 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    def test_exit_codes_distinguish_failure_from_unknown_server(self, tmp_path, capsys, monkeypatch):
+        """0 connected, 1 connection failed, 3 not in config — never argparse's 2, never a silent 0."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: [])
+        assert cmd_mcp_test(_make_args(name="ink")) == 0
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp_test(_make_args(name="ink")) == 1
+        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
+        assert "not found in config" in capsys.readouterr().out
+
+    def test_cli_dispatcher_forwards_test_exit_code(self, tmp_path, monkeypatch):
+        """``hermes mcp test`` reaches ``main()`` with the handler's code (the dispatcher used to drop it)."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.main import cmd_mcp
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp(_make_args(name="ink", mcp_action="test")) == 1
+        assert cmd_mcp(_make_args(name="doesnotexist", mcp_action="test")) == 3
+        assert cmd_mcp(_make_args(mcp_action="list")) is None
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
@@ -532,6 +561,34 @@ class TestProbeEnvResolution:
 
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_probe_propagates_explicit_connect_timeout_to_config(self, monkeypatch):
+        """An explicit `connect_timeout=` override (e.g. `hermes mcp login`'s 315s, extended so a
+        user has time to finish an OAuth browser flow) must reach `config["connect_timeout"]` —
+        that's what tools/mcp_tool_transport.py::_negotiate_session bounds session.initialize()
+        with. Left stale at its unrelated 60s default, the still-pending OAuth callback wait gets
+        cancelled mid-flow well before the caller's intended deadline."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            seen["config"] = config
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+
+        mc._probe_single_server(
+            "travelermd", {"url": "https://mcp.traveler.md/mcp", "auth": "oauth"}, connect_timeout=315.0
+        )
+
+        assert seen["config"]["connect_timeout"] == 315.0
 
 
 class TestProbeCapabilityGating:
@@ -786,7 +843,7 @@ class TestMcpLogin:
             assert staging_home is not None
             staged_token = staging_home / "mcp-tokens" / "realserver.json"
             staged_token.parent.mkdir(parents=True)
-            staged_token.write_text('{"access_token": "x"}')
+            staged_token.write_text('{"access_token": "x"}', encoding="utf-8")
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(
@@ -954,3 +1011,13 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+def test_tool_filters_keeps_explicit_empty_include():
+    """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
+    "no filter"; only an absent/non-list key is None (#12865)."""
+    from hermes_cli.mcp_config import _tool_filters
+
+    assert _tool_filters({"tools": {"include": []}}) == ([], None)
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({}) == (None, None)

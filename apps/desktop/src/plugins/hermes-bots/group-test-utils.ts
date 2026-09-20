@@ -84,12 +84,16 @@ export interface GatewayOptions {
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
   approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
-  /** Per profile: carry `pending_clarify` on its first `until` resumes. */
+  /** Per profile: carry open server requests on its first `until` resumes. */
+  /** `payload` is an open-request frame `{ id, method: 'clarify', params }`. */
   clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST
    *  `profiles.configure`, then reject it as a CAS conflict — the race the
    *  sync worker's pull-merge-retry exists for. */
   conflictOnce?: { key: string; value: unknown }
+  /** Reject attach RPCs whose method is in this map — after recording the call
+   *  so tests can see the staging attempt even when it throws. */
+  failAttach?: Record<string, unknown>
   /** Reject every prompt.submit with this — a fatal, non-recoverable failure. */
   failEverySubmitWith?: unknown
   /** Reject only the FIRST prompt.submit — the 4001 reap the retry recovers. */
@@ -98,6 +102,10 @@ export interface GatewayOptions {
   onResumePoll?: (polls: number) => void
   /** Report the member inflight for the first N post-submit polls. */
   pollsBusy?: number
+  /** After a submit, every resume replays the gateway's RETAINED failed turn
+   *  (`inflight: { status: 'error', error }`, `running: false`) instead of a
+   *  reply — the snapshot `_fail_inflight_turn` leaves for reconnecting clients. */
+  retainedErrorAfterSubmit?: string
   turn?: TurnScript
 }
 
@@ -265,14 +273,19 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       const clarify = options.clarifyUntil?.[session.profile]
       const approval = options.approvalUntil?.[session.profile]
 
+      const retained =
+        options.retainedErrorAfterSubmit && session.messages.at(-1)?.role === 'user'
+          ? { error: options.retainedErrorAfterSubmit, status: 'error', streaming: false }
+          : null
+
       return {
-        inflight: busy,
+        inflight: retained ?? busy,
         message_count: busy ? 0 : session.messages.length,
         messages: busy || params.omit_messages ? [] : [...session.messages],
         running: false,
         session_id: session.runtime,
         session_key: session.stored,
-        ...(clarify && seen <= clarify.until ? { pending_clarify: clarify.payload } : {}),
+        ...(clarify && seen <= clarify.until ? { open_requests: [clarify.payload] } : {}),
         ...(approval && seen <= approval.until ? { pending_approval: approval.payload } : {})
       }
     }
@@ -292,6 +305,10 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
         profile: session.profile,
         runtime: String(params.session_id ?? '')
       })
+
+      if (Object.hasOwn(options.failAttach ?? {}, method)) {
+        throw options.failAttach![method]
+      }
 
       return method === 'file.attach'
         ? { attached: true, ref_text: `@file:attachments/${String(params.name ?? 'attachment')}` }
@@ -425,7 +442,8 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
     host,
-    SkillsView: undefined,
+    CapabilitiesView: undefined,
+    MessageTextContent: undefined,
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
     useQuery: () => ({ data: [], isLoading: false }),

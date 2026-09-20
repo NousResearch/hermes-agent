@@ -42,6 +42,9 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Exact decoded provider response body (no headers/credentials) for integrations that need
+    # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
+    raw: Optional[dict] = None
 
     @property
     def available(self) -> bool:
@@ -186,9 +189,11 @@ def _nous_logged_in() -> bool:
 def _fetch_portal_account(timeout: float):
     """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout)."""
     import concurrent.futures
+    import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
+    context = contextvars.copy_context()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
 
 
 def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
@@ -293,13 +298,26 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
 
 
 def _resolve_codex_usage_credentials(
-    base_url: Optional[str], api_key: Optional[str],
+    base_url: Optional[str], api_key: Optional[str], *, force_refresh: bool = False,
 ) -> tuple[str, str, Optional[str]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
     explicit_key = str(api_key or "").strip()
-    if explicit_key:
+    if explicit_key and not force_refresh:
         return explicit_key, str(base_url or "").strip(), None
+    if explicit_key:
+        # Forced retry for a live agent's own credential: refresh THAT credential (singleton or the
+        # pool entry that issued it), never re-resolve — that would render another pool account's usage.
+        try:
+            singleton_key = str((_read_codex_tokens().get("tokens") or {}).get("access_token", "") or "").strip()
+        except AuthError:
+            singleton_key = ""
+        if singleton_key != explicit_key:
+            from agent.credential_pool import load_pool
+            entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
+            if entry is None:
+                raise RuntimeError("Could not refresh the Codex credential this session runs on")
+            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -309,7 +327,10 @@ def _resolve_codex_usage_credentials(
         # setup this returns a usable ``source="credential_pool"`` token. A refresh/network error must
         # propagate — the outer ``fetch_account_usage`` guard fails open (shows nothing this turn) rather
         # than reporting the wrong account.
-        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        resolve_kwargs = {"refresh_if_expiring": True}
+        if force_refresh:
+            resolve_kwargs["force_refresh"] = True
+        creds = resolve_codex_runtime_credentials(**resolve_kwargs)
         account_id: Optional[str] = None
         try:
             tokens = _read_codex_tokens().get("tokens") or {}
@@ -334,8 +355,10 @@ def _codex_banked_resets(payload: dict) -> int:
 
 
 def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
+    """auth.json's ``account_id`` wins over the JWT claim; the JWT still supplies the residency header."""
+    from agent.codex_headers import codex_account_headers
     return {"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "codex-cli",
-            **({"ChatGPT-Account-Id": account_id} if account_id else {})}
+            **codex_account_headers(token), **({"ChatGPT-Account-ID": account_id} if account_id else {})}
 
 
 def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
@@ -362,6 +385,28 @@ def _usage_windows(
     return windows
 
 
+# Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
+_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "Session", 604800: "Weekly"}
+_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "Session"), ("secondary_window", "Weekly"))
+
+
+def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
+    """Label Codex windows by their published duration, not response position (#65387).
+
+    The usage API keys windows ``primary_window``/``secondary_window`` by position; when only the
+    weekly limit is returned it occupies ``primary_window`` and the positional mapping mislabeled it
+    ``Session``. Windows whose ``limit_window_seconds`` is missing or unrecognized keep the legacy
+    positional label so duration-less payloads render exactly as before.
+    """
+    labels = []
+    for key, fallback in _CODEX_WINDOW_POSITIONAL_LABELS:
+        window = rate_limit.get(key) or {}
+        seconds = window.get("limit_window_seconds") if isinstance(window, dict) else None
+        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
+        labels.append((key, label))
+    return tuple(labels)
+
+
 def _plural(count: int) -> str:
     return "s" if count != 1 else ""
 
@@ -370,9 +415,21 @@ def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    payload = _get_json(_codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0)
-    windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
-                             "used_percent", "reset_at")
+    try:
+        payload = _get_json(
+            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 401:
+            raise
+        token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
+            base_url, api_key, force_refresh=True,
+        )
+        payload = _get_json(
+            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
+        )
+    rate_limit = payload.get("rate_limit") or {}
+    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
@@ -382,7 +439,8 @@ def _fetch_codex_account_usage(
         details.append(f"Credits balance: ${float(balance):.2f}")
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
-    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")))
+    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
+                     raw=payload)
 
 
 @dataclass(frozen=True)
@@ -468,23 +526,37 @@ def redeem_codex_reset_credit(
         token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     except Exception:
         return _unavailable("No Codex credentials available. Run `hermes auth` to sign in with your ChatGPT account.")
-    usage_url, _credits_url, consume_url = _codex_backend_urls(resolved_base_url)
-    headers = _codex_headers(token, account_id)
+    redeem_request_id = str(uuid.uuid4())
     try:
-        with httpx.Client(timeout=15.0) as client:
-            usage_resp = client.get(usage_url, headers=headers)
-            usage_resp.raise_for_status()
-            payload = usage_resp.json() or {}
-            available = _codex_banked_resets(payload)
-            refused = _codex_reset_guard(payload, available, force)
-            if refused is not None:
-                return refused
-            consume_resp = client.post(
-                consume_url, headers={**headers, "Content-Type": "application/json"},
-                json={"redeem_request_id": str(uuid.uuid4())},
-            )
-            consume_resp.raise_for_status()
-            body = consume_resp.json() or {}
+        for attempt in range(2):
+            usage_url, _credits_url, consume_url = _codex_backend_urls(resolved_base_url)
+            headers = _codex_headers(token, account_id)
+            try:
+                with httpx.Client(timeout=15.0) as client:
+                    usage_resp = client.get(usage_url, headers=headers)
+                    usage_resp.raise_for_status()
+                    payload = usage_resp.json() or {}
+                    available = _codex_banked_resets(payload)
+                    refused = _codex_reset_guard(payload, available, force)
+                    if refused is not None:
+                        return refused
+                    consume_resp = client.post(
+                        consume_url, headers={**headers, "Content-Type": "application/json"},
+                        json={"redeem_request_id": redeem_request_id},
+                    )
+                    consume_resp.raise_for_status()
+                    body = consume_resp.json() or {}
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 401 or attempt > 0:
+                    raise
+                try:
+                    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
+                        base_url, api_key, force_refresh=True,
+                    )
+                except Exception:
+                    # Refresh token dead too: the 401 hint (re-login) is the actionable message.
+                    raise exc from None
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code in (401, 403):
@@ -563,11 +635,38 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 }
 
 
+# Wall-clock bound on a plugin profile's ``fetch_account_usage`` hook. The built-in fetchers above carry
+# their own httpx timeouts; a plugin hook is arbitrary code, and the gateway/TUI ``/usage`` paths await
+# this function with no deadline of their own (only the CLI wraps it in a 10 s future), so the bound
+# lives here where every surface shares it.
+PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
+
+
+def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Run the profile hook on a daemon thread; past the deadline (or on any exception) → None."""
+    import contextvars
+    import threading
+    result: list = []
+    context = contextvars.copy_context()  # the hook may read profile-scoped secrets
+    worker = threading.Thread(
+        target=lambda: result.append(
+            context.run(profile.fetch_account_usage, base_url=base_url, api_key=api_key)),
+        name="plugin-account-usage", daemon=True)
+    worker.start()
+    worker.join(PLUGIN_USAGE_HOOK_DEADLINE_S)
+    return result[0] if result else None
+
+
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
-        return fetcher(base_url, api_key) if fetcher else None
+        if fetcher:
+            return fetcher(base_url, api_key)
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None

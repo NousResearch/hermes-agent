@@ -7,12 +7,14 @@ import logging
 import re
 from contextlib import nullcontext
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _DB_PERSISTED_MARKER,
     ContextCompressor,
+    _newest_checkpoint_carrier,
+    drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
@@ -40,6 +42,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 # Reasoning/codex fields are role-gated (assistant-only) inside _insert_message_rows.
 _ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
+_PERSIST_AFTER_ADMISSION_INTERRUPT = "_persist_after_admission_interrupt"
 
 
 def _is_ephemeral_scaffolding(msg: Any) -> bool:
@@ -72,6 +75,19 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
         and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
         and (not isinstance(content, list) or isinstance(override, list))
     )
+
+
+def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -> Tuple[Any, Any]:
+    """``(content, api_content)`` as the current turn's user row is written: the persist override is the
+    clean transcript, the live content is what the wire sent — so when they differ and nothing else was
+    injected, the live bytes ARE the sidecar. Shared by the flush and the turn-start stamp so the stamp
+    matches the row the flush wrote."""
+    override = getattr(agent, "_persist_user_message_override", None)
+    if _override_replaces_content(msg, content, override):
+        if api_content is None and isinstance(content, str) and content != override:
+            api_content = content
+        content = override
+    return content, api_content
 
 
 def _summary_display_kind(msg: Dict) -> Any:
@@ -143,12 +159,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     api_content = msg.get("api_content") if isinstance(msg.get("api_content"), str) else None
     timestamp = msg.get("timestamp")
     if is_current_turn_user and role == "user":
-        override = getattr(agent, "_persist_user_message_override", None)
-        if _override_replaces_content(msg, content, override):
-            # Live content is what the wire sent, the override is the clean transcript; keep the sent bytes.
-            if api_content is None and isinstance(content, str) and content != override:
-                api_content = content
-            content = override
+        content, api_content = durable_user_row_content(agent, msg, content, api_content)
         ov_timestamp = getattr(agent, "_persist_user_message_timestamp", None)
         timestamp = timestamp if ov_timestamp is None else ov_timestamp
     if api_content == content:
@@ -193,15 +204,22 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
-        if id(msg) in history_ids or id(msg) in seed_ids:
+        if (
+            id(msg) in history_ids or id(msg) in seed_ids
+        ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
             msg[_DB_PERSISTED_MARKER] = True
             continue
+        if getattr(agent, "_mute_notification_reply", False):
+            # Only new rows, never the cached history prefix. Keep evidence/model
+            # context intact while transcript pollers omit unsolicited presentation.
+            msg["display_kind"] = "hidden"
+            msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 
 
-def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict]) -> None:
+def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict], messages: List[Dict]) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
@@ -212,6 +230,11 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
+    if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
+        # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
+        # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:
+        # the rows are durable exactly as the dicts now read.
+        drop_shadowed_checkpoints(messages)
 
 
 def _db_flush_adopt_compression_tip(agent) -> bool:
@@ -355,7 +378,7 @@ class SessionPersistenceMixin:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
-            _db_flush_write(self, batch_rows, batch_msgs)
+            _db_flush_write(self, batch_rows, batch_msgs, messages)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)

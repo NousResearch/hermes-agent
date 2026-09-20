@@ -10,6 +10,7 @@ import {
   type MessageGroup,
   resolveThreadScrollTarget,
   RUN_START_SNAP_THRESHOLD_PX,
+  shouldAnchorBeforePrepend,
   shouldClampTranscriptBudget,
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
@@ -112,6 +113,21 @@ describe('shouldClampTranscriptBudget', () => {
   it('snaps only a hot-hidden pane that outgrew the retention budget', () => {
     expect(shouldClampTranscriptBudget(true, 10, 5)).toBe(true)
     expect(shouldClampTranscriptBudget(true, 5, 5)).toBe(false)
+  })
+})
+
+describe('shouldAnchorBeforePrepend', () => {
+  // Regression for #99920: the settle loop hands a bottom-pinned load back at
+  // the first-paint height, BEFORE the backfill commits; skipping the anchor
+  // there left the prepend re-pinned only by a ResizeObserver frames later —
+  // a full-viewport lurch on every long-session switch.
+  it('anchors an unsettled load that is pinned to the bottom', () => {
+    expect(shouldAnchorBeforePrepend(false, { kind: 'bottom' })).toBe(true)
+  })
+
+  it('never anchors an unsettled offset restore still being applied', () => {
+    expect(shouldAnchorBeforePrepend(false, { fromBottom: 3000, kind: 'offset' })).toBe(false)
+    expect(shouldAnchorBeforePrepend(true, { fromBottom: 3000, kind: 'offset' })).toBe(true)
   })
 })
 
@@ -247,6 +263,21 @@ describe('firstVisibleGroupIndex', () => {
     const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
 
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
+  })
+
+  it('keeps the cut stable while the unbudgeted streaming tail grows', () => {
+    const history = [group('old', 50), group('mid', 30), group('recent', 30)]
+    const initial = [...history, group('streaming', 1)]
+    const grown = [...history, group('streaming', 5_000)]
+
+    expect(firstVisibleGroupIndex(initial, 60, 0, true)).toBe(1)
+    expect(firstVisibleGroupIndex(grown, 60, 0, true)).toBe(1)
+  })
+
+  it('exempts exactly one newest group while older history stays budgeted', () => {
+    const groups = [group('a', 200), group('b', 50), group('c', 50), group('d', 50), group('e', 10_000)]
+
+    expect(firstVisibleGroupIndex(groups, 60, 0, true)).toBe(2)
   })
 })
 

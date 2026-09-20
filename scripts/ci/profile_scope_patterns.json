@@ -1,0 +1,173 @@
+{
+  "meta": {
+    "source": "hermes-agent-dev skill, cross-cutting-profile-scope-patterns.json (validated pattern set)",
+    "selection": "patterns with a scope_hint that hit <= 50 sites on main; the >50 ones are review greps, not lint",
+    "class_legend": {
+      "C1": "secret/home read outside the turn scope",
+      "C2": "child-process env built from os.environ",
+      "C3": "side-worker / secondary entrypoint binds home only",
+      "C4": "per-profile key introduced, consumer reads raw name/id",
+      "C5": "adapter setting precedence & raw os.getenv fallback",
+      "C6": "launch-profile / reserved-name asymmetry",
+      "C7": "process identity by bare PID or argv substring",
+      "C8": "config key registry vs runtime reader",
+      "C9": "systemd/launchd unit variants & migration transactionality",
+      "C10": "profile lifecycle ops under a live multiplexer",
+      "C11": "bare thread lifecycle / supervision",
+      "C12": "Desktop topology / surface parity (CLI vs REST vs RPC)",
+      "C13": "kanban notifier routing / silent fail-closed"
+    },
+    "dropped": [
+      "P01: 296 hits on main",
+      "P02: 378 hits on main",
+      "P03: 222 hits on main",
+      "P04: 613 hits on main",
+      "P07: 115 hits on main",
+      "P09: 78 hits on main",
+      "P12: 73 hits on main",
+      "P14: 102 hits on main",
+      "P15: 212 hits on main",
+      "P16: 100 hits on main",
+      "P20: 81 hits on main",
+      "P24: 62 hits on main",
+      "P26: 252 hits on main"
+    ],
+    "usage": "scripts/check_profile_scope_patterns.py --base origin/main [--head HEAD] | --files <paths>; optional path_regex restricts a pattern to matching repo-relative paths"
+  },
+  "patterns": [
+    {
+      "id": "P05",
+      "class": "C2",
+      "pattern_regex": "subprocess\\.(Popen|run|check_output)\\([^)]*env\\s*=\\s*(os\\.environ|dict\\(os\\.environ|\\{\\*\\*os\\.environ)|env\\s*=\\s*os\\.environ\\.copy\\(\\)|spawn\\([^)]*env:\\s*process\\.env|env\\s*=\\s*dict\\(os\\.environ\\)|\\{\\*\\*os\\.environ\\}",
+      "scope_hint": "Also grep the named builders: _build_child_env, _bridge_env, _brv_child_env, build_subprocess_env( without scrub/scope. Assert HERMES_HOME and profile-varying vars from INSIDE a real child.",
+      "why": "Children inherit the launch process's HERMES_HOME and secrets: MCP stdio servers got the default vault, WhatsApp bridge.js ran the default's dm_policy, brv curated into the default's cloud account, execute_code skill scripts read the default's OAuth tokens. Four spawn sites fixed one at a time."
+    },
+    {
+      "id": "P06",
+      "class": "C5",
+      "pattern_regex": "os\\.getenv\\(\\s*[\"'](DISCORD|TELEGRAM|SLACK|MATRIX|WHATSAPP|FEISHU|SIGNAL|TEAMS|LINE|WECOM|YUANBAO|HINDSIGHT|BRV|A2A|WEIXIN)_|os\\.environ\\.get\\(\\s*[\"'](DISCORD|TELEGRAM|SLACK|MATRIX|WHATSAPP|FEISHU|SIGNAL|TEAMS|LINE|WECOM|YUANBAO|HINDSIGHT|BRV|A2A|WEIXIN)_",
+      "scope_hint": "plugins/platforms/*, plugins/memory/*, gateway/run_config_loaders.py, gateway/platforms/*. Replace with gateway.platforms._shared.extra_or_secret(extra, key, ENV, default) or get_scoped_secret.",
+      "why": "Raw env is the launch profile's. A secondary that omits a key must get the adapter default, not the launch profile's value (Matrix notices/session_scope, Discord everyone-mentions, Slack ignored channels all inherited). MindDragon probe still lists TELEGRAM_WEBHOOK_HOST and run_config_loaders.py:64,93 as open."
+    },
+    {
+      "id": "P08",
+      "class": "C5",
+      "pattern_regex": "configured\\s*=\\s*extra\\.get\\(|if\\s+configured\\s+is\\s+not\\s+None:\\s*return|extra\\.get\\([\"'][a-z_]+[\"']\\)\\s*(if|or)\\s*.*os\\.getenv",
+      "scope_hint": "Any 'YAML first, env fallback' reader in an adapter. Order must be explicit scoped env -> own YAML -> default; add the single-profile control test (env=false beats materialized YAML true).",
+      "why": "Materialized defaults (telegram.reactions: false) are always present in YAML, so a YAML-first reader makes the documented env switch a permanent no-op."
+    },
+    {
+      "id": "P10",
+      "class": "C6",
+      "pattern_regex": "if\\s+not\\s+(get_hermes_home_override|current_secret_scope|_served_profile_homes)\\b|profile\\s*(==|!=)\\s*[\"']main[\"']|agent:main\\b",
+      "scope_hint": "Launch-profile branches that treat 'no override' as 'no scope needed'; reserved-name checks.",
+      "why": "The launch profile has its own contract (env-only TERMINAL_ENV=ssh, root files writable, a profile literally named 'main'); tests only asserted secondary isolation and the launch turn collapsed to file-only policy / the default namespace."
+    },
+    {
+      "id": "P11",
+      "class": "C4",
+      "pattern_regex": "^(_active_sessions|_DB_CACHE|_servers|_backends|_session_owner_homes|_trust[a-z_]*|_parallel[a-z_]*|_cooldown[a-z_]*)\\s*[:=]\\s*(\\{\\}|dict\\(|\\{\\s*$)|\\.setdefault\\((task_id|session_id|server_name|name)\\b",
+      "scope_hint": "Module-level dicts keyed by session_id / task_id / server_name / display alone. Key must include hermes_home_key() or (scope, name) when a profile override is active; release must use the same key.",
+      "why": "Two profiles legitimately share session names, DISPLAY numbers and MCP server names; the first profile's entry wins and B's release stops A's driver. #108935 keyed 36 caches and still missed browser_exec/computer_use."
+    },
+    {
+      "id": "P13",
+      "class": "C4",
+      "pattern_regex": "def _connection_identity\\(|def _same_server_route\\(|config_fingerprint\\(",
+      "scope_hint": "MCP connection sharing across profiles: identity must include every credential source, including ones stored outside the config dict (OAuth token files under <profile>/mcp-tokens, client_cert/client_key).",
+      "why": "Identical-looking configs authenticated as different accounts were adopted across profiles; whoami flipped between two Google accounts inside one WhatsApp session."
+    },
+    {
+      "id": "P17",
+      "class": "C8",
+      "pattern_regex": "DEFAULT_CONFIG\\[[\"']\\w+[\"']\\]\\[[\"']\\w+[\"']\\]|\\.get\\([\"'](auto_migrate|auto_multiplex_migration|notify_in_gateway|dispatch_in_gateway)[\"']",
+      "scope_hint": "For every new DEFAULT_CONFIG key, one test: the effective config exposes exactly the key the reader consumes (grep the reader's .get() spelling). Also: a runtime that requires a key (webhook route 'profile') needs the CLI that writes the file to expose it.",
+      "why": "DEFAULT_CONFIG declared gateway.auto_migrate while the guard read gateway.auto_multiplex_migration, and 'hermes config set' pointed operators at the dead spelling; hermes webhook subscribe never wrote the 'profile' key the runtime required (100% 404 on /p/<profile>/)."
+    },
+    {
+      "id": "P18",
+      "class": "C9",
+      "pattern_regex": "systemd_install\\(|_installed_service\\(|_service_op\\(|launchd_install\\(|User=",
+      "scope_hint": "Pass run_as_user read from the unit being replaced; represent every installed unit (user AND system) not a scalar; unresolved User= stays None and blocks the unattended path; wrap install/start after destructive steps in rollback via the manifest; treat flag-on + manifest + no live default as 'interrupted', not 'already multiplexing'.",
+      "why": "Migration passed preflight, uninstalled the secondaries, then raised 'Refusing to install ... as root' with nothing catching it: host left with no gateway and the flag on. Unattended hermes update folded per-UNIX-user system units into one process."
+    },
+    {
+      "id": "P19",
+      "class": "C10",
+      "pattern_regex": "copytree\\([^)]*symlinks\\s*=\\s*True|shutil\\.copytree\\(.*profiles|old_dir\\.rename\\(|_check_gateway_running\\(\\s*old_dir",
+      "scope_hint": "Profile create/clone/rename/delete: materialize symlinked .env/config.yaml/auth.json before editing; build in profiles/.<name>.staging-<pid> and publish with one rename; under a live multiplexer unroute before mutating (a served secondary has no gateway.pid of its own).",
+      "why": "--clone-all stripped the SOURCE's Telegram token through a preserved symlink; the hot-serve rescan adopted a half-copied clone with the source's bots; rename left a ghost the multiplexer re-scaffolded and served."
+    },
+    {
+      "id": "P21",
+      "class": "C3",
+      "pattern_regex": "def _spawn_side_agent\\(|def _profile_build_scope\\(|prompt\\.(background|btw)|preview\\.restart|_build_branch_agent\\(",
+      "scope_hint": "Every secondary entrypoint must enter _session_profile_runtime_scope (home -> secrets -> terminal, same composition as a prompt turn) and hold its own registry reference on the DB.",
+      "why": "Side workers bound HERMES_HOME only: they picked the launch terminal backend (local instead of the secondary's docker) and shared the parent's state.db handle so parent close() closed it under a running background turn."
+    },
+    {
+      "id": "P22",
+      "class": "C3",
+      "pattern_regex": "scan_skill_commands\\(|get_skill_bundles\\(|resolve_bundle_command_key\\(|_is_profile_skill_command\\(|def _dispatch_(skill|bundle)\\(",
+      "scope_hint": "command.dispatch's whole stage loop (quick -> plugin -> bundle -> skill) and slash.exec bundle routing must run under the session's profile home; use the home-keyed get_skill_commands().",
+      "why": "The router bound the profile and said 'skill exists', the dispatcher scanned the launch home and answered 4018 'not a skill command' for every secondary-only skill."
+    },
+    {
+      "id": "P23",
+      "class": "C1",
+      "pattern_regex": "@_profile_scoped_rpc|@_profile_scoped\\b|def _profile_scoped_rpc\\(|_profile_home\\(\\s*profile",
+      "scope_hint": "A decorator that only sets the HERMES_HOME override is insufficient for anything that expands ${VAR} refs, builds MCP clients, or spawns terminals; bind secret scope (after hydrating external secret sources) and terminal scope too.",
+      "why": "Desktop 'Test connection' and the REST MCP list/test/auth sites resolved ${GITHUB_PERSONAL_ACCESS_TOKEN} from the launch process, sending the default's bearer to a secondary's server (HTTP 400 loop, tools missing)."
+    },
+    {
+      "id": "P25",
+      "class": "C12",
+      "pattern_regex": "fetch\\(\\s*[`'\"]/api/(gateway|status|mcp|cron|sessions)[^`'\"]*[`'\"]\\s*[,)]|apiFetch\\([^)]*\\)(?!.*profile)|profilePickConnectionId\\(|resolveNewChatOwnerRoute\\(",
+      "scope_hint": "apps/desktop/src and web/src: every lifecycle/status/settings request against a pooled local backend must carry ?profile= (or the profile param) and every new-session tile must record an owner route.",
+      "why": "A pooled local backend routed lifecycle to the ambient profile (served profiles showed stopped); tab-strip + on a named local profile minted a session with no owner metadata so session.control.read failed closed."
+    },
+    {
+      "id": "P27",
+      "class": "C11",
+      "pattern_regex": "def start\\(self\\).*\\n(?:.*\\n){0,15}?.*(recover_interrupted|record_ticker_heartbeat)|record_ticker_heartbeat\\(",
+      "scope_hint": "cron/scheduler_provider.py and the Desktop desktop-cron-ticker: all pre-loop work inside the BaseException guard; publish the profile list only after the gate filtered it; housekeeping respawns a dead ticker.",
+      "why": "A corrupt executions.db killed the ticker thread before the guarded loop; gateway stayed up, heartbeat frozen, no jobs, no error marker."
+    },
+    {
+      "id": "P28",
+      "class": "C1",
+      "pattern_regex": "filter_media_delivery_paths\\(|_extract_response_content\\(|_docker_sandbox_dir_candidates\\(|_parse_docker_volume_mounts\\(",
+      "scope_hint": "Delivery-side call sites run AFTER the turn's _profile_scope_for_source exited; wrap them in _media_delivery_scope (home + terminal policy).",
+      "why": "A secondary's MEDIA:/output/x.png was validated against the default's Docker mounts and dropped (or the default's same-named decoy delivered)."
+    },
+    {
+      "id": "P29",
+      "class": "C1",
+      "pattern_regex": "no_cache_check_fn\\(|_run_check_fn_uncached\\(|unresolved_scope\\s*=",
+      "scope_hint": "tools/registry.py: classify UnscopedSecretError from current_secret_scope() at the catch site, never from a branch hint; boot-time probes with no scope are DEBUG, not WARNING+traceback.",
+      "why": "The uncached check_fn branch passed unresolved_scope=False at gateway boot under multiplex, logging a traceback that tripped a deployment's post-update health gate and rolled it back."
+    },
+    {
+      "id": "P30",
+      "class": "C1",
+      "pattern_regex": "_hydrate_profile_secret_sources\\(|_applied_homes|secrets\\.command",
+      "scope_hint": "Mark a home hydrated only when every source succeeded; each attempt replaces the prior snapshot; revoke stale snapshots.",
+      "why": "One failing secrets.command helper pinned an empty snapshot for the gateway lifetime, so the secondary ran credential-less until restart."
+    },
+    {
+      "id": "P31",
+      "class": "C6",
+      "pattern_regex": "f\"agent:\\{|[\"']agent:[\"']\\s*\\+|session_key\\s*=\\s*f\"[a-z]+:",
+      "scope_hint": "Every adapter-built session key carries the agent:<profile>: namespace (profile 'main' is 'agent:main~'); adapters derive keys through _source_session_key / _event_session_key (P32), never a hand-built prefix.",
+      "why": "Rows for a served profile land in the root store; browser/computer_use caches never saw the namespace because turns pass the bare session id."
+    },
+    {
+      "id": "P32",
+      "class": "C4",
+      "path_regex": "^(gateway|plugins)/platforms/(?!base\\.py$).+\\.py$",
+      "pattern_regex": "\\bbuild_session_key\\(|\\bSessionSource\\(",
+      "scope_hint": "Inside an adapter derive every key through self._source_session_key(source) / self._event_session_key(event) (owner-profile namespace, runner-seeded isolation flags) and build sources with self.build_source(...) so the transport provenance is kept; only platforms/base.py owns the free calls.",
+      "why": "Yuanbao keyed its per-group queue and RecallGuard with the free build_session_key() (no profile) while handle_message keyed under agent:<owner>: - two derivations of one identity, one lane shared across bots (#88715)."
+    }
+  ]
+}

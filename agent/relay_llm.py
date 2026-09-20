@@ -583,7 +583,7 @@ class AnthropicStreamAccumulator:
     def _on_message_delta(self, payload: dict[str, Any]) -> None:
         delta = payload.get("delta")
         if isinstance(delta, dict):
-            self._message.update({k: delta[k] for k in ("stop_reason", "stop_sequence") if k in delta})
+            self._message.update({k: delta[k] for k in ("stop_reason", "stop_sequence", "stop_details") if k in delta})
         if "usage" in payload:
             usage, current_usage = payload["usage"], self._message.get("usage")
             if isinstance(current_usage, dict) and isinstance(usage, dict):

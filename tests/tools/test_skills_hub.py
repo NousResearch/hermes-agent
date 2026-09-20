@@ -103,6 +103,44 @@ class TestSkillsShGroupings:
         assert len(skills) == 1
         assert skills[0].extra["category"] == "Decision Optimization"
 
+    def test_list_skills_bucket_stamps_category_when_no_sidecar(self):
+        # A tap-level bucket labels every skill when the repo ships no skills.sh.json
+        # grouping — how several repos share one hub category (e.g. science).
+        src = GitHubSource(auth=MagicMock())
+        meta = SkillMeta(
+            name="rdkit", description="d", source="github",
+            identifier="K-Dense-AI/scientific-agent-skills/skills/rdkit", trust_level="community",
+        )
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = [{"type": "dir", "name": "rdkit"}]
+        with patch("tools.skills_hub_github._cached_metas", return_value=None), \
+             patch("tools.skills_hub_github._cache_metas"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch.object(src, "_github_get", return_value=resp):
+            skills = src._list_skills_in_repo("K-Dense-AI/scientific-agent-skills", "skills/", "science")
+
+        assert len(skills) == 1
+        assert skills[0].extra["category"] == "science"
+
+    def test_list_skills_sidecar_grouping_wins_over_bucket(self):
+        src = GitHubSource(auth=MagicMock())
+        meta = SkillMeta(
+            name="cuopt-developer", description="d", source="github",
+            identifier="NVIDIA/skills/skills/cuopt-developer", trust_level="trusted",
+        )
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = [{"type": "dir", "name": "cuopt-developer"}]
+        with patch("tools.skills_hub_github._cached_metas", return_value=None), \
+             patch("tools.skills_hub_github._cache_metas"), \
+             patch.object(src, "_get_skillsh_groupings",
+                          return_value={"cuopt-developer": "Decision Optimization"}), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch.object(src, "_github_get", return_value=resp):
+            skills = src._list_skills_in_repo("NVIDIA/skills", "skills/", "science")
+
+        assert skills[0].extra["category"] == "Decision Optimization"
+
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
@@ -161,6 +199,32 @@ class TestSkillsShSource:
         auth = MagicMock(spec=GitHubAuth)
         return SkillsShSource(auth=auth)
 
+    def test_sitemap_fetches_go_through_guarded_get_and_ask_for_gzip_only(self, monkeypatch):
+        """Sitemap hops use the hub's guarded GET *and* keep the explicit
+        ``Accept-Encoding: gzip`` pin: skills.sh serves sitemaps brotli-compressed and
+        httpx's optional brotlicffi backend has a streaming-decode bug on them, so the
+        default ``gzip, deflate, br`` negotiation must never reach the server."""
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        calls = []
+
+        def fake_get(url, *, timeout, headers=None):
+            calls.append((url, headers))
+            body = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap></sitemapindex>"
+                    if url.endswith("/sitemap.xml") else
+                    "<urlset><url><loc>https://skills.sh/acme/repo/my-skill</loc></url></urlset>")
+            return MagicMock(status_code=200, headers={}, text=body)
+
+        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+
+        results = self._source()._sitemap_catalog(limit=5)
+
+        assert [r.identifier for r in results] == ["skills-sh/acme/repo/my-skill"]
+        assert [u for u, _ in calls] == ["https://www.skills.sh/sitemap.xml", "https://www.skills.sh/sitemap-skills-0.xml"]
+        assert all(h == {"Accept-Encoding": "gzip"} for _, h in calls), calls
+
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
@@ -190,6 +254,37 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
+    @patch("tools.skills_hub_skillssh.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_sitemap_catalog_retries_failed_shard_and_never_caches_partial(
+        self, _mock_read_cache, mock_write_cache, _mock_sleep, monkeypatch,
+    ):
+        """A per-skill sitemap shard that keeps failing is a hole in the catalog, not an
+        empty shard: retry it, and never publish the partial slice to the shared cache."""
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
+                 "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
+        shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
+        calls: List[str] = []
+
+        def fake_get(url, *, timeout, headers=None):
+            calls.append(url)
+            if url.endswith("sitemap.xml"):
+                return MagicMock(status_code=200, headers={}, text=index)
+            if url.endswith("sitemap-skills-0.xml"):
+                return MagicMock(status_code=200, headers={}, text=shard0)
+            return MagicMock(status_code=503, headers={}, text="")
+
+        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        results = self._source()._sitemap_catalog(0)
+
+        assert [m.identifier for m in results] == ["skills-sh/o/r/skill-a"]
+        assert calls.count("https://www.skills.sh/sitemap-skills-1.xml") == SkillSource.CATALOG_PAGE_RETRIES
+        mock_write_cache.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -1727,11 +1822,13 @@ class _FakeSource(SkillSource):
         self._sid = sid
         self._sleep = sleep
         self._results = results or []
+        self.calls = 0
 
     def source_id(self) -> str:
         return self._sid
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        self.calls += 1
         if self._sleep:
             time.sleep(self._sleep)
         return list(self._results)
@@ -1789,6 +1886,81 @@ class TestParallelSearchSourcesTimeout:
         assert source_counts.get("a") == 1
         assert source_counts.get("b") == 1
         assert len(all_results) == 2
+
+
+class TestIndexMissFallback:
+    """An available hermes-index stands in for the external registries; when it
+    has no match for a query the registries it displaced must still be asked
+    (#112503: a skill live on skills.sh but not yet in the index returned zero
+    results on every surface)."""
+
+    def _meta(self, sid: str) -> SkillMeta:
+        return SkillMeta(name="humanizar", description="x", source=sid,
+                         identifier=f"{sid}/humanizar", trust_level="community")
+
+    def _sources(self, index_results):
+        index = _FakeSource("hermes-index", results=index_results)
+        index.is_available = True
+        skills_sh = _FakeSource("skills-sh", results=[self._meta("skills-sh")])
+        github = _FakeSource("github", results=[self._meta("github")])
+        return index, skills_sh, github
+
+    def test_index_miss_consults_displaced_registries_but_not_github(self):
+        index, skills_sh, github = self._sources([])
+
+        results, source_counts, timed_out = parallel_search_sources(
+            [index, skills_sh, github], query="humanizar", overall_timeout=5.0)
+
+        assert [r.identifier for r in results] == ["skills-sh/humanizar"]
+        assert source_counts == {"hermes-index": 0, "skills-sh": 1}
+        assert timed_out == []
+        assert github.calls == 0  # one miss must not spend the unauthenticated GitHub budget
+
+        # A browse (empty query) with an empty index is not a miss: no fan-out.
+        index, skills_sh, github = self._sources([])
+        results, _, _ = parallel_search_sources([index, skills_sh, github], query="", overall_timeout=5.0)
+        assert results == [] and skills_sh.calls == 0
+
+    def test_index_hit_leaves_registries_untouched(self):
+        index, skills_sh, github = self._sources([self._meta("hermes-index")])
+
+        results, source_counts, _ = parallel_search_sources(
+            [index, skills_sh, github], query="humanizar", overall_timeout=5.0)
+
+        assert [r.identifier for r in results] == ["hermes-index/humanizar"]
+        assert source_counts == {"hermes-index": 1}
+        assert skills_sh.calls == 0 and github.calls == 0
+
+    def test_provider_filter_miss_skips_registries_without_provider_data(self):
+        # `--source nvidia` selects like "all"; the fallback registries carry no
+        # extra.provider so re-asking them is guaranteed-empty and only burns budget.
+        index, skills_sh, github = self._sources([])
+        clawhub = _FakeSource("clawhub", sleep=5)
+
+        started = time.monotonic()
+        results, source_counts, timed_out = parallel_search_sources(
+            [index, skills_sh, clawhub, github], query="foo", source_filter="nvidia", overall_timeout=5.0)
+
+        assert time.monotonic() - started < 1.0
+        assert results == [] and timed_out == []
+        assert source_counts == {"hermes-index": 0}
+        assert skills_sh.calls == 0 and clawhub.calls == 0
+
+    def test_fallback_pass_has_its_own_short_budget(self, monkeypatch):
+        # A slow registry (ClawHub takes minutes) must not stall a miss for the
+        # callers' full 30 s overall_timeout when the index answered instantly.
+        monkeypatch.setattr("tools.skills_hub_search._INDEX_MISS_FALLBACK_BUDGET", 0.3, raising=False)
+        index, skills_sh, github = self._sources([])
+        clawhub = _FakeSource("clawhub", sleep=5)
+
+        started = time.monotonic()
+        results, source_counts, timed_out = parallel_search_sources(
+            [index, skills_sh, clawhub, github], query="humanizar", overall_timeout=30.0)
+
+        assert time.monotonic() - started < 2.0
+        assert [r.identifier for r in results] == ["skills-sh/humanizar"]
+        assert source_counts == {"hermes-index": 0, "skills-sh": 1}
+        assert timed_out == ["clawhub"]
 
 
 # ---------------------------------------------------------------------------

@@ -14,9 +14,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
-    SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
+    SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
@@ -43,6 +43,7 @@ class _Batch:
     origin_ui_session_id: str
     origin_owner_transport: Any
     origin_owner_session_record: Any
+    origin_session_history_delivery: bool
     overall_start: float
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
@@ -66,17 +67,22 @@ def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) ->
         _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
 
-def _capture_origin() -> tuple[str, str, Any, Any]:
-    """``(wake_sid, ui_session_id, owner_transport, owner_session_record)`` of the
+def _capture_origin() -> tuple[str, str, Any, Any, bool]:
+    """``(wake_sid, ui_session_id, owner_transport, owner_session_record, session_history_delivery)`` of the
     ORIGINATING session, captured BEFORE building any child: AIAgent construction
-    clobbers the HERMES_SESSION_ID ContextVar/os.environ with the subagent's id."""
+    clobbers the HERMES_SESSION_ID ContextVar/os.environ with the subagent's id.  The wake-
+    capability flag rides the same request-scoped binding and is captured here for the same
+    reason — and fails closed: a binding that never declared it (or a read error) leaves the
+    session treated as non-wake-capable (#98619)."""
     from tools.async_delegation import _current_origin_session_id
     _origin_wake_sid = _current_origin_session_id()
     _origin_ui_session_id = ""
+    _origin_session_history_delivery = False
     with _quiet(None):
-        from gateway.session_context import get_session_env
+        from gateway.session_context import get_session_env, session_history_delivery_supported
         _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
-    return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id))
+        _origin_session_history_delivery = session_history_delivery_supported()
+    return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id), _origin_session_history_delivery)
 
 def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tasks, remaining) -> None:
     """Print one completion line for a finished child and refresh the spinner text. Failed/errored/timed-out children
@@ -85,8 +91,14 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
     label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
     status = entry.get("status", "?")
     _slot = f"{tag} · {idx+1}/{n_tasks}" if tag else f"{idx+1}/{n_tasks}"
-    completion_line = f"{'✓' if status == 'completed' else '✗'} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
-    _err_line = _clean_error_text(entry.get("error"), max_chars=120) if status in SUBAGENT_FAILURE_STATUSES else ""
+    schema_invalid = entry.get("schema_valid") is False and status == "completed"
+    icon = "⚠" if schema_invalid else ("✓" if status == "completed" else "✗")
+    completion_line = f"{icon} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
+    _err_line = (
+        describe_subagent_failure(entry.get("failure_reason"), entry.get("error"), max_chars=120)
+        if status in SUBAGENT_FAILURE_STATUSES else "")
+    if schema_invalid:
+        _err_line = "output_schema not satisfied — raw text returned (schema_valid=false)"
     if _err_line:
         completion_line += f" — {_err_line}"
     _print_completion_line(parent_agent, spinner_ref, completion_line)
@@ -187,7 +199,7 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "one-shot runner such as `hermes -z`, a cron job, a Kanban "
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
@@ -204,15 +216,19 @@ def _run_sync_with_note(batch: _Batch, reason: str) -> str:
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
     return json.dumps(result, ensure_ascii=False)
 
-def _resolve_async_wake_sid(origin_wake_sid: str) -> Optional[str]:
-    """Wake target for a detached batch, or None to force synchronous execution.
+def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_delivery: bool = False) -> Optional[str]:
+    """Detached result target: empty for push, a resumable API id, or None for inline.
 
-    Finite sessions (stateless HTTP requests, one-shot Kanban workers) cannot route a detached result back after their
-    turn/process ends — but if a raw session id is bound (the API server always binds one), gateway.wake can still
-    reach it by self-POSTing /v1/chat/completions, so only fall back to sync when there is truly no session id to
-    wake. Uses the origin captured BEFORE child construction — HERMES_SESSION_ID here would be the subagent's internal
-    id.
-    """
+    API completion only persists a row; this does not authorize a model wake. The
+    continuation must read that row, not an authoritative caller-owned snapshot."""
+    from gateway.session_context import get_session_env
+
+    # Finite chat owns no later turn to consume a detached result. Reuse its
+    # approval/lifecycle marker without disabling terminal notify completions:
+    # those have their own bounded exit linger and durable result receipts.
+    if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return None
+
     try:
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
         # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
@@ -223,13 +239,17 @@ def _resolve_async_wake_sid(origin_wake_sid: str) -> Optional[str]:
             return ""
     except Exception:
         return ""
-    if origin_wake_sid:
+    if origin_wake_sid and origin_session_history_delivery:
         logger.info(
-            "delegate_task: async delivery unsupported on this session, but a session id is bound (%s) — dispatching "
-            "in the background and waking the session via self-post when it completes instead of forcing synchronous "
-            "execution.", origin_wake_sid,
+            "delegate_task: session %s resumes server history — detached result will be persisted "
+            "for the next client turn (no model wake).", origin_wake_sid,
         )
         return origin_wake_sid
+    if origin_wake_sid:
+        logger.info(
+            "delegate_task: session %s has no declared server-history consumer — running the batch "
+            "synchronously so the result returns in this turn.", origin_wake_sid,
+        )
     return None
 
 def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> tuple[str, str]:
@@ -360,23 +380,25 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 
+def _restore_parent_cancellation(unit: _Batch) -> None:
+    """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
+    arrived while async admission had them detached)."""
+    for _, _, child in unit.children:
+        _attach_child(unit.parent_agent, child)
+
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
     async pool is at capacity."""
     from tools.delegate_tool import _get_max_async_children
-    wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid)
+    wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
     if wake_sid is None:
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
 
     parent_agent = batch.parent_agent
     session_key, origin_ui_session_id = _resolve_async_session_key(parent_agent, batch.origin_ui_session_id)
-    # The children's lifecycle is owned by the async registry now: drop them from the parent's
-    # interrupt-propagation list (_build_child_agent attached them, which is correct for sync runs).
-    for (_, _, c) in batch.children:
-        _detach_child(parent_agent, c)
     routing = dict(
         session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
@@ -391,11 +413,16 @@ def _dispatch_background(batch: _Batch) -> str:
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
+        # The worker can start before admission returns. Detach only this unit:
+        # unsubmitted units must still receive parent stops while a fallback runs.
+        for _, _, child in unit.children:
+            _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
+        _restore_parent_cancellation(unit)
         if not dispatched:
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
@@ -405,7 +432,7 @@ def _dispatch_background(batch: _Batch) -> str:
         # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
         # the unit inline so no task is silently dropped.
         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit, honor_parent_interrupt=False)["results"])
+        inline_results.extend(_execute_and_aggregate(unit)["results"])
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results

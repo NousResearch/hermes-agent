@@ -2641,6 +2641,8 @@ human_delay:
   max_ms: 2500                 # Maximum delay (custom mode)
 ```
 
+Each profile's own `config.yaml` is read, so multiplexed profiles keep independent pacing; there is no process-environment override. In `custom` mode a non-integer, negative or inverted `min_ms`/`max_ms` pair is rejected with a warning naming the key and the `natural` range (800–2500 ms) is used instead.
+
 ## Code Execution
 
 Configure the `execute_code` tool:

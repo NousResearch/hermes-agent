@@ -548,3 +548,33 @@ def test_busy_text_timing_rejects_non_numeric_config(caplog):
             {"display": {"busy_text_debounce_seconds": "fast", "busy_text_hard_cap_seconds": -3}})
     assert timing == (0.35, 1.0)
     assert "busy_text_debounce_seconds" in caplog.text and "busy_text_hard_cap_seconds" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_secondary_human_delay_follows_profile_config_not_process_env(tmp_path, monkeypatch):
+    """``human_delay`` pacing is per-profile config (#116895): the launch-process env must not reach
+    any adapter, and each profile keeps its own range across A->B->A."""
+    monkeypatch.setenv("HERMES_HUMAN_DELAY_MODE", "custom")
+    monkeypatch.setenv("HERMES_HUMAN_DELAY_MIN_MS", "1")
+    monkeypatch.setenv("HERMES_HUMAN_DELAY_MAX_MS", "2")
+    runner = _runner()
+    runner._human_delay = None
+    homes = {"alpha": tmp_path / "alpha", "beta": tmp_path / "beta"}
+    for name, body in {"alpha": "human_delay:\n  mode: custom\n  min_ms: 100\n  max_ms: 200\n",
+                       "beta": "human_delay:\n  mode: natural\n"}.items():
+        homes[name].mkdir()
+        (homes[name] / "config.yaml").write_text(body, encoding="utf-8")
+
+    seen = {}
+    for name in ("alpha", "beta", "alpha"):
+        assert await runner._start_one_profile_adapters(name, homes[name], {}) == 0
+        adapter = _adapter()
+        runner._profile_adapters[name][Platform.TELEGRAM] = adapter
+        runner._configure_profile_adapter(adapter, name, Platform.TELEGRAM)
+        seen.setdefault(name, []).append(adapter._human_delay_range_ms)
+
+    assert seen["alpha"] == [(100, 200), (100, 200)]
+    assert seen["beta"] == [(800, 2500)]
+    # A fresh adapter is off until the runner installs a range; env is never consulted.
+    fresh = _adapter()
+    assert fresh._human_delay_range_ms is None and fresh._get_human_delay() == 0.0

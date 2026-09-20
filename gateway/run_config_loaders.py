@@ -37,6 +37,8 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
+
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
 
@@ -294,8 +296,39 @@ class GatewayConfigLoadersMixin:
             out.append(value)
         return out[0], out[1]
 
+    @staticmethod
+    def _human_delay_from_config(config: dict) -> Optional[tuple[int, int]]:
+        """``human_delay.{mode,min_ms,max_ms}`` for one profile as a ``(lo_ms, hi_ms)`` range, or
+        ``None`` when off (#116895). ``natural`` is the fixed 800-2500 range; ``custom`` reads the
+        bounds and rejects non-integer, negative or inverted values with a warning naming the key,
+        falling back to the natural range instead of letting ``random.uniform`` raise at send."""
+        mode = str(cfg_get(config, "human_delay", "mode", default="off") or "off").strip().lower()
+        if mode == "off":
+            return None
+        lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        if mode != "natural":
+            if mode != "custom":
+                logger.warning("human_delay.mode=%r is not off/natural/custom; using natural", mode)
+                return DEFAULT_HUMAN_DELAY_RANGE_MS
+            bounds = []
+            for key, default in (("min_ms", lo), ("max_ms", hi)):
+                raw = cfg_get(config, "human_delay", key, default=None)
+                try:
+                    value = default if raw is None or raw == "" else int(raw)
+                    if value < 0:
+                        raise ValueError(raw)
+                except (TypeError, ValueError):
+                    logger.warning("human_delay.%s=%r is not a non-negative integer; using %s", key, raw, default)
+                    value = default
+                bounds.append(value)
+            lo, hi = bounds
+            if lo > hi:
+                logger.warning("human_delay.min_ms=%s exceeds human_delay.max_ms=%s; using natural range", lo, hi)
+                lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        return lo, hi
+
     def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
-        """Cache a routed profile's busy policy for this gateway lifetime."""
+        """Cache a routed profile's busy policy and pacing for this gateway lifetime."""
         input_mode, text_mode = self._busy_modes_from_config(
             config, fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
             fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
@@ -304,6 +337,8 @@ class GatewayConfigLoadersMixin:
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
         self.__dict__.setdefault("_busy_text_timing_by_profile", {})[profile_name] = (
             self._busy_text_timing_from_config(config))
+        self.__dict__.setdefault("_human_delay_by_profile", {})[profile_name] = (
+            self._human_delay_from_config(config))
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""

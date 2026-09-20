@@ -206,7 +206,7 @@ class GatewayProfileReconcileMixin:
         # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
         _write_runtime_status_quiet(drop_profile_platforms=name)
         for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
-                     "_busy_text_timing_by_profile"):
+                     "_busy_text_timing_by_profile", "_human_delay_by_profile"):
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(name, None)

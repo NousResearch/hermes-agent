@@ -3488,6 +3488,8 @@ class GatewayRunner(
         self._busy_text_modes_by_profile: Dict[str, str] = {}
         self._busy_text_timing = self._busy_text_timing_from_config(_load_gateway_config())
         self._busy_text_timing_by_profile: Dict[str, tuple[float, float]] = {}
+        self._human_delay = self._human_delay_from_config(_load_gateway_config())
+        self._human_delay_by_profile: Dict[str, Optional[tuple[int, int]]] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         # Live launchd ``ExitTimeOut`` for this job (None when not launchd-owned). Read once at
         # boot — launchd fixes it at load — and applied only to signal-driven stops, which are the

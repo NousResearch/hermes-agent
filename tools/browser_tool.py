@@ -1032,24 +1032,35 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
     Tool JSON when the supervisor gave a definitive answer (value, blocked page, or a real
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
     None to fall through to the subprocess path."""
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
-        if supervisor is None:
-            return None
-        sup_result = supervisor.evaluate_runtime(expression)
-        if sup_result.get("ok"):
-            return _eval_result_or_blocked(
-                effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
-        err = sup_result.get("error") or "evaluate_runtime failed"
-        if "supervisor" not in err.lower():
-            return _dumps(_err(err))
-        logger.debug("browser_eval: supervisor path unavailable (%s), falling back to subprocess", err)
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
-    return None
+    session_info = _active_sessions.get(effective_task_id) or {}
+    held: Dict[str, Any] = {"json": None}
+
+    def _run() -> Dict[str, Any]:
+        try:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+            supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+            if supervisor is None:
+                return {"success": True}
+            sup_result = supervisor.evaluate_runtime(expression)
+            if sup_result.get("ok"):
+                held["json"] = _eval_result_or_blocked(
+                    effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
+                return {"success": True}
+            err = sup_result.get("error") or "evaluate_runtime failed"
+            if "supervisor" not in err.lower():
+                held["json"] = _dumps(_err(err))
+                return {"success": True}
+            logger.debug("browser_eval: supervisor path unavailable (%s), falling back to subprocess", err)
+        except ImportError:
+            pass
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
+        return {"success": True}
+
+    fenced = _session.run_fenced(session_info, _run)
+    if fenced.get("code") == "human_has_control":
+        return _dumps(fenced)
+    return held["json"]
 
 
 def _eval_failure_response(result: Dict[str, Any]) -> str:

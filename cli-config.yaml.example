@@ -567,6 +567,24 @@ browser:
   # (same per-page budget as web_extract).
   # snapshot_threshold: 15000
 
+  # Optional persistent CDP attach (unnamed default). When set, Hermes connects to this
+  # Chromium instead of launching a throwaway.
+  # cdp_url: "http://127.0.0.1:9222"
+  # Opt-in Bot Screen lease fence for that unnamed cdp_url (default false: unfenced).
+  # Requires tools.bot_desktop (PR #108914); without it the flag is recorded but is a no-op.
+  # cdp_stay_put: true
+  #
+  # Optional name → CDP URL map. ``browser_exec(session=<name>)``, ``/browser connect <name>``,
+  # or BROWSER_CDP_ENDPOINT=<name> bind a sidecar without replacing cdp_url. Unnamed calls
+  # keep cdp_url. String form is unfenced; object form may set stay_put: true.
+  # Does not add a Desktop Screen button; does not spawn displays.
+  # cdp_endpoints:
+  #   primary:
+  #     url: "http://127.0.0.1:9222"
+  #     stay_put: true
+  #   lab2: "http://127.0.0.1:9223"
+  #   lab3: "http://127.0.0.1:9224"
+
   # JavaScript evaluation guardrails (both default false). restrict_evaluate
   # opts into a denylist that blocks sensitive primitives (cookies, storage,
   # clipboard, network, form values) in browser_console(expression=...) — use

@@ -121,6 +121,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/web-search',
             'user-guide/features/x-search',
             'user-guide/features/browser',
+            'user-guide/features/cdp-endpoints',
             'user-guide/features/credential-vault',
             'user-guide/features/computer-use',
             'user-guide/features/vision',

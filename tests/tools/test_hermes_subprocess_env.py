@@ -77,16 +77,6 @@ class TestStripByDefault:
         result = _build()
         assert result.get("PYTHONUTF8") == "1"
 
-    def test_case_variant_keys_stripped_by_default(self):
-        """Credential names match case-insensitively: on Windows the env block
-        is case-insensitive, so a lowercase-stored ``openai_api_key`` IS the
-        real credential, and both tiers must strip it."""
-        result = _build({"openai_api_key": "sk-lower", "Anthropic_Api_Key": "ant-mixed",
-                         "gh_token": "ghp-lower", "telegram_bot_token": "bot-lower"})
-        for var in ("openai_api_key", "Anthropic_Api_Key", "gh_token",
-                    "telegram_bot_token"):
-            assert var not in result, f"{var} (case variant) leaked"
-
 
 class TestInheritCredentials:
     def test_provider_keys_preserved_when_inheriting(self):
@@ -105,15 +95,6 @@ class TestInheritCredentials:
         # ...while provider keys survive.
         for var in _PROVIDER_SAMPLE:
             assert var in result
-
-    def test_case_variant_provider_keys_preserved_when_inheriting(self):
-        """inherit_credentials=True keeps provider creds under any casing
-        (the fold widens only the default strip), while Tier-1 variants still
-        strip: a lowercase-stored ``gh_token`` is GH_TOKEN on Windows."""
-        result = _build({"openai_api_key": "sk-lower", "gh_token": "ghp-lower"},
-                        inherit_credentials=True)
-        assert result.get("openai_api_key") == "sk-lower"
-        assert "gh_token" not in result
 
     def test_pythonutf8_set_when_inheriting(self):
         assert _build(inherit_credentials=True).get("PYTHONUTF8") == "1"

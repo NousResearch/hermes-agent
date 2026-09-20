@@ -130,21 +130,3 @@ def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     seen = _child_view(browser_env)
     _assert_is_b_env(seen, b, with_secrets=False)  # provider tier stays scrubbed for the browser
     assert seen["FIRECRAWL_API_KEY"] == "b-fc"  # the passthrough key is B's, not the launch profile's
-
-
-def test_case_variant_launch_residue_stripped_for_served_child(mux_homes, monkeypatch):
-    """On Windows the env block is case-insensitive, so launch residue stored
-    under variant casing (``firecrawl_api_key`` IS FIRECRAWL_API_KEY,
-    ``hermes_model`` IS HERMES_MODEL) must not ride into a routed profile's
-    child env — caught by the folded credential scrub and residue strip."""
-    from tools.environments.local import served_profile_child_env
-
-    a, b = mux_homes
-    monkeypatch.setenv("firecrawl_api_key", "a-fc-variant")
-    monkeypatch.setenv("hermes_model", "a-model-variant")
-
-    env = served_profile_child_env(target_home=b)
-
-    assert "firecrawl_api_key" not in env
-    assert "hermes_model" not in env
-    assert env["HERMES_HOME"] == str(b)

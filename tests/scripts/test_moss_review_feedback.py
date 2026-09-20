@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO / "scripts" / "moss_review_feedback.py"
-WATCH_PATH = REPO / "scripts" / "moss-review-feedback-watch.py"
-CONTEXT_PATH = REPO / "scripts" / "moss-review-feedback-context.py"
+MODULE_PATH = REPO / "scripts" / "moss" / "moss_review_feedback.py"
+WATCH_PATH = REPO / "scripts" / "moss" / "moss-review-feedback-watch.py"
+CONTEXT_PATH = REPO / "scripts" / "moss" / "moss-review-feedback-context.py"
 FIXTURE = REPO / "tests" / "fixtures" / "moss_review_feedback.json"
 
 

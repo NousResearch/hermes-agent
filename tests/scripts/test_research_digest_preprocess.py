@@ -5,6 +5,7 @@ No network: fetch_url/fetch_json/run_cmd are monkeypatched.
 """
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -29,8 +30,12 @@ class TestSeenCache:
     def test_save_seen_prunes_old(self, tmp_path, monkeypatch):
         f = tmp_path / "seen.json"
         monkeypatch.setattr(rdp, "SEEN_CACHE", f)
-        old = {"a:1": {"first_seen": "2026-01-01T00:00:00"}}
-        fresh = {"b:2": {"first_seen": "2026-07-30T00:00:00"}}
+        # Dates must be relative to now: the 30-day prune makes any hardcoded
+        # fixture date stale once it ages past the cutoff (this test was red
+        # from 2026-08-29 for exactly that reason).
+        now = datetime.now()
+        old = {"a:1": {"first_seen": (now - timedelta(days=60)).isoformat()}}
+        fresh = {"b:2": {"first_seen": (now - timedelta(days=1)).isoformat()}}
         rdp.save_seen({**old, **fresh})
         data = json.loads(f.read_text())
         assert "a:1" not in data["items"]

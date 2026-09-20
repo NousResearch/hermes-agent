@@ -12,7 +12,7 @@ $HERMES_HOME/content_engine/blog_topics).
 import os
 import sys
 
-_PKG = os.environ.get("MASHUP_PKG", "/home/kensei/research-mashup-pipeline/src")
+_PKG = os.environ.get("MASHUP_PKG", "/home/kensei/archive/research-mashup-pipeline/src")
 if _PKG not in sys.path:
     sys.path.insert(0, _PKG)
 

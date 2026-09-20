@@ -106,9 +106,7 @@ it('paints a Processes block under the agents without letting either block hide 
   expect(alone).toContain('Processes · 1 running · 1 done · Ctrl+T expand')
   expect(alone).toContain('✔ pytest tests/ · exit 0 · 5s ago')
 
-  const collapsed = paint(
-    <AgentsPanelView collapsed cols={80} {...agentRows} processes={block} t={DEFAULT_THEME} />
-  )
+  const collapsed = paint(<AgentsPanelView collapsed cols={80} {...agentRows} processes={block} t={DEFAULT_THEME} />)
 
   expect(collapsed.trim().split('\n')).toHaveLength(1)
   expect(collapsed).toContain('6 live agents · 1 procs')

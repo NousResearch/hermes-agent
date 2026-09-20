@@ -11,7 +11,7 @@ import type { SettingsView } from './types'
 
 const views: SettingsView[] = [
   ...SECTIONS.map(section => `config:${section.id}` as SettingsView),
-  ...Object.keys(OTHER_SUBPAGES) as SettingsView[]
+  ...(Object.keys(OTHER_SUBPAGES) as SettingsView[])
 ]
 
 describe('settings subpage routing', () => {

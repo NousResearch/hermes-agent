@@ -1011,6 +1011,15 @@ def _await_worker_within_budget(
         try:
             return True, future.result(timeout=wait_slice)
         except concurrent.futures.TimeoutError:
+            # concurrent.futures.TimeoutError IS builtin TimeoutError (3.11+), so this also fires when
+            # the WORKER died raising a timeout-class error (the aux client raises bare TimeoutError on a
+            # stalled summary stream). A settled future never becomes unsettled: without this check the
+            # loop re-waits on a dead future, each result() returning instantly, spinning the CPU at
+            # ~2k iterations/sec until the full idle budget elapses and reporting the dead worker as
+            # "still streaming". Take the stall path immediately instead. A non-timeout worker exception
+            # still propagates out of result() unchanged.
+            if future.done():
+                return False, None
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()
             if not fence.deadline_exceeded and since_progress < idle and waited < ceiling:
@@ -1052,6 +1061,12 @@ def _await_in_flight_commit(
         try:
             return future.result(timeout=remaining)
         except concurrent.futures.TimeoutError:
+            # A settled future never becomes unsettled, so a timeout-class exception raised BY the
+            # commit worker (concurrent.futures.TimeoutError aliases builtin TimeoutError on 3.11+)
+            # would otherwise loop forever at full CPU, never surfacing the failure. Re-raise the
+            # worker's own exception once the future is done; a live commit still loops as before.
+            if future.done():
+                return future.result()
             # Commit-phase progress is informative only — the commit must complete; loop
             # and re-report with the updated overrun window.
             continue

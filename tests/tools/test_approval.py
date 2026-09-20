@@ -1266,6 +1266,35 @@ class TestGitDestructiveOps:
             assert dangerous is False, cmd
 
 
+    def test_branch_force_delete_detected_for_capital_d(self):
+        dangerous, _, desc = detect_dangerous_command("git branch -D some-branch")
+        assert dangerous is True
+        assert "force delete" in desc.lower()
+
+
+    def test_safe_branch_delete_not_flagged(self):
+        # git itself refuses -d/--delete on an unmerged branch; only the forced
+        # forms are destructive. -d used to be flagged because case-folding
+        # collapsed it into the -D pattern (#117277).
+        for cmd in (
+            "git branch -d some-merged-branch",
+            "git branch --delete some-merged-branch",
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+
+    def test_forced_branch_delete_combos_still_flagged(self):
+        for cmd in (
+            "git branch -d -f some-branch",
+            "git branch --delete --force some-branch",
+            "git branch --force --delete some-branch",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "force delete" in desc.lower(), cmd
+
+
 class TestChmodExecuteCombo:
     """chmod +x && ./ is the two-step social engineering pattern where a
     script is first made executable then immediately run. The script

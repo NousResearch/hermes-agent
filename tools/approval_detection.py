@@ -415,7 +415,6 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
@@ -446,6 +445,17 @@ DANGEROUS_PATTERNS = [
 
 
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+# Patterns whose meaning depends on letter case: git's destructive `-D` vs the safe `-d`
+# (which git itself refuses to run on an unmerged branch). Both `_RE_FLAGS`' IGNORECASE and
+# the ``command_variant.lower()`` in detect_dangerous_command would collapse the two, so these
+# compile without IGNORECASE and match the unlowered variant. The unforced long spelling
+# (`--delete` without `-f`/`--force`) is intentionally not gated, matching the long-flag
+# patterns above that require delete+force together (#117277).
+DANGEROUS_PATTERNS_CASE_SENSITIVE = [
+    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+]
+DANGEROUS_PATTERNS_CASE_SENSITIVE_COMPILED = [
+    (re.compile(p, re.DOTALL), d) for p, d in DANGEROUS_PATTERNS_CASE_SENSITIVE]
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
 # (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
@@ -1508,6 +1518,9 @@ def detect_dangerous_command(command: str) -> tuple:
                 if pattern_re.search(masked_lower):
                     return (True, description, description)
             elif pattern_re.search(command_lower):
+                return (True, description, description)
+        for pattern_re, description in DANGEROUS_PATTERNS_CASE_SENSITIVE_COMPILED:
+            if pattern_re.search(command_variant):
                 return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):

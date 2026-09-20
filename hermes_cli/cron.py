@@ -303,11 +303,37 @@ def cron_tick():
 
 
 def cron_runs(job_id: Optional[str] = None, limit: int = 20):
-    """Show indexed durable cron execution history."""
+    """Show indexed durable cron execution history.
+
+    Accepts a job NAME as well as an id. Resolution ENRICHES, never blocks: the
+    execution ledger outlives the job, and `cron runs <id-of-deleted-job>` is
+    exactly when the history matters most. An unresolvable argument is passed
+    through as a raw id, and "not found" is only reported when there is neither
+    a job nor a ledger row.
+    """
     from cron.executions import list_executions
-    records = list_executions(job_id=job_id, limit=limit)
+
+    resolved = job_id
+    if job_id:
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        try:
+            job = resolve_job_ref(job_id)
+            if job:
+                resolved = job["id"]
+        except AmbiguousJobReference as exc:
+            print(color(str(exc), Colors.RED))
+            for m in exc.matches:
+                print(f"  {m['id']}  (name: {m.get('name')!r})")
+            return
+
+    records = list_executions(job_id=resolved, limit=limit)
     if not records:
-        print("No cron execution attempts recorded.")
+        if job_id and resolved == job_id:
+            # Nothing resolved AND nothing in the ledger: the argument is wrong,
+            # which is a different message from "this job never ran".
+            print(color(f"Job not found: {job_id}", Colors.RED))
+        else:
+            print("No cron execution attempts recorded.")
         return
     for record in records:
         print(f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
@@ -821,6 +847,24 @@ def cron_notepad(args) -> int:
     if not job_id:
         print(color("A job ID is required.", Colors.RED))
         return 1
+
+    # Accept a job NAME too. This one is not cosmetic: the scheduler reads the
+    # notepad with job["id"] (cron/scheduler.py, render_notepad_section), so a
+    # name stored verbatim writes to a key nothing ever reads — `notepad <name>
+    # set cursor 42` reported success and silently lost durable state.
+    # Resolution ENRICHES, never blocks: notepads outlive their job, so an
+    # unresolvable argument is still used as a raw id.
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
+    try:
+        job = resolve_job_ref(job_id)
+        if job:
+            job_id = job["id"]
+    except AmbiguousJobReference as exc:
+        print(color(str(exc), Colors.RED))
+        for m in exc.matches:
+            print(f"  {m['id']}  (name: {m.get('name')!r})")
+        return 1
+
     try:
         if action not in ("set", "get", "delete"):  # list (default)
             notes = notepad.list_notes(job_id)

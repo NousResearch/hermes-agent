@@ -157,6 +157,30 @@ class TestCreateProfile:
         assert profile_auth.is_symlink()
         assert profile_auth.samefile(root_auth)
 
+    def test_shared_honcho_policy_seeds_new_profile_host(self, profile_env, monkeypatch):
+        """An opted-in install creates the profile's Honcho identity during every
+        profile creation path, not only clone-based CLI creation."""
+        from plugins.memory.honcho import cli as honcho_cli
+
+        default_home = profile_env / ".hermes"
+        (default_home / "honcho.json").write_text(json.dumps({
+            "apiKey": "test-key",
+            "hosts": {"hermes": {
+                "enabled": True,
+                "workspace": "alesia",
+                "peerName": "alesia",
+                "aiPeer": "alesia",
+            }},
+        }), encoding="utf-8")
+        (default_home / ".sync-profile-honcho").write_text("enabled\n", encoding="utf-8")
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+
+        create_profile("coder", no_alias=True)
+
+        cfg = json.loads((default_home / "honcho.json").read_text(encoding="utf-8"))
+        assert cfg["hosts"]["hermes_coder"]["aiPeer"] == "coder"
+        assert cfg["hosts"]["hermes_coder"]["workspace"] == "alesia"
+
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
         """A profile created without a clone source still resolves a provider.

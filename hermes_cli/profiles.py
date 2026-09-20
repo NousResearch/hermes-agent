@@ -74,6 +74,7 @@ NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 # Explicit install-level opt-in for one shared LLM credential store. Profiles remain
 # isolated by default; operators that want fleet-wide subscription auth create this marker.
 SHARED_PROFILE_AUTH_MARKER = ".share-profile-auth"
+SHARED_PROFILE_HONCHO_MARKER = ".sync-profile-honcho"
 
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
 _PLACEHOLDER_ENV = (
@@ -1093,6 +1094,7 @@ def create_profile(
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
+    _sync_shared_profile_honcho(canon)
     # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
@@ -1165,6 +1167,21 @@ def _link_shared_profile_auth(profile_dir: Path) -> bool:
         profile_auth.unlink()
     profile_auth.symlink_to(os.path.relpath(root_auth, profile_dir))
     return True
+
+
+def _sync_shared_profile_honcho(canon: str) -> bool:
+    """Seed a canonical Honcho host block for a newly published profile when opted in."""
+    default_home = _get_default_hermes_home()
+    if not (default_home / SHARED_PROFILE_HONCHO_MARKER).is_file():
+        return False
+    if not (default_home / "honcho.json").is_file():
+        return False
+    try:
+        from plugins.memory.honcho.cli import clone_honcho_for_profile
+        return bool(clone_honcho_for_profile(canon))
+    except Exception as exc:
+        logger.warning("profile %s: shared Honcho identity sync failed: %s", canon, exc)
+        return False
 
 
 def _notify_multiplexer(canon: str) -> None:

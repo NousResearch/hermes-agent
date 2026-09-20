@@ -36,6 +36,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _request_persistence_kwargs,
     _request_relay_metadata,
     check_api_server_requirements,
     cors_middleware,
@@ -2991,6 +2992,32 @@ class TestRequestRelayMetadata:
     @pytest.mark.parametrize("body", [None, [], {}, {"metadata": "invalid"}])
     def test_ignores_non_object_metadata(self, body):
         assert _request_relay_metadata(body) == {}
+
+
+class TestRequestPersistence:
+    def test_maps_present_values_and_omits_nulls(self):
+        assert _request_persistence_kwargs({
+            "_hermes_persist_user_message": "hello",
+            "_hermes_persist_user_timestamp": 123.5,
+            "_hermes_persist_user_display_kind": "notification",
+            "_hermes_persist_user_display_metadata": {"source": "proxy"},
+        }) == {
+            "persist_user_message": "hello",
+            "persist_user_timestamp": 123.5,
+            "persist_user_display_kind": "notification",
+            "persist_user_display_metadata": {"source": "proxy"},
+        }
+        assert _request_persistence_kwargs({"_hermes_persist_user_message": None}) == {}
+
+    @pytest.mark.parametrize("field,value", [
+        ("_hermes_persist_user_message", 1),
+        ("_hermes_persist_user_timestamp", True),
+        ("_hermes_persist_user_display_kind", []),
+        ("_hermes_persist_user_display_metadata", "invalid"),
+    ])
+    def test_rejects_wrong_types(self, field, value):
+        with pytest.raises(ValueError):
+            _request_persistence_kwargs({field: value})
 
 
 # ---------------------------------------------------------------------------

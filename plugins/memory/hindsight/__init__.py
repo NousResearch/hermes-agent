@@ -354,6 +354,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_user_prefix, self._retain_assistant_prefix = "User", "Assistant"
         self._turn_counter = self._turn_index = 0
         self._session_turns: list[str] = []  # ALL turns for the session
+        # Author snapshots parallel _session_turns.  A cached gateway agent can receive several
+        # speakers over its lifetime, and retain batching must not replace earlier authors with
+        # the last turn's author.
+        self._session_turn_authors: list[Optional[Dict[str, Any]]] = []
         self._last_retained_turn_count = 0  # append-mode delta watermark
         # Server-side async retain ops still in flight: aretain_batch returns on
         # *acceptance*, not durability, so the prefetch gates on these via
@@ -688,6 +692,7 @@ class HindsightMemoryProvider(MemoryProvider):
             setattr(self, f"_{name}", str(kwargs.get(name) or "").strip())
         self._turn_index = self._last_retained_turn_count = 0
         self._session_turns = []
+        self._session_turn_authors = []
         self._mode = cfg.get("mode", "cloud")
         self._timeout = self._int_setting("timeout", "HINDSIGHT_TIMEOUT", _DEFAULT_TIMEOUT)
         self._idle_timeout = self._int_setting("idle_timeout", "HINDSIGHT_IDLE_TIMEOUT", _DEFAULT_IDLE_TIMEOUT)
@@ -983,7 +988,39 @@ class HindsightMemoryProvider(MemoryProvider):
         return [{"role": role, "content": f"{prefix}: {content}", "timestamp": now} for role, prefix, content in
                 (("user", self._retain_user_prefix, user_content), ("assistant", self._retain_assistant_prefix, assistant_content))]
 
-    def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
+    @staticmethod
+    def _turn_author_provenance(
+        author: Optional[Dict[str, Any]], *, platform: str, turn_index: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Return structured, non-semantic provenance for one retained turn."""
+        if not isinstance(author, dict):
+            return None
+        sender_id = str(author.get("id") or "").strip()
+        sender_name = str(author.get("name") or "").strip()
+        if not sender_id and not sender_name:
+            return None
+        author_platform = str(author.get("platform") or platform or "").strip()
+        provenance: Dict[str, Any] = {
+            "turn_index": turn_index,
+            "platform": author_platform,
+            "is_bot": bool(author.get("is_bot")),
+        }
+        if sender_id:
+            provenance["id"] = sender_id
+        if sender_name:
+            provenance["name"] = sender_name
+        return provenance
+
+    def _sender_tag(self, provenance: Dict[str, Any]) -> Optional[str]:
+        """Stable Hindsight tag for a platform's immutable sender id."""
+        platform = str(provenance.get("platform") or "").strip()
+        sender_id = str(provenance.get("id") or "").strip()
+        return f"sender:{platform}:{sender_id}" if platform and sender_id else None
+
+    def _build_metadata(
+        self, *, message_count: int, turn_index: int,
+        turn_authors: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, str]:
         metadata: Dict[str, str] = {
             # UTC write/audit time (event time lives on the item timestamp).
             "retained_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -993,6 +1030,20 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._retain_source:
             metadata["source"] = self._retain_source
         metadata.update({name: value for name in _METADATA_ATTRS if (value := getattr(self, f"_{name}"))})
+        if turn_authors:
+            # Hindsight metadata values are strings.  Keep the author-to-turn mapping explicit so
+            # a batched retain is not attributed to only its final speaker.
+            metadata["turn_authors"] = json.dumps(
+                turn_authors, ensure_ascii=False, separators=(",", ":"),
+            )
+            if len(turn_authors) == 1:
+                author = turn_authors[0]
+                metadata.update({
+                    "turn_author_platform": str(author.get("platform") or ""),
+                    "turn_author_id": str(author.get("id") or ""),
+                    "turn_author_name": str(author.get("name") or ""),
+                    "turn_author_is_bot": "true" if author.get("is_bot") else "false",
+                })
         return metadata
 
     def _build_retain_kwargs(self, content: str, *, context: str | None = None,
@@ -1012,30 +1063,70 @@ class HindsightMemoryProvider(MemoryProvider):
         item.update({k: v for k, v in (("tags", merged_tags), ("observation_scopes", self._observation_scopes)) if v})
         return item
 
-    def _retain_batch(self, item: dict, *, bank_id: str, document_id: str | None = None,
+    def _retain_batch(self, item: dict | List[dict], *, bank_id: str, document_id: str | None = None,
                       retain_async: bool | None = None):
-        """Dispatch one item via aretain_batch (bank_id/document_id/retain_async are
-        call-level args, never item keys)."""
-        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id, "retain_async": retain_async}
+        """Dispatch retain item(s) via aretain_batch (call-level args never become item keys)."""
+        items = item if isinstance(item, list) else [item]
+        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": items, "document_id": document_id, "retain_async": retain_async}
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
-    def _make_turn_retain_job(self, turns: list[str], *, document_id: str, update_mode: str | None,
-                              label: str, track_ops: bool = True) -> Callable[[], None]:
+    def _make_turn_retain_job(
+        self, turns: list[str], *, document_id: str, update_mode: str | None,
+        label: str, track_ops: bool = True,
+        turn_authors: Optional[List[Optional[Dict[str, Any]]]] = None,
+        turn_indexes: Optional[List[int]] = None,
+    ) -> Callable[[], None]:
         """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
-        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
-        content = "[" + ",".join(turns) + "]"
-        metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
+        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id.
+        Author snapshots are captured with the same job so a later speaker cannot rewrite an older
+        batched turn's provenance."""
+        turns = list(turns)
+        authors = list(turn_authors or [])
+        authors.extend([None] * (len(turns) - len(authors)))
+        indexes = list(turn_indexes or range(1, len(turns) + 1))
+        indexes.extend(range(len(indexes) + 1, len(turns) + 1))
+        turn_provenance = [
+            self._turn_author_provenance(author, platform=self._platform, turn_index=turn_index)
+            for author, turn_index in zip(authors, indexes)
+        ]
+        has_sender_provenance = any(turn_provenance)
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
-        tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
+        lineage_tags = _normalize_retain_tags([f"{kind}:{sid}" for kind, sid in lineage if sid])
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
+        if has_sender_provenance:
+            # Keep one Hindsight item per turn when author data exists.  A single item with a
+            # union of sender tags would make every derived observation look like it came from
+            # every speaker in a multi-author retain batch.
+            items = []
+            for turn, author_data, turn_index in zip(turns, turn_provenance, indexes):
+                tags = list(lineage_tags)
+                if author_data and (sender_tag := self._sender_tag(author_data)):
+                    tags.append(sender_tag)
+                metadata = self._build_metadata(
+                    message_count=2, turn_index=turn_index,
+                    turn_authors=[author_data] if author_data else None,
+                )
+                items.append(self._build_retain_kwargs(
+                    "[" + turn + "]", context=retain_context, metadata=metadata,
+                    tags=_normalize_retain_tags(tags) or None, update_mode=update_mode,
+                ))
+        else:
+            content = "[" + ",".join(turns) + "]"
+            metadata = self._build_metadata(
+                message_count=len(turns) * 2, turn_index=self._turn_index,
+            )
+            items = [self._build_retain_kwargs(
+                content, context=retain_context, metadata=metadata,
+                tags=lineage_tags or None, update_mode=update_mode,
+            )]
+        content_length = sum(len(item["content"]) for item in items)
 
         def _job() -> None:
-            item = self._build_retain_kwargs(content, context=retain_context, metadata=metadata,
-                                             tags=tags, update_mode=update_mode)
             logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
-            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
+                         label, bank_id, document_id, update_mode, retain_async,
+                         content_length, len(turns))
+            resp = self._retain_batch(items, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
             if retain_async and track_ops:
@@ -1044,9 +1135,13 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return _job
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self, user_content: str, assistant_content: str, *, session_id: str = "",
+        turn_author: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Enqueue a retain for the current turn (non-blocking; writer thread). Dropped
-        once shutdown() fired so post-exit retains never reach aiohttp during teardown."""
+        once shutdown() fired so post-exit retains never reach aiohttp during teardown.
+        ``turn_author`` is structured provenance only; it is never added to semantic content."""
         why = "auto_retain disabled" if not self._auto_retain else "shutting down" if self._shutting_down.is_set() else None
         if why:
             logger.debug("sync_turn: skipped (%s)", why)
@@ -1055,6 +1150,12 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id = str(session_id).strip()
 
         self._session_turns.append(json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False))
+        try:
+            from agent.turn_author import parse_turn_author
+            normalized_author = parse_turn_author(turn_author)
+        except Exception:
+            normalized_author = None
+        self._session_turn_authors.append(normalized_author)
         self._turn_counter = self._turn_index = self._turn_counter + 1
         if remainder := self._turn_counter % self._retain_every_n_turns:
             logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
@@ -1073,7 +1174,9 @@ class HindsightMemoryProvider(MemoryProvider):
                      len(turns_to_retain), len(self._session_turns), sum(len(t) for t in turns_to_retain))
 
         job = self._make_turn_retain_job(turns_to_retain, document_id=document_id,
-                                         update_mode=update_mode, label="retain")
+                                         update_mode=update_mode, label="retain",
+                                         turn_authors=self._session_turn_authors[start:],
+                                         turn_indexes=list(range(start + 1, len(self._session_turns) + 1)))
         # Indicator fires only past every skip/buffer gate: solely on turns that persist.
         # Model-independent status line; no-op without retain_indicator/status channel.
         if self._retain_indicator and self._status_callback is not None:
@@ -1178,7 +1281,9 @@ class HindsightMemoryProvider(MemoryProvider):
             old_document_id, old_update_mode = self._resolve_retain_target(self._document_id)
             job = self._make_turn_retain_job(list(self._session_turns), document_id=old_document_id,
                                              update_mode=old_update_mode, label="flush-on-switch",
-                                             track_ops=False)
+                                             track_ops=False,
+                                             turn_authors=list(self._session_turn_authors),
+                                             turn_indexes=list(range(1, len(self._session_turns) + 1)))
 
             def _flush():
                 try:
@@ -1200,6 +1305,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._parent_session_id = str(parent_session_id).strip()
         self._session_id, self._document_id = new_id, _mint_document_id(new_id)
         self._session_turns = []
+        self._session_turn_authors = []
         self._turn_counter = self._turn_index = self._last_retained_turn_count = 0
         logger.debug("Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
                      self._session_id, self._parent_session_id, reset, self._document_id)

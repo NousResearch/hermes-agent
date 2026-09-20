@@ -665,6 +665,31 @@ def _request_turn_author(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return parse_turn_author(raw)
 
 
+def _request_persistence_kwargs(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate proxy persistence fields and map them to ``run_conversation`` kwargs."""
+    fields = (
+        ("_hermes_persist_user_message", "persist_user_message", str),
+        ("_hermes_persist_user_timestamp", "persist_user_timestamp", (int, float)),
+        ("_hermes_persist_user_display_kind", "persist_user_display_kind", str),
+        ("_hermes_persist_user_display_metadata", "persist_user_display_metadata", dict),
+    )
+    kwargs: Dict[str, Any] = {}
+    for request_key, conversation_key, expected_type in fields:
+        value = body.get(request_key)
+        if value is None:
+            continue
+        if request_key == "_hermes_persist_user_timestamp":
+            valid = isinstance(value, expected_type) and not isinstance(value, bool)
+        else:
+            valid = isinstance(value, expected_type)
+        if not valid:
+            expected = "a number" if request_key == "_hermes_persist_user_timestamp" else (
+                "an object" if request_key == "_hermes_persist_user_display_metadata" else "a string")
+            raise ValueError(f"{request_key} must be {expected}")
+        kwargs[conversation_key] = value
+    return kwargs
+
+
 _USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
 
 
@@ -3781,7 +3806,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None,
+        notification_category: str = "result",
+        persist_user_message: Optional[str] = None,
+        persist_user_timestamp: Optional[float] = None,
+        persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3838,14 +3869,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     # two callers pass ``agent_ref``, and only /v1/runs has a run_id, so neither is a usable
                     # hook for the rest. See #63529.
                     self._shutdown_interruptible_agents[id(agent)] = agent
-                    # Passed only when set: a human turn keeps today's call shape.
-                    author_kwargs = {"turn_author": turn_author} if turn_author is not None else {}
                     conversation_kwargs = dict(
                         user_message=user_message,
                         conversation_history=conversation_history,
                         task_id=effective_task_id,
-                        **author_kwargs,
                     )
+                    # Passed only when set: ordinary API turns keep today's call shape.
+                    if turn_author is not None:
+                        conversation_kwargs["turn_author"] = turn_author
+                    for key, value in (
+                        ("persist_user_message", persist_user_message),
+                        ("persist_user_timestamp", persist_user_timestamp),
+                        ("persist_user_display_kind", persist_user_display_kind),
+                        ("persist_user_display_metadata", persist_user_display_metadata),
+                    ):
+                        if value is not None:
+                            conversation_kwargs[key] = value
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
                     with notification_turn(agent, muted=muted, session_id=session_id or ""):

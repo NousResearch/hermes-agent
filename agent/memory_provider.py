@@ -127,7 +127,8 @@ class MemoryProvider(ABC):
         turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
-        ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
+        ``turn_author`` (``{"id", "name", "is_bot"}``, optionally ``platform``) is who wrote the user side;
+        the manager sends it only to signatures that accept it."""
 
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

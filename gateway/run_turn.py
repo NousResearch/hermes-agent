@@ -2173,6 +2173,7 @@ class GatewayTurnMixin:
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                turn_author=self._gateway_turn_author(source),
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
@@ -2712,6 +2713,10 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
+        persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[dict] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
         scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
@@ -2768,6 +2773,17 @@ class GatewayTurnMixin:
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
+        # Sender identity is structured transport metadata, never prompt text.
+        if turn_author is not None:
+            body["author"] = turn_author
+        if persist_user_message is not None:
+            body["_hermes_persist_user_message"] = persist_user_message
+        if persist_user_timestamp is not None:
+            body["_hermes_persist_user_timestamp"] = persist_user_timestamp
+        if persist_user_display_kind is not None:
+            body["_hermes_persist_user_display_kind"] = persist_user_display_kind
+        if persist_user_display_metadata is not None:
+            body["_hermes_persist_user_display_metadata"] = persist_user_display_metadata
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = (
@@ -2884,6 +2900,22 @@ class GatewayTurnMixin:
             "history_offset": len(history),
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
+        }
+
+    @staticmethod
+    def _gateway_turn_author(source: SessionSource) -> Dict[str, Any]:
+        """Build the accepted per-turn author shape from the admitting transport envelope.
+
+        ``source.user_id`` is the immutable platform identity; the display name is descriptive
+        only.  Include the logical platform when available so a proxied turn keeps its original
+        transport provenance; bot/relay callers that use the older shape remain compatible.
+        """
+        platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+        return {
+            "id": source.user_id or None,
+            "name": source.user_name or None,
+            "is_bot": bool(getattr(source, "is_bot", False)),
+            "platform": str(platform or "") or None,
         }
 
     async def _run_agent(
@@ -3844,6 +3876,7 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
+                turn_author=self._gateway_turn_author(next_source),
                 persist_user_display_kind=next_display_kind,
                 persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
             )
@@ -4168,6 +4201,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
         scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
@@ -4177,7 +4211,13 @@ class GatewayTurnMixin:
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                event_message_id=event_message_id,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
+                turn_author=turn_author,
+                scheduled_heartbeat=scheduled_heartbeat,
             )
 
         from run_agent import AIAgent
@@ -4205,6 +4245,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            turn_author=turn_author,
             scheduled_heartbeat=scheduled_heartbeat,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

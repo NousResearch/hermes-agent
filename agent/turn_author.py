@@ -56,7 +56,12 @@ def local_origin() -> str:
 
 
 def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
-    """Normalize a dict or JSON string into ``{"id", "name", "is_bot"}``; None for anything else or without id and name.
+    """Normalize a dict or JSON string into the accepted author shape.
+
+    The optional ``platform`` field is preserved when a dispatcher knows it. Older
+    callers omit it and keep the original ``id``/``name``/``is_bot`` shape.
+    None is returned for anything else or without id and name.
+
     The id is whatever the transport knows the sender by: ``bot:<profile>`` on a bot-mode delivery inside one
     install, ``bot:<connection>/<profile>`` when the Desktop relayed it from another machine,
     ``bot:<hostname>/<profile>`` on a peer dm, the platform user id elsewhere.
@@ -71,6 +76,9 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
             "name": _clean_text(raw.get("name")),
             "is_bot": _bot_flag(raw.get("is_bot")),
         }
+        platform = _clean_text(raw.get("platform"))
+        if platform is not None:
+            author["platform"] = platform
         if author["id"] is None and author["name"] is None:
             return None
         origin = _clean_text(raw.get("origin"))

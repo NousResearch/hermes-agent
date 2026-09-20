@@ -72,8 +72,8 @@ class MessageEvent:
     auto_skill: Optional[str | list[str]] = None
     # Per-channel ephemeral system prompt; applied at API call time, never persisted to transcript.
     channel_prompt: Optional[str] = None
-    # History-backfilled channel context (missed under require_mention); kept out of ``text`` so
-    # run.py's sender-prefix logic sees only the trigger message.
+    # History-backfilled channel context (missed under require_mention); kept out of ``text`` until
+    # inbound preparation so the trigger message remains separate from the backfill.
     channel_context: Optional[str] = None
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False

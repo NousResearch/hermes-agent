@@ -571,7 +571,8 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+            _openai_error, _redact_api_error_text, _request_persistence_kwargs,
+            _request_turn_author, _resolve_media_to_data_urls)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -607,6 +608,14 @@ class OpenAICompatRoutesMixin:
         history = conversation_messages[:-1]
         if not _content_has_visible_payload(user_message):
             return _invalid_request("No user message found in messages")
+        try:
+            turn_author = _request_turn_author(body)
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code="invalid_author")
+        try:
+            persistence_kwargs = _request_persistence_kwargs(body)
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code="invalid_persistence")
 
         # X-Hermes-Session-Key scopes long-term memory per channel; independent of
         # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
@@ -669,7 +678,10 @@ class OpenAICompatRoutesMixin:
             # and the client can resume the session by sending it again). A fingerprint-derived
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
-            session_history_delivery=("1" if provided_session_id else ""))
+            session_history_delivery=("1" if provided_session_id else ""),
+            **persistence_kwargs,
+            **({"turn_author": turn_author} if turn_author is not None else {}),
+        )
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
@@ -717,8 +729,15 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
-                              "hermes_notification_category"],
+            fingerprint_keys=[
+                "model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
+                "hermes_notification_category",
+                "author",
+                "_hermes_persist_user_message",
+                "_hermes_persist_user_timestamp",
+                "_hermes_persist_user_display_kind",
+                "_hermes_persist_user_display_metadata",
+            ],
             route="chat_completions",
         )
         if err is not None:

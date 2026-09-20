@@ -25,9 +25,7 @@ from gateway.run_inbound_unauthorized import (
     PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
     unauthorized_owner_hint,
 )
-from gateway.session import (
-    SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
-)
+from gateway.session import SessionSource
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1397,22 +1395,7 @@ class GatewayInboundMixin:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
-        _is_shared_multi_user = is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-        )
-        if _is_shared_multi_user and source.user_name:
-            # Display names are attacker-influenceable: neutralize newlines/control chars or a
-            # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
-            # Slack: expose the CURRENT speaker's verifiable `<@U...>` id so "mention me again" has a
-            # trusted target (display names are ambiguous). user_id comes from the envelope, not user-editable.
-            # See #17916.
-            if source.platform == Platform.SLACK and source.user_id:
-                _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
-            message_text = f"[{_safe_user_name}] {message_text}"
-        # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
+        """Prepend history-backfill channel context; sender identity stays structured metadata."""
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
         return message_text

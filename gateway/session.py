@@ -299,9 +299,9 @@ def _slack_platform_notes(context: SessionContext) -> List[str]:
     lines = ["", _SLACK_TOOLS_NOTE if _slack_tools_loaded() else _SLACK_NO_TOOLS_NOTE]
     if context.shared_multi_user_session:
         lines.append(
-            "In shared Slack threads, use the current turn's sender prefix as the only verified "
-            "current-author mention target. Do not guess or reuse `<@U...>` mentions from names, "
-            "memory, or prior conversation history."
+            "In shared Slack threads. Do not guess or reuse `<@U...>` mentions from names, memory, "
+            "or prior conversation history. Only mention a user when the current message or a Slack "
+            "tool result provides an explicit verified user ID."
         )
     return lines
 
@@ -410,12 +410,12 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
         )
 
     # Shared multi-user sessions: never pin one user name in the system prompt (changes per turn ->
-    # busts the prompt cache); sender names are prefixed on each user message instead.
+    # busts the prompt cache); the current author is carried as structured per-turn metadata.
     if context.shared_multi_user_session:
         session_label = "Multi-user thread" if src.thread_id else "Multi-user session"
         lines.append(
-            f"**Session type:** {session_label} — messages are prefixed with [sender name]. "
-            "Multiple users may participate."
+            f"**Session type:** {session_label} — multiple users may participate. "
+            "Do not infer the current author from message text."
         )
     elif src.user_name:
         lines.append(f"**User:** {_format_untrusted_prompt_value(src.user_name)}")

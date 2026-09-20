@@ -5,6 +5,7 @@ Historical table names preserve the driver's bounded retry-retention guard.
 Legacy rows without exact commitments are not upgraded by guessing authority.
 """
 import base64
+from contextlib import contextmanager
 import hashlib
 import math
 import json
@@ -39,11 +40,35 @@ class CanonicalOutputRetry:
         self._artifact_clock = time.time
         self._output_publish_locks = {}
         self._output_publish_locks_guard = threading.Lock()
+        self._output_db = self.authority.db
         self._output_epoch = self.authority.epoch
         self._output_instance = self.authority.instance_id
         self._prepare_artifact_retry_store()
 
+    @contextmanager
+    def _output_policy_read(self):
+        # Policy lock precedes this non-reentrant owner lifetime lock. No pooled
+        # reads, writes, pathname opens or recovery inside the selection fence.
+        db = self._output_db
+        with db.live_read_connection() as conn:
+            def current():
+                if (conn is None or db._read_conns_closed or conn is not db._conn
+                        or self.authority.db is not db or db._db_replaced
+                        or db._db_wal_generation_lost or db._wal_generation_was_lost()):
+                    raise RuntimeStoreError('output_owner_unavailable')
+                db._raise_if_db_corrupt()
+                self._output_owner(conn)
+            current()
+            yield conn
+            # Policy ends its read transaction before this check, so a changed
+            # epoch is read fresh rather than from the selected historical view.
+            current()
+
     def _policy_snapshot(self, room):
+        # Refuse an already unavailable owner before checkpoint sync opens its
+        # separate writer. Sync finishes before the read-only selection begins.
+        with self._output_policy_read():
+            pass
         room_id = str(room['room_id'])
         def held_threads(conn):
             self._output_owner(conn)
@@ -56,10 +81,7 @@ class CanonicalOutputRetry:
             held = set()
             for row in rows:
                 key = (room_id, row['task_id'], row['execution_generation'])
-                try:
-                    current = self._output_metadata(conn, key)
-                except (RoomArtifactError, RuntimeStoreError):
-                    continue
+                current = self._output_metadata(conn, key)
                 # The retry is not settlement authority: the exact settled task,
                 # frozen context/recipients, owner, receipt and result must match.
                 old = json.loads(row['metadata_json'])
@@ -67,7 +89,8 @@ class CanonicalOutputRetry:
                     held.add(row['thread_id'])
             return frozenset(held)
         return self.policy_checkpoint.snapshot(room_id=room_id, latest_seq=int(room['latest_seq']),
-                                               held_output_threads=held_threads)
+                                               held_output_threads=held_threads,
+                                               read_connection=self._output_policy_read)
 
     def _output_room_lock(self, room_id):
         with self._output_publish_locks_guard:

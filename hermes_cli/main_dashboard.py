@@ -168,8 +168,36 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
     return True
 
 
+def _cgroup_paths_from_proc_text(text: str):
+    """Yield at most one cgroup path from a ``/proc/<pid>/cgroup`` body.
+
+    A non-root unified (v2) path is authoritative. On a hybrid host, root
+    ``0::/`` means systemd tracks the process in the legacy ``name=systemd``
+    hierarchy, so use that path instead. This keeps ownership checks, scope
+    detection, and restart on the same cgroup.
+    """
+    v2 = None
+    v1 = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("0::"):
+            if v2 is None:
+                v2 = line[3:]
+            continue
+        parts = line.split(":", 2)
+        if v1 is None and len(parts) == 3 and "name=systemd" in parts[1]:
+            v1 = parts[2]
+
+    if v2 is not None and (v2 != "/" or v1 is None):
+        yield v2
+    elif v1 is not None:
+        yield v1
+
+
 def _pid_unified_cgroup_entries(pid: int):
-    """Yield the ``0::<path>`` cgroup paths from ``/proc/<pid>/cgroup``; nothing when unreadable."""
+    """Yield at most one path: v2, or v1 ``name=systemd`` when v2 is root; nothing when unreadable."""
     try:
         cgroup_path = Path(f"/proc/{pid}/cgroup")
         if not cgroup_path.is_file():
@@ -177,10 +205,7 @@ def _pid_unified_cgroup_entries(pid: int):
         text = cgroup_path.read_text(encoding="utf-8-sig", errors="replace")
     except (OSError, PermissionError):
         return
-    for line in text.splitlines():
-        parts = line.strip().split("::", 1)
-        if len(parts) == 2:
-            yield parts[1]
+    yield from _cgroup_paths_from_proc_text(text)
 
 
 def _get_systemd_service_for_pid(pid: int) -> str | None:

@@ -243,6 +243,9 @@ def fetch_models_with_pricing(
                               if original.get(key) not in (None, "")}
                 if orig_entry.get("prompt") or orig_entry.get("completion"):
                     entry["original"] = orig_entry
+            # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
+            if include_sale_original and item.get("billing_mode") == "subscription":
+                entry["billing_mode"] = "subscription"
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)

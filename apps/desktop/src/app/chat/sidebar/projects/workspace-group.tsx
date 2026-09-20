@@ -16,10 +16,13 @@ import { switchBranchInRepo } from '@/store/projects'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
+
 import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from '../chrome'
+import { SidebarLoadMoreRow } from '../load-more-row'
 import { rankSessions } from '../order'
 
-import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
+import { projectPreviewCountFromConfig, SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
 import type { SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
@@ -49,6 +52,8 @@ export function SidebarWorkspaceGroup({
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
+  const { data: config } = useHermesConfigRecord()
+  const projectPreviewCount = projectPreviewCountFromConfig(config)
   // Totals for the whole profile, not the loaded page — a selector so a refresh
   // that leaves this profile's spend unchanged doesn't repaint its header.
   const usage = useStoreSelector($sessionProfilesUsage, all => all[group.id])
@@ -63,6 +68,7 @@ export function SidebarWorkspaceGroup({
   const defaultOpen = isProfileGroup || group.sessions.length > 0
   const [open, toggleOpen] = useWorkspaceNodeOpen(group.id, defaultOpen)
   const [visibleCount, setVisibleCount] = useState(SIDEBAR_GROUP_PAGE)
+  const [projectVisibleCount, setProjectVisibleCount] = useState<null | number>(null)
 
   // A lane ranks by whatever the sort key says before it trims itself, so the
   // rows it hides are the ones the sort ranked last.
@@ -71,8 +77,9 @@ export function SidebarWorkspaceGroup({
   // is how you see the rest. Workspace groups page within what's loaded unless
   // the user asked for everything.
   const laneCap = showAllSessions ? sessions.length : visibleCount
-  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : laneCap)
-  const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
+  const projectCap = projectVisibleCount ?? projectPreviewCount
+  const visibleSessions = sessions.slice(0, isProfileGroup ? projectCap : laneCap)
+  const hiddenCount = sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
   // Leading glyph: a home mark for the repo's primary checkout (labeled by its
@@ -227,13 +234,19 @@ export function SidebarWorkspaceGroup({
           ) : (
             renderRows(visibleSessions)
           )}
-          {hiddenCount > 0 && (
-            <WorkspaceShowMoreButton
-              count={nextCount}
-              label={group.label}
-              onClick={() => setVisibleCount(count => count + SIDEBAR_GROUP_PAGE)}
-            />
-          )}
+          {hiddenCount > 0 &&
+            (isProfileGroup ? (
+              <SidebarLoadMoreRow
+                onClick={() => setProjectVisibleCount(count => Math.min(sessions.length, (count ?? projectPreviewCount) + SIDEBAR_GROUP_PAGE))}
+                step={nextCount}
+              />
+            ) : (
+              <WorkspaceShowMoreButton
+                count={nextCount}
+                label={group.label}
+                onClick={() => setVisibleCount(count => count + SIDEBAR_GROUP_PAGE)}
+              />
+            ))}
         </>
       )}
     </SidebarRowStack>

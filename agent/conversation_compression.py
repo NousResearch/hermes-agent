@@ -1373,14 +1373,14 @@ def compression_blocked_transiently(agent: Any) -> bool:
 
 def _mark_compression_blocked_transient(agent: Any, compressor: Any) -> None:
     """Publish the transient-block signal when the active guard is transient.
-    Classification comes from ``_compression_block_reason``: ``cooldown:*`` and ``structural_backoff:*`` are
-    transient; ``ineffective`` stays unmarked."""
+    Classification comes from ``_compression_block_reason``: timed backoffs are transient;
+    ``ineffective`` stays unmarked."""
     reason_fn = getattr(compressor, "_compression_block_reason", None)
     reason = None
     if callable(reason_fn):
         with _swallow('compression block-reason read failed', exc_info=True):
             reason = reason_fn()
-    if isinstance(reason, str) and (reason.startswith("cooldown") or reason.startswith("structural_backoff")):
+    if isinstance(reason, str) and reason.startswith(("cooldown", "structural_backoff", "frequency")):
         logger.info(
             "Skipping automatic compression re-entry: transient guard "
             "active (%s, session=%s, last failure: %s) — will retry after "

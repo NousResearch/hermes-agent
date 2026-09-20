@@ -71,6 +71,19 @@ class TestCounterRoundTripsBindSessionState:
             "tripped anti-thrash guard instead of re-compacting"
         )
 
+    def test_frequent_successful_compactions_remain_blocked_after_restart(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        first = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+                first.record_completed_compaction()
+
+        second = _compressor(db, "s1")
+        with patch("agent.context_compressor.time.time", return_value=1_300.0):
+            assert second.should_compress(10**9) is False
+            assert second._compression_block_reason() == "frequency:300"
 
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""

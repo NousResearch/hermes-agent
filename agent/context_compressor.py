@@ -248,6 +248,7 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY = "_compression_frequency_window"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -1980,6 +1981,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._last_summary_fallback_used = self._last_feasibility_skip = False
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._compression_frequency_window_started_at = 0.0
+        self._compression_frequency_window_count = 0
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         # Observability only; never feeds the strike latch or the fallback streak.
@@ -2011,11 +2014,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._last_summary_error = None
         self._consecutive_timeout_failures = self._fallback_compression_streak = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
+        self._compression_frequency_window_started_at = 0.0
+        self._compression_frequency_window_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
+        self._load_compression_frequency_state()
         self._load_anti_thrash_recovery_deadline()
         self._load_proactive_prune_rearm_tokens()
 
@@ -2027,6 +2033,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
         previous_fallback_streak = self._fallback_compression_streak
         previous_ineffective_count = self._ineffective_compression_count
+        previous_frequency_state = self._compression_frequency_state()
         if boundary_reason == "compression" and old_session_id:
             # Parent row carries the streak/strike state across the rotation.
             def _parent(method: str, label: str, current: int) -> int:
@@ -2039,6 +2046,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             previous_ineffective_count = _parent(
                 "get_compression_ineffective_count", "compression parent ineffective count", previous_ineffective_count,
             )
+            previous_frequency_state = self._read_compression_frequency_state(
+                session_db=session_db, session_id=old_session_id
+            )
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
@@ -2047,6 +2057,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._ineffective_compression_count != previous_ineffective_count:
                 self._ineffective_compression_count = previous_ineffective_count
                 self._persist_ineffective_compression_count()
+            if self._compression_frequency_state() != previous_frequency_state:
+                self._set_compression_frequency_state(*previous_frequency_state)
 
     def _durable_read(
         self, method: str, label: str, coerce, default, *args,
@@ -2115,6 +2127,65 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_ineffective_compression_count(self) -> None:
         self._durable_write("set_compression_ineffective_count", "compression ineffective count", self._ineffective_compression_count)
 
+    def _compression_frequency_state(self) -> tuple[float, int]:
+        return self._compression_frequency_window_started_at, self._compression_frequency_window_count
+
+    def _read_compression_frequency_state(
+        self, *, session_db: Any = None, session_id: Optional[str] = None,
+    ) -> tuple[float, int]:
+        session_db = getattr(self, "_session_db", None) if session_db is None else session_db
+        session_id = getattr(self, "_session_id", "") if session_id is None else session_id
+        getter = getattr(session_db, "get_session_model_config_value", None)
+        if not session_id or not callable(getter):
+            return 0.0, 0
+        try:
+            state = getter(session_id, COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {})
+            if not isinstance(state, dict):
+                return 0.0, 0
+            return max(0.0, float(state.get("started_at", 0.0))), max(0, int(state.get("count", 0)))
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            logger.debug("compression frequency state lookup failed: %s", exc)
+            return 0.0, 0
+
+    def _load_compression_frequency_state(self) -> None:
+        self._compression_frequency_window_started_at, self._compression_frequency_window_count = (
+            self._read_compression_frequency_state()
+        )
+
+    def _set_compression_frequency_state(self, started_at: float, count: int) -> None:
+        state = max(0.0, float(started_at)), max(0, int(count))
+        if state == self._compression_frequency_state():
+            return
+        self._compression_frequency_window_started_at, self._compression_frequency_window_count = state
+        payload = None if state[1] == 0 else {"started_at": state[0], "count": state[1]}
+        self._durable_write(
+            "patch_session_model_config", "compression frequency state",
+            {COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY: payload},
+        )
+
+    def _record_completed_compaction_frequency(self) -> None:
+        now = time.time()
+        started_at, count = self._compression_frequency_state()
+        if started_at <= 0.0 or now < started_at or now - started_at >= self._FREQUENT_COMPACTION_WINDOW_SECONDS:
+            started_at, count = now, 1
+        else:
+            count += 1
+        self._set_compression_frequency_state(started_at, count)
+
+    def _frequency_guard_remaining(self) -> float:
+        started_at, count = self._compression_frequency_state()
+        if count < self._FREQUENT_COMPACTION_LIMIT:
+            return 0.0
+        now = time.time()
+        if started_at > now:
+            self._set_compression_frequency_state(now, count)
+            return self._FREQUENT_COMPACTION_WINDOW_SECONDS
+        remaining = started_at + self._FREQUENT_COMPACTION_WINDOW_SECONDS - now
+        if remaining <= 0.0:
+            self._set_compression_frequency_state(0.0, 0)
+            return 0.0
+        return remaining
+
     def _load_anti_thrash_recovery_deadline(self) -> None:
         """Restore the durable recovery deadline (wall-clock epoch); missing storage leaves it disarmed.
 
@@ -2161,6 +2232,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A completed boundary proves compressibility: lift any structural no-op backoff.
         self._structural_no_op_backoff_until = 0.0
         self._verify_compaction_cleared_threshold = True
+        self._record_completed_compaction_frequency()
         if feasibility_skip:
             # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
             # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
@@ -2338,6 +2410,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     # isn't compacting in a loop; short enough that a session which has since grown real compressible
     # material recovers well before it rides into the provider's hard context limit.
     _ANTI_THRASH_RECOVERY_SECONDS = 300.0
+
+    # Three completed rewrites inside ten minutes indicate a refill/compact loop even when each rewrite
+    # successfully clears the token threshold. The fixed window bounds cache breaks and summary feedback.
+    _FREQUENT_COMPACTION_LIMIT = 3
+    _FREQUENT_COMPACTION_WINDOW_SECONDS = 600.0
 
     # Structural no-op (nothing eligible) is not an ineffective attempt: defer retries instead of striking.
     _STRUCTURAL_NO_OP_BACKOFF_SECONDS = 300.0
@@ -2601,8 +2678,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
         """Return ``(should_compress, reason)``.
-        ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
-        ``"ineffective"``. Callers should surface a warning when it is non-None."""
+        ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"``,
+        ``"frequency:<seconds>"``, or ``"ineffective"``. Callers should surface a warning when it is non-None."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False, None
@@ -2611,13 +2688,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return True, None
 
     def _compression_block_reason(self) -> "str | None":
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
+        """Block reason: a timed backoff, ``"ineffective"``, or None."""
         for label, until in (
             ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
         ):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"
+        if remaining := self._frequency_guard_remaining():
+            return f"frequency:{remaining:.0f}"
         return "ineffective" if self._tripped() else None
 
     def _tripped(self) -> bool:
@@ -2658,6 +2737,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 if not self.quiet_mode:
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
+        if remaining := self._frequency_guard_remaining():
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped — %d completed compactions occurred within %.0fs. "
+                    "Auto-compaction will resume in %.0fs; consider /new to start fresh.",
+                    self._compression_frequency_window_count,
+                    self._FREQUENT_COMPACTION_WINDOW_SECONDS,
+                    remaining,
+                )
+            return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
         # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
         if self._tripped():

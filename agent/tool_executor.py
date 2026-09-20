@@ -846,6 +846,12 @@ def _poll_sequential_future(agent, future, function_name: str, deadline: float |
         try:
             return "done", future.result(timeout=wait_slice)
         except concurrent.futures.TimeoutError:
+            # concurrent.futures.TimeoutError aliases builtin TimeoutError (3.11+), so this also fires
+            # when the TOOL WORKER itself raised a timeout-class error. A settled future never becomes
+            # unsettled: without this the loop re-waits on a dead future forever (deadline=None) or until
+            # the deadline, burning a core. Let the worker's own exception propagate to the caller.
+            if future.done():
+                return "done", future.result()
             if agent._interrupt_requested:
                 return "interrupted", None
             elapsed = int(time.monotonic() - started)

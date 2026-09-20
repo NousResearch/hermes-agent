@@ -810,6 +810,49 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── The user manager that restart-safe cron workers need ─────────
+        # The cron scheduler launches every job in a transient `systemd-run
+        # --user --scope`, so that a gateway restart cannot kill a running job,
+        # and it fails the fire closed when the scope cannot be created. A
+        # system service has no user manager — and so no /run/user/<uid>/bus —
+        # unless the uid lingers. That makes `linger` load-bearing for cron on
+        # this module, not cosmetic: without it every job dies before an agent
+        # starts. This check proves three properties: the uid the gateway runs
+        # as lingers, a lingering gateway does not start before that uid's bus
+        # exists, and a gateway whose uid does not linger waits for nothing.
+        cron-worker-user-scope =
+          let
+            configOf = settings: (evalNixosModule ({ enable = true; } // settings)).config;
+
+            managed = configOf { };
+            gateway = managed.systemd.services.hermes-agent;
+            gatewayUser = gateway.serviceConfig.User;
+
+            # The operator declares the user themselves. Nothing here knows
+            # whether they lingered it, so nothing may assume a bus.
+            unmanaged = (configOf { createUser = false; }).systemd.services.hermes-agent;
+
+            failures =
+              lib.optional (!((managed.users.users.${gatewayUser}.linger or false) == true))
+                "the uid the gateway runs as (${gatewayUser}) must linger: `systemd-run --user --scope` has no user manager to ask without it, and cron dispatch fails closed"
+              ++ lib.optional (!lib.elem "linger-users.service" gateway.after)
+                "a lingering gateway must be ordered after linger-users.service, the unit that runs `loginctl enable-linger`"
+              ++ lib.optional (!lib.hasInfix "/run/user" gateway.preStart)
+                "a lingering gateway must wait for its user bus before ExecStart: the bus environment is resolved once at startup, so a bus that appears later is one this process never sees"
+              ++ lib.optional (lib.hasInfix "/run/user" unmanaged.preStart)
+                "a gateway whose uid is not known to linger must not block on a user bus that may never arrive";
+          in
+          pkgs.runCommand "hermes-cron-worker-user-scope" { } (
+            if failures != [ ] then
+              throw "cron worker user scope check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: the gateway uid lingers and the unit waits for its user bus"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── How .env is built ────────────────────────────────────────────
         # This check runs the real script that both modules use to build
         # $HERMES_HOME/.env. The important property is that a second run

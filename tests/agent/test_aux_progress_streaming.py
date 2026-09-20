@@ -18,17 +18,21 @@ from agent.auxiliary_client import (
     _AnthropicCompletionsAdapter,
     _ChatStreamAccumulator,
     _CodexCompletionsAdapter,
+    _acreate_with_progress,
     _acreate_with_stream,
     _aggregate_chat_stream,
     _aggregate_chat_stream_async,
     _anthropic_event_has_content,
+    _aux_dispatch,
     _aux_stream_total_ceiling,
-    _codex_event_has_content,
+    _aux_thread_local_hook,
     _create_with_progress,
+    _create_with_progress_once,
     _notify_aux_progress,
     _provider_requires_stream,
     aux_progress_hook,
 )
+from agent.codex_runtime import _codex_event_has_content
 from agent.conversation_compression import CompressionCommitFence
 
 
@@ -145,9 +149,21 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        # 1 dispatch tick (preserved for the watchdog's historical liveness
-        # signal — see _create_with_progress) + 1 per substantive chunk.
-        assert ticks == [1, 1, 1, 1]
+        # 1 tick per substantive chunk (reasoning, "Hello ", "world"); the
+        # dispatch itself is not progress (#114938).
+        assert ticks == [1, 1, 1]
+
+    def test_reasoning_only_in_model_extra_is_captured_and_counts_as_progress(self):
+        # Non-SDK delta objects (proxies, relays) may carry reasoning only in ``model_extra``;
+        # the accumulator must read it like the main streaming path does (#56516).
+        chunk = _chunk(finish_reason="stop")
+        chunk.choices[0].delta.model_extra = {"reasoning_content": "thinking..."}
+        client = _FakeClient(stream_chunks=[chunk])
+        ticks = []
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = _create_with_progress(client, {"model": "m1", "messages": [], "timeout": 30})
+        assert result.choices[0].message.reasoning == "thinking..."
+        assert ticks == [1]  # the reasoning chunk only; dispatch is not progress (#114938)
 
     def test_completed_response_ticks_only_terminal_signals(self):
         calls = []
@@ -166,11 +182,9 @@ class TestCreateWithProgress:
 
         assert calls[0]["stream"] is True
         assert result is _COMPLETE
-        # A completed response object carries the full summary payload, and
-        # the dispatch tick is the watchdog's historical liveness signal:
-        # both are one-shot terminal ticks, not per-frame keepalives, so
-        # neither can defeat an inactivity timeout.
-        assert ticks == [1, 1]
+        # A completed response object carries the full summary payload: one
+        # terminal tick, and no dispatch tick (#114938).
+        assert ticks == [1]
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
         client = _FakeClient(
@@ -186,6 +200,28 @@ class TestCreateWithProgress:
         assert len(client.calls) == 2
         assert client.calls[0].get("stream") is True
         assert "stream" not in client.calls[1]
+
+    def test_dispatch_only_auth_failure_does_not_tick_progress(self):
+        """Bug pin (#114938): a dispatch that dies before any payload (401) must
+        not reset the compression inactivity fence. Dispatch telemetry still
+        fires, but progress_observed stays False."""
+        fence = CompressionCommitFence()
+        dispatches = []
+
+        class _AuthError(Exception):
+            status_code = 401
+
+        client = _FakeClient(stream_error=_AuthError("unauthorized"))
+        with (
+            aux_progress_hook(fence.touch_progress),
+            _aux_thread_local_hook(_aux_dispatch, lambda: dispatches.append(1)),
+            pytest.raises(_AuthError),
+        ):
+            _create_with_progress_once(
+                client, {"model": "m1", "messages": [], "timeout": 30},
+            )
+        assert dispatches == [1]  # dispatch telemetry preserved
+        assert fence.progress_observed is False
 
 
 
@@ -677,3 +713,31 @@ class TestAsyncStreamAggregation:
         )
         assert calls[0]["stream"] is True
         assert result.choices[0].message.content == "ok"
+    @pytest.mark.asyncio
+    async def test_async_dispatch_only_auth_failure_does_not_tick_progress(self):
+        """Async twin of the #114938 pin: a 401 dispatch must not reset the
+        compression inactivity fence."""
+        fence = CompressionCommitFence()
+        dispatches = []
+
+        class _AuthError(Exception):
+            status_code = 401
+
+        class _AsyncClient:
+            def __init__(self):
+                completions = SimpleNamespace(create=self._create)
+                self.chat = SimpleNamespace(completions=completions)
+
+            async def _create(self, **kwargs):
+                raise _AuthError("unauthorized")
+
+        with (
+            aux_progress_hook(fence.touch_progress),
+            _aux_thread_local_hook(_aux_dispatch, lambda: dispatches.append(1)),
+            pytest.raises(_AuthError),
+        ):
+            await _acreate_with_progress(
+                _AsyncClient(), {"model": "m1", "messages": [], "timeout": 30},
+            )
+        assert dispatches == [1]
+        assert fence.progress_observed is False

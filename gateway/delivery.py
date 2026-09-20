@@ -106,6 +106,11 @@ class DeliveryTarget:
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
+    # Raw target string when the platform name is unknown. The platform falls
+    # back to LOCAL for routing, but the original name is preserved so
+    # deliver() can report {success: False, error: unknown_platform} instead
+    # of silently misrouting to local files.
+    unknown_platform: Optional[str] = None
 
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
@@ -114,12 +119,14 @@ class DeliveryTarget:
         if target.lower() == "origin":
             return (cls(platform=origin.platform, chat_id=origin.chat_id, thread_id=origin.thread_id, is_origin=True)
                     if origin else cls(platform=Platform.LOCAL, is_origin=True))
-        # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms -> local.
+        # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms ->
+        # LOCAL for routing but preserve the raw target so deliver() reports
+        # unknown_platform instead of silently saving locally.
         parts = target.split(":", 2)
         try:
             platform = Platform(parts[0].lower())
         except ValueError:
-            return cls(platform=Platform.LOCAL)
+            return cls(platform=Platform.LOCAL, unknown_platform=target)
         return (cls(platform=platform, chat_id=parts[1], thread_id=parts[2] if len(parts) > 2 else None, is_explicit=True)
                 if len(parts) > 1 else cls(platform=platform))
 
@@ -127,6 +134,8 @@ class DeliveryTarget:
         """Convert back to string format."""
         if self.is_origin:
             return "origin"
+        if self.unknown_platform is not None:
+            return self.unknown_platform
         if self.platform == Platform.LOCAL:
             return "local"
         parts = [self.platform.value, self.chat_id, self.thread_id if self.chat_id else None]
@@ -159,6 +168,10 @@ class DeliveryRouter:
         """Deliver content to all targets; returns per-target results keyed by target string."""
         results = {}
         for target in targets:
+            if target.unknown_platform is not None:
+                results[target.to_string()] = {
+                    "success": False, "error": f"unknown_platform: {target.unknown_platform}"}
+                continue
             # Skip targets proven permanently unreachable (deleted group, blocked bot, deactivated user) —
             # re-sending each tick wastes flood-control budget. Self-healing: a later successful send
             # clears the flag. LOCAL/origin-without-chat targets are never dead-tracked.
@@ -239,9 +252,19 @@ class DeliveryRouter:
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 
     async def _deliver_to_platform(self, target: DeliveryTarget, content: str,
-                                   metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
-        transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
+                                   metadata: Optional[Dict[str, Any]],
+                                   transport: Optional[DeliveryTransport] = None,
+                                   ) -> Dict[str, Any]:
+        """Deliver content to a messaging platform.
+
+        ``transport`` carries an already-authorized transport past resolution:
+        the cron live lane resolved and authorized it per target (including the
+        SharedRouteAdapters satellite grant), and re-resolving from the plain
+        adapters dict cannot re-derive that grant under satellite config
+        (#115656). Omitted (None) preserves resolution for every other caller.
+        """
+        if transport is None:
+            transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
         if transport is None:
             raise ValueError(f"No adapter configured for {target.platform.value}")
         if not target.chat_id:

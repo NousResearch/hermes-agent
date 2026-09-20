@@ -25,7 +25,7 @@ import pytest
 
 import gateway.slash_commands as slash_commands
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -140,3 +140,25 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
     )
 
 
+@pytest.mark.asyncio
+async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_endpoint(_isolated_config, monkeypatch):
+    """#74003: the chat ``/model`` reply is a read path. The listing must ask for cache-only catalogs
+    and must not live-probe every saved custom endpoint (only the selected one), matching the GUI."""
+    seen: list[dict] = []
+
+    def _fake_list_picker_providers(**kwargs):
+        seen.append(kwargs)
+        return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                 "models": ["gpt-x"], "total_models": 1}]
+
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    assert await runner._handle_model_command(_make_event()) is None
+    assert seen, "listing never ran"
+    flags = {k: seen[0].get(k) for k in ("non_blocking_catalogs", "probe_custom_providers", "probe_current_custom_provider")}
+    assert flags == {"non_blocking_catalogs": True, "probe_custom_providers": False,
+                     "probe_current_custom_provider": True}, flags

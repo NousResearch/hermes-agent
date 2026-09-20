@@ -4,6 +4,7 @@ Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) s
 in ``tools.memory_tool`` and is read lazily."""
 
 import logging
+import os
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -126,10 +127,19 @@ class MemoryStore:
 
         for target in ("memory", "user"):
             path = self._path_for(target)
-            path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+
+            mkdir_under_hermes_home(path.parent)
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
+            # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
+            # add/replace, so the oversized block would silently ride in the prompt while every later
+            # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
+            if (count := self._char_count(target)) > (limit := self._char_limit(target)):
+                logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
+                               "further additions are blocked until it is back under the limit.",
+                               path.name, count, limit)
             self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
 
     @staticmethod
@@ -140,11 +150,28 @@ class MemoryStore:
         from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
         lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(lock_path.parent)
         if fcntl is None and msvcrt is None:
             yield
             return
-        with open(lock_path, "a+", encoding="utf-8") as fd:
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        raw_fd = os.open(lock_path, flags, 0o600)
+        try:
+            # The creation mode is filtered through the process umask and does
+            # not repair a lock left loose by an older Hermes process. Tighten
+            # the opened inode before acquiring the lock so both cases are
+            # owner-only. Operating on the fd avoids a path-swap window.
+            if hasattr(os, "fchmod"):
+                os.fchmod(raw_fd, 0o600)
+            fd = os.fdopen(raw_fd, "r+", encoding="utf-8")
+        except Exception:
+            os.close(raw_fd)
+            raise
+        with fd:
             def _flock(unlock: bool):
                 if fcntl:
                     fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)
@@ -187,6 +214,13 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _batch_failure(self, target: str, message: str) -> Dict[str, Any]:
+        """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
+        caller already holds the inventory, so echoing it made each consolidation retry
+        grow the context it was invoked to shrink (#97316)."""
+        return self._consolidation_failure(
+            _error(message + " No operations were applied (batch is all-or-nothing).", usage=self._usage(target)))
+
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
@@ -207,7 +241,9 @@ class MemoryStore:
             if isinstance(result, dict):
                 return result
             self._set_entries(target, result[0])
-            path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+
+            mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
             return self._success_response(target, result[1])
 
@@ -299,7 +335,8 @@ class MemoryStore:
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
-        an over-limit result writes NOTHING and returns the first failure plus live state."""
+        an over-limit result writes NOTHING and returns the first failure. Aborts do not
+        echo ``current_entries`` — the store is unchanged and the model already has it."""
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
@@ -316,13 +353,23 @@ class MemoryStore:
                 msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
-                    return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+                    return self._batch_failure(target, msg)
+            if entries and not working:
+                # #103419: a consolidation batch that removes the last entry would
+                # commit an empty file as a normal successful write. Refuse; single
+                # remove() is the deliberate-wipe path.
+                label = self._path_for(target).name
+                return self._batch_failure(target, (
+                    f"Refusing to empty {label}: this batch would remove every entry from a "
+                    f"previously non-empty store. Keep at least one entry — merge overlapping "
+                    f"entries into a shorter one instead of removing the last one. To delete the "
+                    f"final entry deliberately, use single remove() calls."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
-                return self._failure_with_entries(target, (
+                return self._batch_failure(target, (
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                    f"entries in the same batch (see current_entries below), then retry."))
+                    f"entries in the same batch, then retry."))
             return working, f"Applied {len(operations)} operation(s)."
         return self._mutate(target, _apply)
 

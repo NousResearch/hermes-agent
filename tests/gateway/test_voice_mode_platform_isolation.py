@@ -145,7 +145,8 @@ class TestVoiceModeProfileIsolation:
     async def test_voice_state_and_transcripts_stay_with_the_owning_bot(self, tmp_path):
         from types import SimpleNamespace
 
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
 
         runner = _make_runner()
         runner._VOICE_MODE_PATH = tmp_path / "voice.json"

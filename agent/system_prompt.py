@@ -17,10 +17,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE, MEMORY_GUIDANCE,
-    USER_PROFILE_GUIDANCE, PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -277,14 +278,15 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     # available"; with only USER.md enabled the narrower block is used.
     memory_guidance = None
     if "memory" in names:
-        if getattr(agent, "_memory_enabled", True):
-            memory_guidance = MEMORY_GUIDANCE
-        elif getattr(agent, "_user_profile_enabled", True):
-            memory_guidance = USER_PROFILE_GUIDANCE
+        memory_guidance = _pb.build_memory_guidance(
+            getattr(agent, "_memory_enabled", True),
+            getattr(agent, "_user_profile_enabled", True),
+            skill_manage_available="skill_manage" in names,
+        )
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+    # fallback paths must also limit task protocol guidance to dispatcher workers.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
+    if _kanban_guidance is None and "kanban_show" in names and owned_kanban_task():
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,
@@ -309,6 +311,33 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = frozenset()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
                                          compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+
+
+def _auto_load_parts(agent: Any) -> List[str]:
+    """``skills.auto_load`` blocks, resolved once per agent lifecycle (config, skill files and
+    HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
+    across model switches, compression and static-prefix restoration.
+
+    Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
+    context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
+    operator guidance for the user's session, not payload for every internal fork."""
+    if getattr(agent, "skip_context_files", False) or not any(
+            name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
+        return []
+    if not getattr(agent, "_auto_load_skills_resolved", False):
+        result: Tuple[str, List[str], List[str]] = ("", [], [])
+        try:
+            if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+                from agent.skill_commands import build_auto_load_prompt
+                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+            if result[2]:
+                logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
+        except Exception:
+            logger.debug("skills.auto_load: injection skipped", exc_info=True)  # config errors never block session start
+        agent._auto_load_skills_result = result
+        agent._auto_load_skills_resolved = True
+    prompt = agent._auto_load_skills_result[0]
+    return [prompt] if prompt else []
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:
@@ -380,23 +409,49 @@ def _active_profile_line(agent: Any) -> str:
     )
 
 
-def _platform_hint(agent: Any) -> str:
-    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
-    override + desktop TUI clarifier."""
-    platform_key = (agent.platform or "").lower().strip()
-    _default_hint = PLATFORM_HINTS.get(platform_key, "")
-    if not _default_hint and platform_key:
+def _default_platform_hint(platform_key: str) -> str:
+    """Built-in hint, else the plugin adapter's ``platform_hint``, else ``""``."""
+    hint = PLATFORM_HINTS.get(platform_key, "")
+    if not hint and platform_key:
         try:
             from gateway.platform_registry import platform_registry
             _entry = platform_registry.get(platform_key)
-            _default_hint = (_entry and _entry.platform_hint) or ""
+            hint = (_entry and _entry.platform_hint) or ""
         except Exception:
             pass
-    if platform_key == "telegram" and _default_hint and _telegram_rich_messages_enabled():
-        _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
-    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
+    if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
+        hint = hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+    return hint
+
+
+def _cron_delivery_hint(agent: Any) -> str:
+    """The destination channel's hint (default + its ``platform_hints`` override) for a cron agent.
+
+    A cron agent runs as platform ``cron`` but its final response lands on the job's ``deliver``
+    channel, so without this the model never learns that MEDIA: tags become Slack/Telegram
+    attachments or that tables do not render there — and a user's ``platform_hints.slack.append``
+    never reached scheduled jobs at all. The scheduler publishes the primary auto-deliver target
+    into the session ContextVar before the agent runs (same seam ``send_message`` routes by).
+    """
+    from gateway.session_context import get_session_env
+    deliver_key = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").lower().strip()
+    if not deliver_key or deliver_key == "cron":
+        return ""
+    hint = _resolve_platform_hint(agent, deliver_key, _default_platform_hint(deliver_key))
+    return f"Delivery destination ({deliver_key}): {hint}" if hint else ""
+
+
+def platform_hint(agent: Any) -> str:
+    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
+    override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
+    platform_key = (agent.platform or "").lower().strip()
+    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_platform_hint(platform_key))
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
+    if platform_key == "cron":
+        _delivery = _cron_delivery_hint(agent)
+        if _delivery:
+            _effective_hint = f"{_effective_hint}\n\n{_delivery}".strip()
     return _effective_hint
 
 
@@ -518,7 +573,7 @@ def _guidance_parts(agent: Any) -> List[str]:
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
-        parts.append(execution_guidance_text(agent.valid_tool_names))
+        parts.append(execution_guidance_text())
     return parts
 
 
@@ -538,21 +593,37 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
 
 def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
-    without tools or when probing fails (it must never block prompt build)."""
+    without tools or when probing fails (it must never block prompt build).
+
+    The workspace block is a live git probe after project context, ahead of the whole
+    volatile band; re-probing at the compaction rebuild re-emits different bytes for any
+    repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
+    session on the agent, keyed by the resolved cwd (a gateway serves many cwds), and
+    replayed on rebuilds; ``reset_session_state`` drops the pin at a session boundary.
+    """
     try:
         from agent.coding_context import coding_system_prompt_parts
-        if agent.valid_tool_names:
-            return coding_system_prompt_parts(platform=agent.platform, cwd=resolve_context_cwd(),
-                                              model=agent.model, valid_tool_names=agent.valid_tool_names)
+        if not agent.valid_tool_names:
+            return [], [], []
+        cwd = resolve_context_cwd()
+        cwd_key = str(cwd) if cwd is not None else ""
+        pinned = getattr(agent, "_frozen_workspace_snapshot", None)
+        # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
+        replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
+        parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
+                                           valid_tool_names=agent.valid_tool_names, workspace_block=replay)
+        if replay is None:
+            agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
+        return parts
     except Exception:
         pass
     return [], [], []
 
 
 def _post_workspace_parts(agent: Any) -> List[str]:
-    """Blocks that historically follow the workspace snapshot: environment
-    probe (config.yaml agent.environment_probe; one line, nothing when clean,
-    skipped for remote backends), bot-mode protocol, profile line, platform hint."""
+    """Blocks that follow the worktree-specific context: environment probe
+    (config.yaml agent.environment_probe; one line, nothing when clean, skipped
+    for remote backends), bot-mode protocol, profile line, platform hint."""
     parts: List[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
@@ -562,7 +633,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), _platform_hint(agent)]
+    parts += [_active_profile_line(agent), platform_hint(agent)]
     return parts
 
 
@@ -586,11 +657,13 @@ def _join_tier(parts: List[Optional[str]]) -> str:
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
-    """Assemble the system prompt as three ordered cache tiers: ``stable`` (through
-    the coding operating brief when a workspace snapshot follows), ``context``
-    (snapshot, remaining session-stable guidance, caller ``system_message``,
-    context files) and ``volatile`` (skills index, memory, user profile, external
-    memory block, timestamp line).  Never re-rendered mid-session."""
+    """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
+    guidance and the coding brief), ``context`` (caller ``system_message``, project
+    context files, workspace snapshot and remaining workspace guidance) and
+    ``volatile`` (skills index, memory, user profile, external memory block,
+    timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
+    shared context file can remain in the longest common prefix across worktrees.
+    Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
@@ -608,22 +681,27 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
-    stable_parts.append(_pb.build_environment_hints())
-    # Coding posture: operating brief stays in the stable prefix; the live
-    # git/workspace snapshot sits behind its own cache boundary, and the blocks
-    # below it must keep their historical post-snapshot position.
+    # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
+    stable_parts.extend(_auto_load_parts(agent))
+    # Coding posture: the operating brief stays in the stable prefix. The
+    # environment block contains the current cwd/backend and belongs after
+    # project context, not ahead of a large shared AGENTS.md block.
+    environment_hints = _pb.build_environment_hints()
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
     stable_parts.extend(coding_prefix_parts)
     post_workspace_parts = _post_workspace_parts(agent)
-    # ── Context tier (cwd-dependent, may change between sessions) ─
+    # ── Context tier (project/worktree-dependent, may change between sessions) ──
     context_parts: List[str] = []
-    (context_parts if coding_workspace_parts else stable_parts).extend(
-        [*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts]
-    )
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    if coding_workspace_parts:
+        context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
+    else:
+        # Preserve the stable placement for non-workspace sessions; there is no
+        # worktree snapshot whose later position would improve their prefix.
+        stable_parts.extend([*coding_trailing_parts, *post_workspace_parts])
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
@@ -632,6 +710,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     volatile_parts.append(_timestamp_line(agent))
+    # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
+    # host examples cannot shadow it during persisted-prompt validation.
+    if environment_hints:
+        # Embedder hints are prose too; reserve the delimiter for the renderer.
+        environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
+        volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
 
 
@@ -643,7 +727,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     agent._cached_system_prompt_static = parts["stable"]
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
-        agent._emit_status(warning)
+        agent._emit_diagnostic_status(warning)
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
 
@@ -708,7 +792,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 
 __all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
-           "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+           "platform_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

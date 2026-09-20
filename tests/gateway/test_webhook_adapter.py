@@ -300,6 +300,36 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(req, body, secret) is True
 
+    @pytest.mark.parametrize(
+        "secret, sign_with, body, received, stale, expected",
+        [
+            ("whsec_" + base64.b64encode(b"0123456789abcdef").decode(), None, b'{"a":1}', b'{"a":1}', False, True),
+            ("raw-signing-secret", None, b'{"a":1}', b'{"a":1}', False, True),
+            ("real-secret", "attacker-secret", b'{"a":1}', b'{"a":1}', False, False),
+            ("real-secret", None, b'{"a":1}', b'{"a":2}', False, False),  # tampered body
+            ("real-secret", None, b'{"a":1}', b'{"a":1}', True, False),  # replayed stale timestamp
+        ],
+    )
+    def test_standard_webhooks_headers_validate_like_svix(self, secret, sign_with, body, received, stale, expected):
+        """#47451/#101837: webhook-id/-timestamp/-signature is the same HMAC scheme as svix-*."""
+        adapter = _make_adapter()
+        timestamp = str(int(time.time()) - (600 if stale else 0))
+        sig = _svix_signature(body, sign_with or secret, "msg_std", timestamp)
+        req = _mock_request(headers={"webhook-id": "msg_std", "webhook-timestamp": timestamp, "webhook-signature": sig})
+        assert adapter._validate_signature(req, received, secret) is expected
+
+    def test_gitlab_secret_token_survives_unsigned_standard_webhooks_metadata(self):
+        """GitLab sends webhook-id/webhook-timestamp on every delivery and webhook-signature only when a
+        signing token is set; a legacy X-Gitlab-Token route must not be hijacked into the HMAC path."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Gitlab-Token": "legacy-token", "webhook-id": "gl_1", "webhook-timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "legacy-token") is True
+        req_partial = _mock_request(headers={"webhook-id": "gl_2", "webhook-timestamp": str(int(time.time())),
+                                             "webhook-signature": "v1,AAAA"})
+        assert adapter._validate_signature(req_partial, b"{}", "legacy-token") is False
+
 
 # ===================================================================
 # Prompt rendering
@@ -684,6 +714,7 @@ class TestWebhookSilenceSuppression:
         mock_target.send = AsyncMock(return_value=SendResult(success=True))
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
         adapter.gateway_runner = mock_runner
 
@@ -811,6 +842,7 @@ class TestDeliverCrossPlatformThreadId:
 
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
 
         adapter.gateway_runner = mock_runner
@@ -933,6 +965,38 @@ class TestDualStackBind:
             await adapter.disconnect()
 
 
+class TestExclusiveBindTimeWait:
+    """The TIME_WAIT rebind (positive case: tests/gateway/test_api_server_bind_guard.py, shared
+    ``start_tcp_site``) must not weaken the exclusive bind: a live listener still wins."""
+
+    @staticmethod
+    def _adapter_on(port: int) -> WebhookAdapter:
+        return _make_adapter(
+            routes={"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            host="127.0.0.1",
+            port=port,
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_host_still_rejects_live_listener(self):
+        """The TIME_WAIT retry must not weaken exclusivity: a live listener on the same address wins."""
+        # The probe's connection must be closed server-side too, or ``wait_closed()`` never returns.
+        blocker = await asyncio.start_server(
+            lambda _reader, writer: writer.close(), host="127.0.0.1", port=0, reuse_address=False
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        adapter = self._adapter_on(port)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                assert await adapter.connect() is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()
+
+
 # Regression coverage for #72041: profile-bound webhook authentication
 class TestMultiplexProfileWebhookAuthentication:
     @staticmethod
@@ -942,7 +1006,7 @@ class TestMultiplexProfileWebhookAuthentication:
         adapter.gateway_runner = runner
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", tmp_path),
                 ("worker", tmp_path / "profiles" / "worker"),
                 ("other", tmp_path / "profiles" / "other"),

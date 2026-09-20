@@ -7,6 +7,7 @@ monkeypatch points authoritative.
 
 import json
 import logging
+import sys
 from typing import Any, List, Optional
 
 logger = logging.getLogger("tools.terminal_tool")
@@ -41,7 +42,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
+    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )
@@ -115,15 +116,26 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
 
 def _register_completion_watcher(process_registry, proc_session, session_key) -> None:
     """Gateway mode: register a fast watcher so completion triggers a new
-    agent turn (CLI mode uses the completion_queue directly)."""
+    agent turn (CLI mode uses the completion_queue directly).
+
+    Armed on the live gateway loop right away: the post-turn drain alone leaves a
+    process that finishes while its launching turn is still running unwatched, and
+    the chat mute for as long as that turn lasts (#112033). Before the gateway
+    serves, or while it stops, the descriptor waits in ``pending_watchers`` for the
+    startup / post-turn drain instead."""
     proc_session.watcher_interval = 5
-    process_registry.pending_watchers.append({
+    watcher = {
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
         **{attr.removeprefix("watcher_"): getattr(proc_session, attr)
            for attr, _ in _ROUTING_FIELDS[:-1]},
         "notify_on_complete": True, "parent_session_id": proc_session.parent_session_id,
-    })
+    }
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner = runner_ref() if callable(runner_ref) else None
+    if runner is not None and runner.arm_process_watcher(watcher):
+        return
+    process_registry.pending_watchers.append(watcher)
 
 
 def spawn_background_process(
@@ -177,6 +189,10 @@ def spawn_background_process(
             result_data["notify_on_complete"] = True
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
+            from agent.delegation_context import is_delegated_child_context
+            if is_delegated_child_context():
+                result_data["notify_on_complete"] = False
+                result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
@@ -186,3 +202,55 @@ def spawn_background_process(
             "output": "", "exit_code": -1,
             "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),
         }, ensure_ascii=False)
+
+
+_SUBAGENT_NOTIFY_NOTE = (
+    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
+    "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
+    "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
+)
+
+_YIELDED_NOTE = (
+    "The user sent a message while this command was running, so it was moved to the "
+    "background WITHOUT being killed and is still running. You will be notified when it "
+    "exits (notify_on_complete). Read the user's message and respond to it now; use "
+    "process(action='poll'|'wait'|'log', session_id=...) to check on this command."
+)
+
+
+def yield_to_background_handler(
+    *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
+    task_id: Optional[str], session_key: str,
+):
+    """Build the ``yield_handler`` a foreground ``env.execute`` calls when the tool thread is
+    asked to yield (a user message arrived mid-command). Local backend only: the live Popen
+    is adopted by the process registry as a notify-on-complete background session and the
+    partial output is returned to the model right away. Other backends return None (no
+    adoptable host process) and the foreground wait continues."""
+    if env_type != "local":
+        return None
+
+    def _handler(proc, output_so_far: str) -> dict:
+        from tools.process_registry import process_registry
+        session = process_registry.adopt_local(
+            proc, command=command, cwd=cwd, task_id=effective_task_id,
+            owner_task_id=task_id or effective_task_id, session_key=session_key,
+            output_so_far=output_so_far)
+        _stamp_routing_if_gateway(process_registry, session, session_key)
+        logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
+        return {
+            "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
+        }
+    return _handler
+
+
+def _stamp_routing_if_gateway(process_registry, session, session_key) -> None:
+    """Route the adopted session's completion like a normal notify_on_complete spawn."""
+    from gateway.session_context import async_delivery_supported, get_session_env
+    if not async_delivery_supported():
+        session.notify_on_complete = False
+        return
+    _stamp_gateway_routing(session, get_session_env)
+    if session.watcher_platform:
+        _register_completion_watcher(process_registry, session, session_key)

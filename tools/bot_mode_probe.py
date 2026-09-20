@@ -3,8 +3,9 @@
 When any profile carries ``ui_meta['hermes-bots']`` in profile.yaml (Bot-Mode-managed),
 a bot's canonical "Bot Chat" session — ONLY that session (agent/system_prompt.py enforces
 the ``BOT_CHAT_TITLE`` gate) — gets a "Messaging other agents" section. Silent (``""``)
-when no profile is managed, when SOUL.md already carries the heading (legacy plugin text
-must never double up), or on any error. Cached per (process, home) so compression rebuilds
+when no profile is managed or on any error. Older desktop builds appended a frozen copy of
+the section to SOUL.md; ``strip_legacy_protocol`` drops it at load time so the live roster
+here is the only copy any session sees. Cached per (process, home) so compression rebuilds
 produce identical bytes. Toggle: ``agent.bot_mode_protocol``. Also hosts path/roster
 helpers shared by ``bot_mode_dm`` and ``bot_relay``.
 """
@@ -12,10 +13,18 @@ helpers shared by ``bot_mode_dm`` and ``bot_relay``.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
+# The legacy section through the next H2 heading (or EOF), plus the blank lines before it.
+_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.S)
+
+
+def strip_legacy_protocol(text: str) -> str:
+    """SOUL text without the plugin-era "## Messaging other agents" section (idempotent)."""
+    return _LEGACY_PROTOCOL_RE.sub("\n", text).strip() + "\n" if _PROTOCOL_HEADING in text else text
 
 # The only session title that receives the protocol section. Must match the
 # desktop plugin's createCanonicalChat title and the `-c "Bot Chat"` resume target.
@@ -29,8 +38,9 @@ _cached: dict[str, str] = {}
 
 
 def _default_home() -> str:
-    """Ambient HERMES_HOME (env, else ~/.hermes) as a string."""
-    return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    """Ambient process HERMES_HOME (env, else the platform default) as a string."""
+    from hermes_constants import get_process_hermes_home
+    return str(get_process_hermes_home())
 
 
 def _resolve_home(home: str | os.PathLike | None) -> Path:
@@ -60,9 +70,22 @@ def _handle(name: str) -> str:
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:
-    """(name, dir) for the default profile + every named profile, sorted."""
+    """(name, dir) for the default profile + every live named profile, sorted. Same identity
+    predicate as ``profile list``: infra dirs (``sessions/``, ``logs/``) and tombstones are not
+    teammates (#99392)."""
+    from hermes_constants import named_profile_is_live
+
     profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
+    named = _swallow(
+        lambda: [
+            (c.name, c)
+            for c in sorted(profiles.iterdir())
+            if c.name != "default" and named_profile_is_live(c)
+        ]
+        if profiles.is_dir()
+        else [],
+        [],
+    )
     return [("default", root), *named]
 
 
@@ -105,11 +128,6 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     return _swallow(lambda: _any_managed(_hermes_root(_resolve_home(home))), False)
 
 
-def _soul_has_protocol(profile_dir: Path) -> bool:
-    soul = profile_dir / "SOUL.md"
-    return _swallow(lambda: soul.is_file() and _PROTOCOL_HEADING in soul.read_text(encoding="utf-8", errors="replace"), False)
-
-
 def _role_line(*parts: str) -> str:
     """'title — description' from the non-empty parts (either may be absent)."""
     return " — ".join(p for p in parts if p)
@@ -122,14 +140,68 @@ def _bullet(handle: str, *parts: str) -> str:
 
 def _profile_role(profile_dir: Path) -> str:
     """Teammate role line: Bot Mode title — profile description; tells a teammate
-    WHO to message for a job. Single-line, ≤160 chars, "" when neither. Never raises."""
+    WHO to message for a job. A friendly ``display_name`` (``hermes profile rename``) that
+    differs from both the folder id and the title leads the line, so an untagged
+    "talk to Scribe" maps to the folder handle without a disk search (#100671).
+    Single-line, ≤160 chars, "" when nothing. Never raises."""
     def _role() -> str:
         data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
-        line = _role_line(str((_bots_meta(data) or {}).get("title") or "").strip(),
-                          str(data.get("description") or "").strip())
+        title = str((_bots_meta(data) or {}).get("title") or "").strip()
+        display = str(data.get("display_name") or "").strip()
+        if display.lower() in (profile_dir.name.lower(), title.lower()):
+            display = ""
+        line = _role_line(display, title, str(data.get("description") or "").strip())
         return " ".join(line.split())[:160]
 
     return _swallow(_role, "")
+
+
+def _friendly_names(profile_dir: Path) -> tuple[str, str]:
+    """(Bot Mode title, profile.yaml ``display_name``) for a profile, "" when unset. Never raises."""
+    def _read() -> tuple[str, str]:
+        data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
+        return (str((_bots_meta(data) or {}).get("title") or "").strip(),
+                str(data.get("display_name") or "").strip())
+
+    return _swallow(_read, ("", ""))
+
+
+def _display_name(name: str, profile_dir: Path) -> str:
+    """Human-facing sender name, in the Desktop's ``botFriendlyNames`` order: Bot Mode title,
+    then profile.yaml ``display_name`` (``hermes profile rename``), else the @handle — the
+    renamed primary signs as ``Maia (@hermes)``, not ``hermes (@hermes)`` (#89720)."""
+    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name)
+
+
+# Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
+_RESERVED_ALIASES = frozenset({"all", "everyone", "user", "default", "hermes"})
+
+
+def alias_forms(value: str) -> set[str]:
+    """Lower-cased mention forms of a friendly name, mirroring the Desktop's
+    ``mentionNameForms``: slugified (``"Dr. Foo"`` → ``dr-foo``, what autocomplete inserts)
+    and collapsed (``drfoo``). Reserved tokens and empty forms are dropped."""
+    name = str(value or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name).strip("-")
+    collapsed = re.sub(r"[^a-z0-9_-]+", "", name)
+    return {f for f in (slug, collapsed)
+            if f and re.fullmatch(r"[a-z0-9][a-z0-9_-]*", f) and f not in _RESERVED_ALIASES}
+
+
+def local_alias_map(root: Path) -> dict[str, set[str]]:
+    """``alias form → {folder ids}`` for every local profile's friendly names (profile.yaml
+    ``display_name`` and the Bot Mode title). Folder ids themselves are not aliases: the
+    caller matches those first, so a target that is an exact folder id always addresses that
+    folder — a friendly name colliding with ANOTHER folder id never steals it. Ambiguity
+    (one alias form shared by several profiles) surfaces as a multi-id set. Never raises."""
+    def _build() -> dict[str, set[str]]:
+        aliases: dict[str, set[str]] = {}
+        for name, profile_dir in _roster(root):
+            for form in set().union(*(alias_forms(f) for f in _friendly_names(profile_dir))):
+                aliases.setdefault(form, set()).add(name)
+        return aliases
+
+    return _swallow(_build, {})
 
 
 def _peers(root: Path) -> list[str]:
@@ -167,7 +239,7 @@ def _remote_paragraph(root: Path) -> str:
         "\n\nTeammates on OTHER connected machines (reachable through the "
         "Desktop relay — message them with message_agent exactly like local "
         "teammates; replies arrive as completion notifications the same "
-        "way):\n" + "\n".join(lines)
+        "way, or via reply_delivery=\"poll\" as below):\n" + "\n".join(lines)
     )
 
 
@@ -191,9 +263,6 @@ def _build_section(home: Path) -> str:
     me = _profile_name(home)
     if not _any_managed(root):
         return ""
-    # An older plugin build may have appended the protocol to SOUL.md — never double it.
-    if _soul_has_protocol(home if me == "default" else root / "profiles" / me):
-        return ""
 
     roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
@@ -206,7 +275,9 @@ def _build_section(home: Path) -> str:
         "with your attribution prefixed automatically and returns an acknowledgement "
         "immediately — it never returns the reply. Send it, finish your turn, and "
         "the reply arrives later as a background-process completion notification "
-        "that wakes you; relay it to the user then, attributed to that agent. "
+        "that wakes you; relay it to the user then, attributed to that agent — unless "
+        "the ack returns reply_delivery=\"poll\", in which case follow its "
+        "process(action=\"wait\") instruction before ending the turn. "
         "COMPOSE every message yourself — say what YOU need from that agent; never "
         "forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "
@@ -333,13 +404,11 @@ def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike |
 
 
 def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
-    """True when a Bot Chat session's stored prompt PREDATES the epoch mechanism. Legacy
-    prompts carry neither section nor stamp, so the staleness check (stamped only) would strand
-    them forever. The caller must only ask for sessions titled "Bot Chat"; we rebuild only when
-    the probe would actually emit a section — a SOUL.md carrying the legacy protocol yields an
-    empty section, and rebuilding would mint another unstamped prompt and loop. Fails closed."""
-    text = stored_prompt or ""
-    if _EPOCH_PREFIX in text or _PROTOCOL_HEADING in text:
+    """True when a Bot Chat session's stored prompt PREDATES the epoch mechanism (no stamp —
+    including SOUL-era prompts whose frozen roster rode in from SOUL.md). The caller must only
+    ask for sessions titled "Bot Chat"; we rebuild only when the probe would actually emit a
+    section, and every rebuilt prompt is stamped so this fires once. Fails closed."""
+    if _EPOCH_PREFIX in (stored_prompt or ""):
         return False
     return _swallow(lambda: bool(get_bot_mode_protocol_section(home)), False)
 

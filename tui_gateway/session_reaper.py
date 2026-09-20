@@ -133,7 +133,18 @@ def install_exit_flush_signal_handlers() -> bool:
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-disconnect drop sentinel. _stdio_transport is the REAL transport for
     # standalone `hermes --tui` and must NOT count as dead.
-    return transport is _detached_ws_transport or getattr(transport, "_closed", None) is True
+    if transport is _detached_ws_transport:
+        return True
+    if isinstance(transport, FanoutTransport):
+        # A fan-out is never the sentinel and has no ``_closed`` of its own, so without this arm every
+        # multi-client session reads as alive forever — the TTL reaper, the LRU cap and the #77129 disconnect
+        # revalidation all gate on this predicate. A fan-out can legitimately end up empty, or holding nothing
+        # but closed sockets, with no disconnect passing through _close_sessions_for_transport: a failed write
+        # prunes the peer that failed. It is dead exactly when no peer of its own is alive, and an empty one is
+        # dead. Peers are always leaf transports (attach flattens a fan-out argument instead of nesting it), so
+        # this recurses one level at most.
+        return all(_transport_is_dead(peer) for peer in transport.transports())
+    return getattr(transport, "_closed", None) is True
 
 
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:
@@ -147,6 +158,18 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
     return _transport_is_dead(session.get("transport"))
+
+
+def _sessions_quiescent(exclude: str | None = None) -> bool:
+    """No session but ``exclude`` is mid-turn, building, awaiting input, holding live delegations, or on a live
+    transport. A non-forced memory trim holds the GIL (gc.collect) and every glibc arena lock (malloc_trim) for
+    its whole duration — 20-50 s on multi-GB heaps — which stalls the event loop, drops WS clients past the
+    write deadline and interrupts their turns (#58576); this is the moment it costs no other session. The
+    predicate is advisory (a turn can start right after), so the per-session checks — one may read state.db —
+    run outside ``_sessions_lock``."""
+    with _sessions_lock:
+        others = [(sid, s) for sid, s in _sessions.items() if sid != exclude]
+    return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
@@ -170,15 +193,48 @@ def _reap_idle_sessions() -> None:
         _close_session_by_id(
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
+    _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
-    # every scan to prevent unbounded RSS growth over days/weeks.
+    # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
+    # pressure) are unaffected.
+    if not _sessions_quiescent():
+        logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
+        return
     try:
         from hermes_cli.mem_trim import trim_memory
         trim_memory(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
+
+
+def _repair_missing_ws_orphan_reaps() -> None:
+    """Re-arm detached sessions whose disconnect path lost its teardown timer.
+
+    A resident record otherwise vouches for its lease during every orphan sweep,
+    while the live process prevents PID pruning. Reusing the normal WS grace
+    path preserves reconnect and in-flight-work protections instead of stealing
+    the lease directly.
+    """
+    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+        return
+    # A socket can be closed before its disconnect cleanup reaches the sentinel.
+    # Reuse that cleanup (including surviving viewers), never revoke a fence from
+    # a stale liveness snapshot.
+    with _sessions_lock:
+        closed_transports = [session.get("transport") for session in _sessions.values()
+                             if session.get("transport") is not _detached_ws_transport
+                             and _transport_is_dead(session.get("transport"))]
+    for transport in closed_transports:
+        _close_sessions_for_transport(transport)
+    with _sessions_lock:
+        missing = [
+            sid for sid, session in _sessions.items()
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps
+        ]
+        for sid in missing:
+            _schedule_ws_orphan_reap(sid)
 
 
 def _reclaim_orphaned_leases() -> None:
@@ -250,7 +306,7 @@ def _schedule_session_cap_enforcement() -> None:
 # conservative. Disable via `dashboard.startup_orphan_sweep: false`.
 # This is the startup complement every other resource type already has (docker_orphan_reaper, compression
 # orphans). See #65194.
-_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent")
+_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent", "unknown")
 _startup_orphan_sweep_ran = False
 _startup_orphan_sweep_lock = threading.Lock()
 

@@ -12,7 +12,7 @@ import os
 import sys
 
 __all__ = [
-    "project_root_str", "ensure_project_root_on_path", "is_termux_env",
+    "project_root_str", "normalize_hermes_home_env", "ensure_project_root_on_path", "is_termux_env",
     "is_termux_fast_version_argv", "is_global_fast_version_argv",
     "is_container_startup_environment", "active_profile_may_override_home",
     "container_mode_may_be_active", "read_openai_version", "read_install_method",
@@ -32,6 +32,25 @@ def _read_text(path: str) -> str | None:
 def project_root_str() -> str:
     """Repo root as a str — the single source for main.py's PROJECT_ROOT."""
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+
+
+def normalize_hermes_home_env() -> None:
+    """Expand ``~``/``$VAR`` in ``HERMES_HOME`` once, at process entry, and write it back.
+
+    fish does not expand ``~`` inside ``VAR=~/...`` and every shell passes a quoted value
+    through verbatim, so a literal tilde reaches the process. ``Path("~/.hermes")`` is
+    *relative*: the many raw ``os.environ["HERMES_HOME"]`` readers (this fast path, the
+    active_profile probe, profile re-home, the dotenv loader) would each resolve it against
+    cwd and scaffold a full home under ``<cwd>/~/.hermes``. One expansion here gives every
+    reader the same absolute spelling; ``hermes_constants`` expands as well for non-CLI
+    entry points. A relative value that is not tilde/variable-shaped is left alone.
+    """
+    raw = os.environ.get("HERMES_HOME", "")
+    if not raw.strip():
+        return
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    if expanded != raw:
+        os.environ["HERMES_HOME"] = expanded
 
 
 def ensure_project_root_on_path() -> None:
@@ -167,7 +186,7 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
         from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates()
+        behind = check_for_updates(passive=True)
         if behind == UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:

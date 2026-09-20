@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from tools.environments import docker as docker_env
+from tools.environments.docker_egress import _extra_args_egress_collisions
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -56,6 +57,7 @@ def _make_dummy_env(**kwargs):
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        snap_compat=kwargs.get("snap_compat", False),
     )
 
 
@@ -483,6 +485,27 @@ def test_security_args_include_setuid_setgid_for_privdrop(monkeypatch):
     }
     assert "SETUID" in added, "SETUID cap missing — image privilege-drop will fail"
     assert "SETGID" in added, "SETGID cap missing — image privilege-drop will fail"
+
+
+def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
+    """#9730: snap-packaged Docker under AppArmor turns ``--init`` and ``no-new-privileges`` into
+    "exec: operation not permitted" for every process in the container. The opt-out drops exactly
+    those two flags; cap-drop, tmpfs hardening and the privdrop caps are unchanged."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    def run_args(**kw):
+        calls = _mock_subprocess_run(monkeypatch)
+        _make_dummy_env(**kw)
+        return next(c[0] for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run")
+
+    default, compat = run_args(), run_args(snap_compat=True)
+    assert "--init" in default and "no-new-privileges" in default
+    assert "--init" not in compat and "no-new-privileges" not in compat
+
+    def strip(argv):  # everything except the two flags and the random container name
+        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges") and not a.startswith("hermes-")]
+
+    assert strip(default) == strip(compat)
 
 
 # ── run_as_host_user tests ────────────────────────────────────────
@@ -978,6 +1001,79 @@ def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
         _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
 
 
+def test_extra_args_non_suffixed_egress_name_refuses_under_egress(monkeypatch):
+    """The collision guard must cover every name the egress layer writes, not
+    only *_API_KEY/*_TOKEN: mappings can carry arbitrary real_env_name and
+    alias_env_names entries, and check_docker_env_collisions already guards the
+    full mapped set via load_mappings()."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: ([], {"AWS_SECRET_ACCESS_KEY": "proxy-token"}, []),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*AWS_SECRET_ACCESS_KEY"):
+        _make_dummy_env(extra_args=["-e", "AWS_SECRET_ACCESS_KEY=real"])
+
+
+def test_forward_env_non_suffixed_egress_name_refuses_under_egress(monkeypatch):
+    """docker_forward_env injects the real host value over the swapped token on
+    every docker exec; non-suffixed egress names must refuse too."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: ([], {"AWS_SECRET_ACCESS_KEY": "proxy-token"}, []),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_forward_env.*AWS_SECRET_ACCESS_KEY"):
+        _make_dummy_env(forward_env=["AWS_SECRET_ACCESS_KEY"])
+
+
+@pytest.mark.parametrize(
+    "extra_args, collides",
+    [
+        # pflag joined shorthand: docker parses "-eNAME=v" as "-e NAME=v" (#115887).
+        (["-eHTTPS_PROXY=http://evil"], True),
+        # Name-only passthrough shorthand injects the host's real variable.
+        (["-eAWS_SECRET_ACCESS_KEY"], True),
+        # Chained after docker run's boolean shorthands (-d -i -t -P -q).
+        (["-iteHTTPS_PROXY=http://evil"], True),
+        # A chain ending in bare "e" takes the next arg as its value.
+        (["-ite", "HTTPS_PROXY=http://evil"], True),
+        (["--env=HTTPS_PROXY=http://evil"], True),
+        (["--", "--env-file", "f"], False),  # pflag terminator: rest is image/cmd
+        # Legitimate args must keep working under enforcement.
+        (["-eFOO=bar"], False),
+        (["-dit", "-p8080:80", "-v/tmp:/tmp", "--name", "de", "-e", "FOO=bar"], False),
+    ],
+)
+def test_extra_args_egress_collision_follows_docker_shorthand_parsing(extra_args, collides):
+    """Docker's pflag CLI accepts a value-taking shorthand joined to its value
+    and chained after boolean shorthands; every spelling of ``-e`` that injects
+    a critical env name must collide, and nothing else may (#115887)."""
+    critical = {"HTTPS_PROXY", "AWS_SECRET_ACCESS_KEY"}
+    assert bool(_extra_args_egress_collisions(extra_args, critical)) is collides
+
+
+def test_extra_args_joined_shorthand_refuses_under_egress(monkeypatch):
+    """End to end: a boolean-chained ``-iteNAME=v`` in docker_extra_args must trip
+    the enforced-egress guard exactly like the spaced ``-e NAME=v`` form."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: ([], {"HTTPS_PROXY": "http://host.docker.internal:9090"}, []),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*HTTPS_PROXY"):
+        _make_dummy_env(extra_args=["-iteHTTPS_PROXY=http://10.0.0.9:3128"])
+
+
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     """A labeled container in ``exited`` state must be restarted via
     ``docker start`` before the new Hermes process uses it. Without this
@@ -1415,6 +1511,51 @@ def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
     assert removed == 2
     assert set(rm_calls) == {"cid-a", "cid-b", "cid-c"}, (
         f"reaper must attempt all candidates even when one fails; got: {rm_calls}"
+    )
+
+
+def test_reap_orphan_uses_plain_rm_so_running_containers_fail_safe(monkeypatch):
+    """``docker rm -f`` defeats the exited-only filter: a sibling can restart an
+    exited container between the ``docker ps`` snapshot and the rm (the reuse
+    path legitimately ``docker start``s exited containers), and ``FinishedAt``
+    still reports the previous exit. Plain ``docker rm`` lets the daemon refuse
+    removal of a running container atomically; every intended target is
+    already exited, so ``-f`` buys nothing."""
+    old = _now_iso(offset_seconds=900)
+    rm_calls = []
+
+    def _run(cmd, **kwargs):
+        if not isinstance(cmd, list) or len(cmd) < 2:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        sub = cmd[1]
+        if sub == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="cid-a\ncid-b\n", stderr="",
+            )
+        if sub == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+        if sub == "rm":
+            rm_calls.append(list(cmd))
+            if cmd[-1] == "cid-b":
+                # cid-b was restarted by a sibling after the ps snapshot: the
+                # daemon refuses a plain rm on a running container.
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="",
+                    stderr='cannot remove container "cid-b": container is running',
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    assert [c[-1] for c in rm_calls] == ["cid-a", "cid-b"]
+    assert all("-f" not in c for c in rm_calls), (
+        f"reaper must not force-remove containers: {rm_calls}"
     )
 
 

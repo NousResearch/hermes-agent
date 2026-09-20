@@ -265,8 +265,9 @@ async def search_sessions(
     if not q or not q.strip():
         return {"results": []}
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
-        db = _open_session_db_for_profile(profile, read_only=True)
-        try:
+        row_profile = _serving_profile(profile)
+
+        def _search(db):
             safe_limit = max(1, min(int(limit or 20), 100))
             source_filter = source or None
             source_list = _csv(sources)
@@ -326,6 +327,8 @@ async def search_sessions(
                 sid = lineage_tip(root)
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
+                payload["profile"] = row_profile
+                payload["is_default_profile"] = row_profile == "default"
                 try:
                     row = db.get_session_rich_row(sid)
                 except Exception:
@@ -385,8 +388,9 @@ async def search_sessions(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
             return {"results": list(seen.values())}
-        finally:
-            db.close()
+
+        # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
+        return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
 
 
 @manage_router.post("/api/sessions/bulk-delete")
@@ -470,7 +474,7 @@ async def get_session_stats(profile: Optional[str] = None):
             pass
         return out
 
-    return _with_db(profile, _stats, read_only=True)
+    return await asyncio.to_thread(_with_db, profile, _stats, read_only=True)
 
 
 @manage_router.get("/api/sessions/{session_id}")
@@ -486,7 +490,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         session["is_default_profile"] = session["profile"] == "default"
         return session
 
-    return _with_db(profile, _detail, read_only=True)
+    return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)
 
 
 @manage_router.get("/api/sessions/{session_id}/latest-descendant")
@@ -554,11 +558,73 @@ async def get_session_messages(
     projected_messages = _project_for_display(messages)
     return {
         "session_id": sid,
+        # The same stamp list rows carry, so the Desktop keys a page under the
+        # owner it already routes the session by.
+        "profile": _serving_profile(profile),
         "messages": projected_messages,
         "pagination": {
             "limit": _limit, "offset": offset,
             "order": order or ("latest" if limit is None else "oldest"),
             "returned": len(projected_messages)}}
+
+
+def _timeline_session_id(db, session_id: str, owner: str) -> str:
+    # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
+    # legacy owner belongs to this profile's store, just like /messages pages.
+    def owned(sid):
+        row = db._read_one("SELECT profile_name FROM sessions WHERE id = ?", (sid,))
+        return row is not None and row["profile_name"] in (None, owner)
+
+    if not owned(session_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    sid = db.resolve_resume_session_id(session_id)
+    if not owned(sid):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return sid
+
+
+@manage_router.get("/api/sessions/{session_id}/timeline")
+async def get_session_timeline(
+    session_id: str, profile: Optional[str] = None,
+    limit: int = Query(500, ge=1, le=500), after_row_id: int = Query(0, ge=0),
+):
+    """Prompt metadata only, including compacted display history (never rewind rows).
+
+    ``next_cursor`` is a stable logical first-row id; pass it as ``after_row_id``.
+    Entry ``row_id`` addresses the current representative for /messages/around.
+    """
+    from hermes_state_timeline import get_session_timeline as read_timeline
+
+    owner = _serving_profile(profile)
+
+    def _read(db):
+        sid = _timeline_session_id(db, session_id, owner)
+        return {"session_id": sid, "profile": owner,
+                **read_timeline(db, sid, limit=limit, after_row_id=after_row_id)}
+
+    return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+
+
+@manage_router.get("/api/sessions/{session_id}/messages/around")
+async def get_session_messages_around(
+    session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
+    limit: int = Query(120, ge=1, le=120),
+):
+    """Bounded display page starting at a timeline prompt; no intervening payloads."""
+    from hermes_state_timeline import get_session_messages_around as read_around
+
+    owner = _serving_profile(profile)
+
+    def _read(db):
+        sid = _timeline_session_id(db, session_id, owner)
+        page = read_around(db, sid, row_id, limit=limit)
+        if page is None:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        return {"session_id": sid, "profile": owner, **page}
+
+    result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+    result["messages"] = _project_for_display(result["messages"])
+    return result
 
 
 @manage_router.delete("/api/sessions/{session_id}")

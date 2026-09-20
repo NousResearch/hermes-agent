@@ -654,6 +654,22 @@ class TestUninstall:
 
         assert uninstall_entry("nonexistent") is False
 
+    def test_uninstall_removes_read_only_git_clone(self, monkeypatch):
+        """Loose objects are read-only in a clone: the purge must clear that, not abort (#117176)."""
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "remove_server", lambda name: False)
+        clone = mc._install_root() / "demo"
+        obj_dir = clone / ".git" / "objects" / "4b"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904"
+        obj.write_text("blob", encoding="utf-8")
+        obj.chmod(0o444)
+        obj_dir.chmod(0o555)
+
+        assert mc.uninstall_entry("demo") is True
+        assert not clone.exists()
+
 
 # ---------------------------------------------------------------------------
 # Picker (non-TTY paths only — interactive curses is integration-tested)

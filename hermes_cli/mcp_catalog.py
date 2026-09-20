@@ -20,6 +20,7 @@ from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_cli.cli_output import prompt as _prompt_input
+from utils import rmtree_readonly
 
 _MANIFEST_VERSION = 1
 
@@ -413,7 +414,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if dest.exists():
         # Fresh checkout each install — the manifest ref is the source of truth.
         _say(f"  Removing existing install at {dest}", Colors.DIM)
-        shutil.rmtree(dest)
+        rmtree_readonly(dest)
     _say(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN)
 
     # `git clone --branch` only accepts branches/tags, NOT commit SHAs; detect SHA-shaped refs
@@ -433,7 +434,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if not is_sha_ref and _git("clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)) != 0:
         # Branch/tag form failed (e.g. ref deleted upstream): fall through to full-clone path.
         if dest.exists():
-            shutil.rmtree(dest)
+            rmtree_readonly(dest)
         is_sha_ref = True
     if is_sha_ref:
         if _git("clone", install.url, str(dest)) != 0:
@@ -725,6 +726,6 @@ def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     if purge_install_dir:
         clone = _install_root() / name
         if clone.exists():
-            shutil.rmtree(clone)
+            rmtree_readonly(clone)
             removed = True
     return removed

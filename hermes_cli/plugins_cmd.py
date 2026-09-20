@@ -21,7 +21,7 @@ from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 from hermes_cli.secret_prompt import masked_secret_prompt
-from utils import atomic_write_text
+from utils import atomic_write_text, rmtree_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -688,7 +688,7 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
         _write_install_metadata(new_metadata)
     except Exception:
         if target.exists():
-            shutil.rmtree(target)
+            rmtree_readonly(target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
         if old_metadata:
@@ -963,7 +963,7 @@ def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     metadata = _read_install_metadata()
     if target.name not in metadata:
-        shutil.rmtree(target)
+        rmtree_readonly(target)
         return
     updated = {k: v for k, v in metadata.items() if k != target.name}
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
@@ -979,9 +979,9 @@ def _remove_plugin_core(target: Path) -> None:
                 f"Plugin metadata update failed and '{target.name}' could not be "
                 f"restored automatically; recovery copy remains at {backup}."
             ) from restore_exc
-        shutil.rmtree(staging, ignore_errors=True)
+        rmtree_readonly(staging, ignore_errors=True)
         raise
-    shutil.rmtree(staging)
+    rmtree_readonly(staging)
 
 
 def cmd_remove(name: str) -> None:

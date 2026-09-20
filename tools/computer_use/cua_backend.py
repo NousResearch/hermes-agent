@@ -77,6 +77,28 @@ def _cua_configured_permission_mode() -> str:
     raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
     return "bounded" if raw == "bounded" else "standard"
 
+# ``computer_use.ax_max_elements``: bound on the DRIVER's accessibility-tree walk per capture. The
+# visible-element cap in tool.py (_DEFAULT_MAX_ELEMENTS) trims the RESPONSE only, so without this an
+# unbounded walk pays for nodes the model never sees; 0 disables the bound (driver default: 2,000
+# elements / depth 25).
+_DEFAULT_AX_MAX_ELEMENTS = 200
+
+def _cua_configured_ax_max_elements() -> int:
+    """Bound on ``get_window_state``'s AX walk; 0 = no bound (driver default). Unreadable config fails to
+    the default, never to unbounded. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
+    window 540 ms -> 83 ms and a 456-node Finder window 6.9 s -> 0.6 s at 200, on the CLI transport. The
+    bounded result is a prefix of the unbounded walk, so the elements the model sees are unchanged. Raise
+    it toward 400 to keep the full first 100 visible elements on a pathological tree (~1.4 s on Finder);
+    cost grows with the bound, and a bound in the thousands buys nothing the response cap keeps. This
+    bounds the nodes COLLECTED, not the walk's wall clock: a target whose accessibility surface exceeds the
+    driver's own 20 s walk timeout still fails at every bound (and every depth bound), so a timeout error is
+    never an argument for a smaller or larger value here."""
+    raw = _computer_use_cfg().get("ax_max_elements", _DEFAULT_AX_MAX_ELEMENTS)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_AX_MAX_ELEMENTS
+
 def _manifest_is_mode_independent(path: str) -> bool:
     """True when this manifest may accompany any permission mode: v1/v2 declare ``mode: bounded`` and abort
     startup under an unrestricted runtime; v3 has no mode and is the ceiling the driver accepts alongside any

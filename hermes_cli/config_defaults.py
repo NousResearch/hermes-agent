@@ -2473,6 +2473,17 @@ DEFAULT_CONFIG = {
         # capture_after mode: som = screenshot + overlays; ax = elements only, no PNG (faster);
         # vision = pixels only.
         "capture_after_mode": "som",
+        # Bound cua-driver's accessibility-tree WALK on every capture (get_window_state max_elements).
+        # _DEFAULT_MAX_ELEMENTS in tools/computer_use/tool.py caps the SURFACED element list at 100 and
+        # spills the rest to a cache file, so an unbounded walk pays for nodes the model never sees:
+        # measured on macOS (cua-driver 0.28.2, M-series) a 1,444-node Chrome window went 540 ms -> 83 ms
+        # and a 456-node Finder window 6.9 s -> 0.6 s at 200, with the returned elements a prefix of the
+        # unbounded walk. 0 = driver default (2,000 elements / depth 25) — the pre-fix behaviour.
+        # ~400 keeps the full first 100 visible elements on a pathological tree, at ~1.4 s on Finder;
+        # the walk's cost grows with the bound, so keep it in the low hundreds. This caps the nodes
+        # COLLECTED, not the walk's wall clock: a target whose AX surface exceeds the driver's own 20 s
+        # walk timeout still fails at every bound (measured; a depth bound does not help there either).
+        "ax_max_elements": 200,
         # Disable cua-driver's cursor overlay, which can peg a core when idle (macOS redraw loop;
         # Linux/WSL2 idle spin). None = auto (off on macOS + headless/ WSL2 Linux, on elsewhere);
         # True = always disable; False = always enable.

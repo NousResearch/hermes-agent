@@ -62,7 +62,7 @@ class QQCloseError(Exception):
 
 from gateway.platforms.qqbot.constants import (
     API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
-    CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
+    CONNECT_TIMEOUT_SECONDS, QQ_WS_CLOSE_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
@@ -236,13 +236,27 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         logger.info("[%s] Disconnected", self._log_tag)
 
     async def _close_ws(self) -> None:
-        """Close the WebSocket + its aiohttp session (keeps _http_client alive)."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        """Close the WebSocket + its aiohttp session without blocking teardown."""
+        ws, session = self._ws, self._session
         self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
         self._session = None
+
+        async def close(resource, label: str) -> None:
+            if resource is None or resource.closed:
+                return
+            try:
+                await asyncio.wait_for(resource.close(), timeout=QQ_WS_CLOSE_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning("[%s] %s close timed out after %.1fs", self._log_tag, label, QQ_WS_CLOSE_TIMEOUT_SECONDS)
+            except Exception as exc:
+                logger.warning("[%s] %s close failed: %s", self._log_tag, label, exc)
+
+        try:
+            await close(ws, "WebSocket")
+        finally:
+            await close(session, "session")
 
     async def _cleanup(self) -> None:
         """Close WebSocket, HTTP session, and client; fail pending futures."""

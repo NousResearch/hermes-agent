@@ -224,6 +224,26 @@ def _dump_subagent_timeout_diagnostic(
 # Granularity for re-checking a child's progress while a configured ``child_timeout_seconds`` budget runs.
 # Five seconds is finer than the 30s heartbeat and cheap (one activity-summary read per slice).
 _LIVENESS_POLL_SECONDS = 5.0
+# Fraction of the inactivity budget after which the child is warned once (via its steer channel) that the window is
+# closing, so a child that is merely slow can wrap up and return instead of losing its whole context (#116001).
+_BUDGET_WARNING_FRACTION = 0.8
+
+def _budget_warning_text(idle_seconds: float, child_timeout: float) -> str:
+    return (
+        f"[delegation budget warning] No progress signal for {idle_seconds:.0f}s of your {child_timeout:.0f}s "
+        "inactivity window. Finish the current step and return your summary now — the work is discarded if the "
+        "window elapses."
+    )
+
+def _warn_child_budget(child: Any, idle_seconds: float, child_timeout: float) -> None:
+    """Queue the one-line warning through the child's steer path (delivered at its next iteration boundary)."""
+    steer = getattr(child, "steer", None)
+    if not callable(steer):
+        return
+    try:
+        steer(_budget_warning_text(idle_seconds, child_timeout))
+    except Exception as exc:
+        logger.debug("budget warning steer failed: %s", exc)
 
 def _child_activity_fingerprint(child: Any) -> tuple:
     """``(completed calls, current tool, activity clock)`` — the progress signals the heartbeat's stale verdict
@@ -781,18 +801,29 @@ class _ChildRun:
             settled.wait()
             return
         deadline = time.monotonic() + child_timeout
+        warn_at = deadline - child_timeout * (1.0 - _BUDGET_WARNING_FRACTION)
+        warned = False
         fingerprint = _child_activity_fingerprint(self.child)
         while True:
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = deadline - now
             if remaining <= 0:
                 return  # no progress for the whole budget
-            settled.wait(timeout=min(_LIVENESS_POLL_SECONDS, remaining))
+            wait = min(_LIVENESS_POLL_SECONDS, remaining)
+            if not warned:
+                wait = min(wait, max(warn_at - now, 0.0))
+            settled.wait(timeout=wait)
             if settled.is_set():
                 return  # the worker finished, or the heartbeat declared the child stale
             current = _child_activity_fingerprint(self.child)
             if current != fingerprint:
                 fingerprint = current
                 deadline = time.monotonic() + child_timeout
+                warn_at = deadline - child_timeout * (1.0 - _BUDGET_WARNING_FRACTION)
+                warned = False  # a fresh window gets its own warning
+            elif not warned and time.monotonic() >= warn_at:
+                warned = True
+                _warn_child_budget(self.child, child_timeout - (deadline - time.monotonic()), child_timeout)
 
     def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,

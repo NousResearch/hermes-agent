@@ -367,6 +367,8 @@ delegation:
 
 A positive value bounds **inactivity, not total runtime**: it is the longest a child may go with *no* progress (no completed API call, no tool change, no activity-clock tick) before it is abandoned. Every sign of progress restarts the window, so a child waiting on a multi-minute completion — the case that used to lose finished work — is never killed for taking long, while a child that has genuinely stopped moving is still caught (and an in-flight request is bounded independently by the per-call stale watchdog). `0` or a negative value disables the cap; the heartbeat staleness monitor below stays active either way.
 
+At ~80% of an idle window the child receives a one-line `[delegation budget warning]` through its steer channel (delivered at its next iteration boundary) telling it how long it has been idle and to return its summary now, so a slow-but-recoverable child can wrap up instead of losing its context. The warning fires once per idle window and re-arms when progress resumes.
+
 When a configured cap or the stale threshold fires, the child's result carries
 structured timeout metadata alongside the error message so parents and hooks
 can distinguish a stopwatch kill from other failures without parsing text:

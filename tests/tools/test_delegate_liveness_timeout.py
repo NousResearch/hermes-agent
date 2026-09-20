@@ -42,6 +42,11 @@ class _SlowButLiveChild:
         self._calls = initial_calls
         self._activity_ts = time.time()
         self.interrupted = threading.Event()
+        self.steers: list[tuple[float, str]] = []  # (monotonic time, text) of every budget warning received
+
+    def steer(self, text: str) -> bool:
+        self.steers.append((time.monotonic(), text))
+        return True
 
     def run_conversation(self, **_kwargs):
         deadline = time.monotonic() + self._total_seconds
@@ -92,6 +97,8 @@ def test_progressing_child_outlives_a_cap_shorter_than_its_runtime(monkeypatch):
     # The cap really was armed and the child really did run past it: the budget reset on progress.
     assert entry["duration_seconds"] > _CAP_SECONDS, entry
     assert not child.interrupted.is_set()
+    # Progress kept resetting the window, so the 80% budget warning never had cause to fire.
+    assert child.steers == [], child.steers
 
 
 def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
@@ -105,3 +112,18 @@ def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     assert entry["timeout_seconds"] == _CAP_SECONDS
     assert entry["last_event_age"] is not None and entry["last_event_age"] > 0.3, entry
     assert child.interrupted.is_set()
+
+
+def test_frozen_child_is_warned_once_at_80_percent_of_the_window(monkeypatch):
+    """Atom 2A of #116001: a stalling child hears about the closing window while it can still wrap up."""
+    child = _SlowButLiveChild(total_seconds=1.2, advance=False, initial_calls=3)
+    started = time.monotonic()
+
+    entry = _run(child, monkeypatch)
+
+    assert entry["status"] == "timeout", entry
+    assert len(child.steers) == 1, child.steers
+    warned_at, text = child.steers[0]
+    assert "[delegation budget warning]" in text and f"{_CAP_SECONDS:.0f}s inactivity window" in text, text
+    # Fired inside the window (after ~80% of it, before the kill), not at the timeout itself.
+    assert 0.8 * _CAP_SECONDS - 0.05 <= warned_at - started < _CAP_SECONDS, (warned_at - started, _CAP_SECONDS)

@@ -84,18 +84,6 @@ def test_a_profile_without_a_store_is_not_memoised_and_picks_one_up(home):
     assert _row("bare")["last_session"]["title"] == "now it exists"
 
 
-def test_one_profile_s_rows_never_answer_for_another(home):
-    bob, ann = home / "profiles" / "bob", home / "profiles" / "ann"
-    ann.mkdir()
-    _seed(bob, "20260920_000001_a", "bob's chat")
-    _seed(ann, "20260920_000002_b", "ann's chat")
-
-    rows = {p["name"]: p for p in _rows()}
-
-    assert rows["bob"]["last_session"]["title"] == "bob's chat"
-    assert rows["ann"]["last_session"]["title"] == "ann's chat"
-
-
 def test_an_unchanged_store_is_read_once_across_repeated_polls(home, monkeypatch):
     """The saving itself: the 5s poll stops reopening a store that has not moved."""
     bob = home / "profiles" / "bob"

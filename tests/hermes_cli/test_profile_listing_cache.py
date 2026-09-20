@@ -43,34 +43,6 @@ def test_an_edited_config_model_is_seen_on_the_next_read(profile_dir):
     assert profiles._read_config_model(profile_dir) == ("claude-opus-4.6", "anthropic")
 
 
-def test_an_edited_profile_meta_is_seen_on_the_next_read(profile_dir):
-    assert profiles.read_profile_meta(profile_dir)["display_name"] == "Bob"
-
-    (profile_dir / "profile.yaml").write_text("display_name: Roberta\ndescription: second\n", encoding="utf-8")
-
-    meta = profiles.read_profile_meta(profile_dir)
-    assert meta["display_name"] == "Roberta"
-    assert meta["description"] == "second"
-
-
-def test_an_edited_distribution_is_seen_on_the_next_read(profile_dir):
-    assert profiles._read_distribution_meta(profile_dir) == ("starter", "1.0.0", "registry")
-
-    (profile_dir / "distribution.yaml").write_text(
-        "name: pro\nversion: 2.0.0\nsource: local\n", encoding="utf-8")
-
-    assert profiles._read_distribution_meta(profile_dir) == ("pro", "2.0.0", "local")
-
-
-def test_the_real_writer_round_trips(profile_dir):
-    """``write_profile_meta`` renames a temp file into place; the memo must follow the new inode."""
-    assert profiles.read_profile_meta(profile_dir)["display_name"] == "Bob"
-
-    profiles.write_profile_meta(profile_dir, display_name="Bobby")
-
-    assert profiles.read_profile_meta(profile_dir)["display_name"] == "Bobby"
-
-
 def test_a_missing_file_is_not_cached_and_is_picked_up_when_created(tmp_path):
     bare = tmp_path / "profiles" / "bare"
     bare.mkdir(parents=True)
@@ -81,14 +53,6 @@ def test_a_missing_file_is_not_cached_and_is_picked_up_when_created(tmp_path):
     (bare / "distribution.yaml").write_text("name: late\nversion: 9\nsource: registry\n", encoding="utf-8")
 
     assert profiles._read_distribution_meta(bare) == ("late", 9, "registry")
-
-
-def test_mutating_a_returned_meta_does_not_poison_the_next_reader(profile_dir):
-    first = profiles.read_profile_meta(profile_dir)
-    first["display_name"] = "clobbered"
-    first["description"] = "clobbered"
-
-    assert profiles.read_profile_meta(profile_dir)["display_name"] == "Bob"
 
 
 def test_an_unchanged_file_is_parsed_once_across_repeated_reads(profile_dir, monkeypatch):

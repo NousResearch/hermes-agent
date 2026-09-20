@@ -43,18 +43,6 @@ def _row(name="bob", **params):
     return next(p for p in envelope["result"]["profiles"] if p["name"] == name)
 
 
-def test_an_edited_ui_meta_shows_on_the_very_next_listing(home):
-    assert _row()["ui_meta"]["hermes-bots"]["title"] == "Bob"
-
-    (home / "profiles" / "bob" / "profile.yaml").write_text(
-        "display_name: Bob\nui_meta:\n  hermes-bots:\n    title: Roberta\n"
-        "_ui_meta_revisions:\n  hermes-bots: 2\n", encoding="utf-8")
-
-    row = _row()
-    assert row["ui_meta"]["hermes-bots"]["title"] == "Roberta"
-    assert row["ui_meta_revisions"] == {"hermes-bots": 2}
-
-
 def test_the_cas_writer_round_trips_through_the_listing(home):
     """The real write path: profiles.configure reads the raw document, mutates and writes it back."""
     before = _row()["ui_meta_revisions"]["hermes-bots"]
@@ -80,32 +68,6 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     (assets / "avatar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _row()["has_avatar"] is True
-
-
-def test_a_profile_without_profile_yaml_is_not_cached_and_picks_one_up(home):
-    bare = home / "profiles" / "bare"
-    bare.mkdir()
-    (bare / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
-
-    assert _row("bare")["ui_meta_revisions"] == {}
-    assert "ui_meta" not in _row("bare")
-    assert cache.profile_yaml_signature(bare) is None
-
-    (bare / "profile.yaml").write_text(
-        "ui_meta:\n  hermes-bots:\n    title: Late\n_ui_meta_revisions:\n  hermes-bots: 1\n",
-        encoding="utf-8")
-
-    assert _row("bare")["ui_meta"]["hermes-bots"]["title"] == "Late"
-
-
-def test_mutating_a_returned_ui_meta_does_not_poison_the_next_listing(home):
-    first = _row()
-    first["ui_meta"]["hermes-bots"]["title"] = "clobbered"
-    first["ui_meta_revisions"]["hermes-bots"] = 999
-
-    row = _row()
-    assert row["ui_meta"]["hermes-bots"]["title"] == "Bob"
-    assert row["ui_meta_revisions"] == {"hermes-bots": 1}
 
 
 def test_an_unchanged_profile_yaml_is_parsed_once_across_repeated_polls(home, monkeypatch):

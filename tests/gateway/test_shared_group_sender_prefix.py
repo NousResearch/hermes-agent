@@ -92,15 +92,15 @@ async def test_user_authored_leading_brackets_are_not_treated_as_sender_prefix()
         platform=Platform.DISCORD, chat_id="c1", chat_type="group",
         user_id="U1", user_name="Alice",
     )
-    event = MessageEvent(text="[DNx5] this bracketed text is mine", source=source)
+    event = MessageEvent(text="[example-user] this bracketed text is mine", source=source)
 
     model_text = await runner._prepare_inbound_message_text(
         event=event, source=source, history=[],
     )
     model_text, persisted_text, _ = runner._hmwa_apply_message_timestamp(event, model_text)
 
-    assert model_text == "[DNx5] this bracketed text is mine"
-    assert persisted_text == "[DNx5] this bracketed text is mine"
+    assert model_text == "[example-user] this bracketed text is mine"
+    assert persisted_text == "[example-user] this bracketed text is mine"
 
 
 @pytest.mark.asyncio

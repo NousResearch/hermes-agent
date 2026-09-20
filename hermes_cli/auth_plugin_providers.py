@@ -29,6 +29,11 @@ _REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "
 
 PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 
+# Names whose PROVIDER_REGISTRY row came from a plugin profile (not the built-in rows). Only these
+# can be "OAuth-shaped with nobody to log them in": a bundled OAuth provider (nous, openai-codex …)
+# declares the same auth_type but its login lives in core.
+PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
+
 
 def register_plugin_provider(pp: Any) -> None:
     """Mirror one profile into ``PROVIDER_REGISTRY`` under the ``auth_type`` it declares.
@@ -51,6 +56,7 @@ def register_plugin_provider(pp: Any) -> None:
     else:
         pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
     PROVIDER_REGISTRY[pp.name] = pconfig
+    PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
     for alias in pp.aliases:  # so resolve_provider() resolves them too
         PROVIDER_REGISTRY.setdefault(alias, pconfig)
 
@@ -143,6 +149,8 @@ def plugin_missing_auth_handler_error(provider: str, action: str) -> Optional[Sy
     Its login is not something core can perform (there is no token endpoint to call), and silently
     running the api-key prompt or reporting "Unknown provider" both hide the plugin bug.
     """
+    if provider not in PLUGIN_MIRRORED_PROVIDERS:
+        return None
     profile = plugin_profile(provider)
     if profile is None or profile.auth_type == "api_key" or plugin_auth_handler(provider) is not None:
         return None

@@ -312,7 +312,13 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         if not name or "://" in raw or raw.startswith(("mailto:", "#", "/")):
             continue
         if name.startswith(".."):
-            return None
+            # A repo-relative link to a doc outside the skill directory (``../../tools/REGISTRY.md``
+            # in a multi-skill repo) is prose, never a bundle path: nothing is fetched or written for
+            # it, so refusing the whole bundle protected nothing and made every skill that links a
+            # sibling doc uninstallable with a misleading "files no longer exist upstream" (#115171).
+            # The link is left dangling in the installed copy, like an absent support file.
+            logger.warning("SKILL.md links outside the skill directory; installing without it: %s", raw)
+            continue
         # Only unambiguous file links: an extension, no internal slash, never SKILL.md itself (casefolded —
         # a ``skill.md`` entry would collide with the bundle root on macOS/Windows; skipped, not merged).
         if ("/" in name or name.casefold() == "skill.md" or "." not in name.lstrip(".")

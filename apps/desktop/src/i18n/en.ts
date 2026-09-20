@@ -130,7 +130,8 @@ export const en: Translations = {
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
     pathCopied: 'Path copied',
-    revealMissing: 'That folder is not on this computer'
+    revealMissing: 'That folder is not on this computer',
+    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
   },
 
   boot: {
@@ -1847,7 +1848,12 @@ export const en: Translations = {
       tierCommunity: 'community',
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
-      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
+      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
+      deepLinkErrorTitle: 'Plugin install link rejected',
+      deepLinkCatalogInvalidName: 'The link\u2019s catalog name is missing or invalid.',
+      deepLinkCatalogUnknown: (name: string) =>
+        `\u201C${name}\u201D is not in the Hermes plugin catalog. Nothing was installed.`,
+      deepLinkCatalogUnavailable: 'Could not load the Hermes plugin catalog. Check your connection and open the link again.'
     },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
@@ -4352,6 +4358,7 @@ export const en: Translations = {
       statusRecovered: 'Recovered',
       statusDone: 'Done',
       resultUnavailable: 'Result unavailable',
+      resultInterrupted: 'Interrupted',
       memoryWriteNoted: 'Memory write noted',
       actions: {
         read: 'Read',

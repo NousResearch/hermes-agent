@@ -596,10 +596,10 @@ _INTERPRETER_WITH_ARG = {
     "php": {"-c", "-d", "-z"},
     "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat",
                    "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
-    # Deno deliberately maps to no value-taking globals: its inline-script entry is the
-    # bare `eval` subcommand (first-arg fast path below), and its dash flags that precede
-    # `eval` (--ext, --no-check, ...) never swallow the next token as a value.
-    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": set(),
+    # Deno's inline-script entry is the bare `eval` subcommand; the only global option that
+    # may precede it and take a separate value is `-L/--log-level <level>` (`--env-file[=v]`
+    # binds with `=`; the `--unstable-*` and `--ext` flags belong after `eval`).
+    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": {"-L", "--log-level"},
 }
 _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
@@ -846,10 +846,6 @@ def _iter_top_level_shell_segments(command: str):
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
     """Return an execution-bearing interpreter option, if present."""
     flags, with_arg = _INTERPRETER_EXEC_FLAGS[family], _INTERPRETER_WITH_ARG[family]
-    # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash flag, and
-    # only as the first argument; a later positional `eval` stays data.
-    if family == "deno" and args and args[0].lower() == "eval":
-        return "eval"
     powershell = family == "powershell"
     skip_value = False
     for token in args:
@@ -857,6 +853,11 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
             skip_value = False
             continue
         if token == "--" or (not powershell and not token.startswith("-")):
+            # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash
+            # flag: the FIRST positional token, after any global options (`deno -q eval ...`);
+            # a later positional `eval` (`deno run eval.ts`) stays data.
+            if family == "deno" and token.lower() == "eval":
+                return "eval"
             break
         option, equals, _ = token.partition("=")
         comparable = option.lower() if powershell else option

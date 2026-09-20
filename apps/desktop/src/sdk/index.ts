@@ -363,6 +363,13 @@ export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
  *  needs a bound of its own or it outlives the wake it describes. */
 export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
+/** Which generation's wake most recently set $gatewaySwapTarget. Clearing it
+ *  keys off this, not off `generation === openSessionGeneration`, so a
+ *  superseded wake still clears the overlay IT put up — the generation
+ *  counter has already moved on by the time its `finally` runs, and a later
+ *  wake that never sets the target (e.g. a paint-first open without
+ *  awaitHydration) would otherwise leave it stuck forever (#115844). */
+let gatewaySwapTargetOwnerGeneration: number | null = null
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
@@ -1049,6 +1056,7 @@ export const host = {
         // Keep the target-specific overlay visible through transcript hydration,
         // not merely through the gateway/profile activation that precedes it.
         $gatewaySwapTarget.set(targetProfile)
+        gatewaySwapTargetOwnerGeneration = generation
       }
 
       // Only the HYDRATION half retries. Activation already failed its own
@@ -1191,8 +1199,13 @@ export const host = {
 
       throw error
     } finally {
-      if (options.awaitHydration && generation === openSessionGeneration) {
+      // Clear the overlay THIS wake set, even when a later open superseded
+      // it: `generation === openSessionGeneration` is false by then, but
+      // nothing else is coming to clear it. Skip only when a newer wake has
+      // since taken ownership of the target.
+      if (gatewaySwapTargetOwnerGeneration === generation) {
         $gatewaySwapTarget.set(null)
+        gatewaySwapTargetOwnerGeneration = null
       }
     }
   },

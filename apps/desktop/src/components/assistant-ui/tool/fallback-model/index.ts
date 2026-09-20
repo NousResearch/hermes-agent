@@ -706,8 +706,9 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'running'
   }
 
+  // A call the user stopped is expected to have no result; don't warn about it.
   if (part.result === undefined && !part.isError) {
-    return 'warning'
+    return part.interrupted ? 'notice' : 'warning'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes
@@ -1477,7 +1478,11 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   )
 
   const unavailable = part.result === undefined && part.completedAt !== undefined
-  const title = unavailable ? translateNow('assistant.tool.resultUnavailable') : titleParts.title
+
+  const title = unavailable
+    ? translateNow(part.interrupted ? 'assistant.tool.resultInterrupted' : 'assistant.tool.resultUnavailable')
+    : titleParts.title
+
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 

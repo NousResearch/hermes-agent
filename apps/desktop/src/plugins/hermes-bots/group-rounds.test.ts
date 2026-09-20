@@ -492,7 +492,9 @@ describe('per-member delta', () => {
     const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
     await drain(() => room.gateway.calls.length < 1)
 
-    for (let i = 0; i < 100; i++) {
+    const retained = room.chat.GROUP_CHAT_LOG_RETAIN
+
+    for (let i = 0; i < retained; i++) {
       room.chat.appendGroupChatEntry('Trim', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
     }
 
@@ -500,52 +502,81 @@ describe('per-member delta', () => {
     await settle(room, 'Trim')
     expect(room.chat.$groupChats.get().Trim.watermarks[`${thread}::research`]).toBe(0)
     await room.rounds.runGroupChatRounds('Trim', members, thread)
-    expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
+    expect(room.gateway.calls.at(-1)?.prompt).toContain(`unseen-${retained - 1}`)
   })
 
-  // #114341: the turn renders only the last GROUP_CHAT_HISTORY_LIMIT entries
-  // of the delta while the watermark advances past the whole tail, so the
+  // #114341 follow-up: the turn renders the newest delta lines that fit the
+  // window (GROUP_CHAT_HISTORY_LIMIT entries / GROUP_CHAT_HISTORY_CHARS
+  // characters) while the watermark advances past the whole tail, so the
   // head is never delivered later either. The cut must be visible to the
-  // member (naming how many entries it did not see); a delta that fits
-  // carries no marker.
-  it('names the omitted head of an over-long delta in the turn prompt', async () => {
+  // member and name EXACTLY how many entries it did not see; a delta that
+  // fits carries no marker.
+  it('names the exact omitted head of an over-budget delta and keeps the newest', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Head', members, 'seen-0')!
     await settle(room, 'Head')
-    const limit = room.chat.GROUP_CHAT_HISTORY_LIMIT
+    const total = 40
+    const body = 'x'.repeat(1000)
 
-    for (let i = 1; i <= limit + 5; i++) {
-      room.chat.appendGroupChatEntry('Head', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    for (let i = 1; i <= total; i++) {
+      room.chat.appendGroupChatEntry('Head', { kind: 'user', name: 'You' }, `unseen-${i} ${body}`, thread)
     }
 
-    const seen = room.chat.$groupChats.get().Head.watermarks[`${thread}::research`] || 0
-    const omitted = log(room, 'Head').slice(seen).length - limit
-    expect(omitted).toBeGreaterThan(0)
+    expect(total * body.length).toBeGreaterThan(room.chat.GROUP_CHAT_HISTORY_CHARS)
 
     await room.rounds.runGroupChatRounds('Head', members, thread)
     const prompt = room.gateway.calls.at(-1)?.prompt || ''
+    const rendered = prompt.match(/unseen-\d+ /g) || []
+    const omitted = Number(prompt.match(/… (\d+) earlier room messages omitted since your last turn/)?.[1])
 
-    expect(prompt).toMatch(new RegExp(`${omitted} earlier room messages omitted`))
-    expect(prompt).toContain(`unseen-${limit + 5}`)
-    expect(prompt).not.toContain(`unseen-${omitted}\n`)
+    expect(omitted).toBeGreaterThan(0)
+    expect(omitted + rendered.length).toBe(total)
+    expect(prompt).toContain(`unseen-${total} `)
+    expect(prompt).not.toContain('unseen-1 ')
+    expect(prompt).not.toContain('[truncated]')
   })
 
-  it('adds no omission marker when the delta fits the window', async () => {
+  it('does not cut a 150-entry delta that fits the window', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Fits', members, 'seen-0')!
     await settle(room, 'Fits')
 
-    for (let i = 1; i < room.chat.GROUP_CHAT_HISTORY_LIMIT; i++) {
-      room.chat.appendGroupChatEntry('Fits', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    for (let i = 1; i <= 150; i++) {
+      room.chat.appendGroupChatEntry('Fits', { kind: 'user', name: 'You' }, `unseen-${i} short room line`, thread)
     }
 
     await room.rounds.runGroupChatRounds('Fits', members, thread)
     const prompt = room.gateway.calls.at(-1)?.prompt || ''
 
-    expect(prompt).toContain('unseen-1')
+    expect(prompt).toContain('unseen-1 short')
+    expect(prompt).toContain('unseen-150 short')
     expect(prompt).not.toMatch(/omitted/)
+  })
+
+  // One giant paste is cut to the per-line budget instead of evicting the
+  // ordinary messages around it.
+  it('truncates one oversized body rather than dropping its neighbours', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Paste', members, 'seen-0')!
+    await settle(room, 'Paste')
+
+    room.chat.appendGroupChatEntry('Paste', { kind: 'user', name: 'You' }, 'before the paste', thread)
+    room.chat.appendGroupChatEntry('Paste', { kind: 'user', name: 'You' }, `PASTE-${'y'.repeat(60_000)}-END`, thread)
+    room.chat.appendGroupChatEntry('Paste', { kind: 'user', name: 'You' }, 'after the paste', thread)
+
+    await room.rounds.runGroupChatRounds('Paste', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toContain('before the paste')
+    expect(prompt).toContain('after the paste')
+    expect(prompt).toContain('PASTE-yyy')
+    expect(prompt).toContain('… [truncated]')
+    expect(prompt).not.toContain('-END')
+    expect(prompt).not.toMatch(/omitted/)
+    expect(prompt.length).toBeLessThan(room.chat.GROUP_CHAT_HISTORY_LINE_CHARS + 2000)
   })
 
   it('feeds a second send only the NEW messages', async () => {

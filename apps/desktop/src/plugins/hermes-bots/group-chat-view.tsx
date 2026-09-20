@@ -64,6 +64,7 @@ import {
   $groupClarify,
   $groupNeedsYou,
   groupThreadOf,
+  rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
   setGroupChatImage,
   updateGroupChat
@@ -73,6 +74,7 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
+import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -154,6 +156,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 
   delete all[group]
+
+  // Remember the disband durably BEFORE any remote write can stall: the
+  // pending sync job alone forgets it once the retry ladder gives up or the
+  // window closes, and a gateway mirror that missed the tombstone push would
+  // resurrect the room on every later pull (#105275).
+  await rememberGroupChatTombstone(group, prior.roomId, prior.syncRevision)
 
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
   // carries no log and is flagged so persistence and name-dedup skip it —
@@ -1466,6 +1474,10 @@ export function openGroupChat(group: string): void {
   })
   const ownerKey = groupWorkspaceOwnerKey(group)
   setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
+  // #93813: what reached the members' room sessions while nobody drove them
+  // (a Bot posting reports into its own session, a CLI resume) is posted as
+  // the room opens, not only once the room next drives that member.
+  void sweepExternalGroupWrites(group, groupChatMemberBots(group, $lastRoster.get(), $botMeta.get()))
 
   if (typeof host.openWorkspace === 'function') {
     try {

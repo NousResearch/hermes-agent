@@ -52,6 +52,12 @@ const META_URL = "/docs/api/plugins-meta.json";
 // Docs section describing the PR-based submission workflow.
 const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
 
+/** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
+ *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
+function desktopInstallLink(name: string): string {
+  return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
+}
+
 const TIER_CONFIG: Record<
   string,
   { label: string; color: string; bg: string; border: string; icon: string }
@@ -288,7 +294,7 @@ function PluginCard({
           ))}
         </div>
 
-        {onPick && (
+        {onPick ? (
           <button
             className={styles.pickBtn}
             onClick={(e) => {
@@ -298,6 +304,15 @@ function PluginCard({
           >
             + Add to this Agent
           </button>
+        ) : (
+          <a
+            className={styles.pickBtn}
+            href={desktopInstallLink(plugin.name)}
+            title="Opens the Install Plugin dialog in Hermes Desktop at the reviewed version. No app? Use the install command below."
+            onClick={(e) => e.stopPropagation()}
+          >
+            Open in Hermes Desktop
+          </a>
         )}
 
         {expanded && (

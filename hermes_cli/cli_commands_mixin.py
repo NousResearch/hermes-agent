@@ -1388,7 +1388,9 @@ class CLICommandsMixin:
             return _cp("  No conversation to branch — send a message first.")
         if not self._session_db:
             return _cp(_db_unavailable_line())
-        branch_name = _command_arg(cmd_original)
+        # CLI has no threads: always in place; strip the gateway's ``--here`` so it is never a title.
+        from gateway.slash_commands_branch_thread import parse_branch_args
+        _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
         new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(

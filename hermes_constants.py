@@ -1458,15 +1458,35 @@ def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
 
 
 def project_venv_dir(project_root) -> Path | None:
-    """The project's ``venv`` or ``.venv`` dir when one exists (``uv venv`` defaults to ``.venv``).
+    """The project's ``venv`` or ``.venv`` dir when one exists (``uv venv`` defaults to ``.venv``);
+    for an install whose interpreter lives outside the checkout, the running interpreter's venv.
 
     ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so both layouts are in the wild.
     Call sites that only knew about ``venv`` silently no-oped on a ``.venv`` install — that is how the
     Windows shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when both exist, matching
     what the installers write.
+
+    Installers that keep the interpreter out of the checkout (``$HERMES_HOME/venvs/<name>``, the layout the
+    shipped Windows launchers assume) have neither, and the ``project_venv_dir(root) or root / "venv"``
+    idiom those call sites share then handed ``uv`` a ``VIRTUAL_ENV`` that does not exist: that one invented
+    path skipped the import probe, reclassified every ``hermes tools`` dependency as missing and failed the
+    reinstall with interpreter errors (#116148). The interpreter running this module is the only truthful
+    answer to "which venv is live", so fall back to it — but only for the checkout it was loaded from. A
+    foreign root (test temp dir, another clone) still resolves to ``None``: handing it someone else's venv
+    would point the callers' writes at the wrong environment.
     """
     root = Path(project_root)
-    return next((root / n for n in ("venv", ".venv") if (root / n).is_dir()), None)
+    in_tree = next((root / n for n in ("venv", ".venv") if (root / n).is_dir()), None)
+    if in_tree is not None:
+        return in_tree
+    # Out-of-tree install: the path is real by construction (never invented), and non-venv installs
+    # keep today's ``None`` so the ``or root / "venv"`` fallback cannot install into a base interpreter.
+    running = Path(sys.prefix)
+    if (Path(__file__).resolve().parent == root.resolve()
+            and sys.prefix != sys.base_prefix
+            and venv_python_path(running).is_file()):
+        return running
+    return None
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:

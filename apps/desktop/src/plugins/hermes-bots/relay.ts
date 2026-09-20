@@ -106,12 +106,11 @@ const relay: RelayLifecycle = {
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
 
-/** One reachable gateway plus a representative route onto it. The route comes
- *  from `host.profileRoutes()`, which carries identity only — the optional
- *  label fields are read defensively in relayAgentsOn and never arrive. */
+/** One reachable gateway plus a representative route onto it. The route carries
+ *  identity only, so the human label comes from the registry (connectionLabels). */
 interface RelayConnection {
   id: string
-  route: ProfileRoute & { connectionLabel?: string; label?: string }
+  route: ProfileRoute
 }
 
 /** One agent as pushed to a peer gateway's relay roster. */
@@ -206,24 +205,46 @@ async function relayConnections(): Promise<RelayConnection[]> {
   }
 }
 
+/** Human label per connection id, from the registry — the only place that has one.
+ *  A `host.profileRoutes()` route carries identity alone, so without this the roster a
+ *  peer gateway shows its bots ("@chii on 127-0-0-1-9119", tools/bot_mode_probe.py) and
+ *  its refusal text name machines by raw connection id. A build with no registry rejects
+ *  the call, and ids stay. */
+async function connectionLabels(): Promise<Map<string, string>> {
+  if (typeof host.connections !== 'function') {
+    return new Map()
+  }
+
+  try {
+    const rows = await host.connections()
+
+    return new Map(
+      (Array.isArray(rows) ? rows : [])
+        .map(row => [String(row?.id || ''), String(row?.label || '').trim()] as const)
+        .filter(([id, label]) => Boolean(id && label))
+    )
+  } catch {
+    return new Map()
+  }
+}
+
 /** The agents living on one connection, as relay roster rows.
  *  Returns null on FAILURE (transient RPC blip, slow socket) — distinct from
  *  a genuine empty profile list. Conflating the two would push a fresh union
  *  roster missing a LIVE connection's agents, and the gateway-side liveness
  *  check (bot_relay._target_liveness) reads "absent from a fresh roster" as
  *  definitively offline → false runtime_offline refusals (#93091 item 2). */
-async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow[] | null> {
+async function relayAgentsOn(
+  connection: RelayConnection,
+  labels: Map<string, string>
+): Promise<RelayAgentRow[] | null> {
   try {
     const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
       include_sessions: false
     })
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
-    // TODO(bot-mode-types): neither `connectionLabel` nor `label` can exist on
-    // a `host.profileRoutes()` route (connectionId / mode / profile /
-    // targetProfile only), so this always falls through to the raw connection
-    // id and peer gateways list agents by id instead of the human label.
-    const label = String(connection.route?.connectionLabel || connection.route?.label || connection.id)
+    const label = labels.get(connection.id) || connection.id
 
     return profiles
       .map(profile => ({
@@ -259,6 +280,7 @@ async function syncRelayRosters() {
 
   try {
     const connections = await relayConnections()
+    const labels = await connectionLabels()
 
     if (connections.length < 2) {
       // Nothing to relay — but the gateways that remain still hold the last
@@ -297,7 +319,7 @@ async function syncRelayRosters() {
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
     await Promise.all(
       connections.map(async connection => {
-        const agents = await relayAgentsOn(connection)
+        const agents = await relayAgentsOn(connection, labels)
 
         if (agents === null) {
           // Transient fetch failure: reuse the last good rows for this

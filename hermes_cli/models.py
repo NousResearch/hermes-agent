@@ -1550,7 +1550,9 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         except Exception as exc:  # a failed subprocess launch degrades to the curated list, like api_key below
             logger.debug("external_process catalog fetch failed for %s: %s", normalized, exc)
             live = None
-        return list(live) if live else (list(profile.fallback_models) or None)
+        # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
+        # `hermes model` offer one list: live ids plus any pinned id the probe omitted.
+        return merge_profile_catalog(normalized, profile, list(live) if live else None)
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)

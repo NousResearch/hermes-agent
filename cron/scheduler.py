@@ -527,6 +527,8 @@ _running_lock = threading.Lock()
 # Per in-flight id: time.time() claim instant + the future owning its release (``_FUTURE_PENDING``
 # until pool.submit returns). Past-allowance with no live future = leak; the sweep force-releases.
 _running_since: dict = {}
+# job_id -> stale-inflight allowance (s), resolved once per run by get_wedged_job_ids.
+_running_allowance_s: dict = {}
 _running_futures: dict = {}
 
 # Installed in ``_running_futures`` at claim time so a sweep landing before ``pool.submit`` returns
@@ -602,6 +604,40 @@ def get_running_job_details() -> list[dict]:
         ]
 
 
+def get_wedged_job_ids() -> "frozenset[str]":
+    """In-flight job IDs older than their stale-inflight allowance (``max(2 * interval,
+    cron.inflight_max_minutes)``) — the scheduler's own definition of a claim that can no longer be
+    making progress. ``sweep_stale_inflight`` cannot release these while the worker thread is still
+    alive (a delivery blocked on a dead transport, #115469), so the gateway restart drain reads this to
+    skip them the way it skips wedged chat turns; restart is their remedy.
+    """
+    now = time.time()
+    with _running_lock:
+        ages = {jid: now - started for jid, started in _running_since.items() if jid in _running_job_ids}
+        allowances = {jid: _running_allowance_s[jid] for jid in ages if jid in _running_allowance_s}
+    if not ages:
+        return frozenset()
+    floor_seconds = _inflight_min_allowance_minutes() * 60.0
+    unresolved = [jid for jid in ages if jid not in allowances]
+    if unresolved:
+        # One jobs.json parse per run, not per tick per job: the restart drain polls this every
+        # 0.1 s on the event loop for the whole wait, and get_job() re-reads the file each call.
+        by_id: dict = {}
+        with contextlib.suppress(Exception):
+            from cron.jobs import load_jobs
+            by_id = {j.get("id"): j for j in load_jobs()}
+        with _running_lock:
+            for job_id in unresolved:
+                allowance = floor_seconds
+                interval_minutes = _job_interval_minutes(by_id.get(job_id) or {})
+                if interval_minutes:
+                    allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+                allowances[job_id] = allowance
+                if job_id in _running_job_ids:  # released meanwhile -> don't resurrect the entry
+                    _running_allowance_s[job_id] = allowance
+    return frozenset(jid for jid, age in ages.items() if age >= max(allowances[jid], floor_seconds))
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -632,6 +668,7 @@ def release_running_job(job_id: str) -> None:
     with _running_lock:
         _running_job_ids.discard(job_id)
         _running_since.pop(job_id, None)
+        _running_allowance_s.pop(job_id, None)
         _running_futures.pop(job_id, None)
         _running_worker_pids.pop(job_id, None)
 
@@ -863,6 +900,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 continue
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
+            _running_allowance_s.pop(job_id, None)
             _running_futures.pop(job_id, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))

@@ -124,3 +124,26 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
         assert svc.enabled_for(str(src)) is False
     finally:
         svc.shutdown()
+
+
+def test_skipped_request_on_broken_root_is_logged_at_info(tmp_path, monkeypatch, caplog):
+    """A request skipped because its root is broken must leave a visible trace (#116446): at default
+    levels ``log_clean`` is DEBUG, so a silently skipped file was indistinguishable from a clean one."""
+    from agent.lsp import eventlog
+
+    repo = _make_git_workspace(tmp_path)
+    src = repo / "x.py"
+    src.write_text("")
+    monkeypatch.chdir(str(repo))
+    eventlog.reset_announce_caches()
+    svc = LSPService(enabled=True, wait_mode="document", wait_timeout=2.0, install_strategy="manual")
+    try:
+        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
+        with caplog.at_level("INFO", logger=eventlog.event_log.name):
+            assert svc.get_diagnostics_sync(str(src)) == []
+            assert svc.get_diagnostics_sync(str(src)) == []
+    finally:
+        svc.shutdown()
+    skipped = [r for r in caplog.records if "marked broken" in r.getMessage()]
+    assert [r.levelname for r in skipped] == ["INFO"]  # once per root; the repeat is DEBUG
+    assert str(repo) in skipped[0].getMessage() and "x.py" in skipped[0].getMessage()

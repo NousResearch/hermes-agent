@@ -81,6 +81,21 @@ def test_skips_sweep_while_git_is_running(tmp_path, monkeypatch):
     assert p.exists()
 
 
+def test_bare_repo_pack_dir_is_swept(tmp_path, monkeypatch):
+    """A bare repo (e.g. the checkpoint store) has no .git/ layer — objects/pack hangs directly
+    off the repo root, where a gc killed mid-repack strands the same debris (#115410)."""
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+    pack = tmp_path / "objects" / "pack"
+    pack.mkdir(parents=True)
+    debris = pack / "tmp_pack_killedGc"
+    debris.write_bytes(b"x" * 256)
+    _age(debris, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+
+    removed = clear_stale_tmp_packs(tmp_path)
+    assert removed == [str(debris)]
+    assert not debris.exists()
+
+
 def test_no_git_dir_is_a_noop(tmp_path):
     assert clear_stale_tmp_packs(tmp_path) == []
 

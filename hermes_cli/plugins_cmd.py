@@ -165,10 +165,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
-# Highest ``manifest_version`` this installer understands; breaking schema changes bump it.
-_SUPPORTED_MANIFEST_VERSION = 1
-
-
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
     plugins = get_hermes_home() / "plugins"
@@ -595,11 +591,14 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         raise PluginOperationError(
             f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer).",
         ) from None
-    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+    # Shared with the runtime loader so the installer can never drift behind what the loader
+    # accepts (#85879): a private cap here refused v2 manifests the runtime happily loads.
+    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION
+    if mv_int > SUPPORTED_MANIFEST_VERSION:
         from hermes_cli.config import recommended_update_command
         raise PluginOperationError(
             f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"but this Hermes supports up to {SUPPORTED_MANIFEST_VERSION}. "
             f"Run {recommended_update_command()} to update Hermes.",
         ) from None
 
@@ -1087,8 +1086,9 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
-    Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
-    tri-state: ``True``/``False`` skip the prompt, ``None`` asks. Bundled plugins are trusted.
+    Non-bundled plugins request consent for declared capabilities. The legacy
+    ``allow_tool_override`` grant changes only with an explicit True/False flag;
+    None leaves it unchanged. Bundled plugins are trusted.
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -1132,10 +1132,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     declared_caps = _declared_capabilities_for_key(key)
     if declared_caps:
         _run_capability_consent(console, key, declared_caps, context="enable")
-        if allow_tool_override is not None:
-            _resolve_tool_override_grant(console, key, allow_tool_override)
-        return
-    _resolve_tool_override_grant(console, key, allow_tool_override)
+    # Enabling a plugin is not a request for undeclared privileges. Keep existing
+    # grants unchanged unless the operator explicitly grants or revokes one.
+    if allow_tool_override is not None:
+        _resolve_tool_override_grant(console, key, allow_tool_override)
 
 
 # ── Capability consent flow ──────────────────────────────────────────────────
@@ -1907,12 +1907,17 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     if not toolset_key:
         return
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
     config = load_config()
     platform_toolsets = _child_dict(config, "platform_toolsets")
     changed = False
-    for ts_list in platform_toolsets.values():
-        if isinstance(ts_list, list) and enable != (toolset_key in ts_list):
+    for platform, raw in list(platform_toolsets.items()):
+        # A list-literal string (older `hermes config set`) is the user's real selection; toggling
+        # it re-saves the entry as a proper list so the string never persists.
+        ts_list = parse_platform_toolsets_value(raw)
+        if ts_list is not None and enable != (toolset_key in ts_list):
             (ts_list.append if enable else ts_list.remove)(toolset_key)
+            platform_toolsets[platform] = ts_list
             changed = True
     # Enabling with no platform lists yet: seed "cli" at minimum.
     if enable and not changed and not platform_toolsets:

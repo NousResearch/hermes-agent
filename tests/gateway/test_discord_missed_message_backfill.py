@@ -348,6 +348,19 @@ def test_missed_message_backfill_config_stays_per_adapter():
     assert second._missed_message_backfill_max_dispatches() == 3
 
 
+def test_explicit_empty_backfill_channel_list_disables_the_scan(monkeypatch):
+    """``channels: []`` is the operator saying "scan nothing" — it must not fall through to the
+    allowed ∪ free-response default (which would scan channels they disabled). The default
+    ``channels: ""`` still falls through."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "555")
+    explicit = DiscordAdapter(PlatformConfig(
+        enabled=True, token="one", extra={"missed_message_backfill": {"enabled": True, "channels": []}}))
+    assert explicit._missed_message_backfill_channels() == set()
+    default = DiscordAdapter(PlatformConfig(
+        enabled=True, token="two", extra={"missed_message_backfill": {"enabled": True, "channels": ""}}))
+    assert "555" in default._missed_message_backfill_channels()
+
+
 def test_recovery_ledger_prunes_expired_rows(adapter):
     old = (datetime.now(timezone.utc) - dt.timedelta(days=31)).isoformat()
 

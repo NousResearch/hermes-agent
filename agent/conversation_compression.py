@@ -1123,6 +1123,13 @@ def run_compress_context_with_progress_timeout(
 
     ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
     idle = float(idle_timeout_seconds)
+    # An over-window request cannot be sent uncompressed, so a summary that keeps streaming while
+    # reclaiming nothing must not hold the host (and the Desktop UI) to the full ceiling: bound the
+    # pre-commit wait to one inactivity budget (``compression.context_timeout_seconds``) and let the
+    # first-stall deterministic fallback below carry the compaction (#116472: a 600s trickle froze
+    # the Desktop for 10 minutes per turn).
+    if request_exceeds_window:
+        ceiling = idle
     fence = fence if fence is not None else CompressionCommitFence()
     fence.set_total_ceiling_seconds(ceiling)
     # Read BEFORE this attempt runs: the host's ``stalled`` record and the cancelled worker's

@@ -368,6 +368,41 @@ def _probe_ipv6_path() -> ProbeResult:
     return _row(name, "ok", f"(IPv6 path to {host} reachable)")  # refused/reset also prove a live path
 
 
+# /rate_limit is reachable by EVERY token type and does not count against the quota. /user answers
+# 403 "Resource not accessible by integration" for App installation tokens (the GITHUB_TOKEN every
+# Actions job exports), which would paint a valid token red.
+GITHUB_API_PROBE_URL = "https://api.github.com/rate_limit"
+
+
+def _probe_github_token() -> ProbeResult:
+    """Validate a configured ``GITHUB_TOKEN``/``GH_TOKEN`` against api.github.com (#115257).
+
+    A dead PAT in ``.env`` used to fail every git-auth clone with a message that never named the
+    token; the resolver now falls through to the gh CLI, and this row tells the user WHICH file
+    still carries the stale token so they can remove it.
+    """
+    name = "GitHub token"
+    from hermes_cli.config import get_env_value, load_env
+    var = next((v for v in ("GITHUB_TOKEN", "GH_TOKEN") if get_env_value(v)), None)
+    if var is None:
+        return _skip(name)  # the Skills Hub section already reports gh-CLI / no-token state
+    from hermes_cli.doctor import _DHH
+    where = f"{_DHH}/.env" if var in load_env() else "the environment"
+    try:
+        import httpx
+        r = httpx.get(GITHUB_API_PROBE_URL, timeout=10, headers={
+            "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": _HERMES_USER_AGENT,
+            "Accept": "application/vnd.github+json"})
+    except Exception as e:
+        return _row(name, "fail", f"({e})", ["Check network connectivity"])
+    if r.status_code == 200:
+        return _row(name, "ok", f"({var} from {where} accepted by api.github.com)")
+    if r.status_code == 401:
+        return _row(name, "fail", f"({var} in {where} rejected by api.github.com — expired or revoked)",
+                    [f"{var} in {where} is expired or revoked: remove it (gh CLI login is used instead) or paste a fresh token"])
+    return _row(name, "fail", f"(HTTP {r.status_code} from api.github.com)")
+
+
 def build_probes() -> list:
     """(label, callable) pairs in display order."""
     global _APIKEY_PROVIDERS_CACHE
@@ -379,6 +414,7 @@ def build_probes() -> list:
         # functools.partial binds each row's args so every callable keeps its own provider.
         *((row[0], functools.partial(_probe_apikey_provider, *row)) for row in _APIKEY_PROVIDERS_CACHE),
         ("AWS Bedrock", _probe_bedrock), ("Azure Foundry (Entra ID)", _probe_azure_entra),
+        ("GitHub token", _probe_github_token),
     ]
 
 

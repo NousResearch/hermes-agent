@@ -365,6 +365,14 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
                   file=sys.stderr)
             return 1
         return _peer_failure(peer_name, exc)
+    if result.get("object") == "hermes.session.chat.queued":
+        # The peer's Bot Chat is open in its Desktop and that turn outlasted the peer's wait: the
+        # message is in the open chat and is answered there, so a resend would run it twice.
+        queued_in = result.get("session_id") or session_id
+        return _emit(args, {"peer": peer_name, "profile": profile, "session_id": queued_in,
+                            "status": result.get("status") or "queued", "delivery_id": result.get("delivery_id")},
+                     [f"Peer '{peer_name}' has its Bot Chat open, so the message went into that chat (session "
+                      f"{queued_in}) and is answered there. The reply cannot come back on this call. Do NOT resend."])
     msg = result.get("message")
     reply = str(msg.get("content") or "") if isinstance(msg, dict) else ""
     # A successful bare silence marker is a delivery decision, not a message:

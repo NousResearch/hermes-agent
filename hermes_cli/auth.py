@@ -976,6 +976,11 @@ def _config_selects_provider(normalized: str) -> bool:
     cfg = load_config()
     if _slot_selects(cfg.get("model"), normalized):
         return True
+    # ``auxiliary.<task>.provider: copilot`` selects the provider for that task the same way a MoA
+    # slot does — without this the seeder treats the credential as merely discovered (#114740).
+    aux_cfg = cfg.get("auxiliary")
+    if isinstance(aux_cfg, dict) and any(_slot_selects(s, normalized) for s in aux_cfg.values()):
+        return True
 
     def _moa_block_matches(block: Any) -> bool:
         return isinstance(block, dict) and (

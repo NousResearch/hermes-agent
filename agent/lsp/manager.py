@@ -207,7 +207,12 @@ class LSPService:
         if srv is None or srv.server_id in self._disabled_servers:
             return False
         key = self._broken_key(srv, file_path)
-        return key is not None and key not in self._broken
+        if key is None:
+            return False
+        if key in self._broken:
+            eventlog.log_skipped_broken(srv.server_id, key[1], file_path)
+            return False
+        return True
 
     def snapshot_baseline(self, file_path: str) -> None:
         """Snapshot current diagnostics for ``file_path`` as the delta baseline (call BEFORE a write).

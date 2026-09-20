@@ -1272,6 +1272,10 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Recency of the matched conversation, straight from the sessions row —
+   *  present on hits backed by a rich row (the search endpoint fills it).
+   *  Used to order unloaded hits honestly; falls back to session_started. */
+  last_active?: number | null
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null

@@ -3245,7 +3245,8 @@ class GatewayTurnMixin:
                 session_key or "", run_generation,
             )
             return
-        self._session_state(session_key).turn.agent = agent_holder[0]
+        turn_state = self._session_state(session_key).turn
+        turn_state.agent, turn_state.ctx = agent_holder[0], turn_ctx
         if self._draining:
             self._update_runtime_status("draining")
 

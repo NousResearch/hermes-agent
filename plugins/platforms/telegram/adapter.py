@@ -163,6 +163,15 @@ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # — a 97-minute penalty on the boot path froze inbound on every platform (#91969).
 _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
 
+# Shared per-chat outbound budget (#116312): Telegram counts an editMessageText against the
+# SAME per-chat allowance as a sendMessage, but streaming previews used to pace only edits at
+# DEFAULT_STREAMING_EDIT_INTERVAL = 0.8s (1.25 msg/s into one chat before any reply was sent)
+# — that was 83% of measured flood penalties.  One shared slot per chat: a SEND waits for its
+# slot (skipping a send would drop a message), an INTERIM edit is skipped (the next tick shows
+# the same text anyway), and the FINAL edit is never gated (the answer itself is never
+# withheld).  Tunable: validated in production by the issue reporter at 0 flood events.
+_TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0
+
 
 def _flood_cap_result(wait: float) -> "SendResult":
     """The shared fail-closed SendResult for an over-cap flood wait."""
@@ -3607,6 +3616,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Telegram flood control still active for chat %s (%.0fs left); refusing locally without an API call",
                 self.name, chat_id, cooldown)
             return _flood_cap_result(cooldown)
+        # Shared per-chat budget (#116312): a send WAITS for its slot (a send that waits
+        # is delivered; one that is skipped would drop a message).
+        slot_remaining = self._chat_outbound_slot_remaining(chat_id)
+        if slot_remaining > 0:
+            logger.debug(
+                "[%s] pacing send for chat %s (shared send+edit budget: slot in %.1fs)",
+                self.name, chat_id, slot_remaining)
+            await asyncio.sleep(slot_remaining)
+        self._hold_chat_outbound_slot(chat_id)
         error_types = self._telegram_error_types()
         chunks: List[str] = []
         delivered: List[str] = []
@@ -3769,6 +3787,24 @@ class TelegramAdapter(BasePlatformAdapter):
         continuations, and return the final chunk's id as the next edit target."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        # Shared per-chat budget (#116312): an interim (preview) edit is SKIPPED when the slot is busy —
+        # the text it would show is shown by the next edit anyway, so a burst of edits can't trip flood
+        # control. A final edit is never gated (the completed answer is always delivered). Sends wait for
+        # their slot; edits defer instead. Over-cap interim edits are exempt: the saturated-preview dedup
+        # below already throttles them to one real edit per ~4096-char growth. Consumed only when the
+        # edit actually fires. The skip is flagged in raw_response so the stream consumer does not
+        # record never-shown text as the visible prefix (a later flood fallback would then drop the
+        # tail the user never saw).
+        if (
+            not finalize
+            and utf16_len(content) <= self.MAX_MESSAGE_LENGTH
+            and self._chat_outbound_slot_remaining(chat_id) > 0
+        ):
+            logger.debug(
+                "[%s] skipping interim edit for chat %s (shared send+edit budget: slot busy)",
+                self.name, chat_id)
+            return SendResult(success=True, message_id=message_id, raw_response={"skipped": True})
+        self._hold_chat_outbound_slot(chat_id)
         # Rich finalize (Bot API 10.1): edit the preview IN PLACE via rich_message — no fresh send + delete.
         # Before the 4,096 pre-flight because the rich cap is 32,768; falls back to legacy on rejection.
         # Rich finalize (Bot API 10.1): when the completed content has constructs the legacy MarkdownV2 edit
@@ -5419,6 +5455,31 @@ class TelegramAdapter(BasePlatformAdapter):
             return remaining
         until.pop(key, None)
         return None
+
+    # --- shared per-chat send+edit pacing budget (#116312) -----------------------------------------
+    # One slot per chat that sendMessage AND editMessageText both draw from (Telegram counts them
+    # against the same per-chat allowance).  ``_telegram_chat_outbound_slot_until`` maps the
+    # normalized chat id to the loop-time when the next outbound call may fire.
+
+    def _chat_outbound_slot_remaining(self, chat_id: Any) -> float:
+        """Seconds until this chat's shared send+edit slot is open again (0 = may fire now)."""
+        slot_until: Dict[str, float] = self.__dict__.setdefault("_telegram_chat_outbound_slot_until", {})
+        key = str(normalize_telegram_chat_id(chat_id))
+        deadline = slot_until.get(key)
+        if deadline is None:
+            return 0.0
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            slot_until.pop(key, None)  # expired — bounded dict, like the send locks
+            return 0.0
+        return remaining
+
+    def _hold_chat_outbound_slot(self, chat_id: Any) -> None:
+        """Arm/re-arm this chat's slot after an actual send/edit API call fires."""
+        slot_until: Dict[str, float] = self.__dict__.setdefault("_telegram_chat_outbound_slot_until", {})
+        budget = getattr(self, "_telegram_chat_outbound_slot_secs", _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS)
+        slot_until[str(normalize_telegram_chat_id(chat_id))] = (
+            asyncio.get_running_loop().time() + max(0.0, budget))
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""

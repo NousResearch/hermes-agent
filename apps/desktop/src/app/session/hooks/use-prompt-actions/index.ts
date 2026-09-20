@@ -59,7 +59,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   durableRowIdsForRebind,
-  finalizeInterruptedMessages,
+  finalizeUserInterruptedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -129,12 +129,14 @@ export async function uploadComposerAttachment(
     sessionId: string
     /** Durable id used to re-register after sleep/wake or a backend restart. */
     storedSessionId?: null | string
+    /** Runs BEFORE the retried attach: publish the recovered stored→runtime binding here. */
+    onRecovered?: (sessionId: string) => void
     /** Called when the attach recovered onto a fresh live id. */
     onSessionRecovered?: (sessionId: string) => void
     terminalBackend?: string
   }
 ): Promise<ComposerAttachment> {
-  const { backendCwd, remote, requestGateway, storedSessionId, onSessionRecovered, terminalBackend } = opts
+  const { backendCwd, remote, requestGateway, storedSessionId, onRecovered, onSessionRecovered, terminalBackend } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
   const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
@@ -217,7 +219,11 @@ export async function uploadComposerAttachment(
     opts.sessionId,
     storedSessionId,
     stageForSession,
-    { requestGateway }
+    // onRecovered fires before the retried attach: the window dispatcher routes a
+    // session-scoped RPC by translating its runtime id back to the stored session
+    // and that session's owner, so the recovered binding must be published first
+    // or an off-screen remote / multi-profile retry is rejected as ownerless.
+    { requestGateway, onRecovered }
   )
 
   if (usedSessionId !== opts.sessionId) {
@@ -339,18 +345,37 @@ export function usePromptActions({
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
-      options: { updateComposerAttachments?: boolean } = {}
+      options: { storedSessionId?: null | string; updateComposerAttachments?: boolean } = {}
     ): Promise<{ attachments: ComposerAttachment[]; sessionId: string }> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
-      const storedSessionId = selectedStoredSessionIdRef.current
+      // The submit's own target, never the chat on screen: a queued send drains
+      // after the user has moved on, so a stale runtime here must recover the
+      // session the text belongs to — not stage the files on, and then submit
+      // into, whichever chat is selected now (#46194, the attachments edition).
+      const storedSessionId = options.storedSessionId ?? selectedStoredSessionIdRef.current
+      const targetIsForeground = storedSessionId === selectedStoredSessionIdRef.current
       const remote = isSessionRemote(storedSessionId ?? sessionId)
       let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
 
+      // Published BEFORE the retried attach (see uploadComposerAttachment): the
+      // stored→runtime binding is what routes the retry to the session's owner.
+      const onRecovered = (recoveredId: string) => {
+        if (storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, recoveredId)
+          updateSessionState(recoveredId, state => state, storedSessionId)
+        }
+
+        // Only a foreground send may retarget the foreground: a background
+        // drain that recovers its own session must not steal the view.
+        if (targetIsForeground) {
+          activeSessionIdRef.current = recoveredId
+          setActiveSessionId(recoveredId)
+        }
+      }
+
       const onSessionRecovered = (recoveredId: string) => {
         liveSessionId = recoveredId
-        activeSessionIdRef.current = recoveredId
-        setActiveSessionId(recoveredId)
       }
 
       for (const original of attachments) {
@@ -386,6 +411,7 @@ export function usePromptActions({
             requestGateway,
             sessionId: liveSessionId,
             storedSessionId,
+            onRecovered,
             onSessionRecovered,
             terminalBackend: $terminalBackend.get()
           })
@@ -417,7 +443,7 @@ export function usePromptActions({
 
       return { attachments: synced, sessionId: liveSessionId }
     },
-    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
+    [activeSessionIdRef, requestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
   // Stage a freshly dropped file as soon as it lands (when a session already
@@ -682,7 +708,7 @@ export function usePromptActions({
 
     if (!sessionId) {
       releaseBusy()
-      setMessages(finalizeInterruptedMessages($messages.get()))
+      setMessages(finalizeUserInterruptedMessages($messages.get()))
 
       return
     }
@@ -693,7 +719,7 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-      const messages = finalizeInterruptedMessages(state.messages, streamId)
+      const messages = finalizeUserInterruptedMessages(state.messages, streamId)
 
       return {
         ...state,

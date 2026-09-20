@@ -165,6 +165,159 @@ def test_file_line_range_is_applied_before_oversized_fallback(tmp_path: Path):
     assert "too large to inline safely" not in result.message
 
 
+def test_oversized_file_refused_without_full_read(tmp_path: Path, monkeypatch):
+    from agent import context_references
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "huge.txt"
+    payload.write_text("x" * 100_000, encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("oversized file was read in full")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    result = preprocess_context_references(
+        f"Inspect @file:{payload.name}", cwd=tmp_path, context_length=1_000,
+    )
+    assert "too large to inline safely" in result.message
+    assert str(payload) in result.message
+
+
+def test_line_range_ref_streams_only_the_window(tmp_path: Path, monkeypatch):
+    from agent.context_references import preprocess_context_references
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("ranged ref read the whole file")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    small = tmp_path / "small.txt"
+    small.write_text("first\nsecond\nthird\nfourth\n", encoding="utf-8")
+    result = preprocess_context_references(
+        f"Inspect @file:{small.name}:2-3", cwd=tmp_path, context_length=1_000,
+    )
+    assert "second\nthird" in result.message
+    assert "first" not in result.message
+    assert "fourth" not in result.message
+
+
+def test_binary_sniff_reads_prefix_only(tmp_path: Path):
+    from agent.context_references import _is_binary_file
+
+    # .txt keeps the mime guess on the text side so the byte sniff runs.
+    payload = tmp_path / "data.txt"
+    payload.write_bytes(b"\x00" * 10 + b"x" * 1_000_000)
+    read_calls = []
+    orig_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        fh = orig_open(self, *args, **kwargs)
+        if "b" in (args[0] if args else kwargs.get("mode", "r")):
+            orig_read = fh.read
+            def _read(*a, **k):
+                data = orig_read(*a, **k)
+                read_calls.append(len(data))
+                return data
+            fh.read = _read
+        return fh
+
+    with patch.object(Path, "open", _counting_open):
+        assert _is_binary_file(payload)
+    assert read_calls and max(read_calls) <= 4096
+
+
+def test_folder_listing_caps_line_count_io(tmp_path: Path, monkeypatch):
+    from agent import context_references
+    from agent.context_references import preprocess_context_references
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    big = assets / "big.txt"
+    big.write_bytes(b"line\n" * (context_references._LINE_COUNT_MAX_BYTES // 5 + 2))
+    (assets / "small.txt").write_text("a\nb\n", encoding="utf-8")
+
+    result = preprocess_context_references("list @folder:assets", cwd=tmp_path, context_length=10_000_000)
+    assert "big.txt" in result.message and "bytes" in result.message
+    assert "3 lines" in result.message  # small file still reports a line count
+
+
+def test_line_range_bounds_reads_on_single_line_file(tmp_path: Path, monkeypatch):
+    from agent.context_references import preprocess_context_references
+
+    payload = tmp_path / "oneline.txt"
+    payload.write_text("x" * 100_000, encoding="utf-8")  # one giant line, no newline
+
+    read_sizes, returned = [], []
+    orig_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        fh = orig_open(self, *args, **kwargs)
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if "b" not in mode:
+            orig_readline = fh.readline
+
+            def _readline(*a, **k):
+                read_sizes.append(a[0] if a else -1)
+                piece = orig_readline(*a, **k)
+                returned.append(len(piece))
+                return piece
+
+            fh.readline = _readline
+        return fh
+
+    monkeypatch.setattr(Path, "open", _counting_open)
+    result = preprocess_context_references(
+        f"Inspect @file:{payload.name}:1-1", cwd=tmp_path, context_length=1_000,
+    )
+    assert "too large to inline safely" in result.message
+    # hard_limit = 500 tokens -> char budget 2000 -> each readline bounded at 2001
+    assert read_sizes and max(read_sizes) <= 2001
+    # ... and the giant line is never materialized: reading stops once the budget is exceeded
+    # instead of collecting every 2001-char piece up to the newline (review follow-up).
+    assert sum(returned) <= 2 * 2001
+
+
+def test_run_quiet_caps_child_output(tmp_path: Path):
+    import sys
+    from agent.context_references import _MAX_QUIET_OUTPUT_BYTES, _run_quiet
+
+    huge = _run_quiet(
+        [sys.executable, "-c", f"import sys; sys.stdout.write('x' * {_MAX_QUIET_OUTPUT_BYTES + 1000})"],
+        tmp_path, 30,
+    )
+    assert huge.returncode != 0
+    assert len(huge.stdout) <= _MAX_QUIET_OUTPUT_BYTES
+
+    # A child that flushes past the cap and exits 0 before the drain thread reads it (the common
+    # case for a fast writer on a loaded runner) must still report failure: the caller's fallback
+    # path keys on the returncode, and a 0 with truncated stdout was a silent success.
+    with patch("agent.context_references.subprocess.Popen") as popen:
+        import io
+        fake = popen.return_value
+        fake.stdout = io.BytesIO(b"x" * (_MAX_QUIET_OUTPUT_BYTES + 1000))
+        fake.stderr = io.BytesIO(b"")
+        fake.returncode = 0
+        fake.wait.return_value = 0
+        exited = _run_quiet([sys.executable, "-c", "pass"], tmp_path, 30)
+    assert exited.returncode != 0
+    assert len(exited.stdout) <= _MAX_QUIET_OUTPUT_BYTES
+
+    ok = _run_quiet([sys.executable, "-c", "print('hello')"], tmp_path, 30)
+    assert ok.returncode == 0 and "hello" in ok.stdout
+
+
+def test_reference_count_is_capped(tmp_path: Path):
+    from agent.context_references import _MAX_EXPANDED_REFERENCES, preprocess_context_references
+
+    for i in range(_MAX_EXPANDED_REFERENCES + 4):
+        (tmp_path / f"f{i}.txt").write_text("data", encoding="utf-8")
+    result = preprocess_context_references(
+        " ".join(f"@file:f{i}.txt" for i in range(_MAX_EXPANDED_REFERENCES + 4)),
+        cwd=tmp_path, context_length=10_000_000,
+    )
+    skipped = [w for w in result.warnings if "not expanded" in w]
+    assert len(skipped) == 4
+
+
 def test_multiple_individually_safe_files_still_obey_aggregate_limit(tmp_path: Path):
     from agent.context_references import preprocess_context_references
 

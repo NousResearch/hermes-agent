@@ -585,7 +585,10 @@ hermes sessions archive --title "dry run" --yes
 ```
 
 At least one filter is required — a bare `hermes sessions archive` refuses to
-archive your entire history. Archived sessions are hidden from
+archive your entire history. A compacted conversation is archived as a unit
+through its live tip: an old compression segment never matches on its own age,
+so a chat that is still active is never hidden because its history is long.
+Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
 

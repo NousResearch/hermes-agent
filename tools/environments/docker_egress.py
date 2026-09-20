@@ -180,6 +180,10 @@ def _env_flag_value(arg: str) -> tuple[str, str | None] | None:
 
 def _extra_args_egress_collisions(extra_args: list[str], critical_names: set[str]) -> list[str]:
     """Return docker_extra_args entries that can override egress controls."""
+    # Folded membership: ``-e NAME`` resolves NAME in the host env, which is
+    # case-insensitive on Windows — ``-eopenai_api_key`` would inject the real
+    # credential past the token swap.
+    critical_folded = {n.upper() for n in critical_names}
     collisions: list[str] = []
     i = 0
     while i < len(extra_args):
@@ -198,7 +202,7 @@ def _extra_args_egress_collisions(extra_args: list[str], critical_names: set[str
                 value = inline_value if inline_value is not None else (
                     extra_args[i + 1] if i + 1 < len(extra_args) else "")
                 name = value.split("=", 1)[0]
-                if name in critical_names:
+                if name.upper() in critical_folded:
                     collisions.append(name)
             i += 1 if inline_value is not None else 2
             continue
@@ -217,7 +221,11 @@ def _collision_guard(msg: str, *, enforce: bool, remedy: str, consequence: str) 
 
 
 def check_forward_env_collisions(forward_env: list[str], critical: set[str], enforce: bool) -> None:
-    collisions = sorted(k for k in forward_env if k in critical)
+    # Folded membership: forward_env names are resolved via os.getenv() on the
+    # host, which is case-insensitive on Windows — ``openai_api_key`` would
+    # inject the real credential into the container under a variant name.
+    critical_folded = {k.upper() for k in critical}
+    collisions = sorted(k for k in forward_env if k.upper() in critical_folded)
     if collisions:
         _collision_guard(
             f"docker_forward_env would inject real egress-protected variables {collisions}",

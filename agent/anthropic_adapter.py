@@ -375,7 +375,17 @@ def _build_anthropic_client_with_bearer_hook(
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
-    headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
+    betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
+    from agent.anthropic_credentials import anthropic_route_is_oauth
+    if anthropic_route_is_oauth(base_url, token_provider):
+        # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
+        # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
+        # static "oauth" style in build_anthropic_client.
+        headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
+        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["x-app"] = "cli"
+    else:
+        headers = _beta_header(betas)
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 

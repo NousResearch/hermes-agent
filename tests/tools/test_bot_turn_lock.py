@@ -305,7 +305,7 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
 
         return _Done()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
 
     held = threading.Event()
     release = threading.Event()
@@ -340,7 +340,7 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
         stdout = "pong"
         stderr = ""
 
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: _Proc())
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", lambda *a, **k: _Proc())
 
     held = threading.Event()
     release = threading.Event()
@@ -398,7 +398,7 @@ def test_every_relay_refusal_carries_its_typed_reason(tmp_path, monkeypatch, fai
     def _raise(argv, **kwargs):
         raise failure
 
-    monkeypatch.setattr("subprocess.run", _raise)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _raise)
 
     out = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
 

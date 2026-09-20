@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -1252,6 +1252,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
         return interrupted
+
+    def mark_shutdown_requested(self) -> int:
+        """Persist the gateway drain start on every nonterminal API run."""
+        return _api_runs._mark_shutdown_requested(self)
 
     @staticmethod
     def _gateway_is_draining() -> bool:
@@ -3187,6 +3191,122 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return ""
         return "confirmed" if runtime else "accepted"
 
+    async def _admit_to_live_bot_chat(
+        self, session_id: str, message: Any, author: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[Path, Dict[str, Any]]]:
+        """Admit a turn aimed at the canonical Bot Chat to the Desktop session that holds it live.
+
+        ``(profile home, mailbox record)`` when a live owner took it; None when this process should
+        run the turn itself — the session is not the canonical Bot Chat's own lineage, or nobody
+        holds that chat. Both peer transports (``/api/sessions/{id}/chat`` for ``peer dm``,
+        ``/v1/runs`` for ``peer run``) go through here, so the two lanes cannot drift.
+        """
+        if not isinstance(message, str):
+            return None
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return None
+        home = Path(db.db_path).parent
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+
+        def _admit() -> Optional[Dict[str, Any]]:
+            owner = find_canonical_live_owner(home)
+            # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
+            if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
+                return None
+            return deliver_to_live_owner(home, owner, message, author=author)
+
+        record = await asyncio.to_thread(_admit)
+        return None if record is None else (home, record)
+
+    async def _answer_through_live_bot_chat(self, ctx: Dict[str, Any]) -> Optional["web.Response"]:
+        """Hand a turn aimed at a canonical Bot Chat that a Desktop holds live to that owner.
+
+        This is the ``hermes peer dm`` transport. Running the turn here would make this process a
+        second writer beside the lease holder: the open chat never shows the message or the reply,
+        its live context never learns of them, and the two transcripts interleave in state.db.
+        Local and relayed DMs already hand such a message to the owner's mailbox
+        (``tools/bot_mode_dm.py``, ``tui_gateway/methods_bot_relay.py``). This waits for the owner's
+        receipt on the same budget as the local path, so the peer still gets the reply on this call.
+        """
+        session_id = ctx["session_id"]
+        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        if admitted is None:
+            return None
+        record = await self._await_live_bot_chat_receipt(*admitted)
+        delivery_id = record["delivery_id"]
+        headers = self._session_headers(session_id, ctx["gateway_session_key"])
+        if record["status"] == "settled":
+            return web.json_response(
+                {"object": "hermes.session.chat.completion", "session_id": session_id,
+                 "message": {"role": "assistant", "content": record.get("reply") or ""},
+                 "usage": {}, "runtime": {}, "delivery_id": delivery_id}, headers=headers)
+        if record["status"] in ("queued", "claimed"):
+            return web.json_response(
+                {"object": "hermes.session.chat.queued", "session_id": session_id,
+                 "status": record["status"], "delivery_id": delivery_id}, status=202, headers=headers)
+        return _error_response(record.get("error") or f"Bot Chat delivery {record['status']}", 502,
+                               code=record.get("reason") or record["status"], headers=headers)
+
+    async def _await_live_bot_chat_receipt(self, home: Path, record: Dict[str, Any], *, keepalive=None) -> Dict[str, Any]:
+        """Wait on the owner's mailbox record through the shared ``await_delivery_async`` primitive until it
+        settles or the local DM budget runs out; ``keepalive`` (async) is called every SSE keepalive interval
+        so a streaming caller's proxy keeps the socket."""
+        from tools.bot_live_delivery import await_delivery_async
+        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        delivery_id = record["delivery_id"]
+        deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+        while record["status"] in ("queued", "claimed"):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            budget = remaining if keepalive is None else min(remaining, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
+            record = await await_delivery_async(home, delivery_id, budget) or record
+            if keepalive is not None and record["status"] in ("queued", "claimed"):
+                await keepalive()
+        return record
+
+    async def _stream_through_live_bot_chat(self, request: "web.Request", ctx: Dict[str, Any]) -> Optional["web.StreamResponse"]:
+        """``_answer_through_live_bot_chat`` for the SSE sibling route: the owner's settled receipt is
+        the run's single ``assistant.completed`` event; a receipt still open at the budget is a
+        ``run.queued`` event (the 202 shape), a failed one an ``error`` event carrying the reason."""
+        session_id = ctx["session_id"]
+        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        if admitted is None:
+            return None
+        events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+            **self._session_headers(session_id, ctx["gateway_session_key"])})
+        await response.prepare(request)
+
+        async def _write(name: str, payload: Dict[str, Any]) -> None:
+            name, payload = events.payload(name, payload)
+            await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
+
+        async def _keepalive() -> None:
+            await response.write(b": keepalive\n\n")
+
+        try:
+            await _write("run.started", {"user_message": {"role": "user", "content": ctx["user_message"]}, "runtime": {}})
+            record = await self._await_live_bot_chat_receipt(*admitted, keepalive=_keepalive)
+            delivery_id = record["delivery_id"]
+            if record["status"] == "settled":
+                message_id = f"msg_{uuid.uuid4().hex}"
+                await _write("message.started", {"message": {"id": message_id, "role": "assistant"}})
+                await _write("assistant.completed", {
+                    "message_id": message_id, "content": record.get("reply") or "", "delivery_id": delivery_id, "runtime": {}})
+                await _write("run.completed", {"message_id": message_id, "delivery_id": delivery_id, "usage": {}, "runtime": {}})
+            elif record["status"] in ("queued", "claimed"):
+                await _write("run.queued", {"status": record["status"], "delivery_id": delivery_id})
+            else:
+                await _write("error", {"message": record.get("error") or f"Bot Chat delivery {record['status']}",
+                                       "code": record.get("reason") or record["status"], "delivery_id": delivery_id})
+            await _write("done", {})
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            logger.info("Session SSE client disconnected while a live Bot Chat held the turn")
+        return response
+
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn (plus the delivery lanes'
@@ -3201,6 +3321,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        handed_off = await self._answer_through_live_bot_chat(ctx)
+        if handed_off is not None:
+            return handed_off
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
@@ -3238,6 +3361,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        handed_off = await self._stream_through_live_bot_chat(request, ctx)
+        if handed_off is not None:
+            return handed_off
         gateway_session_key, session_id = ctx["gateway_session_key"], ctx["session_id"]
         user_message, runtime_request = ctx["user_message"], ctx["runtime_request"]
         runtime_meta = self._sanitize_runtime_metadata(
@@ -3922,7 +4048,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
-            return await loop.run_in_executor(None, _run)
+            # Worker-scoped count rides along so the shutdown close gate still sees the thread
+            # after this handler task is cancelled (#116535); released in the worker's finally.
+            return await _api_runs._submit_api_worker(loop, _run)
         finally:
             self._inflight_agent_runs -= 1
 

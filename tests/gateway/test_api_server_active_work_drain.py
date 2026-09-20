@@ -121,6 +121,22 @@ class TestAPIServerAdapterWorkCount:
 
         agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
+    @pytest.mark.asyncio
+    async def test_shutdown_begin_marks_api_runs_before_drain(self):
+        runner, _adapter = make_restart_runner()
+        api = MagicMock()
+        api.mark_shutdown_requested.return_value = 1
+        runner.adapters = {Platform.API_SERVER: api}
+        runner._clear_plugin_message_injector = MagicMock()
+        runner._cancel_secondary_profile_reconnect_tasks = AsyncMock()
+        runner._notify_active_sessions_of_shutdown = AsyncMock()
+        runner._stop_systemd_watchdog = AsyncMock()
+        runner._stop_hosted_room_worker = AsyncMock(return_value=True)
+
+        await runner._stop_begin_teardown(runner._StopContext(deferred_count=lambda: 0))
+
+        api.mark_shutdown_requested.assert_called_once_with()
+
 
 class TestDrainWaitsForApiWork:
 
@@ -352,6 +368,40 @@ class TestRunAgentRegistersForShutdownInterrupt:
 
         assert list(observed["during"].values()) == [agent]
         assert adapter._shutdown_interruptible_agents == {}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_handler_keeps_the_worker_counted_until_the_turn_exits(self):
+        """Cancelling the ``_run_agent`` handler task must not drop the worker count (#116535).
+
+        The handler-side ``_inflight_agent_runs`` legitimately drops in the handler's
+        ``finally``; the shutdown SessionDB-close gate reads the worker-scoped count instead,
+        which the real ``_run_agent`` call site must hold until the executor thread exits.
+        """
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        started, release = asyncio.Event(), threading.Event()
+        agent = _parked_agent(loop, started, release)
+        agent.interrupt.side_effect = None
+        baseline = _api_runs.api_worker_live_count()
+
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            task = asyncio.ensure_future(
+                adapter._run_agent(user_message="hello", conversation_history=[], session_id="s1"))
+            await asyncio.wait_for(started.wait(), _TURN_UNBLOCK_TIMEOUT)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert adapter._inflight_agent_runs == 0
+            assert _api_runs.api_worker_live_count() == baseline + 1, (
+                "cancelled handler dropped the worker-scoped count while the turn was still running")
+
+            release.set()
+            for _ in range(200):
+                if _api_runs.api_worker_live_count() == baseline:
+                    break
+                await asyncio.sleep(0.01)
+        assert _api_runs.api_worker_live_count() == baseline, "worker exit did not release the count"
 
     @pytest.mark.asyncio
     async def test_agent_is_unregistered_when_the_turn_raises(self):
@@ -676,3 +726,18 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
 
+
+@pytest.mark.asyncio
+async def test_failed_executor_submission_releases_the_worker_count():
+    """A request that reaches ``run_in_executor`` after ``shutdown_default_executor()`` raises
+    RuntimeError and never runs a worker; the worker-scoped count must not stay elevated for the
+    process lifetime, or the shutdown SessionDB-close gate skips the close forever (#116535)."""
+    baseline = _api_runs.api_worker_live_count()
+
+    class _ShutExecutorLoop:
+        def run_in_executor(self, executor, fn):
+            raise RuntimeError("Executor shutdown has been called")
+
+    with pytest.raises(RuntimeError, match="Executor shutdown"):
+        _api_runs._submit_api_worker(_ShutExecutorLoop(), lambda: None)
+    assert _api_runs.api_worker_live_count() == baseline

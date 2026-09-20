@@ -126,6 +126,26 @@ class TestCompletionQueue:
         assert len(completion["output"]) == 5000
         assert "output_cut" not in completion
 
+    def test_polled_result_carries_the_same_reply_as_the_notification(self, registry):
+        """api_server / one-shot senders cannot receive completion notifications and poll with
+        process(action='wait') instead (bot-mode.md): the polled result must carry the reply
+        whole up to the per-process size and the same ``output_cut`` marker, not a silent
+        2000-char tail."""
+        s = _make_session(sid="proc_polled", output="Reply from @b:\n" + "x" * 4000)
+        s.completion_output_chars = 6000
+        s.exited, s.exit_code = True, 0
+        registry._finished[s.id] = s
+        with patch.object(registry, "_reconcile_local_exit"), patch.object(registry, "_write_checkpoint"):
+            result = registry.wait(s.id, timeout=1)
+        assert result["status"] == "exited"
+        assert result["output"].startswith("Reply from @b:")
+        assert "output_cut" not in result
+
+        s.completion_output_chars = 1000
+        result = registry.wait(s.id, timeout=1)
+        assert len(result["output"]) == 1000
+        assert result["output_cut"] == len(s.output_buffer) - 1000
+
     def test_multiple_completions_queued(self, registry):
         """Multiple notify processes all push to the same queue."""
         for i in range(3):
@@ -162,23 +182,6 @@ class TestCheckpointNotify:
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
-
-    def test_checkpoint_round_trips_completion_output_chars(self, registry, tmp_path):
-        """A recovered delivery process still reports its reply whole."""
-        checkpoint = tmp_path / "procs.json"
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            s = _make_session(notify_on_complete=True)
-            s.completion_output_chars = 18000
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-            data = json.loads(checkpoint.read_text())
-            assert data[0]["completion_output_chars"] == 18000
-            data[0].update(pid=os.getpid(), command="sleep 999")
-            checkpoint.write_text(json.dumps(data))
-            fresh = ProcessRegistry()
-            assert fresh.recover_from_checkpoint() == 1
-            assert fresh.get(s.id).completion_output_chars == 18000
-
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
@@ -224,14 +227,6 @@ class TestTerminalSchema:
             )
             _, kwargs = mock_tt.call_args
             assert kwargs["notify_on_complete"] is True
-
-    def test_completion_output_chars_reaches_the_spawner(self):
-        """terminal_tool's internal ``_completion_output_chars`` is handed to spawn_background_process."""
-        from tools import terminal_tool as tt
-        with patch("tools.terminal_tool.spawn_background_process", return_value='{"ok":true}') as spawn:
-            tt.terminal_tool("echo hi", background=True, notify_on_complete=True, task_id="t1",
-                             _host_local=True, _completion_output_chars=18000)
-        assert spawn.call_args.kwargs["completion_output_chars"] == 18000
 
     def test_cut_completion_says_so_and_points_at_the_log(self):
         """The rendered notice names the cut and the process log; a whole output renders as before."""

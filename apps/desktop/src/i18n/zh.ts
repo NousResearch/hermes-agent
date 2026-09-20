@@ -2017,7 +2017,11 @@ export const zh = defineLocale({
       tierCommunity: '社区',
       updateToPin: (sha: string) => `更新到 ${sha}`,
       updateFailed: (name: string) => `无法更新 ${name}`,
-      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`
+      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
+      deepLinkErrorTitle: '插件安装链接已拒绝',
+      deepLinkCatalogInvalidName: '链接中的目录名称缺失或无效。',
+      deepLinkCatalogUnknown: (name: string) => `“${name}”不在 Hermes 插件目录中。未安装任何内容。`,
+      deepLinkCatalogUnavailable: '无法加载 Hermes 插件目录。请检查网络连接后重新打开链接。'
     },
     officialCatalog: '可安装',
     officialPill: '官方',
@@ -4268,6 +4272,7 @@ export const zh = defineLocale({
       statusRecovered: '已恢复',
       statusDone: '完成',
       resultUnavailable: '结果不可用',
+      resultInterrupted: '已中断',
       memoryWriteNoted: '已记下记忆写入',
       actions: {
         read: '已读取',

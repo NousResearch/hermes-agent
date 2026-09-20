@@ -72,7 +72,7 @@ _PRUNE_FILTERS = (
     ("min_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) >= ?")),
     ("max_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) <= ?")),
 )
-_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned"}
+_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
 
 
 class SessionMaintenanceMixin:
@@ -176,15 +176,20 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            **filters) -> Tuple[str, list]:
+                            lineage_tips_only: bool = False, **filters) -> Tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
         AND together, only ended sessions are ever candidates, ``archived`` is tri-state
-        (None = both), ``*_like`` are case-insensitive substrings, the rest exact."""
+        (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
+        ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
+        their tip, never on their own age — matching an old ancestor would fan out over the lineage
+        and hide its OPEN, recently active tip (#115489)."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {sorted(unknown)[0]!r}")
         clauses = ["s.ended_at IS NOT NULL"]
+        if lineage_tips_only:
+            clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
         for name, applies, build in _PRUNE_FILTERS:
             value = filters.get(name)

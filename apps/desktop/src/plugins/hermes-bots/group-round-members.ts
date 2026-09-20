@@ -233,12 +233,7 @@ export async function runGroupRoundMember(
   const spoke = reply !== null && !isGroupPassText(reply)
 
   if (reply !== null && spoke) {
-    appendGroupChatEntry(
-      context.group,
-      groupMemberAuthor(member),
-      reply,
-      thread
-    )
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
   }
 
   // A member's own entries — its reply, and the rows group-external-writes.ts

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import hashlib
+import hmac
 import inspect
 import logging
 import queue
@@ -15,8 +17,9 @@ import re
 import threading
 import time
 import types
+import unicodedata
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
@@ -51,6 +54,27 @@ _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+
+_HOOK_CALLBACK_TELEMETRY_SCHEMA = "hermes-plugin-callback-telemetry/v1"
+_HOOK_CALLBACK_TELEMETRY_MAX_EVENTS = 256
+_HOOK_CALLBACK_TELEMETRY_OUTCOMES = frozenset({
+    "timed_out",
+    "suppression_window",
+    "callback_abandoned",
+    "same_identity_running",
+    "worker_start_failed",
+    "callback_exception",
+})
+_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS = {
+    "hook": 128,
+    "plugin": 128,
+    "callback": 192,
+    "exception_type": 128,
+    "exception_message": 512,
+}
+_HOOK_CALLBACK_CORRELATION_INPUT_CHARS = 512
+_HOOK_FAILURE_DEDUPE_MAX = 256
+_MAX_TELEMETRY_MILLISECONDS = (1 << 63) - 1
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
 SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
@@ -140,20 +164,57 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
-    """Identity of the call this callback fires for, or ``None`` when the event has none.
+def _hook_call_correlation(kwargs: Dict[str, Any]) -> tuple[str, Optional[str]]:
+    """Trusted field name and opaque logical identity for one bounded hook call.
 
-    Concurrent invocations of the same tool in one session must not collapse into one
-    gate key: they are different work, and treating the second as a duplicate drops the
-    hook as if a callback had timed out (upstream #98382). The identity is already in the
-    payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
-    carries many tool calls, which would re-collapse the keys.
+    Tool calls are the narrowest grain, followed by turns and sessions. Deliberately do
+    not use ``api_request_id`` here: one provider request can contain several tool calls.
     """
-    for field in ("tool_call_id", "turn_id"):
+    for field in ("tool_call_id", "turn_id", "session_id"):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
-            return value
-    return None
+            return field, value
+    return "none", None
+
+
+def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
+    """Opaque logical identity used by the healthy in-flight gate."""
+    return _hook_call_correlation(kwargs)[1]
+
+
+def _printable_collapsed_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value))
+    printable = "".join(char if char.isprintable() else " " for char in normalized)
+    return " ".join(printable.split())
+
+
+def _canonical_telemetry_text(value: Any, *, max_chars: int, fallback: str) -> str:
+    """Return printable, whitespace-collapsed, forcibly redacted bounded text."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(
+            _printable_collapsed_text(value),
+            force=True,
+            redact_url_credentials=True,
+        )
+        return _printable_collapsed_text(redacted)[:max_chars] or fallback
+    except Exception:
+        return fallback[:max_chars]
+
+
+def _canonical_correlation_bytes(field: str, value: str) -> bytes:
+    """Canonical, bounded HMAC input. The returned bytes are never retained."""
+    collapsed = _printable_collapsed_text(value)[:_HOOK_CALLBACK_CORRELATION_INPUT_CHARS]
+    return f"{field}:{collapsed}".encode("utf-8", errors="replace")
+
+
+def _bounded_milliseconds(value: float) -> int:
+    try:
+        milliseconds = int(max(0.0, float(value)) * 1_000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return min(milliseconds, _MAX_TELEMETRY_MILLISECONDS)
 
 
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
@@ -164,6 +225,145 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 
 class PluginDispatchMixin:
+    if TYPE_CHECKING:
+        _hook_callback_telemetry_secret: bytes
+        _hook_callback_owners: Dict[int, list[tuple[Callable, str, object]]]
+        _hook_callback_telemetry_lock: threading.Lock
+        _hook_callback_telemetry_sequence: int
+        _hook_callback_telemetry_events: Deque[Mapping[str, Any]]
+        _hook_failures_reported: Dict[tuple, None]
+
+    def _record_hook_callback_telemetry(
+        self,
+        *,
+        outcome: str,
+        hook_name: str,
+        callback: Callable,
+        kwargs: Dict[str, Any],
+        timeout: Optional[float] = None,
+        elapsed: Optional[float] = None,
+        exception: Optional[Exception] = None,
+    ) -> Optional[Mapping[str, Any]]:
+        """Append one privacy-bounded diagnostic event and return its immutable copy.
+
+        This method is called only through ``_record_hook_callback_telemetry_safely`` by
+        callback dispatch. Keeping the builder separate makes fault isolation testable.
+        """
+        if outcome not in _HOOK_CALLBACK_TELEMETRY_OUTCOMES:
+            raise ValueError(f"unsupported plugin callback telemetry outcome: {outcome!r}")
+        identity_field, identity = _hook_call_correlation(kwargs)
+        correlation_digest = "none"
+        if identity is not None:
+            correlation_digest = hmac.new(
+                self._hook_callback_telemetry_secret,
+                _canonical_correlation_bytes(identity_field, identity),
+                hashlib.sha256,
+            ).hexdigest()[:32]
+
+        callback_module = getattr(callback, "__module__", "")
+        callback_name = getattr(callback, "__qualname__", None)
+        if callback_name is None:
+            callback_name = getattr(callback, "__name__", type(callback).__qualname__)
+        callback_label = f"{callback_module}.{callback_name}" if callback_module else callback_name
+        owner_entries = self._hook_callback_owners.get(id(callback), ())
+        owner = (
+            owner_entries[-1][1]
+            if owner_entries and owner_entries[-1][0] is callback
+            else "core/unowned"
+        )
+
+        event: Dict[str, Any] = {
+            "schema_version": _HOOK_CALLBACK_TELEMETRY_SCHEMA,
+            "observed_at_monotonic_ms": _bounded_milliseconds(time.monotonic()),
+            "outcome": outcome,
+            "hook": _canonical_telemetry_text(
+                hook_name,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["hook"],
+                fallback="unknown",
+            ),
+            "plugin": _canonical_telemetry_text(
+                owner,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["plugin"],
+                fallback="core/unowned",
+            ),
+            "callback": _canonical_telemetry_text(
+                callback_label,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["callback"],
+                fallback="unknown",
+            ),
+            "identity_field": identity_field,
+            "correlation_digest": correlation_digest,
+        }
+        if timeout is not None:
+            event["timeout_ms"] = _bounded_milliseconds(timeout)
+        if elapsed is not None:
+            event["elapsed_ms"] = _bounded_milliseconds(elapsed)
+        if exception is not None:
+            event["exception_type"] = _canonical_telemetry_text(
+                type(exception).__name__,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["exception_type"],
+                fallback="Exception",
+            )
+            event["exception_message"] = _canonical_telemetry_text(
+                exception,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["exception_message"],
+                fallback="redacted",
+            )
+        with self._hook_callback_telemetry_lock:
+            self._hook_callback_telemetry_sequence += 1
+            event["sequence"] = self._hook_callback_telemetry_sequence
+            stored = types.MappingProxyType(event.copy())
+            self._hook_callback_telemetry_events.append(stored)
+        return types.MappingProxyType(event.copy())
+
+    def _record_hook_callback_telemetry_safely(self, **event: Any) -> Optional[Mapping[str, Any]]:
+        """Best-effort wrapper: telemetry can never change callback behavior."""
+        try:
+            return self._record_hook_callback_telemetry(**event)
+        except Exception:
+            try:
+                logger.debug("Plugin callback telemetry recording failed", exc_info=True)
+            except Exception:
+                pass
+            return None
+
+    @staticmethod
+    def _safe_hook_callback_labels(
+        hook_name: str, callback: Callable
+    ) -> tuple[str, str]:
+        """Return canonical labels safe for callback diagnostics."""
+        callback_module = getattr(callback, "__module__", "")
+        callback_name = getattr(callback, "__qualname__", None)
+        if callback_name is None:
+            callback_name = getattr(callback, "__name__", type(callback).__qualname__)
+        callback_label = (
+            f"{callback_module}.{callback_name}" if callback_module else callback_name
+        )
+        return (
+            _canonical_telemetry_text(
+                hook_name,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["hook"],
+                fallback="unknown",
+            ),
+            _canonical_telemetry_text(
+                callback_label,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["callback"],
+                fallback="unknown",
+            ),
+        )
+
+    def get_hook_callback_telemetry(self, limit: int = _HOOK_CALLBACK_TELEMETRY_MAX_EVENTS) -> tuple:
+        """Return an immutable newest-tail snapshot with a bounded caller limit."""
+        try:
+            bounded_limit = max(0, min(int(limit), _HOOK_CALLBACK_TELEMETRY_MAX_EVENTS))
+        except (TypeError, ValueError, OverflowError):
+            bounded_limit = _HOOK_CALLBACK_TELEMETRY_MAX_EVENTS
+        if bounded_limit == 0:
+            return ()
+        with self._hook_callback_telemetry_lock:
+            tail = tuple(self._hook_callback_telemetry_events)[-bounded_limit:]
+            return tuple(types.MappingProxyType(dict(event)) for event in tail)
+
     @staticmethod
     def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
         """Invoke a hook while withholding additive fields from narrow legacy callbacks.
@@ -222,103 +422,211 @@ class PluginDispatchMixin:
     def _report_hook_failure(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], exc: Exception, *, surface: str = "Hook"
     ) -> None:
-        """One WARNING per distinct (hook, callback, error); identical repeats at DEBUG.
+        """Report one safe WARNING per distinct failure and record callback exceptions.
 
-        A callback whose signature names a parameter the hook never sends (``tool_data`` instead
-        of ``tool_name``/``args``) fails identically on every tool call — ~1700 WARNING lines an
-        hour that bury real signals (#111922). The first report names the fields the hook does
-        provide so the plugin author can fix the signature. The key names the callback by
-        module/qualname (not ``id()``, which CPython recycles across plugin reloads) and
-        truncates the message so a hook that embeds tool args in its error cannot grow the set
-        per call; the set is cleared on unload alongside the timeout-suppression map.
+        Hook exception text is untrusted plugin output. Canonical redaction happens before
+        both the bounded dedupe key and every emitted log message.
         """
-        callback_name = getattr(cb, "__name__", repr(cb))
-        key = (hook_name, getattr(cb, "__module__", ""), getattr(cb, "__qualname__", callback_name),
-               type(exc).__name__, str(exc)[:200])
+        callback_name = _canonical_telemetry_text(
+            getattr(cb, "__name__", type(cb).__qualname__),
+            max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["callback"],
+            fallback="unknown",
+        )
+        safe_message = _canonical_telemetry_text(
+            exc,
+            max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["exception_message"],
+            fallback="redacted",
+        )
+        if surface == "Hook":
+            self._record_hook_callback_telemetry_safely(
+                outcome="callback_exception",
+                hook_name=hook_name,
+                callback=cb,
+                kwargs=kwargs,
+                exception=exc,
+            )
+        key = (
+            _canonical_telemetry_text(
+                hook_name,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["hook"],
+                fallback="unknown",
+            ),
+            _canonical_telemetry_text(
+                getattr(cb, "__module__", ""),
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["callback"],
+                fallback="unknown",
+            ),
+            _canonical_telemetry_text(
+                getattr(cb, "__qualname__", callback_name),
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["callback"],
+                fallback=callback_name,
+            ),
+            type(exc).__name__,
+            safe_message[:200],
+        )
         if key in self._hook_failures_reported:
-            logger.debug("%s '%s' callback %s raised again: %s", surface, hook_name, callback_name, exc)
+            logger.debug(
+                "%s '%s' callback %s raised again: %s",
+                surface,
+                key[0],
+                callback_name,
+                safe_message,
+            )
             return
-        self._hook_failures_reported.add(key)
+        self._hook_failures_reported[key] = None
+        while len(self._hook_failures_reported) > _HOOK_FAILURE_DEDUPE_MAX:
+            self._hook_failures_reported.pop(next(iter(self._hook_failures_reported)))
         logger.warning(
             "%s '%s' callback %s raised: %s (%s provides: %s; identical failures are logged at DEBUG from now on)",
-            surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
+            surface,
+            key[0],
+            callback_name,
+            safe_message,
+            surface.lower(),
+            ", ".join(sorted(kwargs)) or "no fields",
+        )
 
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
-        """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, timed out (worker abandoned, never joined), or the worker
-        could not be started. Exceptions propagate."""
-        callback_name = getattr(cb, "__name__", repr(cb))
-        # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
-        # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
+        """Run one callback under the existing non-blocking timeout contract."""
+        callback_name = _canonical_telemetry_text(
+            getattr(cb, "__name__", type(cb).__qualname__),
+            max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["callback"],
+            fallback="unknown",
+        )
         suppression_key = (hook_name, id(cb))
         gate_key = (*suppression_key, _hook_call_identity(kwargs))
         token = object()
+        skip_outcome: Optional[str] = None
+        now = time.monotonic()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
-            # A worker abandoned on timeout still holds a thread; a fresh call id must not
-            # start a second one for the same callback, or a hung plugin leaks a thread per call.
-            running = (gate_key in self._hook_running_callbacks
-                       or bool(self._hook_abandoned.get(suppression_key)))
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
-                logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
-                return _HOOK_SKIPPED
-            if suppressed_until is not None:
-                self._hook_timeout_suppressed_until.pop(suppression_key, None)
-            self._hook_running_callbacks[gate_key] = token
+            abandoned = bool(self._hook_abandoned.get(suppression_key))
+            if abandoned:
+                skip_outcome = "callback_abandoned"
+            elif suppressed_until is not None and suppressed_until > now:
+                skip_outcome = "suppression_window"
+            elif gate_key in self._hook_running_callbacks:
+                skip_outcome = "same_identity_running"
+            if skip_outcome is None:
+                if suppressed_until is not None:
+                    self._hook_timeout_suppressed_until.pop(suppression_key, None)
+                self._hook_running_callbacks[gate_key] = token
+
+        if skip_outcome is not None:
+            event = self._record_hook_callback_telemetry_safely(
+                outcome=skip_outcome,
+                hook_name=hook_name,
+                callback=cb,
+                kwargs=kwargs,
+                timeout=timeout,
+            )
+            safe_hook, safe_callback = (
+                (event["hook"], event["callback"])
+                if event is not None
+                else self._safe_hook_callback_labels(hook_name, cb)
+            )
+            logger.warning(
+                "Hook '%s' callback %s skipped: %s",
+                safe_hook,
+                safe_callback,
+                skip_outcome,
+            )
+            return _HOOK_SKIPPED
 
         context = contextvars.copy_context()
         done = threading.Event()
-        outcome: Dict[str, Any] = {}
+        callback_outcome: Dict[str, Any] = {}
         failure: Dict[str, Exception] = {}
+        started_at = time.monotonic()
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_running_callbacks.pop(gate_key, None)
-                    abandoned = self._hook_abandoned.get(suppression_key)
-                    if abandoned is not None:
-                        abandoned.discard(gate_key)
-                        if not abandoned:
+                    abandoned_gates = self._hook_abandoned.get(suppression_key)
+                    if abandoned_gates is not None:
+                        abandoned_gates.discard(gate_key)
+                        if not abandoned_gates:
                             self._hook_abandoned.pop(suppression_key, None)
 
         def _runner() -> None:
             try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                callback_outcome["value"] = context.run(
+                    self._invoke_hook_callback, cb, kwargs
+                )
             except Exception as exc:
                 failure["exc"] = exc
             finally:
                 _release_token()
                 done.set()
 
-        thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
+        thread = threading.Thread(
+            target=_runner,
+            name=f"hermes-hook-{callback_name}"[:40],
+            daemon=True,
+        )
         try:
             thread.start()
         except RuntimeError as exc:
-            _release_token()  # the runner's finally never runs when OS thread creation fails
+            _release_token()
+            event = self._record_hook_callback_telemetry_safely(
+                outcome="worker_start_failed",
+                hook_name=hook_name,
+                callback=cb,
+                kwargs=kwargs,
+                timeout=timeout,
+                elapsed=time.monotonic() - started_at,
+            )
+            safe_hook, safe_callback = (
+                (event["hook"], event["callback"])
+                if event is not None
+                else self._safe_hook_callback_labels(hook_name, cb)
+            )
+            safe_message = _canonical_telemetry_text(
+                exc,
+                max_chars=_HOOK_CALLBACK_TELEMETRY_LABEL_LIMITS["exception_message"],
+                fallback="redacted",
+            )
             logger.warning(
                 "Hook '%s' callback %s worker failed to start: %s — skipping",
-                hook_name, callback_name, exc)
+                safe_hook,
+                safe_callback,
+                safe_message,
+            )
             return _HOOK_SKIPPED
-        if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
+
+        if not done.wait(timeout=timeout):
             with self._hook_timeout_lock:
-                # See #6622.
                 self._hook_timeout_suppressed_until[suppression_key] = (
-                    time.monotonic() + self._hook_timeout_suppression_seconds)
-                # The worker may have finished (and released its token) between the wait
-                # expiring and this lock; recording it as abandoned then would block the
-                # callback for that call id until reload with no thread behind it.
+                    time.monotonic() + self._hook_timeout_suppression_seconds
+                )
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
+            event = self._record_hook_callback_telemetry_safely(
+                outcome="timed_out",
+                hook_name=hook_name,
+                callback=cb,
+                kwargs=kwargs,
+                timeout=timeout,
+                elapsed=time.monotonic() - started_at,
+            )
+            safe_hook, safe_callback = (
+                (event["hook"], event["callback"])
+                if event is not None
+                else self._safe_hook_callback_labels(hook_name, cb)
+            )
             logger.warning(
-                "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
+                "Hook '%s' callback %s timed out after %gs — skipping",
+                safe_hook,
+                safe_callback,
+                timeout,
+            )
             return _HOOK_SKIPPED
         if "exc" in failure:
             raise failure["exc"]
-        return outcome.get("value")
+        return callback_outcome.get("value")
 
     def _subscribe_event(self, owner: str, event: str, callback: Callable) -> None:
         """Add an owner-tagged event subscription in registration order."""

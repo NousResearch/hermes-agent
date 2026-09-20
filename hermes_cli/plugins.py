@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import importlib.metadata
+import secrets
 import inspect
 import json
 import logging
@@ -22,6 +23,7 @@ import re
 import sys
 import threading
 import types
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -53,7 +55,8 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
-    _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
+    _HOOK_CALLBACK_TELEMETRY_MAX_EVENTS, _HOOK_CALLBACK_TIMEOUT_SECS,
+    _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id,
@@ -933,7 +936,25 @@ class PluginContext:
             logger.warning("Plugin '%s' registered unknown %s '%s' (valid: %s)", self.manifest.name, kind,
                            key, ", ".join(sorted(valid)))
         mapping.setdefault(key, []).append(callback)
-        handle = self._track(kind, key, lambda: self._manager._remove_callback(mapping, key, callback))
+        owner = self.plugin_id
+        owner_token = object()
+        if kind == "hook":
+            self._manager._hook_callback_owners.setdefault(id(callback), []).append(
+                (callback, owner, owner_token)
+            )
+
+        def _release_callback() -> None:
+            self._manager._remove_callback(mapping, key, callback)
+            if kind != "hook":
+                return
+            owners = self._manager._hook_callback_owners.get(id(callback))
+            if owners is None:
+                return
+            owners[:] = [entry for entry in owners if entry[2] is not owner_token]
+            if not owners:
+                self._manager._hook_callback_owners.pop(id(callback), None)
+
+        handle = self._track(kind, key, _release_callback)
         logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
         return handle
 
@@ -1181,8 +1202,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
-        # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
-        self._hook_failures_reported: set = set()
+        # Trusted registration metadata for callback attribution. The callback object is retained in
+        # each entry so a recycled ``id()`` can never inherit a previous owner's label.
+        self._hook_callback_owners: Dict[int, list[tuple[Callable, str, object]]] = {}
+        # Manager-local, process-ephemeral timeout diagnostics. Neither key nor events are persisted.
+        self._hook_callback_telemetry_secret = secrets.token_bytes(32)
+        self._hook_callback_telemetry_events = deque(maxlen=_HOOK_CALLBACK_TELEMETRY_MAX_EVENTS)
+        self._hook_callback_telemetry_sequence = 0
+        self._hook_callback_telemetry_lock = threading.Lock()
+        # Safe (hook, callback, exception) tuples already reported at WARNING; repeats go to DEBUG.
+        self._hook_failures_reported: Dict[tuple, None] = {}
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
         # global registries are shared across profiles while several managers coexist, so the ledger
         # is keyed per (hermes_home, plugin_id) and every inverse is identity-conditional — one

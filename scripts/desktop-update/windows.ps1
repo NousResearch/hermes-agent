@@ -795,6 +795,22 @@ if ($env:HERMES_UPDATE_PROGRESS_LOG) {
     $script:StepProgressLogPath = $env:HERMES_UPDATE_PROGRESS_LOG
 }
 
+# How long step 1 gives the Desktop to actually exit. 30s was measured against
+# a bare app; on a machine with live remote scopes the app's quit has to tear
+# down its backend, every pooled remote backend and an SSH mux full of
+# forwards, and the observed latency is 35-45s. A healthy-but-slow quit was
+# therefore reported as an abort ("the Hermes window did not exit within 30s")
+# and the update silently never ran. The gate stays FAIL CLOSED on the pid --
+# a longer ceiling only delays a genuine failure, it never runs an update
+# under a live Desktop. Overridable for tests; not a documented user knob.
+$script:DesktopExitGraceSeconds = 120
+if ($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS) {
+    $parsedExit = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS, [ref]$parsedExit) -and $parsedExit -gt 0) {
+        $script:DesktopExitGraceSeconds = $parsedExit
+    }
+}
+
 function Get-StepProgressLogStamp {
     # Size + mtime fingerprint of the update log; $null when absent or
     # unreadable. Comparing fingerprints between passes is how the idle
@@ -1436,10 +1452,24 @@ exit 3
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
-    Show-ProgressWindow
     Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
+    # THIS MUST STAY AHEAD OF Show-ProgressWindow.
+    #
+    # The Desktop pre-writes the marker with the pid of the `cmd /c start`
+    # WRAPPER (see wrapHandoffForDetachedConsole), and that wrapper exits
+    # immediately -- so between the spawn and this write the marker names a
+    # DEAD pid. The Desktop's update gate (apps/desktop/electron/update-gate.ts
+    # + update-marker.ts) reads a dead-owner marker as "no live update",
+    # deletes it, and reports "update finished; proceeding with backend start":
+    # it boots a fresh backend *inside* the very hand-off it is supposed to be
+    # parked for. The app then keeps running (backend + SSH scopes come back
+    # up), never exits, and step 1 below aborts the whole update -- the
+    # "did not exit within 30s" abort. Booting the progress window first
+    # (loopback server + readiness probe + browser spawn) stretched that
+    # dead-owner window to ~2s; claiming here, before any of that, keeps it
+    # down to this interpreter's own startup.
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $startedAt = 0L
@@ -1460,6 +1490,11 @@ try {
         $finalMsg = "marker self-test complete"
         exit 0
     }
+
+    # Progress-window veneer: opened only AFTER step 0 so the Desktop's update
+    # gate sees a live marker owner before the loopback server + browser spawn
+    # add seconds of startup work.
+    Show-ProgressWindow
 
     # StartAssigned passes a null CreateProcess currentDirectory, so children
     # inherit the hand-off process directory rather than PowerShell's $PWD.
@@ -1506,7 +1541,7 @@ try {
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
-        $deadline = (Get-Date).AddSeconds(30)
+        $deadline = (Get-Date).AddSeconds($script:DesktopExitGraceSeconds)
         while ((Get-Date) -lt $deadline) {
             $proc = Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue
             if (-not $proc) { break }
@@ -1517,7 +1552,7 @@ try {
             # A live Desktop means a live backend re-locking the venv at any
             # moment. Updating under it is how installs brick. Abort.
             $finalCode = 4
-            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within $($script:DesktopExitGraceSeconds)s. Nothing was changed. Close Hermes fully and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }

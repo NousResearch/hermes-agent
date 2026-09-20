@@ -562,20 +562,37 @@ export function useMessageStream({
               : m
           )
         } else {
-          // No streaming bubble — create a standalone interim message
-          nextMessages = [
-            ...nextMessages,
-            {
-              id: nextStreamMessageId('assistant-interim'),
-              role: 'assistant' as const,
-              parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
-              timestamp: occurredAt,
-              completedAt: occurredAt,
-              pending: false,
-              interim: true,
-              branchGroupId: state.pendingBranchGroup ?? undefined
+          // No streaming bubble. Before appending a standalone bubble, treat an
+          // identical recent interim row as a transport redelivery (at-least-once
+          // delivery). A replayed `message.interim` otherwise appends a second
+          // bubble with a fresh id that no id-keyed dedupe can collapse (#93926).
+          // Scan the current turn's assistant tail (back to the last user message)
+          // so a redelivery that arrives after a later segment still collapses.
+          let redelivered = false
+          for (let i = nextMessages.length - 1; i >= 0; i--) {
+            const m = nextMessages[i]
+            if (m.role === 'user') break
+            if (m.role === 'assistant' && !m.hidden && m.interim === true && chatMessageText(m).trim() === authoritativeText) {
+              redelivered = true
+              break
             }
-          ]
+          }
+
+          if (!redelivered) {
+            nextMessages = [
+              ...nextMessages,
+              {
+                id: nextStreamMessageId('assistant-interim'),
+                role: 'assistant' as const,
+                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+                timestamp: occurredAt,
+                completedAt: occurredAt,
+                pending: false,
+                interim: true,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ]
+          }
         }
 
         return {

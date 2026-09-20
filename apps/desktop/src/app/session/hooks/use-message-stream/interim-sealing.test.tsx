@@ -344,4 +344,54 @@ describe('useMessageStream interim text sealing', () => {
     await start()
     expect(getState().interimBoundaryPending).toBe(false)
   })
+
+  it('does not duplicate a redelivered standalone message.interim (back-to-back) (#93926)', async () => {
+    mountStream()
+    await start()
+
+    await interim('dup check')
+    await interim('dup check')
+
+    const texts = assistantMessages()
+    expect(texts.filter(t => t === 'dup check')).toHaveLength(1)
+  })
+
+  it('does not duplicate a redelivered interim that arrives after a later segment (#93926)', async () => {
+    mountStream()
+    await start()
+
+    await interim('first segment')
+    // A later segment streams and seals, then the first interim is replayed.
+    await delta('second segment')
+    await interim('second segment')
+    await interim('first segment')
+
+    const texts = assistantMessages()
+    expect(texts.filter(t => t === 'first segment')).toHaveLength(1)
+    expect(texts.filter(t => t === 'second segment')).toHaveLength(1)
+  })
+
+  it('still dedupes a redelivered interim carrying already_streamed (#93926)', async () => {
+    mountStream()
+    await start()
+
+    await interim('same reply')
+    await interim('same reply')
+
+    const texts = assistantMessages()
+    expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
+  })
+
+  it('does not collapse two distinct interim segments with different text', async () => {
+    mountStream()
+    await start()
+
+    await interim('first distinct')
+    await interim('second distinct')
+
+    const texts = assistantMessages()
+    expect(texts).toContain('first distinct')
+    expect(texts).toContain('second distinct')
+    expect(texts).toHaveLength(2)
+  })
 })

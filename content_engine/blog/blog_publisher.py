@@ -89,14 +89,25 @@ def _read_title_from_mdx(mdx_path: str) -> str:
     return Path(mdx_path).stem
 
 
-def _flip_approved(mdx_path: Path) -> bool:
-    """Flip approved:false to approved:true in the MDX frontmatter."""
+def _flip_approved(mdx_path: Path) -> str:
+    """Flip approved:false to approved:true in the MDX frontmatter.
+
+    Returns "flipped", "already_flipped", or "missing_field":
+    - "flipped": the file carried approved:false and was rewritten.
+    - "already_flipped": the file already reads approved:true. This is the
+      normal state when retrying a publish whose earlier run died after the
+      write (build/push failure), so callers must NOT treat it as a failure.
+    - "missing_field": the frontmatter has no approved field at all — the
+      file is not publishable; only this state is a flip failure.
+    """
     text = mdx_path.read_text()
     new = re.sub(r"^approved:\s*false\s*$", "approved: true", text, flags=re.MULTILINE)
-    if new == text:
-        return False  # nothing to flip (already approved or no field)
-    mdx_path.write_text(new)
-    return True
+    if new != text:
+        mdx_path.write_text(new)
+        return "flipped"
+    if re.search(r"^approved:\s*true\s*$", text, re.MULTILINE):
+        return "already_flipped"
+    return "missing_field"
 
 
 def stage_adhoc(mdx_path: str, stream: str = "ai",
@@ -174,8 +185,10 @@ def approve(slug: str, repo: Optional[str] = None) -> dict:
     if not mdx_path.exists():
         return {"status": "not_found", "slug": slug}
 
-    # 1. Flip approved.
-    if not _flip_approved(mdx_path):
+    # 1. Flip approved (idempotent on retry: an earlier run may already have
+    #    written approved:true before failing at build/push).
+    flip = _flip_approved(mdx_path)
+    if flip == "missing_field":
         return {"status": "flip_failed", "slug": slug}
 
     # 2. Build.

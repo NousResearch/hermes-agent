@@ -63,8 +63,26 @@ re-reads the PR head/base. Optional failed/skipped telemetry does not veto accep
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
+checks needs a local-only contract, or a declared set (below). `gh` must be
+authenticated with read access to the repository's checks; no remote writes are
+performed by this gate.
+
+Private repositories on the free GitHub plan answer 403 ("Upgrade to GitHub Pro")
+for branch protection and rulesets, so GitHub cannot supply the required set even
+though exact-head check runs stay readable. Declare it per repository instead:
+
+```yaml
+kanban:
+  pr_required_checks:
+    acme/widgets:
+      - Go Backend
+      - {context: E2E Tests, app_id: 15368}   # pinned to the github-actions app
+```
+
+The declaration is consulted only when GitHub exposes no required checks; a
+GitHub-derived set always wins. The receipt records `required_source` (`github`
+or `declared`). With neither, a plan-gated repository is classified `plan_gated`
+and the card stays open.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery

@@ -1894,6 +1894,15 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Required checks per repository for PR completion contracts, used only when GitHub
+        # exposes no required set (no branch protection, or a private repository on a plan where
+        # branch protection/rulesets answer 403). GitHub-derived requirements always win when
+        # present. Keys are OWNER/REPO; entries are check-run names, or {context, app_id} to pin
+        # a check to one GitHub App (github-actions is 15368). Empty = no fallback; such cards
+        # need a local-only contract.
+        #   pr_required_checks:
+        #     acme/widgets: ["Go Backend", {context: "E2E Tests", app_id: 15368}]
+        "pr_required_checks": {},
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

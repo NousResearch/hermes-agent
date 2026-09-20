@@ -7351,9 +7351,45 @@ class DiscordAdapter(BasePlatformAdapter):
         return await self._send_prompt(chat_id, metadata, _build)
         # KENSEI CUSTOM: view._message is stored by the upstream _send_prompt seam so
         # _HermesView.on_timeout can expire the embed; ProfileGateView is registered at
-        # _define_discord_view_classes. NOTE: fork's send_profile_gate (863c2bbecc) and the
-        # profile-gate watcher delivery loop were lost in the 20260904 watcher refactor —
-        # tracked separately; the view class is restored here so any future caller works.
+        # _define_discord_view_classes.
+
+    async def send_profile_gate(
+        self, chat_id: str, approval: dict, board: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post an Approve / Reject prompt for a profile lifecycle approval.
+
+        KENSEI CUSTOM (restored from fork commit 863c2bbecc; the method was
+        lost in the 20260904 watcher refactor while the watcher delivery loop
+        was being restructured). Delivered by the profile-gate watcher in
+        ``gateway/kanban_watchers.py``; resolution is kanban-side via
+        ``ProfileGateView`` (``profile_lifecycle_gate`` resolve).
+        """
+        op = str(approval.get("op") or "?").upper()
+        profile = approval.get("profile") or "?"
+
+        def _build(_channel):
+            embed = discord.Embed(
+                title=f"Profile {op} requested",
+                description=approval.get("blast_summary") or f"{op} {profile}",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Profile", value=str(profile), inline=True)
+            embed.add_field(
+                name="Requested by",
+                value=str(approval.get("requested_by") or "?"), inline=True,
+            )
+            embed.add_field(
+                name="Approval id", value=str(approval.get("id")), inline=False,
+            )
+            view = ProfileGateView(
+                approval_id=str(approval.get("id")),
+                board=board,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            return {"embed": embed, "view": view}, view
+        return await self._send_prompt(chat_id, metadata, _build, fail_log="profile-gate prompt")
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,

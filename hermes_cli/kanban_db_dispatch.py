@@ -140,6 +140,12 @@ class DispatchResult:
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
     on multi-lane setups, NOT operator-actionable; tracked apart so health
     telemetry can tell "stuck" from "correctly idle"."""
+    skipped_review_nonspawnable: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, unresolvable_reviewer)`` pairs: review-column tasks whose
+    reviewer is not a spawnable profile (e.g. the ``sdlc-review`` skill name
+    passed as ``reviewer``). Operator-actionable — unlike the ready lane,
+    nothing ever pulls a review task, so it starves silently without this
+    signal."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
@@ -3296,7 +3302,24 @@ def _dispatch_once_locked(
             result.skipped_unassigned.append(row["id"])
             continue
         if not _is_profile_spawnable(row["assignee"]):
-            result.skipped_nonspawnable.append(row["id"])
+            # Operator-actionable starvation (unlike the ready lane): nothing
+            # ever pulls a review task, so an unresolvable reviewer name (e.g.
+            # the ``sdlc-review`` skill passed as ``reviewer``) would sit here
+            # forever with no signal. Surface it every tick so the dispatch
+            # diagnostics/log output carries the task id and the unresolvable
+            # profile name; routing the fix (reassign to a real reviewer) is
+            # left to the operator — auto-reassignment was explicitly rejected
+            # (Sahil, 2026-09-20) because silently swapping the reviewer
+            # changes who signs off on the work.
+            _log.warning(
+                "REVIEW TASK STARVED: review task %s has reviewer '%s' which "
+                "is not a spawnable profile (not a profile dir, in "
+                "kanban.nonspawnable_profiles, or tier 3). It cannot be "
+                "dispatched and nothing else pulls review tasks. Reassign it "
+                "to a real reviewer profile.",
+                row["id"], row["assignee"],
+            )
+            result.skipped_review_nonspawnable.append((row["id"], row["assignee"]))
             continue
         # Per-profile concurrency cap — mirrors the ready-lane check so a
         # fan-out of review tasks for the same reviewer profile is bounded.

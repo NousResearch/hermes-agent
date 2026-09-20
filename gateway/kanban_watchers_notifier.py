@@ -328,6 +328,63 @@ def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], 
     ).collect()
 
 
+# KENSEI CUSTOM: PROFILE-GATE approval collection (restored from fork commit
+# 863c2bbecc; the delivery loop was lost in the 20260904 watcher refactor).
+# Per-tick sync half: sweep every live board for pending, undelivered
+# profile lifecycle approvals. The async half (posting + notified-marking)
+# lives in ``GatewayKanbanWatchersMixin._profile_gate_watcher``.
+
+
+def _profile_gate_collect(kb: Any) -> list[tuple[str, dict]]:
+    """Collect pending, undelivered profile lifecycle approvals across boards.
+
+    Runs in a worker thread (called via ``asyncio.to_thread``); one board's
+    failure never blocks the others. Dedupes boards by resolved db_path so
+    slug aliases do not double-post an approval. The approval helpers live on
+    the aggregate ``kanban_db`` module (not the connect/notify split), so the
+    caller passes that module in.
+    """
+    out: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        boards = [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+    for board_meta in boards:
+        slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+        db_path = board_meta.get("db_path")
+        try:
+            resolved = str(
+                Path(db_path).expanduser().resolve()
+            ) if db_path else str(kb.kanban_db_path(slug).resolve())
+        except Exception:
+            resolved = f"slug:{slug}"
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            conn = kb.connect(board=slug)
+        except Exception:
+            continue
+        try:
+            for row in kb.list_pending_profile_lifecycle_approvals(
+                conn, undelivered_only=True
+            ):
+                out.append((slug, row))
+        finally:
+            conn.close()
+    return out
+
+
+def _profile_gate_mark_notified(kb: Any, slug: str, approval_id: str) -> None:
+    """Stamp ``notified_at`` for one delivered profile-gate approval (idempotency guard)."""
+    conn = kb.connect(board=slug)
+    try:
+        kb.mark_profile_lifecycle_notified(conn, approval_id)
+    finally:
+        conn.close()
+
+
 # --- Per-event message formatting: kind -> (msg, wake_handoff, wake_review_detail) ---
 # ``None`` for handoff / review_detail leaves the accumulated wake value untouched.
 

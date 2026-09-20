@@ -24,7 +24,12 @@ from gateway.kanban_watchers_common import (
     _to_thread_process_service,
     logger,
 )
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from gateway.kanban_watchers_notifier import (
+    _KanbanNotification,
+    _notifier_collect,
+    _profile_gate_collect,
+    _profile_gate_mark_notified,
+)
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
@@ -126,6 +131,60 @@ class GatewayKanbanWatchersMixin:
                         )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
+            await self._sleep_between_ticks(interval)
+
+    async def _profile_gate_watcher(self, interval: float = 5.0) -> None:
+        """Deliver pending PROFILE-GATE approvals to Discord as button prompts.
+
+        KENSEI CUSTOM (restored from fork commit 863c2bbecc; the delivery
+        loop was lost in the 20260904 watcher refactor and is now re-ported
+        into the split watcher modules). Polls each board's
+        ``profile_lifecycle_approvals`` for undelivered pending rows and
+        posts an Approve / Reject prompt to the Discord home channel. Runs
+        only on the dispatch-owning gateway (same gate as the dispatcher) so
+        a single process owns kanban-DB access. Marking a row ``notified``
+        is the idempotency guard against re-posting every tick.
+        """
+        boot = self._kanban_dispatcher_boot()
+        if boot is None:
+            return
+        _load_config, _kb, _kanban_cfg = boot  # noqa: F841 — boot gate only
+        from gateway.config import Platform as _Platform
+
+        await asyncio.sleep(6)  # let adapters wire up
+
+        while self._running:
+            try:
+                adapter = self.adapters.get(_Platform.DISCORD)
+                home = self.config.get_home_channel(_Platform.DISCORD)
+                if adapter is None or home is None:
+                    await self._sleep_between_ticks(interval)
+                    continue
+
+                pending = await asyncio.to_thread(_profile_gate_collect, _kb)
+                for slug, row in pending:
+                    metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                    try:
+                        res = await adapter.send_profile_gate(
+                            home.chat_id, row, board=slug, metadata=metadata,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "profile-gate watcher: send failed for %s: %s",
+                            row.get("id"), exc,
+                        )
+                        continue
+                    if getattr(res, "success", False):
+                        await asyncio.to_thread(
+                            _profile_gate_mark_notified, _kb, slug, row["id"],
+                        )
+                    else:
+                        logger.warning(
+                            "profile-gate watcher: delivery unsuccessful for %s: %s",
+                            row.get("id"), getattr(res, "error", "?"),
+                        )
+            except Exception:
+                logger.exception("profile-gate watcher tick failed")
             await self._sleep_between_ticks(interval)
 
     def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:

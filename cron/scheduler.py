@@ -156,6 +156,16 @@ def _detect_gateway_code_skew() -> tuple[str, str] | None:
         return None
 
 
+def _current_gateway_code_sha() -> str | None:
+    """Full revision currently on disk; kept separate from display-shortened skew labels."""
+    try:
+        from gateway.code_skew import current_code_sha
+
+        return current_code_sha()
+    except Exception:
+        return None
+
+
 class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
@@ -188,6 +198,9 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     skew = _detect_gateway_code_skew()
     if skew is None:
         return None
+    disk_sha = _current_gateway_code_sha()
+    if disk_sha is None:
+        return None
     try:
         from gateway import status as _gateway_status
     except Exception:
@@ -204,7 +217,7 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
             or not isinstance(holder_status, dict)
             or holder_status.get("pid") != holder_pid
             or _gateway_status.runtime_status_is_stale(holder_status)
-            or holder_status.get("code_sha") != skew[1]
+            or holder_status.get("code_sha") != disk_sha
         ):
             return None
     except Exception:

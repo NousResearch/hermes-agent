@@ -151,11 +151,39 @@ def build_models_payload(
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
 
+def _user_endpoint_is_local(api_url) -> bool:
+    """True when a user-defined endpoint points at the user's own machine — the #45954
+    local-proxy shape (litellm-proxy on loopback/localhost). The automatic inference stops at
+    loopback on purpose: a private-address endpoint can equally be another machine or a routing
+    aggregator reached over LAN/VPN/Tailscale, and treating it as "local" would strip official
+    aggregator rows for what is really a remote deployment — both routes must stay
+    discoverable (#56145 — a custom API exposing 447 models gutted the Kilo row to 12)."""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(str(api_url or "")).hostname or "").strip().lower()
+        if not host:
+            return False
+        if host == "localhost" or host.endswith(".localhost"):
+            return True
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # a DNS name is a remote host as far as we can tell
+    except Exception:
+        return False
+
+
 def _strip_aggregator_overlaps(rows: list[dict]) -> None:
-    """Drop models from TRUE routing aggregators (OpenRouter, custom:* proxies) that a user-defined
-    provider also serves. The is_user_defined guard matters: is_routing_aggregator() is True for every
-    custom:* slug, so without it the dedup would empty a user's own custom row. Flat-namespace
-    resellers (opencode-go/zen) serve every model first-party and keep shared names."""
+    """Drop models from TRUE routing aggregators (OpenRouter, custom:* proxies) that a user's own
+    LOCAL endpoint also serves — a local proxy is the more-specific deployment, and picking the
+    aggregator row for its model routes the call away from it (#45954). Remote user-defined
+    endpoints are distinct routes the user deliberately added: overlapping model names there are
+    two real choices, so the aggregator keeps them and stays discoverable/selectable (#56145).
+    The is_user_defined guard matters: is_routing_aggregator() is True for every custom:* slug,
+    so without it the dedup would empty a user's own custom row. Flat-namespace resellers
+    (opencode-go/zen) serve every model first-party and keep shared names."""
     try:
         from hermes_cli.providers import is_routing_aggregator
     except Exception:
@@ -163,7 +191,7 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
 
     user_models: set[str] = set()
     for row in rows:
-        if row.get("is_user_defined"):
+        if row.get("is_user_defined") and _user_endpoint_is_local(row.get("api_url")):
             user_models.update(m.lower() for m in (row.get("models") or []))
     if not user_models:
         return
@@ -179,7 +207,9 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
         filtered = [m for m in original if m.lower() not in user_models]
         if len(filtered) < len(original):
             row["models"] = filtered
-            row["total_models"] = len(filtered)
+            # total_models keeps reporting the real catalog size: the picker sorts rows and
+            # labels them by it, and a deduped count makes a 382-model aggregator look like a
+            # 12-model one (#56145) — same convention as max_models truncation elsewhere.
 
 
 def build_model_options_payload(

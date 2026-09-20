@@ -1496,6 +1496,19 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 120
+
+  # Kanban triage router — a fast/cheap Jev pre-check that runs ahead of
+  # `hermes kanban specify`. Off by default: `model` must be set explicitly.
+  # `max_body_chars` bounds which tasks are even eligible for the
+  # pre-check, independent of what Jev decides — tasks over this combined
+  # title+body length always fall through to the full specify path.
+  triage_router:
+    provider: "auto"
+    model: ""                   # unset = router never runs
+    base_url: ""
+    api_key: ""
+    timeout: 15
+    max_body_chars: 300         # tasks longer than this skip the pre-check
 ```
 
 :::tip

@@ -145,6 +145,13 @@ def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
 
 
+def _effective_watchdog_leash(runner: object) -> float:
+    """Thread-watchdog leash for the stop in progress: effective drain + grace, clamped under
+    launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
+    because restart.py cannot import shutdown_watchdog without a cycle."""
+    return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
+
+
 class GatewayShutdownMixin:
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -1743,10 +1750,9 @@ class GatewayShutdownMixin:
         # Under launchd the real leash is launchd's own exit timeout, not our watchdog
         # (drain + grace): a signal-driven stop that lets cron work push past it is SIGKILLed
         # before cleanup runs.
-        _cron_leash = resolve_shutdown_watchdog_delay(timeout)
-        _launchd_budget = getattr(self, "_launchd_exit_timeout_s", None)
-        if getattr(self, "_stop_requested_by_signal", False) and _launchd_budget:
-            _cron_leash = min(_cron_leash, float(_launchd_budget))
+        # ``timeout`` is already the effective (launchd-capped) drain, so this is the same
+        # leash the thread watchdog is armed with — dump margin included.
+        _cron_leash = effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(timeout))
         _cron_timeout = resolve_cron_drain_budget(
             timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
         )
@@ -2042,7 +2048,7 @@ class GatewayShutdownMixin:
             "restart_drain_timeout": self._restart_drain_timeout,
             "effective_drain_timeout": effective_stop_drain_timeout(self),
             "launchd_exit_timeout_s": getattr(self, "_launchd_exit_timeout_s", None),
-            "watchdog_delay_s": effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self))),
+            "watchdog_delay_s": _effective_watchdog_leash(self),
             "phase_elapsed_s": ctx.elapsed() if ctx.started_at is not None else None,
         }
 
@@ -2062,7 +2068,7 @@ class GatewayShutdownMixin:
         )
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             arm_shutdown_watchdog(
-                effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self))), done_event=_watchdog_done,
+                _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
         try:

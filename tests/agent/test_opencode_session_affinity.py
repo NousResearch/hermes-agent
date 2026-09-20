@@ -41,14 +41,17 @@ def _agent(provider, model, base_url, api_mode=None):
         ("custom", "glm-5", "https://opencode.ai/zen/go/v1", None),  # URL-only detection
     ],
 )
-def test_main_turn_sends_stable_session_header_on_every_transport(provider, model, base_url, api_mode):
+def test_main_turn_sends_stable_session_and_client_headers_on_every_transport(provider, model, base_url, api_mode):
     agent = _agent(provider, model, base_url, api_mode)
-    first = build_api_kwargs(agent, _MSGS)["extra_headers"]["x-opencode-session"]
-    second = build_api_kwargs(agent, _MSGS)["extra_headers"]["x-opencode-session"]
-    assert first == second == "sess-affinity-1"
+    first_headers = build_api_kwargs(agent, _MSGS)["extra_headers"]
+    second_headers = build_api_kwargs(agent, _MSGS)["extra_headers"]
+    assert first_headers["x-opencode-client"] == second_headers["x-opencode-client"] == "hermes"
+    assert first_headers["x-opencode-session"] == second_headers["x-opencode-session"] == "sess-affinity-1"
 
     other = _agent("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1")
-    assert "x-opencode-session" not in (build_api_kwargs(other, _MSGS).get("extra_headers") or {})
+    other_headers = build_api_kwargs(other, _MSGS).get("extra_headers") or {}
+    assert "x-opencode-client" not in other_headers
+    assert "x-opencode-session" not in other_headers
 
 
 def test_auxiliary_calls_share_the_main_turn_session_key():
@@ -57,8 +60,10 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
     )
     try:
         kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
+        assert kwargs["extra_headers"]["x-opencode-client"] == "hermes"
         assert kwargs["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
         other = aux._build_call_kwargs("openrouter", "x", _MSGS, base_url="https://openrouter.ai/api/v1")
+        assert "x-opencode-client" not in (other.get("extra_headers") or {})
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
@@ -157,7 +162,9 @@ def test_stateless_oneshot_still_sends_an_opencode_session_header(out_of_turn):
     from agent.opencode_affinity import opencode_session_headers
 
     kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
+    assert kwargs["extra_headers"]["x-opencode-client"] == "hermes"
     assert kwargs["extra_headers"]["x-opencode-session"]
 
+    assert opencode_session_headers("opencode-go", None, session_id=None)["x-opencode-client"] == "hermes"
     assert opencode_session_headers("opencode-go", None, session_id=None).get("x-opencode-session")
     assert opencode_session_headers("openrouter", "https://openrouter.ai/api/v1", session_id=None) == {}

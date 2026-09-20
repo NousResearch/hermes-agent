@@ -4,7 +4,8 @@ Two sources, one merge point:
 
 * ``x-opencode-session`` — OpenCode (opencode.ai Zen/Go relay) pins requests that share this
   value to the same upstream backend, which keeps its prompt cache warm across the turns of one
-  conversation. Always sent to OpenCode targets.
+  conversation. Always sent to OpenCode targets, alongside ``x-opencode-client: hermes``
+  identifying this caller to the relay.
 * ``providers.<name>.session_affinity_header`` — an opt-in header NAME on a custom provider entry
   (default off). Session-aware proxies fronting a stateful backend (LiteLLM's ``x-litellm-session-id``,
   self-hosted Claude/OpenAI gateways) otherwise classify an agent-loop request whose last message is
@@ -27,6 +28,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, Optional
 
+OPENCODE_CLIENT_HEADER = "x-opencode-client"
+OPENCODE_CLIENT_ID = "hermes"
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
 
@@ -94,11 +97,12 @@ def opencode_session_headers(
     base_url: Optional[str],
     session_id: Optional[str] = None,
 ) -> dict[str, str]:
-    """Return ``{"x-opencode-session": <key>}`` for OpenCode targets, else ``{}``.
+    """Return OpenCode client + session headers for OpenCode targets, else ``{}``.
 
     OpenCode targets always get a key: when no conversation/session key resolves, an
     ephemeral ``oneshot-<hex>`` value is generated (OpenCode Go rejects requests without
-    the header, #105841)."""
+    the header, #105841). The client header identifies this caller against the relay's
+    official clients (which send their own client id); caller-pinned values win at merge."""
     if not is_opencode_target(provider, base_url):
         return {}
     key = resolve_affinity_key(session_id)
@@ -108,7 +112,10 @@ def opencode_session_headers(
         # x-opencode-session on every request (HTTP 400 MissingSessionID if absent, #105841)
         # so generate an ephemeral session id fallback.
         key = f"oneshot-{uuid.uuid4().hex[:16]}"
-    return {OPENCODE_SESSION_HEADER: key}
+    return {
+        OPENCODE_CLIENT_HEADER: OPENCODE_CLIENT_ID,
+        OPENCODE_SESSION_HEADER: key,
+    }
 
 
 def custom_provider_session_affinity_headers(

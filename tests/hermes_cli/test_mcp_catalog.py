@@ -8,6 +8,8 @@ launch an MCP is mocked.
 from __future__ import annotations
 
 import re
+import stat
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -653,6 +655,25 @@ class TestUninstall:
         from hermes_cli.mcp_catalog import uninstall_entry
 
         assert uninstall_entry("nonexistent") is False
+
+    @pytest.mark.windows_only
+    def test_uninstall_removes_real_git_clone_with_read_only_objects(self, tmp_path):
+        from hermes_cli.mcp_catalog import _install_root, uninstall_entry
+
+        source = tmp_path / "source"
+        subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+        subprocess.run([
+            "git", "-C", str(source), "-c", "user.name=Test", "-c",
+            "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "init", "--quiet",
+        ], check=True)
+        clone = _install_root() / "demo"
+        subprocess.run(["git", "clone", "--quiet", str(source), str(clone)], check=True)
+
+        objects = [path for path in (clone / ".git" / "objects").rglob("*") if path.is_file()]
+        assert objects and any(path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY for path in objects)
+
+        assert uninstall_entry("demo") is True
+        assert not clone.exists()
 
 
 # ---------------------------------------------------------------------------

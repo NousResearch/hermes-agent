@@ -467,8 +467,8 @@ def test_payload_shape_compatible_with_modelpickerdialog_frontend():
 # ─── Aggregator dedup (issue #45954) ───────────────────────────────────
 
 
-def _user_provider_row(slug: str, models: list[str]) -> dict:
-    return {
+def _user_provider_row(slug: str, models: list[str], api_url: str | None = None) -> dict:
+    row = {
         "slug": slug,
         "name": slug.title(),
         "models": models,
@@ -477,6 +477,11 @@ def _user_provider_row(slug: str, models: list[str]) -> dict:
         "is_user_defined": True,
         "source": "user-config",
     }
+    # Real rows from list_authenticated_providers always carry api_url (add_endpoint_row);
+    # the overlap dedup only treats LOCAL endpoints as the more-specific deployment (#56145).
+    if api_url is not None:
+        row["api_url"] = api_url
+    return row
 
 
 def _aggregator_row(slug: str, models: list[str]) -> dict:
@@ -524,14 +529,14 @@ def test_user_defined_rows_carry_alias_set_for_gui_current_match():
 
 
 def test_aggregator_dedup_removes_overlapping_models():
-    """Models served by a user-defined provider are removed from
+    """Models served by a user's LOCAL proxy are removed from
     aggregator rows so the picker doesn't show them under the wrong
-    provider.  (#45954)"""
+    provider.  (#45954; remote endpoints stopped stripping in #56145.)"""
     rows = [
         _user_provider_row("litellm-proxy", [
             "nvidia/nim/minimax-m3",
             "nvidia/nim/kimi-k2.6",
-        ]),
+        ], api_url="http://localhost:4000/v1"),
         _aggregator_row("openrouter", [
             "minimax/minimax-m3",
             "nvidia/nim/minimax-m3",  # overlaps with litellm-proxy
@@ -552,7 +557,8 @@ def test_aggregator_dedup_removes_overlapping_models():
     assert "nvidia/nim/minimax-m3" not in or_row["models"]
     assert "minimax/minimax-m3" in or_row["models"]
     assert "anthropic/claude-sonnet-4.6" in or_row["models"]
-    assert or_row["total_models"] == 2
+    # total_models keeps the real catalog size (3) even though the picker shows 2 (#56145).
+    assert or_row["total_models"] == 3
 
 
 
@@ -571,7 +577,7 @@ def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy
     rows = [
         _user_provider_row("custom:my-proxy", [
             "minimax-m3", "minimax-m2.7", "glm-5", "deepseek-v4-flash",
-        ]),
+        ], api_url="http://localhost:4000/v1"),
         _aggregator_row("opencode-go", [
             "kimi-k2.6", "minimax-m3", "minimax-m2.7", "glm-5",
             "deepseek-v4-flash", "qwen3.7-max",

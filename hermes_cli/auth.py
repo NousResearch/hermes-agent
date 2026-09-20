@@ -979,7 +979,17 @@ _VERTEX_PROVIDER_IDS = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "v
 
 
 def _env_secret(name: str) -> bool:
-    return has_usable_secret(os.getenv(name, ""))
+    """True when *name* resolves to a usable secret in the active profile scope.
+
+    Must not read raw ``os.getenv``: under ``hermes serve`` / Desktop multiplex the
+    process environ is the *launch* profile, so a DeepSeek key pasted into another
+    profile's ``.env`` would be invisible to ``explicit_only`` Settings → Model
+    until a Bot-chat Refresh ran against that profile's own backend.
+    ``get_env_value`` is the scope-aware reader (#67027): secret scope, then the
+    current HERMES_HOME ``.env``.
+    """
+    from hermes_cli.config import get_env_value
+    return has_usable_secret(get_env_value(name) or "")
 
 
 def _explicit_env_credentials_present(normalized: str) -> bool:

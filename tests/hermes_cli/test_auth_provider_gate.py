@@ -190,6 +190,38 @@ def test_stale_env_pool_entry_does_not_count_when_var_unset(tmp_path, monkeypatc
     assert is_provider_explicitly_configured("deepseek") is False
 
 
+def test_profile_dotenv_key_counts_as_explicit_when_process_env_lacks_it(tmp_path, monkeypatch):
+    """A DeepSeek key in a named profile's .env must count under that profile's
+    secret scope even when os.environ (the launch profile) has no DeepSeek var.
+
+    Desktop Settings → Model uses explicit_only, which filters through
+    is_provider_explicitly_configured. os.getenv hid the keyed provider until
+    Refresh models ran against the bot's own backend.
+    """
+    root = tmp_path / "hermes"
+    studio = root / "profiles" / "content-studio"
+    studio.mkdir(parents=True)
+    (root / "config.yaml").write_text("model: {}\n")
+    (studio / "config.yaml").write_text("model: {}\n")
+    (studio / ".env").write_text("DEEPSEEK_API_KEY=sk-studio-deepseek-key\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy as lpp
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(lpp, "_snapshot", None)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    assert is_provider_explicitly_configured("deepseek") is False
+    with _config_profile_scope("content-studio"):
+        assert is_provider_explicitly_configured("deepseek") is True
+    with _config_profile_scope(None):
+        assert is_provider_explicitly_configured("deepseek") is False
+
+
 # ─── aws_sdk providers (Bedrock) ─────────────────────────────────────────
 #
 # Bedrock is registered with auth_type="aws_sdk" and an empty

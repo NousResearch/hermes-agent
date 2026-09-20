@@ -389,8 +389,10 @@ class SessionMaintenanceMixin:
         if retention_days is None or retention_days < 0:
             # A negative retention would build a future cutoff and match every ended
             # session; auto_prune=false is the disable switch, not a negative bound.
-            logger.warning("state.db auto-maintenance skipped: retention_days=%r is invalid",
-                           retention_days)
+            logger.warning(
+                "state.db auto-maintenance skipped: sessions.retention_days=%r is outside the allowed "
+                "range (a whole number of days >= 0); set sessions.auto_prune: false to disable pruning",
+                retention_days)
             result["skipped"] = True
             return result
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)

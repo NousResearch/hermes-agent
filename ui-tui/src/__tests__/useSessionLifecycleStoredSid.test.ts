@@ -84,6 +84,7 @@ describe('useSessionLifecycle durable session id', () => {
 
   it('refreshes a resumed transcript when another surface persists new messages', async () => {
     let followTick: null | (() => void) = null
+
     const intervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation((handler, timeout) => {
       if (timeout === 2000) {
         followTick = handler as () => void
@@ -91,6 +92,7 @@ describe('useSessionLifecycle durable session id', () => {
 
       return 1 as unknown as ReturnType<typeof setInterval>
     })
+
     const request = vi.fn(async () => ({
       info: { cwd: '/tmp/w', model: 'test', skills: {}, tools: {} },
       message_count: 1,
@@ -100,8 +102,12 @@ describe('useSessionLifecycle durable session id', () => {
       session_id: 'runtime-42',
       status: 'idle'
     }))
+
     const rpc = vi.fn(async (method: string) => {
-      if (method === 'setup.status') return { provider_configured: true }
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
       if (method === 'session.history') {
         return {
           count: 2,
@@ -114,6 +120,7 @@ describe('useSessionLifecycle durable session id', () => {
 
       return null
     })
+
     const mounted = mountLifecycle(request, rpc)
 
     await vi.waitFor(() => expect(mounted.api()).toBeTruthy())

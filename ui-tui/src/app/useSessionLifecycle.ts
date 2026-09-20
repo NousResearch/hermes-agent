@@ -192,6 +192,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       refreshing = true
+
       try {
         const snapshot = await rpc<SessionHistorySnapshot>('session.history', { session_id: followed.runtimeId })
         const current = followedSessionRef.current

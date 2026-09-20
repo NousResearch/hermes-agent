@@ -94,12 +94,14 @@ def _call_id(kw: dict[str, Any]) -> dict[str, Any]:
     return {"tool_call_id": kw["tool_call_id"]} if kw.get("tool_call_id") else {}
 
 
+# ``reasoning.available`` is deliberately absent: it is a completion-time preview derived from
+# finished assistant content, so it would misclassify or duplicate the final answer. Live
+# reasoning rides ``reasoning.delta`` from the agent's ``reasoning_callback`` instead (#99552).
 _FIXED_EVENT_FIELDS = {
     "tool.started": lambda tool, preview, kw: {"tool": tool, "preview": preview, **_call_id(kw)},
     "tool.completed": lambda tool, preview, kw: {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False),
-        **_call_id(kw)},
-    "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
+        **_call_id(kw)}}
 _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
 
 
@@ -1006,6 +1008,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
+    def _reasoning_cb(delta: Optional[str]) -> None:
+        """Live model reasoning, tagged so it never mixes into ``message.delta`` (#99552)."""
+        if not delta or run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "reasoning.delta", delta=delta))
+
     def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
         # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
@@ -1060,7 +1069,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
-                    run.admission, stream_delta_callback=_text_cb,
+                    run.admission, stream_delta_callback=_text_cb, reasoning_callback=_reasoning_cb,
                     tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
@@ -1069,7 +1078,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         else:
             with self._profile_scope(run.request_profile):
                 agent = self._create_agent(
-                    stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                    stream_delta_callback=_text_cb, reasoning_callback=_reasoning_cb,
+                    tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)

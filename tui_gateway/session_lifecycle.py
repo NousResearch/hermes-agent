@@ -11,6 +11,8 @@ import contextlib
 
 from .method_ctx import bind_module
 
+logger = logging.getLogger(__name__)
+
 
 @contextlib.contextmanager
 def _session_turn_admission(session: dict):
@@ -129,12 +131,38 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
+        _evict_other_session_leases(sid, key)
         _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
     return limit_message
+
+
+def _evict_other_session_leases(current_sid: str, key: str) -> None:
+    """When a session claims or takes over a key, evict and interrupt any sibling session in this process
+    holding that key so multiple runtimes cannot concurrently execute turns into one stored session."""
+    try:
+        from tui_gateway.server import _sessions as sessions, _sessions_lock as sessions_lock
+    except ImportError:
+        sessions = globals().get("_sessions", {})
+        sessions_lock = globals().get("_sessions_lock", contextlib.nullcontext())
+
+    with sessions_lock:
+        for other_sid, other in list(sessions.items()):
+            if other_sid == current_sid or str(other.get("session_key") or "") != key:
+                continue
+            if other.get("active_session_lease") is not None:
+                del other["active_session_lease"]
+                other["_lease_taken_over"] = True
+                logger.info("Session %s evicted lease for %s from session %s", current_sid, key, other_sid)
+                try:
+                    _interrupt = globals().get("_interrupt_session_turn")
+                    if callable(_interrupt):
+                        _interrupt(other_sid, other, request_id=f"takeover-evict-{current_sid}")
+                except Exception:
+                    logger.exception("takeover interrupt failed sid=%s", other_sid)
 
 
 def _attach_lease(session: dict, lease) -> None:

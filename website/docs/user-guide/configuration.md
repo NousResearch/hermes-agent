@@ -2599,8 +2599,8 @@ allow_session_takeover: true  # default false; newest surface takes the chat ove
 
 With it enabled, opening the chat elsewhere **hands it over** instead of being
 refused: the previous owner's lease is replaced, so there is still exactly one
-owner at a time. This is a handover, not shared writing — the surface that lost
-the lease stops owning the session and the one you are using now owns it.
+active lease in the session registry. On the same gateway, sibling runtimes that
+lost the lease are evicted and interrupted on claim.
 
 `session.allow_takeover` is accepted as a nested alternative; the top-level key
 wins when both are set. `max_concurrent_sessions` is unaffected — takeover

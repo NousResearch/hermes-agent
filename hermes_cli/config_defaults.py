@@ -40,6 +40,8 @@ DEFAULT_CONFIG = {
     "runtime": {"nofile_soft_limit": 4096},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # Allow claiming an active session held by another surface (transfers lease instead of refusing).
+    "allow_session_takeover": False,
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the
     # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.
     # 0/null disables.
@@ -49,6 +51,8 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+        # Allow claiming an active session held by another surface (nested alternative).
+        "allow_takeover": False,
     },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int

@@ -1,5 +1,6 @@
 """Regression tests for #53009: chat -q final response erased by exit-summary clear."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -170,52 +171,56 @@ def _fallback_cli():
     return SimpleNamespace(), ExplodingStdout()
 
 
-@pytest.mark.parametrize("is_windows", [True, False])
-def test_clear_fallback_spawns_no_shell(monkeypatch, is_windows):
+@pytest.mark.skipif(os.name == "nt", reason="POSIX `clear` path; the nt path has its own test")
+def test_clear_fallback_spawns_no_shell(monkeypatch):
     """#116904: fallback used os.system() — a shell spawn (console flash on Windows,
-    silent no-op without `clear`). It must now be argv subprocess.run with hidden
-    Windows console flags."""
+    silent no-op without `clear`). It must now be an argv subprocess.run of the
+    resolved `clear` binary, with the real (0 off-Windows) hide flags."""
+    import subprocess as sp
+
     import hermes_cli.cli_session_mixin as mixin_mod
 
     calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-
-    monkeypatch.setattr(mixin_mod, "os", SimpleNamespace(
-        name="nt" if is_windows else "posix"), raising=False)
     monkeypatch.setattr(mixin_mod.shutil, "which",
                         lambda exe: f"/usr/bin/{exe}" if exe == "clear" else None)
-    import hermes_cli._subprocess_compat as compat_mod
-    monkeypatch.setattr(compat_mod, "windows_hide_flags",
-                        lambda: 0x08000000 if is_windows else 0)
-    import subprocess as sp
-    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr(sp, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
 
     _, stdout = _fallback_cli()
     monkeypatch.setattr(mixin_mod.sys, "stdout", stdout)
 
     mixin_mod.CLISessionMixin._clear_terminal_on_exit(SimpleNamespace())
 
-    assert len(calls) == 1, "fallback must spawn exactly one subprocess"
-    argv, kwargs = calls[0]
-    assert isinstance(argv, list), "argv must be a list — no shell string"
-    assert kwargs.get("creationflags") == (0x08000000 if is_windows else 0), (
-        "CREATE_NO_WINDOW must be applied on Windows so no console flashes"
-    )
-    if is_windows:
-        assert argv == ["cmd", "/c", "cls"]
-    else:
-        assert argv == ["/usr/bin/clear"]
+    assert calls == [(["/usr/bin/clear"], {"stdin": sp.DEVNULL, "creationflags": 0, "check": False})]
 
 
+@pytest.mark.windows_only
+def test_clear_fallback_windows_runs_cls_with_hidden_console(monkeypatch):
+    """Native Windows: `cls` is a cmd builtin, so the argv is cmd /c cls, run with the
+    real windows_hide_flags() (CREATE_NO_WINDOW) so no console flashes (#116904)."""
+    import subprocess as sp
+
+    import hermes_cli.cli_session_mixin as mixin_mod
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    calls = []
+    monkeypatch.setattr(sp, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+
+    _, stdout = _fallback_cli()
+    monkeypatch.setattr(mixin_mod.sys, "stdout", stdout)
+
+    mixin_mod.CLISessionMixin._clear_terminal_on_exit(SimpleNamespace())
+
+    assert windows_hide_flags() == sp.CREATE_NO_WINDOW
+    assert calls == [(["cmd", "/c", "cls"], {"stdin": sp.DEVNULL, "creationflags": sp.CREATE_NO_WINDOW, "check": False})]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX `clear` lookup")
 def test_clear_fallback_skips_spawn_when_no_clear(monkeypatch):
     """POSIX without `clear` on PATH: skip the spawn entirely instead of letting a
     shell swallow the failure (#116904's silent no-op)."""
     import hermes_cli.cli_session_mixin as mixin_mod
 
     calls = []
-    monkeypatch.setattr(mixin_mod, "os", SimpleNamespace(name="posix"), raising=False)
     monkeypatch.setattr(mixin_mod.shutil, "which", lambda _exe: None)
     import subprocess as sp
     monkeypatch.setattr(sp, "run", lambda *a, **k: calls.append(a))

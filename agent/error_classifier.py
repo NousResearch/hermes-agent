@@ -619,6 +619,15 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome
+    # CommandCode reports an unavailable upstream model backend as 429 even though the
+    # CommandCode credential remains healthy. Treat only its explicit availability signal
+    # as overload; genuine CommandCode rate-limit 429s keep the normal rotation path.
+    if (
+        c.provider_slug in {"commandcode", "commandcode-anthropic"}
+        and status == 429
+        and "upstream model provider is temporarily unavailable" in msg
+    ):
+        return _V_OVERLOADED
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):

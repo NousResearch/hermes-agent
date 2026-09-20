@@ -1441,6 +1441,35 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.should_rotate_credential is True
 
 
+class TestCommandCodeUpstreamUnavailable:
+    """CommandCode's upstream outage 429 is not a credential rate limit."""
+
+    @pytest.mark.parametrize("provider", ["commandcode", "commandcode-anthropic"])
+    def test_upstream_unavailable_429_keeps_credential_healthy(self, provider):
+        e = MockAPIError(
+            "Upstream model provider is temporarily unavailable. Please try again in a moment.",
+            status_code=429,
+        )
+
+        result = classify_api_error(e, provider=provider, model="deepseek/deepseek-v4-flash")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    def test_genuine_commandcode_rate_limit_still_rotates_credential(self):
+        e = MockAPIError(
+            "Rate limit exceeded: 200 requests per minute",
+            status_code=429,
+        )
+
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4-flash"
+        )
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+
 
 
 

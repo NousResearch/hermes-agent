@@ -490,7 +490,7 @@ class CLISessionMixin:
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
-            CLI_CONFIG, _parse_service_tier_config,
+            CLI_CONFIG,
             _sync_process_session_id, datetime)
         from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
         old_session_id = self.session_id
@@ -533,11 +533,21 @@ class CLISessionMixin:
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
-        self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self._service_tier_session_override = False
+        if self.agent:
+            self.agent._service_tier_session_override = False
         _reset_model_to_config_default(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning
         # session override is dropped, the default model's per-model override is kept).
         _resolve_cli_reasoning(self)
+        # Re-resolve per-model service_tier / fast-mode for the landing model as well.
+        from agent.chat_completion_helpers import _reresolve_service_tier_config
+        from hermes_constants import resolve_service_tier_config
+        if self.agent:
+            _reresolve_service_tier_config(self.agent, config=CLI_CONFIG)
+            self.service_tier = self.agent.service_tier
+        else:
+            self.service_tier = resolve_service_tier_config(CLI_CONFIG, self.model)
         _sync_process_session_id(self.session_id)
 
         if self.agent:

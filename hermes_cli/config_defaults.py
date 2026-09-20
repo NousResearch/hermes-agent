@@ -130,6 +130,8 @@ DEFAULT_CONFIG = {
         # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
         # turn), "cold" (first turn of a session only).
         "service_tier": "",
+        # Model name -> normal/fast/auto/cold. Matching is shared with reasoning_overrides.
+        "service_tier_overrides": {},
         "fast_auto_seconds": 60,
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.

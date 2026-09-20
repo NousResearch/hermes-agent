@@ -21,10 +21,11 @@ from hermes_cli.cli_agent_setup_mixin import _retire_agent
 # CLI-level fields describing the active model route; snapshotted before a switch / one-turn
 # override and restored wholesale on rollback. ``reasoning_config`` rides along because it is
 # resolved per model: a failed swap or `/model X --reasoning high --once` must not leave the
-# new model's effort behind with the old route.
+# new model's effort behind with the old route. ``service_tier`` likewise rides along for
+# per-model fast-mode overrides so a rollback restores the prior tier.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "service_tier")
 
 
 def _runtime_fields(cli) -> dict:
@@ -648,7 +649,7 @@ class CLIModelSwitchMixin:
         otherwise the staged broken credentials leak into the next turn even though the agent
         rolled back. Returns False after printing the failure (a failed switch is a no-op).
         """
-        from cli import _cprint
+        from cli import _cprint, logger
         _cli_snapshot = _runtime_fields(self)
         self.model = result.new_model
         self.provider = result.target_provider
@@ -683,6 +684,15 @@ class CLIModelSwitchMixin:
                     f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
                     f"staying on {old_model}.")
                 return False
+        if not getattr(self, "_service_tier_session_override", False):
+            try:
+                from hermes_constants import resolve_service_tier_config
+                from hermes_cli.config import load_config
+                self.service_tier = resolve_service_tier_config(load_config() or {}, self.model)
+                if self.agent is not None:
+                    self.agent.service_tier = self.service_tier
+            except Exception:
+                logger.debug("Could not re-resolve service_tier after model switch", exc_info=True)
         return True
 
     def _apply_model_switch_result(

@@ -309,6 +309,10 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
+import {
+  runningAssigneesFromKanbanList,
+  shouldKeepPoolBackendWarm
+} from './pool-kanban-warm'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
 import {
@@ -12222,6 +12226,24 @@ async function evictLruPoolBackends(keep) {
   return poolRetirer.evictTo(Math.max(0, keep), POOL_KEEPALIVE_FRESH_MS)
 }
 
+function listRunningKanbanAssignees(): Set<string> {
+  const home = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
+  const db = path.join(home, 'kanban.db')
+  if (!fs.existsSync(db)) {
+    return new Set()
+  }
+  try {
+    const out = execFileSync(
+      'python3',
+      ['-c', 'import json,os,sqlite3; c=sqlite3.connect("file:"+os.environ["HERMES_KANBAN_DB"]+"?mode=ro", uri=True); print(json.dumps([r[0] for r in c.execute("SELECT assignee FROM tasks WHERE status=\'running\' AND assignee IS NOT NULL")]))'],
+      { timeout: 2000, encoding: 'utf8', env: { ...process.env, HERMES_KANBAN_DB: db } }
+    )
+    return runningAssigneesFromKanbanList(JSON.parse(out))
+  } catch {
+    return new Set()
+  }
+}
+
 function startPoolIdleReaper() {
   if (poolIdleReaper) {
     return
@@ -12229,8 +12251,12 @@ function startPoolIdleReaper() {
 
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
+    const running = listRunningKanbanAssignees()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
+      if (shouldKeepPoolBackendWarm(profile, running)) {
+        continue
+      }
       if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
         // Remote descriptors hold no child/slot. Local children require the
         // same admission authority as foreground and LRU reclamation.

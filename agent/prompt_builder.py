@@ -77,7 +77,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     raise value  # type: ignore[misc]
 
 
-def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
+def _scan_context_content(content: str, filename: str) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
@@ -88,11 +88,6 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
         content = content[1:]
     findings = _scan_for_threats(content, scope="context")
     if not findings:
-        return content
-    if user_authored:
-        logger.warning("Context file %s matched injection pattern(s) %s; loaded anyway because it is the "
-                       "user's own file in HERMES_HOME — review it if you did not write that text",
-                       filename, ", ".join(findings))
         return content
     logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
     return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -450,7 +445,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n"
     "- File contents, sizes, line counts → use read_file, search_files, or terminal\n"
     "- Git history, branches, diffs → use terminal\n"
-    "- Current facts (weather, news, versions) → use web_search\n"
+    "- Current facts (weather, news, versions) → use an available web lookup tool\n"
     "Your memory and user profile describe the USER, not the system you are running on. The execution environment may "
     "differ from what the user profile says about their personal setup.\n"
     "</mandatory_tool_use>\n\n"
@@ -492,7 +487,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "</literal_preservation>\n\n"
     "<missing_context>\n"
     "- If required context is missing, do NOT guess or hallucinate an answer.\n"
-    "- Use the appropriate lookup tool when missing information is retrievable (search_files, web_search, read_file, "
+    "- Use the appropriate lookup tool when missing information is retrievable (search_files, read_file, "
     "etc.).\n"
     "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
     "- If you must proceed with incomplete information, label assumptions explicitly.\n"
@@ -503,12 +498,11 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 def execution_guidance_text(valid_tool_names=None) -> str:
     """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
 
-    Without web tools (e.g. Blank Slate) the ``web_search`` mentions would dangle, so they are dropped/adjusted.
+    Keep web capabilities generic so the shared execution block never names an unavailable tool.
     """
     text = OPENAI_MODEL_EXECUTION_GUIDANCE
     if valid_tool_names is not None and "web_search" not in valid_tool_names:
-        text = text.replace("- Current facts (weather, news, versions) → use web_search\n", "")
-        text = text.replace("(search_files, web_search, read_file, etc.)", "(search_files, read_file, etc.)")
+        text = text.replace("- Current facts (weather, news, versions) → use an available web lookup tool\n", "")
     return text
 
 
@@ -1475,7 +1469,7 @@ def _build_skills_system_prompt_inner(
 
 def _truncate_content(
     content: str, filename: str, max_chars: Optional[int] = None, context_length: Optional[int] = None,
-    read_path: Optional[str] = None,
+    read_path: Optional[str] = None, queue_warning: bool = True,
 ) -> str:
     """Head/tail truncation with a marker in the middle; ``read_path`` (default ``filename``) is what the
     agent is told to ``read_file`` to recover the full content."""
@@ -1483,14 +1477,18 @@ def _truncate_content(
         max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
         return content
-    msg = (
-        f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds limit of {max_chars} — "
-        f"trim the file, pin a larger context_file_max_chars, or use a larger-context model!"
-    )
+    if queue_warning:
+        msg = (
+            f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds limit of {max_chars} — "
+            f"trim the file, pin a larger context_file_max_chars, or use a larger-context model!"
+        )
+    else:
+        msg = f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds the hint preview limit of {max_chars}."
     logger.warning(msg)
-    if (warnings := _truncation_warnings.get()) is None:
-        _truncation_warnings.set(warnings := [])
-    warnings.append(msg)
+    if queue_warning:
+        if (warnings := _truncation_warnings.get()) is None:
+            _truncation_warnings.set(warnings := [])
+        warnings.append(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     marker = (
@@ -1529,16 +1527,7 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
-        from hermes_cli.profile_distribution import read_manifest
-        try:
-            manifest = read_manifest(soul_path.parent)
-            user_authored = manifest is None or (
-                bool(manifest.distribution_owned) and "SOUL.md" not in manifest.distribution_owned
-            )
-        except Exception as e:
-            logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
-            user_authored = False
-        return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored),
+        return _truncate_content(_scan_context_content(content, "SOUL.md"),
                                  "SOUL.md", context_length=context_length,
                                  read_path=str(soul_path))
     except Exception as e:

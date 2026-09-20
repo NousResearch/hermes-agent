@@ -4033,11 +4033,28 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _launchd_log_dir() -> Path:
+    """Return a launchd-writable log directory.
+
+    macOS System Policy can reject xpcproxy before process launch when a
+    LaunchAgent's StandardOutPath/StandardErrorPath live on /Volumes. Keep
+    service logs on the account's local home while HERMES_HOME may remain on
+    external storage.
+    """
+    import pwd
+
+    hermes_home = get_hermes_home().resolve()
+    if str(hermes_home).startswith("/Volumes/"):
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        return account_home / "Library" / "Logs" / "Hermes"
+    return hermes_home / "logs"
+
+
 def generate_launchd_plist() -> str:
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
+    log_dir = _launchd_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     venv_dir = _service_venv_dir()

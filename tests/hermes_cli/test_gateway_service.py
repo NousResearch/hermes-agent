@@ -1861,6 +1861,23 @@ class TestProfileArg:
             "--external-supervisor",
         ]
 
+    def test_launchd_plist_keeps_logs_local_when_hermes_home_is_external(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        external_home = Path("/Volumes/ExternalSSD/Hermes")
+        monkeypatch.setattr(Path, "home", lambda: machine_home)
+        monkeypatch.setattr(Path, "mkdir", lambda self, *args, **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: external_home)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        local_logs = machine_home / "Library" / "Logs" / "Hermes"
+
+        assert plist["StandardOutPath"] == str(local_logs / "gateway.log")
+        assert plist["StandardErrorPath"] == str(local_logs / "gateway.error.log")
+        assert plist["ProgramArguments"][4] == str(local_logs / "gateway.error.log")
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
+from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 
 import logging
 import os
@@ -218,6 +219,8 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    status_cleared_at: Optional[float] = None
+    model_cooldowns: Optional[Dict[str, float]] = None
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -785,15 +788,18 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
 def _profile_owns_pool_provider(provider: str) -> bool:
     """True when the ACTIVE auth.json has its own rows for *provider*.
 
-    Named profiles with no local rows read the provider through the
-    ``read_credential_pool`` global-root fallback ("borrowing").
+    Named profiles own single-use OAuth pools locally. The reader suppresses
+    the global-root fallback for these providers, so an empty local slice is
+    still an owned (empty) pool that may accept a newly added credential.
     """
     try:
         pool = _load_auth_store().get("credential_pool")
     except Exception:
         return True  # unreadable store: assume ownership, keep legacy path
     entries = pool.get(provider) if isinstance(pool, dict) else None
-    return isinstance(entries, list) and bool(entries)
+    if isinstance(entries, list) and entries:
+        return True
+    return True
 
 
 def _borrowed_single_use_pool_root() -> Optional[Path]:
@@ -931,7 +937,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -964,18 +970,19 @@ class CredentialPool(CredentialPoolAdminMixin):
         with self._lock:
             return bool(self._entries)
 
-    def has_available(self) -> bool:
+    def has_available(self, *, model: Optional[str] = None) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown.
 
         ``_available_entries`` is not read-only (it prunes aged-out DEAD
         manual entries and persists), so it must run under ``self._lock``
         like every other caller or a probe can race a concurrent rotation.
         """
+        self._sync_disk_status_clears()
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             return bool(available)
 
-    def next_available_at(self) -> Optional[float]:
+    def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 
         ``None`` when an entry is available now, or when no exhausted entry
@@ -984,7 +991,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         Runs under ``self._lock`` for the same reason as ``has_available``.
         """
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             if available:
                 return None
             # Mirror _available_entries: a sole credential's transient throttle
@@ -1012,6 +1019,27 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     def _find(self, predicate: Callable[[PooledCredential], bool]) -> Optional[PooledCredential]:
         return next((e for e in self._entries if predicate(e)), None)
+
+    def _sync_disk_status_clears(self) -> None:
+        """Apply a newer cross-process auth-reset marker to this live pool."""
+        if not any(entry.last_status or entry.model_cooldowns for entry in self._entries):
+            return
+        try:
+            from agent.credential_pool_admin import _cleared_status_copy
+            disk_entries = read_credential_pool(self.provider)
+        except Exception:
+            return
+        disk_by_id = {row.get("id"): row for row in disk_entries if isinstance(row, dict)}
+        with self._lock:
+            for index, entry in enumerate(self._entries):
+                disk = disk_by_id.get(entry.id)
+                if not isinstance(disk, dict) or not disk.get("status_cleared_at"):
+                    continue
+                cleared_at = _parse_absolute_timestamp(disk.get("status_cleared_at")) or 0.0
+                status_at = _parse_absolute_timestamp(entry.last_status_at) or 0.0
+                if cleared_at >= status_at and (entry.last_status or entry.model_cooldowns):
+                    cleared = _cleared_status_copy(entry)
+                    self._entries[index] = replace(cleared, status_cleared_at=cleared_at)
 
     def _current_unlocked(self) -> Optional[PooledCredential]:
         if not self._current_id:
@@ -1795,20 +1823,21 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     # ---- selection ---------------------------------------------------------
 
-    def select(self) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock()
+    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        self._sync_disk_status_clears()
+        entry, pending_refresh = self._select_under_lock(model=model)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:
-                entry, _ = self._select_under_lock()
+                entry, _ = self._select_under_lock(model=model)
         if entry is not None:
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+    def _select_under_lock(self, *, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
     def _refresh_pending_entries(self, pending: List[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -1836,7 +1865,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         return self._sync_entry_from_auth_store(entry)
 
     def _available_entries(
-        self, *, clear_expired: bool = False, refresh: bool = False,
+        self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -1882,6 +1911,8 @@ class CredentialPool(CredentialPoolAdminMixin):
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
+            if model_cooldown_until(entry, model) is not None:
+                continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
@@ -1926,14 +1957,17 @@ class CredentialPool(CredentialPoolAdminMixin):
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
     def _select_unlocked(
-        self, *, refresh: bool = True, count: bool = True,
+        self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        exclude_ids: Optional[Set[str]] = None,
     ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        if exclude_ids:
+            available = [entry for entry in available if entry.id not in exclude_ids]
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -1970,6 +2004,16 @@ class CredentialPool(CredentialPoolAdminMixin):
                 return current
             available, _pending = self._available_entries()
             return available[0] if available else None
+
+    def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        """Return an entry once its cooldown has lifted without counting a request."""
+        with self._lock:
+            available, pending = self._available_entries(clear_expired=True, refresh=True, model=model)
+        if any(entry.id == credential_id for entry in pending):
+            self._refresh_pending_entries([entry for entry in pending if entry.id == credential_id])
+            with self._lock:
+                available, _pending = self._available_entries(clear_expired=True, refresh=True, model=model)
+        return next((entry for entry in available if entry.id == credential_id), None)
 
     # ---- rotation ----------------------------------------------------------
 
@@ -2051,6 +2095,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2064,6 +2109,15 @@ class CredentialPool(CredentialPoolAdminMixin):
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            if self._is_model_scoped_failure(status_code, model, failure_reason):
+                self._cool_down_model(entry, model, error_context, failure_reason=failure_reason)
+                logger.info(
+                    "credential pool: %s unavailable for model %s; other models stay available",
+                    _label, model,
+                )
+                self._current_id = None
+                next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+                return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
             # A 402/429/401 is a key-level failure, and the same key can back
             # several entries (an explicit entry plus a ``model_config`` row
@@ -2093,7 +2147,7 @@ class CredentialPool(CredentialPoolAdminMixin):
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, exclude_ids={entry.id})
             if next_entry:
                 logger.info("credential pool: rotated to %s", next_entry.label or next_entry.id[:8])
             return next_entry

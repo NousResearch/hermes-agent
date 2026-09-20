@@ -775,6 +775,15 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
+                # CREATE INDEX statements in the canonical script can reference
+                # columns omitted by reduced external harness schemas. Restore
+                # the early task columns first; the regular migration below
+                # remains the single owner of later additive columns.
+                if _table_exists(conn, "tasks"):
+                    existing = _column_names(conn, "tasks")
+                    for name, ddl in _BASE_TASK_COLUMNS + _EARLY_TASK_COLUMNS:
+                        if name not in existing:
+                            _add_column_if_missing(conn, "tasks", name, ddl)
                 conn.executescript(_kb.SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)

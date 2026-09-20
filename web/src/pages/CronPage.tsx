@@ -882,7 +882,7 @@ export default function CronPage() {
       {jobsLoadError && (
         <div role="alert" className="rounded-md border border-destructive/40 p-3 text-sm">
           <p>Could not load cron jobs: {jobsLoadError}</p>
-          <Button variant="outline" size="sm" onClick={() => loadJobs(selectedProfile)}>
+          <Button size="sm" onClick={() => loadJobs(selectedProfile)}>
             Retry
           </Button>
         </div>

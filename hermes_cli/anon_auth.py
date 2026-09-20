@@ -517,7 +517,7 @@ def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: b
     return f"The Nous free tier refused this request ({reason}). {signin}"
 
 
-def welcome_route_refusal(status: Any, message: Any) -> Optional[str]:
+def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Optional[str]:
     """Which host cross-refusal a gateway 400/403 is, by its message; None for any other error.
 
     ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"named_on_welcome_host"``: an
@@ -526,7 +526,10 @@ def welcome_route_refusal(status: Any, message: Any) -> Optional[str]:
     if status not in (400, 403):
         return None
     text = str(message or "").lower()
-    return next((kind for needle, kind in _WELCOME_ROUTE_REFUSALS if needle in text), None)
+    kind = next((kind for needle, kind in _WELCOME_ROUTE_REFUSALS if needle in text), None)
+    if kind is None and status == 403 and route_is_welcome_host(base_url):
+        return "tier_disabled"
+    return kind
 
 
 def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True) -> str:

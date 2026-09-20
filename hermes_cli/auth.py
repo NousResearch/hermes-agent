@@ -913,13 +913,18 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
         return list(provider_entries)
+    # Single-use OAuth refresh grants are profile-owned secrets, never a
+    # fallback credential. Sharing them across profiles creates implicit
+    # identity inheritance even if writes are serialized back to the root.
+    if provider_id in SINGLE_USE_REFRESH_POOL_PROVIDERS and _global_auth_file_path() is not None:
+        return []
     global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
 _POOL_STATUS_FIELDS = (
     "last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message",
-    "last_error_reset_at")
+    "last_error_reset_at", "status_cleared_at")
 
 
 def _merge_disk_cooldown_state(
@@ -938,6 +943,10 @@ def _merge_disk_cooldown_state(
         )
 
         disk_status = disk_entry.get("last_status")
+        cleared_at = _parse_absolute_timestamp(disk_entry.get("status_cleared_at")) or 0.0
+        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
+        if cleared_at and cleared_at >= mem_ts:
+            return {**entry, **{f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}}
         if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
             return entry
         # A token change means the caller re-authed this entry and intentionally cleared its status:
@@ -947,7 +956,6 @@ def _merge_disk_cooldown_state(
         if mem_access and disk_access and mem_access != disk_access:
             return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
-        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
         if disk_ts <= mem_ts:
             return entry
         if disk_status == STATUS_EXHAUSTED:

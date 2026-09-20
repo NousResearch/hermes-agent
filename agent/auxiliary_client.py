@@ -3063,6 +3063,7 @@ def _get_provider_chain() -> List[tuple]:
 _AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
 _aux_unhealthy_until: Dict[Any, float] = {}
 _aux_unhealthy_logged_at: Dict[Any, float] = {}
+_aux_unhealthy_reason: Dict[Any, str] = {}
 # resolved_provider / explicit-config names → chain labels.
 _AUX_UNHEALTHY_LABEL_ALIASES = {
     "openrouter": "openrouter", "nous": "nous", "custom": "local/custom",
@@ -3080,6 +3081,7 @@ def _normalize_chain_label(provider: str) -> str:
 
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
+    reason: Optional[str] = None, level: Optional[int] = None,
 ) -> None:
     """Hide one provider endpoint until the TTL expires after a confirmed payment error."""
     label = _normalize_chain_label(provider)
@@ -3089,10 +3091,12 @@ def _mark_provider_unhealthy(
     ttl = _AUX_UNHEALTHY_TTL_SECONDS if ttl is None else ttl
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
-    logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
-        "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), time.strftime("%H:%M:%S", time.localtime(expires_at)),
+    detail = reason or "payment / credit error"
+    _aux_unhealthy_reason[key] = detail
+    logger.log(
+        level if level is not None else logging.WARNING,
+        "Auxiliary: marking %s unhealthy for %ds (%s). Subsequent auxiliary calls will skip it until %s.",
+        label, int(ttl), detail, time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
 
@@ -3121,8 +3125,9 @@ def _log_skip_unhealthy(
         _aux_unhealthy_logged_at[key] = now
         expires_at = _aux_unhealthy_until.get(key, now)
         logger.info(
-            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
-            task or "call", label, max(0, int(expires_at - now)),
+            "Auxiliary %s: skipping %s (recently returned %s, retry in %ds)",
+            task or "call", label, _aux_unhealthy_reason.get(key, "payment error"),
+            max(0, int(expires_at - now)),
         )
 
 
@@ -3130,6 +3135,7 @@ def _reset_aux_unhealthy_cache() -> None:
     """Clear the unhealthy cache (tests / explicit user reset)."""
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
+    _aux_unhealthy_reason.clear()
 
 
 def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
@@ -3156,13 +3162,16 @@ _PAYMENT_KEYWORDS = (
     "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
 )
+from agent.error_classifier import _BILLING_PATTERNS as _SHARED_BILLING_PATTERNS
+_PAYMENT_KEYWORDS = tuple(dict.fromkeys((*_PAYMENT_KEYWORDS, *_SHARED_BILLING_PATTERNS, "key limit exceeded")))
 
 
 def _is_payment_error(exc: Exception) -> bool:
     """Payment/credit/quota exhaustion: HTTP 402, or a billing/quota body on 403/404/429/no-status."""
     status = getattr(exc, "status_code", None)
     return status == 402 or (
-        status in {403, 404, 429, None} and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
+        status in {403, 404, 429, None}
+        and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
     )
 
 
@@ -3298,6 +3307,8 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     ):
         return True
     if "response_format" in err_lower and "unavailable" in err_lower:
+        return True
+    if "response_format" in err_lower and "invalid schema" in err_lower:
         return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
@@ -3912,20 +3923,31 @@ def _call_fallback_candidate_sync(
     )
 
     def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
-        if stream:
-            from agent.auxiliary_egress_recovery import send_stream
-            return send_stream(client, request_kwargs, dest.provider, dest.api_mode,
-                               task=task, stream_options=stream_options)
-        return _validate_llm_response(
-            _relay_sync_completion(
-                client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,
-                create=lambda request: _create_with_progress(
-                    client, request, task,
-                    force_stream=_provider_requires_stream(dest.provider, dest.base_url),
+        def send(kwargs: Dict[str, Any]) -> Any:
+            if stream:
+                from agent.auxiliary_egress_recovery import send_stream
+                return send_stream(client, kwargs, dest.provider, dest.api_mode,
+                                   task=task, stream_options=stream_options)
+            return _validate_llm_response(
+                _relay_sync_completion(
+                    client, kwargs, provider=dest.provider, api_mode=dest.api_mode,
+                    create=lambda request: _create_with_progress(
+                        client, request, task,
+                        force_stream=_provider_requires_stream(dest.provider, dest.base_url),
+                    ),
                 ),
-            ),
-            task,
-        )
+                task,
+            )
+        try:
+            return send(request_kwargs)
+        except Exception as exc:
+            retry_kwargs = _without_structured_output_format(request_kwargs) if _is_structured_output_rejection(exc) else None
+            if retry_kwargs is None:
+                raise
+            response = send(retry_kwargs)
+            from agent.auxiliary_structured_output import remember_structured_output_rejection
+            remember_structured_output_rejection(dest.provider, dest.base_url, request_kwargs, exc)
+            return response
     try:
         return _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
@@ -3961,10 +3983,22 @@ async def _call_fallback_candidate_async(
     )
 
     async def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
-        return _validate_llm_response(
-            await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
-            task,
-        )
+        try:
+            return _validate_llm_response(
+                await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
+                task,
+            )
+        except Exception as exc:
+            retry_kwargs = _without_structured_output_format(request_kwargs) if _is_structured_output_rejection(exc) else None
+            if retry_kwargs is None:
+                raise
+            response = _validate_llm_response(
+                await _relay_async_completion(client, retry_kwargs, provider=dest.provider, api_mode=dest.api_mode),
+                task,
+            )
+            from agent.auxiliary_structured_output import remember_structured_output_rejection
+            remember_structured_output_rejection(dest.provider, dest.base_url, request_kwargs, exc)
+            return response
     try:
         return await _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
@@ -4070,6 +4104,8 @@ def _try_main_agent_model_fallback(
         runtime = dict(runtime, provider=main_provider, model=main_model,
                        base_url="", api_key="", api_mode="")
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
+        return None, None, ""
+    if task == "vision" and not _main_model_supports_vision(main_provider, main_model):
         return None, None, ""
     main_base_url = str(runtime.get("base_url") or "").strip() or _custom_health_base_url(main_provider)
     if _failed_backend_skip(
@@ -4738,6 +4774,10 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         )
         client._hermes_aux_effective_provider = "actual"
         return client
+    from agent.opencode_affinity import opencode_transport
+    opencode_mode, opencode_base = opencode_transport(req.provider, final_model_str, base_url_str)
+    if opencode_mode:
+        req, base_url_str = req._replace(api_mode=opencode_mode), opencode_base
     needs_codex = not (
         isinstance(client_obj, CodexAuxiliaryClient) or req.raw_codex
     ) and (
@@ -4753,7 +4793,16 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
         return CodexAuxiliaryClient(client_obj, final_model_str)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, req.api_mode)
+    api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
+    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+
+
+def _profile_declared_messages_wire(provider: str) -> Optional[str]:
+    """Return the registered provider profile's Messages API declaration, if any."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(str(provider or "").strip().lower())
+    return "anthropic_messages" if profile is not None and profile.api_mode == "anthropic_messages" else None
 
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:
@@ -6358,7 +6407,13 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback.
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    if "response_format" in merged_extra:
+        from agent.auxiliary_structured_output import without_unsupported_response_format
+        merged_extra = without_unsupported_response_format(
+            merged_extra, provider_norm, effective_base, model, task,
+        )
+    if merged_extra:
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
@@ -7062,7 +7117,8 @@ def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
+            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
+            or _is_structured_output_rejection(exc))
 
 
 def _credential_rung_accepts(exc: Exception) -> bool:
@@ -7097,12 +7153,17 @@ def _ladder_parameter_rungs(
     if _is_structured_output_rejection(first_err):
         retry_kwargs = _without_structured_output_format(kwargs)
         if retry_kwargs is not None:
+            rejected_err = first_err
             logger.info("Auxiliary %s%s: provider rejected the structured-output "
                         "format field; retrying once without it (schema "
                         "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
             resp, first_err = yield from _rung(
                 _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
             if first_err is None:
+                from agent.auxiliary_structured_output import remember_structured_output_rejection
+                remember_structured_output_rejection(
+                    route.resolved_provider, route.resolved_base_url, kwargs, rejected_err,
+                )
                 return resp, None, retry_kwargs
             kwargs = retry_kwargs
     err_str = str(first_err)

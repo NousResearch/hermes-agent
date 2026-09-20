@@ -646,6 +646,25 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return next((f for f in map(get_reasoning_stale_timeout_floor, candidates) if f is not None), None)
 
 
+# High-effort Codex requests can spend several minutes reasoning before their
+# first event. Apply this floor only to implicit watchdogs; explicit settings
+# and the run-budget cap retain precedence.
+HIGH_EFFORT_SILENCE_FLOOR_SECONDS = 300.0
+
+
+def _high_effort_silence_floor(agent) -> float:
+    """Return the silence floor when enabled reasoning effort is high or above."""
+    from agent.reasoning_effort import EFFORT_LADDER
+
+    cfg = getattr(agent, "reasoning_config", None)
+    if not isinstance(cfg, dict) or cfg.get("enabled") is False:
+        return 0.0
+    effort = str(cfg.get("effort") or "").strip().lower()
+    if effort not in EFFORT_LADDER or EFFORT_LADDER.index(effort) < EFFORT_LADDER.index("high"):
+        return 0.0
+    return HIGH_EFFORT_SILENCE_FLOOR_SECONDS
+
+
 def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
     """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3
     directly) with the shared recovery: a cachePoint rejection (Nova: toolConfig.tools,
@@ -1166,13 +1185,15 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         if hard_timeout > 0:
             stale_timeout = min(stale_timeout, hard_timeout)
 
-    idle_default = next(
+    effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
+    idle_default = max(effort_floor, next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
-        12.0)
+        12.0))
 
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.
     ttfb_enabled = codex
+    ttfb_explicit = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", -1.0) != -1.0
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
@@ -1193,6 +1214,9 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
+
+    if ttfb_enabled and not ttfb_explicit:
+        ttfb_timeout = max(ttfb_timeout, effort_floor)
 
     # An operator-set idle timeout keeps first-event semantics; only the implicit
     # default defers arming until model progress. Sentinel: env_float returns the

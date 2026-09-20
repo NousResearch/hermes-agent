@@ -2254,7 +2254,10 @@ def test_dispatch_defers_second_worker_until_shared_directory_is_free(
     assert contender not in result.auto_blocked
     with _hermes_cli_kanban_db_connect.connect() as conn:
         assert conn.execute("SELECT consecutive_failures FROM tasks WHERE id=?", (contender,)).fetchone()[0] == 0
-        kb.complete_task(conn, owner, result="owner finished")
+        kb.complete_task(
+            conn, owner, result="owner finished",
+            expected_run_id=claimed_owner.current_run_id,
+        )
         resumed = _hermes_cli_kanban_db_dispatch.dispatch_once(
             conn, spawn_fn=fake_spawn, max_in_progress=2, reconcile_orphans=False,
         )

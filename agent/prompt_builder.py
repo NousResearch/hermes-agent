@@ -1627,12 +1627,16 @@ def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
     for directory in _agents_md_directory_chain(cwd_resolved):
         for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
             path = directory / name
+            if not _exists_or_denied(path):
+                continue
             content = _read_context_file(path)
+            label = name if directory == cwd_resolved else os.path.relpath(path, cwd_resolved)
+            discovered.append(("agents_md", label, path, content))
             if content:
-                if content not in seen:
+                if content in seen:
+                    discovered.pop()
+                else:
                     seen.add(content)
-                    label = name if directory == cwd_resolved else os.path.relpath(path, cwd_resolved)
-                    discovered.append(("agents_md", label, path, content))
                 break
 
     for name in ("CLAUDE.md", "claude.md"):

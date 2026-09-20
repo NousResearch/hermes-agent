@@ -57,7 +57,7 @@ interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
-  credential_warning?: string;
+  credential_warning?: string | null;
   title?: string;
 }
 

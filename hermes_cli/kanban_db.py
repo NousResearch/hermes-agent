@@ -1529,6 +1529,12 @@ def create_task(
                         "reason": "initial_status", "kind": "needs_input",
                         "source_status": "created",
                     })
+                if task_status == "todo":
+                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    if gating:
+                        _append_event(conn, task_id, "dependency_wait", {
+                            "parent": gating[-1], "reason": "parent_not_done",
+                        })
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -1831,25 +1837,42 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
 
 # --- Links ---
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection, parent_id: str, child_id: str, *,
+    expected_child_run_id: Optional[int] = None,
+) -> bool:
+    """Link a dependency; return whether it demoted a ready child to todo."""
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    gated = False
     with write_txn(conn):
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        child = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (child_id,),
+        ).fetchone()
+        if child["status"] == "running" and (
+            expected_child_run_id is None or child["current_run_id"] != expected_child_run_id
+        ):
+            raise ValueError(f"cannot link {parent_id} -> {child_id}: child is already running")
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet done, demote child to todo.
-        if _task_status(conn, parent_id) != "done":
-            conn.execute(
+        if _task_status(conn, parent_id) not in ("done", "archived"):
+            cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'", (child_id,),
             )
+            gated = cur.rowcount == 1
+            if gated:
+                _append_event(conn, child_id, "dependency_wait", {
+                    "reason": "parent_not_done", "demoted": True, "parent": parent_id,
+                })
         _append_event(
             conn, child_id, "linked", {"parent": parent_id, "child": child_id},
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
+    return gated
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -2165,9 +2188,7 @@ def _end_run(
                error         = ?,
                metadata      = ?,
                ended_at      = ?,
-               claim_lock    = NULL,
-               claim_expires = NULL,
-               worker_pid    = NULL
+               claim_expires = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -2261,11 +2282,17 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if not row:
+        return False
+    if row["kind"] == "blocked":
+        return True
+    if row["kind"] == "gave_up":
+        return bool(_json_dict(_row_get(row, "payload")).get("sticky"))
+    return False
 
 
 def _latest_event(
@@ -3126,15 +3153,35 @@ def _gate_created_cards(
     return verified_cards
 
 
-def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata: dict, now: int) -> None:
+def _stage_completion_artifacts(
+    conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *, retain_staged_paths: bool = False,
+) -> None:
     """Copy scratch artifacts to the attachments dir and record each as an attachment row."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
-    for stored_path in metadata.pop("_staged_artifacts", []):
+    staged_paths = list(metadata.get("_staged_artifacts", []))
+    for stored_path in staged_paths:
         path = Path(stored_path)
         _insert_completion_attachment(
             conn, task_id, filename=path.name, stored_path=str(path),
             size=path.stat().st_size, created_at=now,
         )
+    if not retain_staged_paths:
+        metadata.pop("_staged_artifacts", None)
+
+
+def _discard_staged_completion_artifacts(metadata: dict, paths: Optional[list[str]] = None) -> None:
+    """Remove filesystem copies when their surrounding database transaction rolls back."""
+    paths = paths if paths is not None else metadata.pop("_staged_artifacts", [])
+    metadata.pop("_staged_artifacts", None)
+    directories = set()
+    for value in paths:
+        path = Path(value)
+        directories.add(path.parent)
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+    for directory in directories:
+        with contextlib.suppress(OSError):
+            directory.rmdir()
 
 
 def _completed_event_payload(
@@ -3596,10 +3643,22 @@ def request_review(
             return _ret(
                 False, "task is not in running/ready (or expected_run_id did not match the current run)",
             )
-        run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="review_requested", status="review",
-            summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
-        )
+        staged_artifacts: list[str] = []
+        if isinstance(metadata, dict):
+            _stage_completion_artifacts(
+                conn, task_id, metadata, int(time.time()), retain_staged_paths=True,
+            )
+            staged_artifacts = list(metadata.get("_staged_artifacts", []))
+            metadata.pop("_staged_artifacts", None)
+        try:
+            run_id = _end_or_synthesize_run(
+                conn, task_id, outcome="review_requested", status="review",
+                summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+            )
+        except BaseException:
+            if isinstance(metadata, dict):
+                _discard_staged_completion_artifacts(metadata, staged_artifacts)
+            raise
         _append_event(
             conn,
             task_id,
@@ -3608,6 +3667,7 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "artifacts": metadata.get("artifacts") if isinstance(metadata, dict) else None,
             },
             run_id=run_id,
         )

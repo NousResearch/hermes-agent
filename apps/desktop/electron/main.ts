@@ -78,6 +78,7 @@ import {
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
 import { describeBootstrapFailure, missingInstallPartMessage } from './bootstrap-failure-copy'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
@@ -4533,6 +4534,12 @@ function preflightStateDb(hermesHome, rememberLog) {
           '[updates] state.db header is INVALID before update — ' +
             'this indicates pre-existing corruption or a concurrent write issue'
         )
+      }
+
+      if (!readPreUpdateBackupEnabled(path.join(hermesHome, 'config.yaml'))) {
+        rememberLog('[updates] emergency state.db backup disabled by updates.pre_update_backup')
+
+        return
       }
 
       // Emergency timestamped backup, separate from the Python-level snapshot.

@@ -357,7 +357,8 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - `status-stack.css` owns the shared columns and `0.25rem` nesting step. Rows
   own their padding and full-width hover fill. `StatusControlRow` uses the same
   columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
-  dashed marker for tasks and criteria. The first row has `0.5rem` top inset.
+  dashed marker for tasks and criteria. The first row keeps its normal padding;
+  the stack adds no extra top inset.
 - Keep the rounded status card stationary, with the bounded scroll viewport
   inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
   nested rosters and transcripts use `auto` so wheel input can hand off at an

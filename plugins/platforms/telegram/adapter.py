@@ -6310,12 +6310,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _telegram_photo_album_key(msg) -> str:
-        """Stable cache-folder key: media_group_id (album) or message_id (single)."""
+        """Stable cache-folder key: media_group_id (album) or message_id (single).
+
+        Telegram message_ids are unique per chat, not globally — the chat id is
+        part of the key so two chats can never share one album folder
+        (PR #115282 review)."""
         gid = getattr(msg, "media_group_id", None)
+        chat = getattr(msg, "chat_id", None) or getattr(msg, "chat", None) or "unknownchat"
+        chat = str(chat).split("@", 1)[0]
         if gid:
-            return f"mg{gid}"
+            return f"mg{chat}-{gid}"
         mid = getattr(msg, "message_id", None)
-        return f"msg{mid}" if mid is not None else "msgunknown"
+        return f"msg{chat}-{mid}" if mid is not None else f"msg{chat}-unknown"
 
     async def _cache_telegram_photo_bytes(self, msg, image_bytes, ext: str) -> str:
         """Write this photo into its timestamped album folder (not the flat img_* pile)."""

@@ -62,7 +62,16 @@ def test_cleanup_drops_stale_album_dirs(image_cache):
 
 
 def test_telegram_album_key_prefers_media_group():
-    msg = SimpleNamespace(media_group_id="998877", message_id=12)
-    assert TelegramAdapter._telegram_photo_album_key(msg) == "mg998877"
-    single = SimpleNamespace(media_group_id=None, message_id=45)
-    assert TelegramAdapter._telegram_photo_album_key(single) == "msg45"
+    # chat id is part of the key: message_ids are unique per chat, not
+    # globally (PR #115282 review)
+    msg = SimpleNamespace(media_group_id="998877", message_id=12, chat_id="-100123")
+    assert TelegramAdapter._telegram_photo_album_key(msg) == "mg-100123-998877"
+    single = SimpleNamespace(media_group_id=None, message_id=45, chat_id="-100123")
+    assert TelegramAdapter._telegram_photo_album_key(single) == "msg-100123-45"
+
+
+def test_telegram_album_key_same_message_id_different_chats_never_collide():
+    from types import SimpleNamespace as NS
+    a = TelegramAdapter._telegram_photo_album_key(NS(media_group_id=None, message_id=45, chat_id="-100111"))
+    b = TelegramAdapter._telegram_photo_album_key(NS(media_group_id=None, message_id=45, chat_id="-100222"))
+    assert a != b

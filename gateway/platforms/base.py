@@ -619,15 +619,22 @@ def resolve_inbound_album_dir(album_key: str) -> Path:
 
 
 def _write_album_photo(album_dir: Path, ext: str, data: bytes) -> str:
-    """Write the next ``photo-NN<ext>`` in *album_dir*; return the path string."""
+    """Write the next ``photo-NN<ext>`` in *album_dir*; return the path string.
+
+    O_EXCL open makes the slot claim atomic — two writers racing on the same
+    photo-NN cannot clobber each other (PR #115282 review)."""
     if not ext.startswith("."):
         ext = f".{ext}"
     album_dir.mkdir(parents=True, exist_ok=True)
     for n in range(1, 100):
         dest = album_dir / f"photo-{n:02d}{ext}"
-        if not dest.exists():
-            dest.write_bytes(data)
-            return str(dest)
+        try:
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        return str(dest)
     raise ValueError(f"album already has 99 photos: {album_dir}")
 
 

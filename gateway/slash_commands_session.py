@@ -1039,6 +1039,8 @@ class GatewaySessionCommandsMixin:
             )
             session_key = self._session_key_for_source(source)
             # Establish the destination lane; switching it must never end the parent lane.
+            # If the later fork fails, this lane and the pre-created Discord thread remain orphaned;
+            # keep the link in the error reply so the user can still recover that destination.
             await self.async_session_store.get_or_create_session(source)
         parent_session_id = current_entry.session_id
         # Full parent origin (same shape as the reset path in gateway/session.py); the live entry's

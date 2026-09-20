@@ -404,11 +404,18 @@ class _FakeStream:
     def start(self):
         pass
 
+    @property
+    def read_available(self):
+        return 1024
+
     def read(self, n):
         time.sleep(0.01)
         return [0] * n, False
 
     def stop(self):
+        pass
+
+    def abort(self):
         pass
 
     def close(self):
@@ -462,6 +469,60 @@ class _LoudStream(_FakeStream):
     def read(self, n):
         time.sleep(0.005)
         return _Frame([500] * n), False
+
+
+def test_capture_waits_for_available_frames_and_stop_is_interruptible(monkeypatch):
+    class _UnavailableStream(_FakeStream):
+        @property
+        def read_available(self):
+            return 0
+
+        def read(self, _n):
+            raise AssertionError("read must not block while a full frame is unavailable")
+
+    monkeypatch.setattr(ww, "_READ_POLL_SECONDS", 0.001)
+    stop = threading.Event()
+    cap = ww._Capture(stream=_UnavailableStream(), frame_length=4, stop_event=stop)
+    result = []
+    reader = threading.Thread(target=lambda: result.append(cap.read()))
+    reader.start()
+    stop.set()
+    reader.join(1)
+
+    assert result == [None]
+
+
+def test_pause_aborts_a_read_that_outlives_the_join_deadline(monkeypatch):
+    class _BlockingStream(_FakeStream):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.aborted = threading.Event()
+            self.abort_calls = 0
+
+        @property
+        def read_available(self):
+            return 4
+
+        def read(self, _n):
+            self.aborted.wait(1)
+            raise OSError("aborted")
+
+        def abort(self):
+            self.abort_calls += 1
+            self.aborted.set()
+
+    stream = _BlockingStream()
+    fake_sd = types.SimpleNamespace(InputStream=lambda **_kw: stream)
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+    monkeypatch.setattr(ww, "_THREAD_JOIN_TIMEOUT_SECONDS", 0.01)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+
+    det.start()
+    det.pause()
+
+    assert stream.abort_calls >= 1
+    assert stream.closed is True
+    assert det.running is False
 
 
 def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch):

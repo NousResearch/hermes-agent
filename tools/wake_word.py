@@ -31,6 +31,8 @@ SAMPLE_RATE = 16000  # 16 kHz mono int16 — Whisper-native and what every engin
 # several frames while the caller is still reacting.
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
+_THREAD_JOIN_TIMEOUT_SECONDS = 2.0
+_READ_POLL_SECONDS = 0.01
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
@@ -429,19 +431,35 @@ class _Capture:
     np: Any = None
     rate: int = SAMPLE_RATE
     frame_length: int = 1280  # samples per read at ``rate``
+    stop_event: Optional[threading.Event] = None
 
     def read(self):
-        """One raw block; None when no client frame arrived within 250 ms. Stream errors propagate."""
+        """Read one block without entering PortAudio until enough frames are ready."""
         if self.stream is not None:
-            return self.stream.read(self.frame_length)[0]
+            while self.stop_event is None or not self.stop_event.is_set():
+                if self.stream.read_available >= self.frame_length:
+                    return self.stream.read(self.frame_length)[0]
+                if self.stop_event is not None:
+                    self.stop_event.wait(_READ_POLL_SECONDS)
+                else:
+                    time.sleep(_READ_POLL_SECONDS)
+            return None
         with suppress(Exception):
             return self.queue.get(timeout=0.25)
         return None
 
-    def close(self) -> None:
+    def abort(self) -> None:
         with suppress(Exception):
             if self.stream is not None:
+                self.stream.abort()
+
+    def close(self) -> None:
+        if self.stream is not None:
+            with suppress(Exception):
+                self.stream.abort()
+            with suppress(Exception):
                 self.stream.stop()
+            with suppress(Exception):
                 self.stream.close()
 
 
@@ -458,6 +476,7 @@ class WakeWordDetector:
             {"selector": "client", "name": "client capture", "hostapi": "remote"}
             if self.external_audio else {"selector": input_device})
         self._thread: Optional[threading.Thread] = None
+        self._capture: Optional[_Capture] = None
         self._stop, self._callback_inflight = threading.Event(), threading.Event()
         self._lock, self._last_fire = threading.Lock(), 0.0
         # Client-capture PCM queue (int16 mono frames). Local mode ignores this.
@@ -533,10 +552,19 @@ class WakeWordDetector:
         with self._lock:
             self._stop.set()
             t = self._thread
-            if t is not None and t is not threading.current_thread():
-                t.join(timeout=2.0)
-            if self._thread is t:
+            cap = self._capture
+        if t is None or t is threading.current_thread():
+            return
+
+        t.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
+        if t.is_alive() and cap is not None:
+            cap.abort()
+            t.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
+        with self._lock:
+            if not t.is_alive() and self._thread is t:
                 self._thread = None
+        if t.is_alive():
+            raise TimeoutError("Timed out while stopping the wake-word microphone.")
 
     def _dispatch_wake(self) -> None:
         try:
@@ -554,7 +582,7 @@ class WakeWordDetector:
                     self._audio_q.get_nowait()
             logger.info("wake word: client-capture mode (frame=%d, rate=%d) — waiting for wake.feed",
                         frame_length, SAMPLE_RATE)
-            return _Capture(queue=self._audio_q, frame_length=frame_length)
+            return _Capture(queue=self._audio_q, frame_length=frame_length, stop_event=self._stop)
 
         try:
             sd, np = _import_audio()
@@ -563,7 +591,7 @@ class WakeWordDetector:
             raise
         details = self.input_device_details = _describe_input_device(self.input_device, sd)
         # Capture at the device's native rate when PortAudio reports one; frames are resampled to the engine.
-        cap, rate = _Capture(np=np), details.get("default_samplerate")
+        cap, rate = _Capture(np=np, stop_event=self._stop), details.get("default_samplerate")
         if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0:
             with suppress(OverflowError, ValueError):
                 cap.rate = int(round(rate))
@@ -621,6 +649,12 @@ class WakeWordDetector:
             startup_errors.append(e)
             ready.set()
             return
+        with self._lock:
+            if self._thread is not threading.current_thread():
+                cap.close()
+                ready.set()
+                return
+            self._capture = cap
         # Drop buffered audio/feature state so a resume right after a voice turn can't
         # re-fire on audio captured before the pause (wake → voice → resume → wake loop).
         with suppress(Exception):
@@ -652,6 +686,11 @@ class WakeWordDetector:
                     logger.debug("wake word: engine error: %s", e)
         finally:
             cap.close()
+            with self._lock:
+                if self._capture is cap:
+                    self._capture = None
+                if self._thread is threading.current_thread():
+                    self._thread = None
             logger.info("wake word: stream closed")
             if failed and self.on_failure is not None:
                 self.on_failure(self)
@@ -711,13 +750,23 @@ def _release_machine_lock(handle) -> None:
 
 
 def _teardown_locked(close: Callable[[], None]) -> None:
-    """Forget the singleton and run ``close``, always releasing the machine lease (caller holds the lock)."""
+    """Close and forget the singleton (caller holds the lock).
+
+    A reader that could not be interrupted keeps ownership so no second stream
+    can open while it may still be inside PortAudio.
+    """
     global _detector, _detector_owner, _detector_file_lock
     lock_handle = _detector_file_lock
-    _detector = _detector_owner = _detector_file_lock = None
     try:
         close()
-    finally:
+    except BaseException:
+        if _detector is not None and _detector.running:
+            raise
+        _detector = _detector_owner = _detector_file_lock = None
+        _release_machine_lock(lock_handle)
+        raise
+    else:
+        _detector = _detector_owner = _detector_file_lock = None
         _release_machine_lock(lock_handle)
 
 

@@ -1020,7 +1020,11 @@ class TestClassifyApiError:
             ("Error code: 400 - max_tokens must be positive (reasoning is enabled for this model)", False),
             ("invalid request: max_tokens must be at least 1; note reasoning.effort is supported", False),
             ("reasoning temperature must be positive", False),
+            ("reasoning.max_tokens is valid; max_tokens must be positive", False),
+            ("reasoning.max_tokens: valid, but max_tokens must be at least 1", False),
             ("Error code: 400 - {'error': 'reasoning.max_tokens must be positive'}", True),
+            ("'reasoning.max_tokens': must be greater than zero", True),
+            ("reasoning.max_tokens is valid; reasoning.max_tokens must be positive", True),
             ("max_tokens must be positive", False),
         ),
     )

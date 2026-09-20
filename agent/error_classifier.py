@@ -526,10 +526,13 @@ _REASONING_REQUIRED_MARKERS = (
 _REASONING_VALUE_CONSTRAINT_MARKERS = (
     "must be positive", "must be greater than 0", "must be greater than zero", "must be at least 1",
 )
-# A generic ``max_tokens`` value error is about the ordinary output cap.  Only the nested reasoning
-# schema field identifies the value constraint as a rejected reasoning wire control.
-_REASONING_MAX_TOKENS_FIELD = re.compile(
+# Bind the constraint directly to its field: a nearby clause may validate reasoning.max_tokens
+# while rejecting the ordinary output cap instead.
+_REASONING_MAX_TOKENS_VALUE_REJECTION = re.compile(
     r"(?<![\w-])reasoning\s*(?:[._]\s*|\s+)max_tokens(?![\w-])"
+    r"[\"'`]?\s*(?::\s*)?(?:"
+    + "|".join(re.escape(marker) for marker in _REASONING_VALUE_CONSTRAINT_MARKERS)
+    + r")\b"
 )
 
 
@@ -571,18 +574,10 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    reasoning_max_tokens = _REASONING_MAX_TOKENS_FIELD.search(msg)
-    value_constraint_near_reasoning_max_tokens = (
-        reasoning_max_tokens is not None
-        and any(
-            marker in msg[reasoning_max_tokens.end():reasoning_max_tokens.end() + 64]
-            for marker in _REASONING_VALUE_CONSTRAINT_MARKERS
-        )
-    )
     return (
         "unsupported" in near
         or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
-        or value_constraint_near_reasoning_max_tokens
+        or _REASONING_MAX_TOKENS_VALUE_REJECTION.search(msg) is not None
     )
 
 

@@ -120,6 +120,19 @@ def _validate_moa(req: _Request) -> dict[str, Any]:
         return _reject(f"Could not read MoA presets: {exc}")
 
 
+def _is_custom(req: _Request) -> bool:
+    if req.normalized == "custom" or req.normalized.startswith("custom:"):
+        return True
+    if req.base_url and not (
+        base_url_host_matches(req.base_url, "openrouter.ai")
+        or base_url_host_matches(req.base_url, "api.openai.com")
+        or base_url_host_matches(req.base_url, "api.anthropic.com")
+        or base_url_host_matches(req.base_url, "api.x.ai")
+    ):
+        return True
+    return False
+
+
 def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
     if any(ch.isspace() for ch in req.requested):
         return _reject("Model names cannot contain spaces.")
@@ -547,25 +560,21 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
 
 # ── Orchestrator ─────────────────────────────────────────────────────────
 
-def _is_custom(req: _Request) -> bool:
-    return req.normalized == "custom" or req.normalized.startswith("custom:")
-
-
 def _for(*providers: str) -> Callable[[_Request], bool]:
     return lambda req: req.normalized in providers
 
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
-# BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
-# curated-catalog fallback (always decides).
+# BEHAVIOR: moa → OpenRouter preset parse → LM Studio → Ollama native → custom →
+# whitespace reject → codex/xai static → MiniMax → Anthropic native → Anthropic Messages →
+# live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
-    (lambda req: True, _reject_whitespace),
     (_for("openrouter"), _parse_openrouter_preset),
     (_for("lmstudio"), _validate_lmstudio),
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
+    (lambda req: True, _reject_whitespace),
     (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
     (_for("minimax", "minimax-cn"), _validate_minimax),
     (_for("anthropic"), _validate_anthropic),

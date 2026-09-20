@@ -872,3 +872,69 @@ class TestValidateCustomUnreachableFallback:
         # The unreachable-listing wording is unchanged.
         unreachable = self._validate("kimi-k3", "kimi-coding", models=None, api_mode="anthropic_messages")
         assert "do not implement GET /v1/models" in unreachable["message"]
+
+
+# -- validate — whitespace in custom model IDs --
+
+class TestValidateWhitespaceInModelNames:
+    """Whitespace in model names is rejected for standard providers but allowed for custom endpoints."""
+
+    def test_standard_providers_reject_model_names_with_whitespace(self):
+        result = validate_requested_model("claude 3.5 sonnet", "anthropic")
+        assert result["accepted"] is False
+        assert result["message"] == "Model names cannot contain spaces."
+
+    def test_openrouter_rejects_model_names_with_whitespace(self):
+        result = validate_requested_model("anthropic/claude opus 4.6", "openrouter")
+        assert result["accepted"] is False
+        assert result["message"] == "Model names cannot contain spaces."
+
+    def test_custom_provider_accepts_model_with_spaces_from_live_listing(self):
+        probe = {
+            "models": ["my-Claude opus 4.6", "my-gemini 3.1 pro"],
+            "probed_url": "http://localhost:20128/v1/models",
+            "resolved_base_url": "http://localhost:20128/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.probe_api_models", return_value=probe):
+            res = validate_requested_model(
+                "my-Claude opus 4.6",
+                "custom:omniroute",
+                api_key="sk-test",
+                base_url="http://localhost:20128/v1",
+            )
+        assert res["accepted"] is True
+        assert res["recognized"] is True
+
+    def test_custom_provider_soft_accepts_unlisted_model_with_spaces(self):
+        probe = {
+            "models": ["other-model"],
+            "probed_url": "http://localhost:20128/v1/models",
+            "resolved_base_url": "http://localhost:20128/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.probe_api_models", return_value=probe):
+            res = validate_requested_model(
+                "my-unlisted combo model",
+                "custom",
+                api_key="sk-test",
+                base_url="http://localhost:20128/v1",
+            )
+        assert res["accepted"] is True
+        assert res["recognized"] is False
+
+    def test_lmstudio_accepts_loaded_model_with_spaces(self):
+        with patch("hermes_cli.models_local.probe_lmstudio_models", return_value=["Meta Llama 3.1 8B Instruct"]):
+            res = validate_requested_model("Meta Llama 3.1 8B Instruct", "lmstudio")
+        assert res["accepted"] is True
+        assert res["recognized"] is True
+
+    def test_ollama_accepts_model_tag_with_spaces(self):
+        with patch("hermes_cli.models_local.probe_ollama_local_models", return_value=["my model:latest"]):
+            res = validate_requested_model("my model:latest", "ollama", base_url="http://127.0.0.1:11434")
+        assert res["accepted"] is True
+        assert res["recognized"] is True
+
+

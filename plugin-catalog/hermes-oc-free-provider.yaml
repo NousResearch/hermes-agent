@@ -1,7 +1,7 @@
 name: hermes-oc-free-provider
 repo: https://github.com/anpicasso/hermes-oc-free-provider
-sha: 4c8175f541533f2aa8b257d82df65df28e2cf5e7
-description: "Unofficial OpenCode Zen free-model transport for Hermes: discovers the OpenCode model catalog, sends conversation content and tool schemas to OpenCode's third-party inference service, and translates OpenCode-compatible tool calls for local execution by Hermes. Disclosure — prompts, tool schemas, tool results, and other conversation content leave the machine for OpenCode and the selected model provider; model availability, retention, data use, and permission are governed by their current terms."
+sha: 8df4df1023a624f30396f6ba56d8fbc19da25139
+description: "Unofficial OpenCode Zen free-model transport for Hermes: discovers the OpenCode model catalog and bidirectionally translates tool schemas, calls, choices, and replayed history between OpenCode and Hermes while Hermes executes tools locally. Disclosure — prompts, tool schemas, tool results, and other conversation content leave the machine for OpenCode and the selected model provider; model availability, retention, data use, and permission are governed by their current terms."
 maintainer: anpicasso
 tier: community
 category: models

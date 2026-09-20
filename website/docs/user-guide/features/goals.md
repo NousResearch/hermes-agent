@@ -79,9 +79,9 @@ Messaging platforms retain their access rules: `/goal gate add` requires an expl
 
 ## Completion contracts
 
-A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.
+A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, how to pick the next attempt, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.
 
-A contract has five fields, all optional:
+A contract has six fields, all optional:
 
 | Field | Meaning |
 |---|---|
@@ -89,6 +89,7 @@ A contract has five fields, all optional:
 | `verification` | The specific test / command / artifact that *proves* the outcome. |
 | `constraints` | What must not change or regress. |
 | `boundaries` | Which files, dirs, tools, or systems are in scope. |
+| `iteration_policy` | How Hermes should choose what to try next after each attempt. |
 | `stop_when` | The condition under which Hermes should stop and ask for input. |
 
 When a contract is set, both prompts change: the **continuation prompt** tells the agent to target the verification surface and respect the constraints, and the **judge prompt** decides `done` *only when the verification criterion is met with concrete evidence* (a command result, file excerpt, test output) — not a loose "looks done" claim. This directly tightens the most common `/goal` failure mode (premature completion or endless over-continuation on an underspecified objective).
@@ -110,6 +111,7 @@ Hermes expands your one-liner into a full contract via the `goal_judge` auxiliar
 verify: pytest tests/auth passes
 constraints: keep the /login response shape unchanged
 boundaries: only touch services/auth and its tests
+between iterations: record what changed and what the evidence showed
 stop when: a DB schema migration is required
 ```
 

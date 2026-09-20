@@ -981,6 +981,44 @@ class TestBlockedVerdict:
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
 
 
+
+
+def test_parse_contract_iteration_policy_field():
+    """Inline ``iteration:`` / ``between iterations:`` lines populate the sixth contract field."""
+    from hermes_cli.goals import parse_contract
+
+    headline, contract = parse_contract(
+        "Ship the migration\n"
+        "verify: pytest -q passes\n"
+        "between iterations: record what changed, then try the next most likely fix\n"
+        "stop when: a schema change needs sign-off"
+    )
+    assert headline == "Ship the migration"
+    assert contract.verification == "pytest -q passes"
+    assert contract.iteration_policy == "record what changed, then try the next most likely fix"
+    assert contract.stop_when == "a schema change needs sign-off"
+    assert "Iteration policy" in contract.render_block()
+
+
+def test_draft_contract_prompt_declares_iteration_policy():
+    from hermes_cli.goals import DRAFT_CONTRACT_SYSTEM_PROMPT
+
+    assert "six fields" in DRAFT_CONTRACT_SYSTEM_PROMPT
+    assert "iteration_policy" in DRAFT_CONTRACT_SYSTEM_PROMPT
+
+
+def test_iteration_policy_renders_in_continuation_prompt(hermes_home):
+    from hermes_cli.goals import GoalContract, GoalManager
+
+    mgr = GoalManager(session_id="iter-policy-sid")
+    mgr.set("migrate auth", contract=GoalContract(
+        iteration_policy="record evidence, then pick the most likely fix"))
+    assert "- Iteration policy: record evidence" in mgr.next_continuation_prompt()
+    # An empty iteration_policy stays omitted from the rendered block.
+    _, empty = __import__("hermes_cli.goals", fromlist=["parse_contract"]).parse_contract("bare goal")
+    assert "Iteration policy" not in empty.render_block()
+
+
 def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     """GoalManager must borrow the process-wide registry handle for ``state.db`` rather than
     minting a bare ``SessionDB()``: a second writer per profile carries its own token-writer

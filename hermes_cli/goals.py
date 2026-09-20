@@ -237,12 +237,15 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
 # /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal").
 DRAFT_CONTRACT_SYSTEM_PROMPT = (
     "You turn a user's plain-language objective into a structured completion "
-    "contract for an autonomous coding agent. The contract has five fields:\n"
+    "contract for an autonomous coding agent. The contract has six fields:\n"
     "- outcome: the single end state that must be true when done\n"
     "- verification: the specific test / command / artifact that PROVES the "
     "outcome (must be concrete and checkable)\n"
     "- constraints: what must NOT change or regress\n"
     "- boundaries: which files, dirs, tools, or systems are in scope\n"
+    "- iteration_policy: how the agent should choose what to try next after "
+    "each attempt (e.g. record what changed and what evidence it produced, "
+    "then pick the highest-likelihood remaining path)\n"
     "- stop_when: the condition under which the agent should stop and ask "
     "for human input instead of pushing on\n\n"
     "Infer sensible, specific values from the objective and any project "
@@ -252,20 +255,21 @@ DRAFT_CONTRACT_SYSTEM_PROMPT = (
     "empty string for it.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{"outcome": "...", "verification": "...", "constraints": "...", '
-    '"boundaries": "...", "stop_when": "..."}'
+    '"boundaries": "...", "iteration_policy": "...", "stop_when": "..."}'
 )
 
 
 # ── Completion contract ───────────────────────────────────────────────
 
-# The five contract fields, in display order (after OpenAI Codex's "strong goal" guidance: what
-# "done" means, how to prove it, what must not regress, what is in bounds, when to stop and ask).
+# The six contract fields, in display order (after OpenAI Codex's "strong goal" guidance: what
+# "done" means, how to prove it, what must not regress, what is in bounds, how to choose the next
+# attempt, when to stop and ask).
 # A bare free-form goal stays fully supported — empty fields are omitted from every prompt.
-_CONTRACT_FIELDS = ("outcome", "verification", "constraints", "boundaries", "stop_when")
+_CONTRACT_FIELDS = ("outcome", "verification", "constraints", "boundaries", "iteration_policy", "stop_when")
 
 _CONTRACT_LABELS = {
     "outcome": "Outcome", "verification": "Verification", "constraints": "Constraints",
-    "boundaries": "Boundaries", "stop_when": "Stop when blocked",
+    "boundaries": "Boundaries", "iteration_policy": "Iteration policy", "stop_when": "Stop when blocked",
 }
 
 # Inline-input aliases the user may type before a value (`verify: tests pass`, `done when: ...`).
@@ -277,6 +281,8 @@ _CONTRACT_ALIASES = {
     "must not": "constraints", "do not change": "constraints",
     "boundaries": "boundaries", "boundary": "boundaries", "scope": "boundaries",
     "allowed": "boundaries", "files": "boundaries",
+    "iteration policy": "iteration_policy", "iteration": "iteration_policy",
+    "between iterations": "iteration_policy", "next step policy": "iteration_policy",
     "stop when": "stop_when", "stop_when": "stop_when", "blocked": "stop_when",
     "stop if blocked": "stop_when", "give up when": "stop_when",
 }
@@ -289,6 +295,7 @@ class GoalContract:
     verification: str = ""
     constraints: str = ""
     boundaries: str = ""
+    iteration_policy: str = ""
     stop_when: str = ""
 
     def is_empty(self) -> bool:

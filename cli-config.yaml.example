@@ -38,6 +38,16 @@ runtime:
   nofile_soft_limit: 4096
 
 # =============================================================================
+# Persistent Goals
+# =============================================================================
+# When enabled, the first eligible execution request in a session automatically
+# starts a drafted /goal loop. Explicit /goal commands and sessions with an existing
+# goal are unchanged. Default: false (opt-in because the first eligible request
+# can trigger continuation turns and an auxiliary contract-drafting call).
+goals:
+  auto_start: false
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

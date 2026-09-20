@@ -482,6 +482,17 @@ def _output_tail(session: "ProcessSession", n: int) -> str:
     return strip_ansi(session.output_buffer[-n:])
 
 
+def _completion_output(session: "ProcessSession") -> dict:
+    """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
+
+    Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
+    or one-shot session cannot receive notifications and polls instead, so the polled result must
+    carry the same whole reply and the same cut marker (#115334)."""
+    limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
+    cut = len(session.output_buffer) - limit
+    return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -1451,8 +1462,6 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
-            limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
-            cut = len(session.output_buffer) - limit
             notification = {
                 "type": "completion",
                 "session_id": session.id,
@@ -1462,9 +1471,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
-                "output": _output_tail(session, limit),
                 # A consumer that relays the output (a bot DM's reply) must know it is not whole.
-                **({"output_cut": cut} if cut > 0 else {}),
+                **_completion_output(session),
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
@@ -1912,10 +1920,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     @staticmethod
     def _exit_snapshot(session: ProcessSession, status: str) -> dict:
-        """Result dict for an exited session: exit metadata + last 2000 chars of output."""
+        """Result dict for an exited session: exit metadata + the completion-sized output tail."""
         return {
             "status": status, "command": session.command,
-            **ProcessRegistry._exit_fields(session), "output": _output_tail(session, 2000)}
+            **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
@@ -1957,7 +1965,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # Capture output, mark consumed, THEN expose ``exited`` to watcher tasks —
             # closes the delayed-notification race without losing the transcript.
             with session._lock:
-                output = _output_tail(session, 2000)
+                output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 session.exited = True
@@ -1973,7 +1981,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
-                "termination_source": session.termination_source, "output": output}
+                "termination_source": session.termination_source, **output}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -2006,11 +2014,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 with session._lock:
                     session.exited = True
                     session.exit_code = None
-                    output = _output_tail(session, 2000)
+                    output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 self._move_to_finished(session)
-                return {"status": "already_exited", "exit_code": session.exit_code, "output": output}
+                return {"status": "already_exited", "exit_code": session.exit_code, **output}
             self._terminate_host_pid(session.pid, session.host_start_time)
         else:
             return {

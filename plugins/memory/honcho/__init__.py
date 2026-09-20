@@ -28,6 +28,7 @@ from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.session_peers import assistant_peer_id_for, sanitize_peer_id
 from plugins.memory.honcho.session_context import usable_honcho_summary
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
+from plugins.memory.honcho.turn_guard import guard_user_turn
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -782,7 +783,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
+        turn_limit = getattr(self._config, "turn_max_chars", 8000) if self._config else 8000
+        clean_user_content = guard_user_turn(sanitize_context(user_content or "").strip(), turn_limit)
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
         # Skip only when the whole turn is empty: an interrupted or tool-only turn can have
         # an empty assistant side, and the user's message must still be persisted.

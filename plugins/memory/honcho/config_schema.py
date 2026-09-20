@@ -121,6 +121,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # — Limits —
         _field("messageMaxChars", "Message max chars", KIND_NUMBER, "Max chars per message sent to Honcho.",
                placeholder="25000", group="Limits"),
+        _field("turnMaxChars", "Turn max chars", KIND_NUMBER,
+               "Max chars of one user turn stored in memory; attachments are stubbed first. 0 disables.",
+               placeholder="8000", group="Limits"),
         # — Observation —
         _field("observationMode", "Observation mode", KIND_SELECT, "Per-peer observation preset. Directional observes all directions; unified shares one view.",
                default="directional", options=_opts(("directional", "Directional"), ("unified", "Unified")), group="Observation"),

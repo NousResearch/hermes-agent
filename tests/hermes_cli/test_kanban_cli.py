@@ -72,6 +72,22 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_edit_updates_documented_task_fields(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="old title", body="old body", priority=2)
+
+    output = kc.run_slash(
+        f"edit {task_id} --title 'new title' --body 'new body' --priority 70"
+    )
+
+    assert f"Edited {task_id}" in output
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert (task.title, task.body, task.priority) == ("new title", "new body", 70)
+    assert any(event.kind == "reprioritized" for event in events)
+
+
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         worker = kb.create_task(conn, title="worker")

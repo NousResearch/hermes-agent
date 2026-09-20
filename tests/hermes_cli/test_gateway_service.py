@@ -432,6 +432,45 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+    @pytest.mark.parametrize(("suffix", "name"), [("", "hermes-gateway"), ("work", "hermes-gateway-work")])
+    def test_launchd_plist_launches_through_named_wrapper_on_macos(self, tmp_path, monkeypatch, suffix, name):
+        """Login Items & Extensions names a LaunchAgent after ProgramArguments[0]'s basename, so the
+        plist must start the stderr wrapper through a ``hermes-gateway`` exec script (written beside
+        the venv python, suffixed per profile like the label), never the bare interpreter that reads
+        as an anonymous "python"."""
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        python = venv_bin / "python"
+        python.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python))
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: suffix)
+
+        args = plistlib.loads(gateway_cli.generate_launchd_plist().encode())["ProgramArguments"]
+
+        launcher = venv_bin / name
+        assert args[:3] == [str(launcher), "-m", "hermes_cli.stderr_timestamp"]
+        assert launcher.stat().st_mode & 0o111
+        assert 'exec "$(dirname "$0")/python" "$@"' in launcher.read_text()
+
+    def test_launchd_plist_keeps_bare_python_when_wrapper_name_is_foreign(self, tmp_path, monkeypatch):
+        """A pre-existing ``hermes-gateway`` that Hermes did not write (e.g. a console script) must
+        be left untouched, and the plist falls back to the interpreter itself."""
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        python = venv_bin / "python"
+        python.write_text("#!/bin/sh\n")
+        foreign = venv_bin / "hermes-gateway"
+        foreign.write_text("#!/bin/sh\necho someone else's entry point\n")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python))
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+
+        args = plistlib.loads(gateway_cli.generate_launchd_plist().encode())["ProgramArguments"]
+
+        assert args[0] == str(python)
+        assert foreign.read_text() == "#!/bin/sh\necho someone else's entry point\n"
+
 
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only

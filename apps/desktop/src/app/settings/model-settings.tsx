@@ -873,12 +873,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-destructive">
       <span>{error}</span>
       {skewRestart && (
-        <Button
-          disabled={restartingBackend}
-          onClick={() => void recycleStaleBackend()}
-          size="sm"
-          variant="textStrong"
-        >
+        <Button disabled={restartingBackend} onClick={() => void recycleStaleBackend()} size="sm" variant="textStrong">
           {restartingBackend && <Loader2 className="size-3.5 animate-spin" />}
           {restartingBackend ? m.restartingBackend : m.restartBackend}
         </Button>
@@ -995,7 +990,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                   {t.shell.modelOptions.fast}
                   <Switch
                     checked={fastOn}
-                    onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
+                    onCheckedChange={checked =>
+                      void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
+                    }
                     size="xs"
                   />
                 </label>
@@ -1098,7 +1095,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
                               value={auxDraft.model}
                             >
-                              <SelectTrigger aria-label={`${copy.label} model`} className={cn('min-w-48', CONTROL_TEXT)}>
+                              <SelectTrigger
+                                aria-label={`${copy.label} model`}
+                                className={cn('min-w-48', CONTROL_TEXT)}
+                              >
                                 <SelectValue placeholder={m.model} />
                               </SelectTrigger>
                               <SelectContent>
@@ -1158,9 +1158,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                             {' · '}
                             {current.reasoning_effort === 'none'
                               ? `${m.reasoning} ${m.reasoningOff}`
-                              : (isReasoningEffort(current.reasoning_effort)
-                                  ? t.shell.modelOptions[current.reasoning_effort]
-                                  : current.reasoning_effort)}
+                              : isReasoningEffort(current.reasoning_effort)
+                                ? t.shell.modelOptions[current.reasoning_effort]
+                                : current.reasoning_effort}
                           </span>
                         )}
                       </span>

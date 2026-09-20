@@ -72,9 +72,16 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
     ], stdout=subprocess.PIPE, text=True, env=env)
     owner_identity = json.loads(owner.stdout.readline())
     processes = []
+    def _ready_record():
+        try:
+            return json.loads(ready.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
     try:
-        _wait_for(ready.exists)
-        record = json.loads(ready.read_text())
+        _wait_for(lambda: _ready_record() is not None)
+        record = _ready_record()
+        assert record is not None
         processes = [psutil.Process(record[k]) for k in ("router", "child")]
         if case != "live-owner":
             owner.wait(timeout=10)

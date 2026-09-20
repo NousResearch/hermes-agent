@@ -433,37 +433,77 @@ def test_warns_when_no_auxiliary_provider(mock_get_client):
     assert agent._compression_warning is not None
 
 
-def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
-    """Primary compression provider can be down if configured fallback works."""
+def test_configured_fallback_selected_by_feasibility_is_used_for_summary_dispatch():
+    """A preflight fallback remains the summary route even if the configured primary resolves later."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+    )
     fallback_client = MagicMock()
-    fallback_client.base_url = "https://chatgpt.com/backend-api/codex"
-    fallback_client.api_key = "codex-oauth-token"
+    fallback_client.base_url = "https://integrate.api.nvidia.com/v1"
+    fallback_client.api_key = "nvidia-test-key"
+    fallback_client._hermes_fallback_destination = (
+        "nvidia", "https://integrate.api.nvidia.com/v1", "chat_completions",
+        "nvidia/nemotron-3-super-120b-a12b",
+    )
+    fallback_entry = {
+        "provider": "nvidia",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "nvidia-test-key",
+        "timeout": 90,
+    }
+    dispatched = {}
+
+    def fake_call_llm(**kwargs):
+        dispatched.update(kwargs)
+        return {"choices": [{"message": {"content": "retained fallback summary"}}]}
 
     messages = []
     agent._emit_status = lambda msg: messages.append(msg)
 
     with patch(
         "agent.auxiliary_client._resolve_task_provider_model",
-        return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None),
+        return_value=("nous", "stepfun/step-3.7-flash:free", None, None, None),
     ), patch(
         "agent.auxiliary_client.get_text_auxiliary_client",
         return_value=(None, None),
     ), patch(
+        "agent.auxiliary_client._get_auxiliary_task_config",
+        return_value={"fallback_chain": [fallback_entry]},
+    ), patch(
+        "agent.auxiliary_client._fallback_entry_api_key",
+        return_value="nvidia-test-key",
+    ), patch(
         "agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
-        return_value=(fallback_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)"),
+        return_value=(
+            fallback_client,
+            "nvidia/nemotron-3-super-120b-a12b",
+            "fallback_chain[0](nvidia)",
+        ),
     ) as mock_fallback, patch(
         "agent.model_metadata.get_model_context_length",
         return_value=200_000,
-    ) as mock_ctx_len:
+    ) as mock_ctx_len, patch(
+        "agent.context_compressor.call_llm",
+        side_effect=fake_call_llm,
+    ):
         agent._check_compression_model_feasibility()
+        summary = agent.context_compressor._call_summary_llm("summarize", 0.0)
 
+    assert summary == "retained fallback summary"
     assert messages == []
     assert agent._compression_warning is None
-    mock_fallback.assert_called_once_with("compression", "ollama-cloud")
+    mock_fallback.assert_called_once_with("compression", "nous")
     mock_ctx_len.assert_called_once()
-    assert mock_ctx_len.call_args.args == ("gpt-5.4-mini",)
-    assert mock_ctx_len.call_args.kwargs["provider"] == "openai-codex"
+    assert mock_ctx_len.call_args.args == ("nvidia/nemotron-3-super-120b-a12b",)
+    assert mock_ctx_len.call_args.kwargs["provider"] == "nvidia"
+    assert dispatched["provider"] == "nvidia"
+    assert dispatched["model"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert dispatched["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert dispatched["api_key"] == "nvidia-test-key"
+    assert dispatched["api_mode"] == "chat_completions"
+    assert dispatched["timeout"] == 90
 
 
 

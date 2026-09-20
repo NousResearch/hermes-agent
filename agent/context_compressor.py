@@ -2658,6 +2658,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.last_prompt_tokens = self.last_completion_tokens = 0
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
+        # Set by the feasibility probe when the configured primary cannot build a client. The summary
+        # dispatch must keep that proven route instead of independently resolving the failed primary again.
+        self._feasibility_summary_route: Optional[Dict[str, Any]] = None
         self._session_db: Any = None
         self._session_id: str = ""
         # Per-session state (also reset by /new, /reset and session end).
@@ -3515,6 +3518,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
+        if self._feasibility_summary_route:
+            call_kwargs.update(
+                {
+                    field: self._feasibility_summary_route[field]
+                    for field in _PINNED_ROUTE_FIELDS
+                    if self._feasibility_summary_route.get(field) not in (None, "")
+                }
+            )
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.

@@ -2632,10 +2632,12 @@ def _relay_sync_stream(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
 
-    kwargs = bypass_chat_sdk_request_transform(prepare_chat_messages(client, kwargs), client)
+    kwargs = prepare_chat_messages(client, kwargs)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
+    # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
+    # rewritten) the real conversation; hoisting it here would hand Relay an empty one.
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
@@ -6865,14 +6867,15 @@ def _create_with_progress_once(
     # reset the compression inactivity fence, or a zero-output attempt runs to the
     # total ceiling instead of idling out (#114938). Progress ticks only for
     # substantive stream payloads or a completed usable response.
+    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
-        response = client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
+        response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
-        chunks = client.chat.completions.create(**bypass_chat_sdk_request_transform(stream_kwargs, client))
+        chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
         # Genuine provider failures aren't streaming's fault — surface unchanged so the
         # recovery chains see the same error as a plain call.
@@ -6884,7 +6887,7 @@ def _create_with_progress_once(
         logger.debug("Auxiliary %s: streamed request failed (%s); retrying non-streaming",
                      task or "call", exc)
         _notify_aux_dispatch()
-        response = client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
+        response = client.chat.completions.create(**kwargs)
         _notify_aux_provider_response()
         return response
     # Some shims (MoA quiet mode, defensive adapters) return a complete response despite
@@ -7090,14 +7093,15 @@ async def _acreate_with_progress(
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
     _notify_aux_dispatch()
     # Same contract as the sync twin (#114938): dispatch alone is not progress.
+    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
-        response = await client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
+        response = await client.chat.completions.create(**kwargs)
         if not _async_client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
-        chunks = await client.chat.completions.create(**bypass_chat_sdk_request_transform(stream_kwargs, client))
+        chunks = await client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
         # Only a rejected stream NEGOTIATION falls back to a plain call (mirrors the sync wrapper); a
         # failure mid-consumption below reaches the classified recovery ladder instead of silently
@@ -7108,7 +7112,7 @@ async def _acreate_with_progress(
         logger.debug("Auxiliary %s: streamed async request failed (%s); retrying non-streaming",
                      task or "call", exc)
         _notify_aux_dispatch()
-        response = await client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
+        response = await client.chat.completions.create(**kwargs)
         _notify_aux_provider_response()
         return response
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True

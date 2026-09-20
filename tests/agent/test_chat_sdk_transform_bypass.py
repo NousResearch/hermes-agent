@@ -149,3 +149,28 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     assert seen[0]["messages"] == [] and seen[0]["tools"] == []
     assert seen[0]["extra_body"]["messages"] == body["messages"]
     assert seen[0]["extra_body"]["tools"] == body["tools"]
+
+
+def test_relay_stream_path_shows_relay_the_full_conversation(monkeypatch):
+    """On the Relay-managed stream path the bypass must run INSIDE the provider callback: Relay's
+    tracing/intercepts see the real ``messages`` while the SDK still gets only the placeholder."""
+    from agent import auxiliary_client, relay_llm
+
+    seen = _capture_sdk_create(monkeypatch)
+    client = _Recorder().client
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 4096}], "stream": True}
+    relay_saw: list[dict] = []
+
+    def fake_stream_current(request, provider_call, **_kw):
+        relay_saw.append(dict(request))
+        return provider_call(request)
+
+    monkeypatch.setattr(relay_llm, "stream_current", fake_stream_current)
+    monkeypatch.setattr(
+        auxiliary_client, "_relay_auxiliary_metadata", lambda **_kw: ("openrouter", "m", {}))
+
+    auxiliary_client._relay_sync_stream(client, dict(body))
+
+    assert relay_saw[0]["messages"] == body["messages"]
+    assert seen[0]["messages"] == []
+    assert seen[0]["extra_body"]["messages"] == body["messages"]

@@ -4,12 +4,13 @@ A quota-exhausted provider answers with an explicit ``retry after <N>s`` (Codex 
 ``AuthError`` from ``hermes_cli.auth_codex._codex_quota_exhausted_error``). When the whole
 fallback chain is unavailable, re-firing on cadence is guaranteed to fail identically until
 the window reopens — every fire is a usage probe plus a delivered failure alert. The failing
-run's alert says the job is held; ``mark_job_run`` then parks ``next_run_at`` at the first
-scheduled occurrence after the window and stamps ``quota_hold_until`` so the stale-error
-re-arm (``cron.jobs._job_is_stale_error_recurring``) does not pull the job back early.
+run's alert says the job is held; ``mark_job_run`` then parks ``next_run_at`` at the recovery
+boundary (or the first legal occurrence after it, when several fall inside the window) and
+stamps ``quota_hold_until`` so the stale-error re-arm
+(``cron.jobs._job_is_stale_error_recurring``) does not pull the job back early.
 
-Mirror of ``cron/unreachable_retry.py`` (which pulls ``next_run_at`` EARLIER); this one pushes
-it LATER. Any run that reaches the model clears the marker.
+Complement to ``cron/unreachable_retry.py``: this one moves ``next_run_at`` out of a known
+closed provider window. Any run that reaches the model clears the marker.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ logger = logging.getLogger("cron.scheduler")
 
 # Persisted while a hold is active: ISO instant the job was parked at.
 STATE_KEY = "quota_hold_until"
+SCHEDULE_EXPR_KEY = "quota_hold_cron_expr"
 
 # The provider's remaining seconds were measured when the probe ran; by the time the run is
 # recorded a little wall clock has passed, so land clearly past the boundary.
@@ -64,29 +66,56 @@ def hold_active(job: Dict[str, Any], now: Optional[datetime] = None) -> bool:
 
 def clear_state(job: Dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
+    job.pop(SCHEDULE_EXPR_KEY, None)
 
 
-def plan_hold(job: Dict[str, Any], hold_seconds: float) -> bool:
+def is_recovery_fire(job: Dict[str, Any], next_run: str) -> bool:
+    """True for the exact off-lattice cron fire parked by ``plan_hold``.
+
+    The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
+    exception: edited schedules must still re-anchor without firing.
+    """
+    schedule = job.get("schedule") or {}
+    return (
+        schedule.get("kind") == "cron"
+        and job.get(STATE_KEY) == next_run
+        and job.get(SCHEDULE_EXPR_KEY) == schedule.get("expr")
+    )
+
+
+def plan_hold(
+    job: Dict[str, Any], hold_seconds: float, *, recover_consumed_fire: bool = False,
+) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's natural
-    ``next_run_at`` for a failed run. Parks a recurring job at its first occurrence after the
-    provider window when that is later than the natural one. Returns True when parked."""
+    ``next_run_at`` for a failed run. A scheduled sparse cron may retry its consumed fire at the
+    recovery boundary; manual runs keep the natural schedule. Otherwise coalesce fires through
+    the closed window. Returns True when parked."""
     from cron.jobs import _parse_aware, compute_next_run
 
     schedule = job.get("schedule") or {}
-    if schedule.get("kind") not in {"cron", "interval"} or job.get("state") == "paused":
+    kind = schedule.get("kind")
+    if kind not in {"cron", "interval"} or job.get("state") == "paused":
         clear_state(job)
         return False
     window_end = _hermes_now() + timedelta(seconds=float(hold_seconds) + HOLD_SLACK_SECONDS)
     natural_next = _parse_aware(job.get("next_run_at"))
-    if natural_next is not None and natural_next >= window_end:
-        clear_state(job)
-        return False
-    if schedule.get("kind") == "interval":
+    if kind == "interval":
+        if natural_next is not None and natural_next >= window_end:
+            # No interval occurrence is blocked: its natural next run is already after recovery.
+            clear_state(job)
+            return False
         parked = window_end.isoformat()
+        job.pop(SCHEDULE_EXPR_KEY, None)
     else:
-        # First LEGAL cron occurrence after the window; parking at the boundary would fire at a
-        # time the expression excludes.
-        parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
+        if natural_next is not None and natural_next >= window_end:
+            if not recover_consumed_fire:
+                clear_state(job)
+                return False
+            parked = window_end.isoformat()
+        else:
+            # Coalesce cron occurrences inside the closed window to the first legal instant after it.
+            parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
+        job[SCHEDULE_EXPR_KEY] = schedule.get("expr")
     job["next_run_at"] = parked
     job[STATE_KEY] = parked
     logger.warning(
@@ -104,6 +133,6 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
     hours = float(hold_seconds) / 3600.0
     return (
         f"\nThe provider's usage window is closed for about {hours:.1f}h. This job is held "
-        f"until its first scheduled run after {window_end.strftime('%Y-%m-%d %H:%M %Z')} — "
-        "no further alerts until then."
+        f"through {window_end.strftime('%Y-%m-%d %H:%M %Z')} and resumes at the first safe "
+        "opportunity afterwards; no further alerts are sent while the provider is unavailable."
     )

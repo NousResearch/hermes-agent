@@ -491,8 +491,8 @@ def _apply_dynamic_schemas(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, An
 _TOOL_SEARCH_LISTING_FORMS = {
     "full": "catalog listing embedded",
     "names": "names-only listing embedded",
-    "mixed": "listing embedded (oversized servers summarized)",
-    "groups": "server summary embedded (search-only discovery)",
+    "mixed": "listing embedded (oversized groups summarized)",
+    "groups": "group summary embedded (search-only discovery)",
     "none": "no listing (search-only)",
 }
 

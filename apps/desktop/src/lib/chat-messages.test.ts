@@ -190,7 +190,11 @@ describe('toChatMessages', () => {
     const [plain, , replied, assistant] = toChatMessages([
       { role: 'user', content: `${note}\n\nCreate a project plan for Q4`, timestamp: 1 },
       { role: 'assistant', content: 'ok', timestamp: 2 },
-      { role: 'user', content: `[Replying to: "Create a project plan for Q4"]\n\n${note}\n\nyes do that`, timestamp: 3 },
+      {
+        role: 'user',
+        content: `[Replying to: "Create a project plan for Q4"]\n\n${note}\n\nyes do that`,
+        timestamp: 3
+      },
       { role: 'assistant', content: note, timestamp: 4 }
     ])
 
@@ -1445,7 +1449,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,

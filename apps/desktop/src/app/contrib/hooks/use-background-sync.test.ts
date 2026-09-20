@@ -54,7 +54,10 @@ const { refreshProjectTree } = await import('@/store/projects')
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
 
-function transcript(answer: string, sessionId = ACTIVE_STORED_ID): Awaited<ReturnType<typeof getLatestSessionMessages>> {
+function transcript(
+  answer: string,
+  sessionId = ACTIVE_STORED_ID
+): Awaited<ReturnType<typeof getLatestSessionMessages>> {
   return {
     messages: [
       { content: 'question', role: 'user', timestamp: 1 },

@@ -39,7 +39,7 @@ def test_http_catalogue_lineage_and_profile_rows(client):
         response = client.put(f"/api/sessions/tip/tags?profile={profile}", json={"tag": tag, "assigned": True})
         assert response.status_code == 200, response.text
     for profile, tags in [("default", ["A", "A2"]), ("work", ["B"]), ("default", ["A", "A2"])]:
-        assert client.get(f"/api/sessions/tags?profile={profile}").json() == {"tags": tags}
+        assert client.get(f"/api/sessions/tags?profile={profile}").json() == {"tags": ["A", "A2", "B"]}
         rows = client.get(f"/api/sessions?profile={profile}").json()["sessions"]
         assert rows[0]["tags"] == tags
         rows = client.get(f"/api/profiles/sessions?profile={profile}").json()["sessions"]
@@ -47,7 +47,7 @@ def test_http_catalogue_lineage_and_profile_rows(client):
         assert client.get(f"/api/sessions/tip?profile={profile}").json()["tags"] == tags
     response = client.put("/api/sessions/root/tags", json={"tag": "A", "assigned": False})
     assert response.json() == {"tags": ["A2"]}
-    assert client.get("/api/sessions/tags").json() == {"tags": ["A", "A2"]}
+    assert client.get("/api/sessions/tags").json() == {"tags": ["A", "A2", "B"]}
 
 
 def test_http_search_preserves_tags_in_id_and_content_results(client, monkeypatch):

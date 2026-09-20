@@ -2,14 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { requestGatewayForAgent } from '@/store/gateway'
-import { $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
 export function useTagCatalogue(open: boolean) {
   const connection = useStore($connection)
-  const scope = useStore($profileScope)
-  const profiles = useStore($profiles)
   const sessions = useStore($sessions)
   const cron = useStore($cronSessions)
   const messaging = useStore($messagingSessions)
@@ -18,18 +15,15 @@ export function useTagCatalogue(open: boolean) {
   const routes = new Map<string, [string | null, string]>()
 
   const add = (connectionId: string | null, profile: string) => {
-    const route: [string | null, string] = [connectionId, normalizeProfileKey(profile)]
+    // Catalogue scope is the server, not the selected profile or loaded rows.
+    const key = JSON.stringify(connectionId)
 
-    if (scope === ALL_PROFILES || route[1] === scope) {
-      routes.set(JSON.stringify(route), route)
+    if (!routes.has(key)) {
+      routes.set(key, [connectionId, profile])
     }
   }
 
   add(primary, connection?.profile || 'default')
-
-  if (scope === ALL_PROFILES) {
-    profiles.forEach(profile => add(primary, profile.name))
-  }
 
   for (const row of [...sessions, ...cron, ...messaging, ...archived]) {
     add(row.connection_id ?? primary, row.profile || 'default')

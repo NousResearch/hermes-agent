@@ -35,6 +35,20 @@ def homes(tmp_path, monkeypatch):
         registry.close_all()
 
 
+def test_empty_profile_reuses_catalogue_without_assignment_leaks(homes, monkeypatch):
+    launch, other = homes
+    assert call("session.tags.list", profile="work")["result"] == {"tags": []}
+    call("session.tags.set", session_id="shared-id", tag="Reusable", assigned=True)
+    assert call("session.tags.list", profile="work")["result"] == {"tags": ["Reusable"]}
+    assert call("session.list", profile="work")["result"]["sessions"][0]["tags"] == []
+    call("session.tags.set", session_id="shared-id", profile="work", tag="Reusable", assigned=True)
+    call("session.tags.set", session_id="shared-id", tag="Reusable", assigned=False)
+    registry.close_all()
+    monkeypatch.setattr(server, "_db", None)
+    assert call("session.tags.list", profile="work")["result"] == {"tags": ["Reusable"]}
+    assert call("session.list", profile="work")["result"]["sessions"][0]["tags"] == ["Reusable"]
+
+
 def test_profile_a_b_a_catalogue_and_rows_survive_reconnect(homes, monkeypatch):
     launch, other = homes
     for profile, tag in [(None, "A"), ("work", "B"), (None, "A2")]:
@@ -44,7 +58,7 @@ def test_profile_a_b_a_catalogue_and_rows_survive_reconnect(homes, monkeypatch):
     registry.close_all()
     monkeypatch.setattr(server, "_db", None)
     for profile, tags in [(None, ["A", "A2"]), ("work", ["B"]), (None, ["A", "A2"])]:
-        assert call("session.tags.list", profile=profile)["result"] == {"tags": tags}
+        assert call("session.tags.list", profile=profile)["result"] == {"tags": ["A", "A2", "B"]}
         rows = call("session.list", profile=profile)["result"]["sessions"]
         assert rows[0]["tags"] == tags
         titled = call("session.list", profile=profile, title="Example")["result"]["sessions"]
@@ -52,10 +66,10 @@ def test_profile_a_b_a_catalogue_and_rows_survive_reconnect(homes, monkeypatch):
     # A live runtime id selects its owning profile, even without explicit profile.
     monkeypatch.setitem(server._sessions, "runtime", {"session_key": "shared-id", "profile_home": str(other), "agent": None})
     assert call("session.tags.set", session_id="runtime", tag="Live", assigned=True)["result"] == {"tags": ["B", "Live"]}
-    assert call("session.tags.list")["result"] == {"tags": ["A", "A2"]}
+    assert call("session.tags.list")["result"] == {"tags": ["A", "A2", "B", "Live"]}
     assert call("session.tags.set", session_id="runtime", profile="default", tag="Wrong", assigned=True)["error"]["code"] == 4001
     assert call("session.tags.set", session_id="shared-id", tag="A", assigned=False)["result"] == {"tags": ["A2"]}
-    assert call("session.tags.list")["result"] == {"tags": ["A", "A2"]}
+    assert call("session.tags.list")["result"] == {"tags": ["A", "A2", "B", "Live"]}
 
     db = server._get_db()
     db.end_session("shared-id", "compression")

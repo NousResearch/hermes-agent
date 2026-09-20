@@ -1,4 +1,4 @@
-"""Persistent session-tag RPCs (catalogue and assignments share the profile DB)."""
+"""Installation-wide tag discovery with profile-owned assignments."""
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -7,12 +7,13 @@ _profile_scoped = _registry.profile_scoped
 
 
 @method("session.tags.list")
-@_profile_scoped
 def _tags_list(rid, params):
-    with _profile_db(params) as db:
-        if db is None:
-            return _db_unavailable_error(rid, code=5007)
-        return _ok(rid, {"tags": db.list_session_tags()})
+    from hermes_state_tags import list_installation_session_tags
+    try:
+        tags = list_installation_session_tags(Path(_hermes_home), params.get("profile"))
+    except (ValueError, FileNotFoundError) as exc:
+        return _err(rid, 4064, str(exc))
+    return _ok(rid, {"tags": tags})
 
 
 @method("session.tags.set")

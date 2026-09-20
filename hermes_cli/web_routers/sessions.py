@@ -485,9 +485,16 @@ async def get_session_stats(profile: Optional[str] = None):
 
 @manage_router.get("/api/sessions/tags")
 async def get_session_tags(profile: Optional[str] = None):
-    """Persistent profile catalogue, including tags without current assignments."""
-    return await asyncio.to_thread(
-        _with_db, profile, lambda db: {"tags": db.list_session_tags()}, read_only=True)
+    """Installation catalogue; the optional profile is still validated."""
+    from hermes_constants import get_hermes_home
+    from hermes_state_tags import list_installation_session_tags
+    try:
+        tags = await asyncio.to_thread(list_installation_session_tags, get_hermes_home(), profile)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"tags": tags}
 
 
 @manage_router.put("/api/sessions/{session_id}/tags")

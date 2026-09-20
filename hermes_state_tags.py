@@ -1,6 +1,8 @@
 """Profile-local tag catalogue and compression-root assignments for SessionDB."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import unicodedata
 
 from hermes_state_common import _sql_json_extract
@@ -48,6 +50,40 @@ def _tag_roots(conn, session_ids: list[str]) -> dict[str, str]:
         """, ids).fetchall()
         roots.update((row[0], row[1]) for row in rows)
     return roots
+
+
+def list_installation_session_tags(home: Path, profile: str | None = None) -> list[str]:
+    """Read the installation catalogue without creating/migrating sibling stores.
+
+    API profile visibility is installation-wide (the same live-profile enumeration
+    as profiles.list); assignment writes still use only the owning SessionDB.
+    Anchor discovery to the supplied home, never the host user's default home.
+    """
+    from hermes_cli.profiles import _iter_named_profile_dirs, normalize_profile_name, validate_profile_name
+    from hermes_state import SessionDB
+
+    home = Path(home).resolve()
+    base = os.environ.get("HERMES_BASE_HOME", "").strip()
+    root = Path(base).expanduser().resolve() if base else (home.parent.parent if home.parent.name == "profiles" else home)
+    if home != root and home.parent != root / "profiles":
+        raise ValueError("profile home is outside the installation")
+    homes = [root, *_iter_named_profile_dirs(profiles_root=root / "profiles")]
+    homes = [candidate for candidate in homes if candidate.resolve().is_relative_to(root)]
+    if profile:
+        name = normalize_profile_name(profile.strip())
+        validate_profile_name(name)
+        requested = root if name == "default" else root / "profiles" / name
+        if requested not in homes or not requested.is_dir():
+            raise FileNotFoundError(f"Profile '{profile}' does not exist.")
+    tags: set[str] = set()
+    for profile_home in homes:
+        path = (profile_home / "state.db").resolve()
+        # Symlinked homes/databases must not escape the installation boundary.
+        if not path.is_relative_to(root) or not path.is_file():
+            continue
+        with SessionDB(path, read_only=True) as db:
+            tags.update(db.list_session_tags())
+    return sorted(tags)
 
 
 class SessionTagsMixin:

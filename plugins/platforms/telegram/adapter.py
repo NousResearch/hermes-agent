@@ -49,7 +49,7 @@ def _consume_abandoned_task(task: asyncio.Task) -> None:
         logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
 
 
-async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None, label: str = "telegram-init"):
+async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None, label: str = "telegram"):
     """Wall-clock deadline that survives a blocked loop / cancellation-shielded PTB+httpcore init.
 
     ``on_abandon`` runs detached so an abandoned initialize() can't leak an httpx pool. Raises
@@ -2945,7 +2945,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # On timeout the (possibly shielded) initialize() task is abandoned; release the half-built
                 # app's httpx client so it isn't leaked across the ladder.
                 await _await_with_thread_deadline(
-                    self._app.initialize(), timeout=_init_timeout, on_abandon=lambda app=self._app: _shutdown_abandoned_app(app))
+                    self._app.initialize(), timeout=_init_timeout, on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
+                    label="telegram-init")
                 break
             except asyncio.TimeoutError:
                 rebuild_app = True

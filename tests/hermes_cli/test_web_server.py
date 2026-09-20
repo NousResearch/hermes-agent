@@ -177,6 +177,28 @@ class TestReloadEnv:
             assert known_key not in os.environ
             assert count >= 1
 
+    def test_does_not_clobber_a_resolved_secret_source_value(self, tmp_path, monkeypatch):
+        """A raw .env placeholder for a var an external secret source (Bitwarden/1Password)
+        already resolved must not stick after reload_env() — the same clobber
+        load_hermes_dotenv() fixed for startup (#74265), but via the CLI `/reload` /
+        `reload.env` RPC path instead."""
+        import hermes_cli.env_loader as env_loader
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("VAULT_SECRET=__BITWARDEN_MANAGED__\n", encoding="utf-8")
+        home_key = str(tmp_path.resolve())
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_RESTORE_BY_HOME, home_key, {"VAULT_SECRET": "sk-resolved-by-bitwarden"}
+        )
+        os.environ["VAULT_SECRET"] = "sk-resolved-by-bitwarden"
+
+        with patch.dict(
+            reload_env.__globals__, {"get_env_path": lambda: env_file, "get_hermes_home": lambda: tmp_path}
+        ):
+            reload_env()
+            assert os.environ["VAULT_SECRET"] == "sk-resolved-by-bitwarden"
+        os.environ.pop("VAULT_SECRET", None)
+
 
 # ---------------------------------------------------------------------------
 # redact_key tests

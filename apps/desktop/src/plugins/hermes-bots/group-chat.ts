@@ -894,15 +894,20 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     durable[name] = {
       log: room.log,
       watermarks: room.watermarks || {},
+      // #93129/#117472: sticky holds + holdDetection kill switch.
+      // updateGroupChat's inline durable map already kept holds; this sync
+      // path must not strip them (or the opt-out).
+      holds: room.holds || {},
+      holdDetection: room.holdDetection,
       sessions: room.sessions || {},
+      sessionOwners: room.sessionOwners || {},
       stranded: room.stranded || {},
       externalCursors: room.externalCursors || {},
       members: Array.isArray(room.members) ? room.members : [],
       // Immutable room identity: without this, a room merged in via the
-      // remote-sync path (the only caller of this function) loses its
-      // roomId on the next cold hydrate and falls back to legacy
-      // name-keyed identity — same field updateGroupChat's inline map
-      // already carries.
+      // remote-sync or disband paths loses its roomId on the next cold
+      // hydrate and falls back to legacy name-keyed identity — same
+      // field updateGroupChat's inline map already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       image: room.image || null,
       rosterOrder: room.rosterOrder,
@@ -928,8 +933,7 @@ export function persistGroupChatRooms(all: Record<string, GroupChat> = $groupCha
 
 /** Register-removed sweep: annotate (not delete) every persisted group-chat
  *  member owned by the deleted connection, in the atom AND plugin storage.
- *  Writes ride updateGroupChat so the durable record keeps its full shape
- *  (sessionOwners, holds — durableGroupChatRooms would drop them).
+ *  Writes ride updateGroupChat so the durable record keeps its full shape.
  *  Returns whether anything changed. */
 export function sweepGroupChatMembersForRemovedConnection(connectionId: string) {
   const id = String(connectionId || '').trim()
@@ -1606,6 +1610,8 @@ export function updateGroupChat(
         // must too — otherwise a window restart silently releases a bot the
         // user explicitly stopped.
         holds: room.holds || {},
+        // #117472: holdDetection kill switch (must survive reload).
+        holdDetection: room.holdDetection,
         // #93813: per-member external-write reconcile cursors. Persisted so
         // external posts aren't re-mirrored after a window restart.
         externalCursors: room.externalCursors || {},
@@ -1660,6 +1666,20 @@ export interface GroupChatRoom extends GroupChat {
 export function setGroupChatImage(group: string, image: null | string | undefined) {
   updateGroupChat(group, (room: GroupChatRoom) => {
     room.image = image || null
+
+    return room
+  })
+}
+
+/** #117472: Enable or disable stop-hold detection in this room.
+ *  Disabling holds clears any active holds immediately. */
+export function setGroupChatHoldDetection(group: string, detection: 'off' | 'on') {
+  updateGroupChat(group, (room: GroupChatRoom) => {
+    room.holdDetection = detection
+
+    if (detection === 'off') {
+      room.holds = {}
+    }
 
     return room
   })

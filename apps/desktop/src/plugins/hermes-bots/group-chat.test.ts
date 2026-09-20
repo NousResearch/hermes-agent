@@ -1256,4 +1256,47 @@ describe('sync worker', () => {
 
     expect(room.chat.$groupChats.get().Core?.log.map(entry => entry.text)).toEqual(['fresh start'])
   })
+
+  it('toggles holdDetection and persists with durable room state (#117472)', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('TestRoom', r => {
+      r.holds = { impl: { at: 123 } }
+      return r
+    })
+
+    expect(room.chat.$groupChats.get().TestRoom.holds).toBeDefined()
+
+    room.chat.setGroupChatHoldDetection('TestRoom', 'off')
+
+    const updated = room.chat.$groupChats.get().TestRoom
+    expect(updated.holdDetection).toBe('off')
+    expect(updated.holds).toEqual({})
+
+    const stored = durable(room).TestRoom
+    expect(stored.holdDetection).toBe('off')
+  })
+
+  it('disbanding a room preserves holds, holdDetection, and sessionOwners on remaining rooms (#117472)', async () => {
+    const room = await loadRoom()
+    const view = await import('./group-chat-view')
+
+    room.chat.updateGroupChat('KeepRoom', r => {
+      r.holds = { impl: { at: 123 } }
+      r.holdDetection = 'off'
+      r.sessionOwners = { impl: { name: 'impl', connectionId: 'local' } }
+      return r
+    })
+    room.chat.updateGroupChat('DisbandRoom', r => {
+      r.log = [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'd1', text: 'bye', thread: 't' }]
+      return r
+    })
+
+    await view.disbandGroupChat('DisbandRoom', [])
+
+    const remainingStored = durable(room).KeepRoom
+    expect(remainingStored).toBeDefined()
+    expect(remainingStored.holdDetection).toBe('off')
+    expect(remainingStored.holds).toEqual({ impl: { at: 123 } })
+    expect(remainingStored.sessionOwners).toEqual({ impl: { name: 'impl', connectionId: 'local' } })
+  })
 })

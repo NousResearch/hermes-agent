@@ -189,6 +189,10 @@ export interface GroupChat {
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>
+  /** #117472: opt out of prose stop/hold *creation*. Default (unset/`on`) keeps
+   *  #93129 behavior; `off` suppresses new holds from user text but still
+   *  applies releaseAll / per-member release. Explicit Stop UI may still set holds. */
+  holdDetection?: 'off' | 'on'
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]

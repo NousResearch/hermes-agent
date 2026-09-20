@@ -25,13 +25,6 @@ export interface GroupRoundMemberContext {
   failedMembers?: Set<string>
 }
 
-/** #93129: a held member's skip must consume its delta exactly once —
- *  advance the watermark past the current log so the same entries never
- *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
-export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
-  return logLength > (seen || 0) ? logLength : null
-}
-
 function prepareGroupRoundMember(context: GroupRoundMemberContext, member: GroupMember) {
   const { members, thread } = context
 
@@ -53,32 +46,29 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
 
   // #93129: a member the user told to stop is HELD — no turn until an
   // explicit release (resume / @all resume / a direct non-stop
-  // mention). Consume the delta exactly once (watermark past the
-  // current log) so the same entries never re-trigger this skip, and
-  // surface WHY the bot is silent in the activity feed the first time.
+  // mention).
+  // #117472: Do NOT advance the watermark past unread messages while held.
+  // Advancing the watermark prematurely swallows the triggering message
+  // and any intervening entries upon release. The watermark advances only
+  // when a member turn actually commits.
   const heldEntry = (room.holds || {})[memberKey]
 
   if (heldEntry) {
-    const advance = heldMemberWatermarkAdvance(seen, room.log.length)
-    updateGroupChat(context.group, (r: GroupChatRoom) => {
-      if (advance !== null) {
-        r.watermarks[markKey] = advance
-      }
-
-      if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
-        r.holds = {
-          ...r.holds,
-          [memberKey]: {
-            ...r.holds[memberKey],
-            noted: true
+    if (!heldEntry.noted) {
+      updateGroupChat(context.group, (r: GroupChatRoom) => {
+        if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
+          r.holds = {
+            ...r.holds,
+            [memberKey]: {
+              ...r.holds[memberKey],
+              noted: true
+            }
           }
         }
-      }
 
-      return r
-    })
+        return r
+      })
 
-    if (!heldEntry.noted) {
       recordGroupActivity(context.group, {
         kind: 'held',
         member: groupMemberKey(member),

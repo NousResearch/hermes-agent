@@ -217,6 +217,8 @@ type BotsMessages = {
     allHeldStatus: (count: number) => string
     heldMembersStatus: (members: string) => string
     holdReleaseHint: string
+    holdDetectionLabel: string
+    holdDetectionHint: string
     needsYourInput: string
     noMembersToSend: (group: string) => string
     pictureGenerationFailed: string
@@ -481,6 +483,8 @@ const en: BotsMessages = {
     allHeldStatus: count => `All ${count} bots are paused`,
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
+    holdDetectionLabel: 'Detect stop/hold commands in messages',
+    holdDetectionHint: 'When off, words like stop/pause/halt in chat will not pause bots. The Stop button still works.',
     needsYourInput: 'A bot in this group chat needs your input',
     noMembersToSend: group => `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
@@ -736,6 +740,8 @@ const ja: BotsMessages = {
     allHeldStatus: count => `すべてのボット（${count}体）が一時停止中`,
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
+    holdDetectionLabel: 'メッセージ内の停止コマンドを検出する',
+    holdDetectionHint: 'オフにすると、チャット内の stop/pause/halt ではボットを一時停止しません。停止ボタンは引き続き動作します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
     noMembersToSend: group => `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
@@ -986,6 +992,8 @@ const zh: BotsMessages = {
     allHeldStatus: count => `全部 ${count} 个机器人已暂停`,
     heldMembersStatus: members => `已暂停：${members}`,
     holdReleaseHint: '提及已暂停的机器人，或发送 @all resume 以恢复它们。',
+    holdDetectionLabel: '检测消息中的停止/暂停指令',
+    holdDetectionHint: '关闭后，聊天中的 stop/pause/halt 不会暂停机器人。停止按钮仍然有效。',
     needsYourInput: '此群聊中有机器人需要你输入',
     noMembersToSend: group => `${group} 没有可发送的成员——请添加机器人，如果成员仍在加载，请重新打开该群聊。`,
     pictureGenerationFailed: '群组图片生成失败',
@@ -1236,6 +1244,8 @@ const zhHant: BotsMessages = {
     allHeldStatus: count => `全部 ${count} 個機器人已暫停`,
     heldMembersStatus: members => `已暫停：${members}`,
     holdReleaseHint: '提及已暫停的機器人，或傳送 @all resume 以恢復它們。',
+    holdDetectionLabel: '偵測訊息中的停止/暫停指令',
+    holdDetectionHint: '關閉後，聊天中的 stop/pause/halt 不會暫停機器人。停止按鈕仍然有效。',
     needsYourInput: '此群組聊天中有機器人需要您的輸入',
     noMembersToSend: group => `${group} 沒有可傳送的成員——請新增機器人，若成員仍在載入中，請重新開啟該群組聊天。`,
     pictureGenerationFailed: '群組圖片產生失敗',

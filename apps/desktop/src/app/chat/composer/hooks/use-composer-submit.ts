@@ -92,12 +92,24 @@ export function useComposerSubmit({
   // must not publish an old session's text into the newly focused one.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
     const submittedScope = draftScopeRef.current
+    let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
-    const restore = () => {
-      stashAt(submittedScope, text, submittedAttachments)
+    // Only this operation's explicit session.create handoff may re-home a
+    // pre-session submit. A null → stored render can also be user navigation.
+    const assignment =
+      submittedScope === null
+        ? {
+            onComposerScopeAssigned: (scope: string) => {
+              restoreScope = scope
+            }
+          }
+        : {}
 
-      if (draftScopeRef.current === submittedScope) {
+    const restore = () => {
+      stashAt(restoreScope, text, submittedAttachments)
+
+      if (draftScopeRef.current === restoreScope) {
         loadIntoComposer(text, submittedAttachments)
       }
     }
@@ -108,8 +120,13 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(text, {
+            attachments,
+            composerScope: submittedScope,
+            ...assignment,
+            ...(displayKind ? { displayKind } : {})
+          })
+        : onSubmit(text, { composerScope: submittedScope, ...assignment, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
       .catch(rejected)

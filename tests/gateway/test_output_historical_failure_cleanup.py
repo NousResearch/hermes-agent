@@ -185,12 +185,14 @@ async def test_failed_producer_cleanup_fault_remains_pending_until_exact_retry(t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("loss", ["owner", "epoch"])
-async def test_failed_producer_owner_loss_never_writes_a_false_cleanup_marker(
+async def test_failed_producer_capture_loss_recovers_after_restored_owner_cold_continuation(
     tmp_path, monkeypatch, caplog, loss
 ):
     from gateway import session_hosted_output
+    from gateway.hosted_room_artifacts import RoomArtifactOutbox
     from gateway.session_hosted_output import current_output_binding
     from gateway.session_hosted_output_lifecycle import records
+    from gateway.session_hosted_service import CanonicalHostedRoomService
     from tools.hosted_room_artifact import share_group_file
 
     async with owner(tmp_path, monkeypatch) as (authority, service, runner):
@@ -237,13 +239,136 @@ async def test_failed_producer_owner_loss_never_writes_a_false_cleanup_marker(
         with authority.db._read_ctx() as conn:
             assert records(conn, "room") == []
             row = conn.execute(
-                "SELECT acknowledged_at, cleanup_required_at FROM hosted_room_output_artifacts "
+                "SELECT acknowledged_at, cleanup_required_at, blob_name "
+                "FROM hosted_room_output_artifacts "
                 "WHERE scope_key=?",
                 (captured[0].scope.key,),
             ).fetchone()
         assert row is not None
         assert row["acknowledged_at"] is None and row["cleanup_required_at"] is None
         assert output.read_bytes() == b"private output retained by invalidated owner"
+
+        # Continue through a fresh service with no access to the process-local
+        # producer flag. The exact persisted outbox row is the additional proof.
+        scope = captured[0].scope
+        blob = tmp_path / "hosted-room-artifact-outbox" / "blobs" / row["blob_name"]
+        captured.clear()
+        cold = CanonicalHostedRoomService(authority, asyncio.get_running_loop())
+        authority.hosted_room_service = cold
+        room_binding = cold.bindings()[0]
+        published = []
+        publish = cold._publish_one_output
+
+        def publish_after_cleanup(room, current, progress):
+            with authority.db._read_ctx() as conn:
+                remaining = conn.execute(
+                    "SELECT 1 FROM hosted_room_output_artifacts WHERE scope_key=?", (scope.key,)
+                ).fetchall()
+            assert remaining == []
+            assert not blob.exists()
+            published.append(current["identity"].task_id)
+            return publish(room, current, progress)
+
+        cold._publish_one_output = publish_after_cleanup
+        with monkeypatch.context() as cleanup_fault:
+            def fail_exact_unlink(*_args, **kwargs):
+                if kwargs.get("dir_fd") is not None:
+                    raise OSError("test-owned restored-owner cleanup fault")
+                raise AssertionError("cleanup must use a directory-relative exact blob name")
+
+            cleanup_fault.setattr("gateway.hosted_room_output_discard.os.unlink", fail_exact_unlink)
+            cold.prepare_room(room_binding)
+
+        assert published == []
+        with authority.db._read_ctx() as conn:
+            pending, = [record for _, record in records(conn, "room")]
+            retained = conn.execute(
+                "SELECT acknowledged_at, cleanup_required_at, blob_reclaimed_at "
+                "FROM hosted_room_output_artifacts WHERE scope_key=?", (scope.key,)
+            ).fetchone()
+        assert pending["state"] == "pending"
+        assert pending["reason_code"] == "cleanup_unavailable"
+        assert retained is not None and retained["acknowledged_at"] is not None
+        assert retained["cleanup_required_at"] is not None
+        assert retained["blob_reclaimed_at"] is None and blob.exists()
+        assert any(
+            item["kind"] == "output_cleanup"
+            and item["state"] == "pending"
+            and item["reason_code"] == "cleanup_unavailable"
+            for item in cold.status("room")["pending_actions"]
+        )
+
+        cold._artifact_clock = lambda: pending["next_attempt_at"] + 1
+        cold.prepare_room(room_binding)
+        outbox = RoomArtifactOutbox(cold.db_path)
+        assert outbox.list(scope) == []
+        assert outbox.retirement_complete(scope)
+        assert published == [task["identity"].task_id]
+        assert not cold.status("room")["pending_actions"]
+        assert output.read_bytes() == b"private output retained by invalidated owner"
+
+
+@pytest.mark.asyncio
+async def test_failed_producer_current_invalid_owner_refuses_recovery_and_publication(
+    tmp_path, monkeypatch
+):
+    from gateway import session_hosted_output
+    from gateway.hosted_room_artifacts import RoomArtifactError
+    from gateway.session_hosted_output import current_output_binding
+    from gateway.session_hosted_output_lifecycle import records
+    from tools.hosted_room_artifact import share_group_file
+
+    async with owner(tmp_path, monkeypatch) as (authority, service, runner):
+        output = tmp_path / "cache" / "current-invalid-owner.txt"
+        output.parent.mkdir(exist_ok=True)
+        output.write_bytes(b"private output retained while owner is invalid")
+        captured = []
+        capture = session_hosted_output.capture_failed_output
+
+        def capture_while_invalidated(current_authority, row, binding):
+            retained = current_authority.hosted_room_service
+            current_authority.hosted_room_service = object()
+            try:
+                return capture(current_authority, row, binding)
+            finally:
+                current_authority.hosted_room_service = retained
+
+        monkeypatch.setattr(session_hosted_output, "capture_failed_output", capture_while_invalidated)
+
+        async def fail_after_output(_event):
+            binding = current_output_binding()
+            assert binding is not None
+            captured.append(binding)
+            assert json.loads(await asyncio.to_thread(share_group_file, str(output)))["ok"] is True
+            raise RuntimeError("producer failure before current-owner refusal")
+
+        runner._handle_message = fail_after_output
+        _, _, _, task, room_binding = await execute_group_turn(
+            authority, service, defer_publication=True
+        )
+        published = []
+        service._publish_one_output = lambda *_args, **_kwargs: published.append(True)
+        retained_service = authority.hosted_room_service
+        authority.hosted_room_service = object()
+        before = authority.db._conn.total_changes
+        try:
+            with pytest.raises(RoomArtifactError, match="owner changed"):
+                service.prepare_room(room_binding)
+        finally:
+            authority.hosted_room_service = retained_service
+
+        assert authority.db._conn.total_changes == before
+        assert published == []
+        assert tasks.get_task(service.db_path, task["identity"])["status"] == "failed"
+        with authority.db._read_ctx() as conn:
+            assert records(conn, "room") == []
+            row = conn.execute(
+                "SELECT acknowledged_at, cleanup_required_at FROM hosted_room_output_artifacts "
+                "WHERE scope_key=?", (captured[0].scope.key,)
+            ).fetchone()
+        assert row is not None
+        assert row["acknowledged_at"] is None and row["cleanup_required_at"] is None
+        assert output.read_bytes() == b"private output retained while owner is invalid"
 
 
 @pytest.mark.asyncio

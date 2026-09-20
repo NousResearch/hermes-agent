@@ -159,15 +159,43 @@ class CanonicalOutputLifecycle:
                 producer_binding.check_write(conn, producer_binding.scope)
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else None
+            snapshot = admission = None
             if existing_only and old is None:
-                return None  # A failed driver alone cannot create cleanup authority.
+                names = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?)",
+                    ('hosted_room_output_artifacts', 'hosted_room_output_generation_fences'))}
+                if not names:
+                    return None  # No initialized producer store is the no-output fast path.
+                RoomArtifactOutbox.borrow_existing(self._output_db, conn)
+                snapshot, admission = self._cleanup_snapshot(conn, task)
+                scope_mapping = snapshot.get('scope')
+                if (snapshot.get('unavailable') or not isinstance(scope_mapping, dict)
+                        or admission is None):
+                    raise RoomArtifactError('Group Chat failed output evidence is unavailable')
+                scope = RoomArtifactScope.from_mapping(scope_mapping)
+                evidence = conn.execute(
+                    'SELECT scope_json,acknowledged_at,cleanup_required_at,blob_reclaimed_at '
+                    'FROM hosted_room_output_artifacts WHERE scope_key=? ORDER BY created_at,artifact_id '
+                    'LIMIT ?', (scope.key, BATCH + 1)).fetchall()
+                if not evidence:
+                    return None
+                for row in evidence:
+                    try:
+                        stored_scope = RoomArtifactScope.from_mapping(json.loads(row['scope_json']))
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise RoomArtifactError('Group Chat failed output evidence changed') from exc
+                    if (stored_scope != scope or row['acknowledged_at'] is not None
+                            or row['cleanup_required_at'] is not None
+                            or row['blob_reclaimed_at'] is not None):
+                        raise RoomArtifactError('Group Chat failed output evidence changed')
             if old and old['state'] == 'completed':
                 self._require_completed_identity(conn, task, old)
                 if old['version'] == 1:
                     old = compact_completed(old)
                     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(old, sort_keys=True), key))
                 return old
-            snapshot, admission = self._cleanup_snapshot(conn, task)
+            if snapshot is None:
+                snapshot, admission = self._cleanup_snapshot(conn, task)
             if (producer_binding is not None
                     and snapshot.get('scope') != producer_binding.scope.as_mapping()):
                 raise RoomArtifactError('Group Chat output cleanup scope changed')

@@ -159,12 +159,19 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
-def _scan_json_stack(raw: str) -> list[str] | None:
-    """Open brace/bracket stack of a JSON prefix, ignoring delimiters inside string
-    values (``{"code": "}"}`` keeps one open brace, not a balanced document). ``None``
-    when the text ends inside an unterminated string — the caller must close the open
-    quote before closing any brackets.
+_JSON_CLOSERS = {"{": "}", "[": "]"}
+
+
+def _rebalance_json_closers(raw: str) -> str | None:
+    """Close a JSON prefix's open braces/brackets in stack order, ignoring delimiters
+    inside string values (``{"code": "}"}`` keeps one open brace, not a balanced
+    document). A closer that does not match the stack top but does match a deeper opener
+    gets the missing inner closers inserted BEFORE it: ``{"a": [{"b": 1}}`` → the model
+    dropped the ``]`` and let the neighbouring ``}`` close in its place, so the counts
+    balance and nothing can be appended. ``None`` when the text ends inside an
+    unterminated string — that content is unrecoverable and must not be guessed.
     """
+    out: list[str] = []
     stack: list[str] = []
     in_string = False
     i, n = 0, len(raw)
@@ -172,20 +179,24 @@ def _scan_json_stack(raw: str) -> list[str] | None:
         ch = raw[i]
         if in_string:
             if ch == "\\":
+                out.append(raw[i:i + 2])
                 i += 2
                 continue
             if ch == '"':
                 in_string = False
         elif ch == '"':
             in_string = True
-        elif ch in "{[":
+        elif ch in _JSON_CLOSERS:
             stack.append(ch)
-        elif ch in "}]":
-            expected = "{" if ch == "}" else "["
-            if stack and stack[-1] == expected:
-                stack.pop()
+        elif ch in "}]" and ch in (_JSON_CLOSERS[o] for o in stack):
+            while _JSON_CLOSERS[stack[-1]] != ch:
+                out.append(_JSON_CLOSERS[stack.pop()])
+            stack.pop()
+        out.append(ch)
         i += 1
-    return None if in_string else stack
+    if in_string:
+        return None
+    return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
 
 
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
@@ -213,12 +224,11 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
 
     # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
     # (bounded). Bracket counting is string-aware: delimiters inside string values
-    # ({"code": "}"}) are not structure, and the closers are appended in stack order —
-    # {"items": [{"n": 1}, {"n": 2 needs "}]}", not "}}".
+    # ({"code": "}"}) are not structure, and the closers land in stack order — a truncated
+    # {"items": [{"n": 1}, {"n": 2 needs "}]}" appended, and a misnested
+    # {"a": [{"b": 1}, {"c": 2}} needs "]" inserted before the misplaced "}".
     fixed = re.sub(r",\s*([}\]])", r"\1", raw_stripped)
-    stack = _scan_json_stack(fixed)
-    if stack:
-        fixed += "".join("}" if ch == "{" else "]" for ch in reversed(stack))
+    fixed = _rebalance_json_closers(fixed) or fixed
     for _ in range(50):
         if _loads_ok(fixed) or not (
             (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))

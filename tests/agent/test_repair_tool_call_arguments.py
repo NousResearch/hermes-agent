@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from agent.message_sanitization import _repair_tool_call_arguments
 class TestRepairToolCallArguments:
     """Verify each repair stage in the pipeline."""
@@ -51,20 +53,28 @@ class TestRepairToolCallArguments:
         result = _repair_tool_call_arguments('{"code": "}", "x": 1', "t")
         assert json.loads(result) == {"code": "}", "x": 1}
 
-    def test_braces_inside_values_offset_the_count_the_other_way(self):
-        # An unclosed "{" inside a value makes naive counting append one "}" too many.
-        result = _repair_tool_call_arguments('{"code": "if (x) {", "y": 2', "t")
-        assert json.loads(result) == {"code": "if (x) {", "y": 2}
-
     def test_truncated_nested_array_closes_in_stack_order(self):
         # {"items": [{"n": 1}, {"n": 2 needs "}]} appended (stack order), not "}}" —
         # count-based appending grouped all braces before all brackets and never parsed.
         result = _repair_tool_call_arguments('{"items": [{"n": 1}, {"n": 2', "t")
         assert json.loads(result) == {"items": [{"n": 1}, {"n": 2}]}
 
-    def test_truncated_flat_array_closes_correctly(self):
-        result = _repair_tool_call_arguments('{"a": [1, 2', "t")
-        assert json.loads(result) == {"a": [1, 2]}
+    # -- Balanced but misnested: the "]" of an array of objects dropped, a "}" closing in
+    # its place (#115061, deepseek-v4-flash via a portal). Counts balance, so nothing can be
+    # appended; the missing closer has to be inserted BEFORE the misplaced one. --
+
+    @pytest.mark.parametrize("raw, expected", [
+        ('{"a": [{"b": 1}, {"c": 2}}]}', {"a": [{"b": 1}, {"c": 2}]}),
+        ('{"edits": [{"path": "a.py", "mode": "w"}, {"path": "b.py", "mode": "w"}}',
+         {"edits": [{"path": "a.py", "mode": "w"}, {"path": "b.py", "mode": "w"}]}),
+        ('{"tool": "edit", "args": {"items": [{"k": 1}, {"k": 2}}}}',
+         {"tool": "edit", "args": {"items": [{"k": 1}, {"k": 2}]}}),
+        ('{"calls": [{"name": "a", "arguments": {"x": 1}}, {"name": "b", "arguments": {"y": 2}}}',
+         {"calls": [{"name": "a", "arguments": {"x": 1}}, {"name": "b", "arguments": {"y": 2}}]}),
+        ('{"a": [1, 2}', {"a": [1, 2]}),
+    ])
+    def test_misnested_closer_is_inserted_before_the_misplaced_one(self, raw, expected):
+        assert json.loads(_repair_tool_call_arguments(raw, "t")) == expected
 
     # -- Valid JSON passthrough (this path is via except, but still works) --
 

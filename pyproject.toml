@@ -132,8 +132,8 @@ dependencies = [
   # we declare the working components inline and gate uvloop behind the
   # [uvloop] optional extra — desktop/server profiles pull it via [all].
   "uvicorn>=0.31.0,<1",
-  "httptools>=0.8.0",
-  "watchfiles>=0.20",
+  "httptools>=0.6.0,<1",
+  "watchfiles>=0.20,<2",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
@@ -198,7 +198,7 @@ dependencies = [
 # optional extra because libuv's ./configure does not run on Android/Termux
 # (bionic libc, non-FHS layout).  Desktop and server installs pull this via
 # [all]; the [termux] / [termux-all] profiles intentionally omit it.
-uvloop = ["uvloop>=0.15.1; sys_platform != 'win32'"]
+uvloop = ["uvloop>=0.15.1,<1; sys_platform != 'win32'"]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452

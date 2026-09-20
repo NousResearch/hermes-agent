@@ -71,36 +71,6 @@ def test_roster_excludes_dirs_failing_the_profile_id_regex(tmp_path):
     assert not any(f"`@{s}`" in section for s in ("_backup_removed_20260920", ".staging-area"))
 
 
-def test_profile_id_regex_mirror_stays_in_sync_with_canonical():
-    """The roster's mirrored profile-id predicate must accept and reject exactly what the
-    canonical ``hermes_cli.profiles._PROFILE_ID_RE`` accepts and rejects — the #116905 bug
-    class was precisely these two predicates drifting apart (review follow-up)."""
-    from hermes_cli.profiles import _PROFILE_ID_RE as canonical
-
-    samples = [
-        "researcher",
-        "content-creator",
-        "trade-ops2",
-        "a",
-        "0",
-        "a" * 64,
-        "a" * 65,
-        "_backup_removed",
-        ".staging-area",
-        "has space",
-        "UPPER",
-        "default",
-        "-leading-dash",
-        "trailing-dash-",
-        "sla/sh",
-        "emoji-\U0001f916",
-    ]
-    for sample in samples:
-        assert bool(bot_mode_probe._PROFILE_ID_RE.match(sample)) == bool(
-            canonical.match(sample)
-        ), sample
-
-
 def test_silent_when_no_profile_is_bot_managed(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

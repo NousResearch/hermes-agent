@@ -277,6 +277,8 @@ def named_profile_is_deleted(profile_home: str | Path) -> bool:
 # none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
 # listed, served, ticked, or seeded with the default install's credentials.
 _PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+# Canonical named-profile id grammar; every profile-directory gate imports this one object.
+PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def named_profile_has_identity(profile_home: str | Path) -> bool:

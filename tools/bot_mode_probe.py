@@ -20,10 +20,6 @@ from pathlib import Path
 _PROTOCOL_HEADING = "## Messaging other agents"
 # The legacy section through the next H2 heading (or EOF), plus the blank lines before it.
 _LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.S)
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE (not imported: this module must stay
-# import-light on the system-prompt path, and hermes_cli.profiles drags in the full
-# profile machinery — archive/tar, subprocess, threading — for one regex).
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def strip_legacy_protocol(text: str) -> str:
@@ -78,14 +74,14 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
     predicate as ``profile list``: infra dirs (``sessions/``, ``logs/``) and tombstones are not
     teammates (#99392), and neither is a marker-carrying dir whose name is not a profile id —
     a parked backup or staging dir must never become a ``message_agent`` target (#116905)."""
-    from hermes_constants import named_profile_is_live
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
 
     profiles = root / "profiles"
     named = _swallow(
         lambda: [
             (c.name, c)
             for c in sorted(profiles.iterdir())
-            if c.name != "default" and _PROFILE_ID_RE.match(c.name) and named_profile_is_live(c)
+            if c.name != "default" and PROFILE_ID_RE.match(c.name) and named_profile_is_live(c)
         ]
         if profiles.is_dir()
         else [],

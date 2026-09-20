@@ -8,7 +8,9 @@ import path and delaying the READY sentinel the Desktop waits on.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
+import types
 
 import hermes_cli.mcp_startup as mcp_startup
 import hermes_cli.web_server as web_server
@@ -66,7 +68,66 @@ def test_deferred_discovery_fires_once_and_is_idempotent(monkeypatch):
     mcp_startup.defer_background_mcp_discovery(logger=log, thread_name="t", delay=60)
     mcp_startup.defer_background_mcp_discovery(logger=log, thread_name="t", delay=60)  # second arm is a no-op
     first = mcp_startup._mcp_discovery_deferred
-    mcp_startup._start_deferred_mcp_discovery_now()
-    mcp_startup._start_deferred_mcp_discovery_now()
+    mcp_startup.start_deferred_mcp_discovery_now()
+    mcp_startup.start_deferred_mcp_discovery_now()
     assert calls == ["t"]
     assert first is not None and mcp_startup._mcp_discovery_deferred is None
+
+
+def _stub_dashboard_runtime(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_resolve_dashboard_web_dist", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+    monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "hermes_logging", types.SimpleNamespace(setup_logging=lambda **_k: None))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
+    return main_mod
+
+
+def test_standalone_dashboard_boot_arms_discovery_without_starting_it(monkeypatch):
+    """#58733: an idle, unvisited `hermes dashboard` must not spawn the configured MCP servers."""
+    _reset_discovery_state(monkeypatch)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    main_mod = _stub_dashboard_runtime(monkeypatch)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        mcp_startup, "start_background_mcp_discovery", lambda *, logger, thread_name: calls.append(thread_name)
+    )
+
+    after_bind = main_mod._dashboard_prepare_runtime(types.SimpleNamespace(skip_build=True), False)
+
+    assert after_bind is False and calls == []
+    armed = mcp_startup._mcp_discovery_deferred
+    assert isinstance(armed, threading.Timer) and not armed.is_alive()
+
+
+def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
+    import asyncio
+
+    import hermes_cli.web_routers.chat_ws as chat_ws
+
+    _reset_discovery_state(monkeypatch)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        mcp_startup, "start_background_mcp_discovery", lambda *, logger, thread_name: calls.append(thread_name)
+    )
+    mcp_startup.defer_background_mcp_discovery(
+        logger=logging.getLogger("test"), thread_name="dashboard-mcp-discovery", delay=None
+    )
+    assert calls == []
+
+    async def _allowed(ws):
+        return True
+
+    async def _handle_ws(ws, **kwargs):
+        return None
+
+    monkeypatch.setattr(chat_ws, "_close_unless_sidecar_allowed", _allowed)
+    monkeypatch.setattr("tui_gateway.ws.handle_ws", _handle_ws)
+    asyncio.run(chat_ws.gateway_ws(object()))
+    asyncio.run(chat_ws.gateway_ws(object()))
+
+    assert calls == ["dashboard-mcp-discovery"]
+    assert mcp_startup._mcp_discovery_deferred is None

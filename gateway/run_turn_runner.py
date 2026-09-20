@@ -34,6 +34,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Consecutive turns a session's persisted transcript may lag its live cached history before
+# _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
+_TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
 _CARD_DESTINATION_REFUSALS = {
@@ -175,6 +179,7 @@ class TurnRunner:
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
+        from gateway.warning_notifications import render_notification
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
@@ -183,7 +188,9 @@ class TurnRunner:
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
                     duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
-                self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
+                render_notification(
+                    lambda: self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error"),
+                    platform=ctx.source.platform, user_config=ctx.user_config)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)
 
@@ -257,7 +264,7 @@ class TurnRunner:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -697,7 +704,7 @@ class TurnRunner:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -876,8 +883,9 @@ class TurnRunner:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
-        if not self._status_live():
+        if ctx.mute_notification_reply or not self._status_live():
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -887,17 +895,22 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        fut = self._schedule(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
-            f"status_callback ({event_type}) scheduling error",
-        )
-        if fut is not None and ctx._cleanup_progress:
-            fut.add_done_callback(self._track_future_cleanup_id)
+        def present():
+            fut = self._schedule(
+                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+                f"status_callback ({event_type}) scheduling error",
+            )
+            if fut is not None and ctx._cleanup_progress:
+                fut.add_done_callback(self._track_future_cleanup_id)
+        render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
+                            diagnostic=is_warning_status(event_type, message))
 
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
+        if ctx.mute_notification_reply:
+            return None, None, None, False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
@@ -915,7 +928,7 @@ class TurnRunner:
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
-                adapter = self._runner._adapter_for_source(ctx.source)
+                adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
@@ -1147,15 +1160,20 @@ class TurnRunner:
         """Credits / out-of-band notices (usage bands, depletion, restored) fire from the agent's
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
-        if not self._status_live():
+        from gateway.warning_notifications import is_diagnostic_notice, render_notification
+        if self._ctx.mute_notification_reply or not self._status_live():
             return
-        try:
-            line = render_notice_line(notice)
-        except Exception:
-            logger.debug("render_notice_line failed", exc_info=True)
-            return
-        if line:
-            self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
+        diagnostic = is_diagnostic_notice(notice)
+        def present():
+            try:
+                line = render_notice_line(notice)
+            except Exception:
+                logger.debug("render_notice_line failed", exc_info=True)
+                return
+            if line:
+                self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
+        render_notification(present, platform=self._ctx.source.platform,
+                            user_config=self._ctx.user_config, diagnostic=diagnostic)
 
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the
@@ -1214,6 +1232,8 @@ class TurnRunner:
         baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
+        agent._notification_config = ctx.user_config
+        agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -1256,6 +1276,16 @@ class TurnRunner:
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
+        if ctx.mute_notification_reply:
+            # Controls and operational event/step callbacks remain wired. These
+            # presentation callbacks are rebound on every next turn.
+            agent.tool_progress_callback = None
+            agent.tool_start_callback = None
+            agent.tool_complete_callback = None
+            # Keep diagnostic observers installed; concrete sinks veto display.
+            agent.stream_delta_callback = None
+            agent.interim_assistant_callback = None
+            agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support
         # The titler fires from the turn prologue, so attach the rename lane before the run.
         self._attach_session_title_callback(agent, ctx)
@@ -1531,16 +1561,27 @@ class TurnRunner:
         # #50502.
         if reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id:
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
+            # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
+            # is the #114266 write outage and must escalate past a repeating WARNING.
+            streaks = getattr(self._runner, "_transcript_lag_streaks", None)
+            if streaks is None:  # tests may build bare runners
+                streaks = self._runner._transcript_lag_streaks = {}
             if selected is not agent_history:
-                logger.warning(
+                streak = streaks[ctx.session_key] = streaks.get(ctx.session_key, 0) + 1
+                log = logger.error if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else logger.warning
+                log(
                     "Persisted transcript lagged live cached history for "
-                    "session %s (disk=%d, memory=%d); preserving live "
-                    "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(selected),
+                    "session %s (disk=%d, memory=%d, consecutive_turns=%d); preserving live "
+                    "conversation context (possible FTS write corruption)%s",
+                    ctx.session_key, len(agent_history), len(selected), streak,
+                    "; state.db is not receiving this session's writes and needs operator attention"
+                    if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else "",
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
                 # the full canonicalization so no replay transform can slip through.
                 agent_history = canonicalize_replay_history(selected)
+            else:
+                streaks.pop(ctx.session_key, None)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
@@ -1556,7 +1597,7 @@ class TurnRunner:
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._adapter_for_source(self._ctx.source), "interactive_resume", True))
+        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
@@ -1666,7 +1707,9 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            return agent.run_conversation(api_message, **kwargs)
+            from agent.notification_presentation import notification_turn
+            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
+                return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
@@ -1854,6 +1897,10 @@ class TurnRunner:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )
+            # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+            # fallback was resolved before any agent exists (#74349); one-shot per turn.
+            pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
+            runner._pre_agent_fallback_notice = None
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1862,6 +1909,12 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from hermes_cli.auth import is_rate_limited_auth_error
+            if is_rate_limited_auth_error(exc.__cause__):
+                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                from gateway.run import _gateway_provider_error_reply
+                return {"final_response": _gateway_provider_error_reply(str(exc)),
+                        "messages": [], "api_calls": 0, "tools": []}
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
@@ -1878,6 +1931,9 @@ class TurnRunner:
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if pending_fallback_notice:
+            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+            agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

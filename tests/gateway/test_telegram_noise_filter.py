@@ -253,6 +253,29 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
+@pytest.mark.parametrize("platform", [*CHAT_PLATFORMS, Platform.BLUEBUBBLES])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<|eos|>", ""),
+        ("<|eos|><|eos|>\n", ""),
+        ("normal answer<|eos|>", "normal answer"),
+        ("normal answer<|eos|>  \n", "normal answer"),
+        ("literal <|eos|> in the middle stays visible", "literal <|eos|> in the middle stays visible"),
+        ("case variant remains literal: <|EOS|>", "case variant remains literal: <|EOS|>"),
+        ("inline code remains literal: `<|eos|>`", "inline code remains literal: `<|eos|>`"),
+    ],
+)
+def test_chat_gateways_strip_terminal_eos_control_tokens(platform, raw, expected):
+    """Provider EOS control tokens are transport metadata, never user-facing chat bubbles."""
+    assert _sanitize_gateway_final_response(platform, raw) == expected
+
+
+def test_local_surface_keeps_terminal_eos_control_token():
+    """Raw/programmatic surfaces retain provider output byte-for-byte."""
+    assert _sanitize_gateway_final_response("local", "normal answer<|eos|>") == "normal answer<|eos|>"
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

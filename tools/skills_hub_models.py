@@ -130,6 +130,8 @@ class SkillSource(ABC):
 
     SOURCE_ID: str = ""
     TRUST_LEVEL: str = "community"
+    # Consecutive failed fetches of one catalog page/shard before a walk gives up as partial.
+    CATALOG_PAGE_RETRIES = 5
 
     @abstractmethod
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -148,6 +150,11 @@ class SkillSource(ABC):
 
     def trust_level_for(self, identifier: str) -> str:
         return self.TRUST_LEVEL
+
+    def current_revision(self, identifier: str) -> str:
+        """Upstream revision the skill would be fetched at; "" when the registry has no cheap
+        revision probe, which keeps update checks on the full-fetch path."""
+        return ""
 
 
 class GuardedFetchMixin:

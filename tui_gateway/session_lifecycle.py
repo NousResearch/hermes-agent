@@ -85,10 +85,44 @@ def _claim_active_session_slot(
         return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
+def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
+    """Adopt the parent's registry slot as an INERT token on a compute-host child.
+
+    An isolated turn runs in the compute-host CHILD process. The parent dashboard already
+    claimed the session's active-session lease before routing the turn here, but the child's
+    freshly built session record never carried it — so ``_admit_prompt_turn`` re-claimed from
+    the child's pid and was fenced out by the parent's own entry (``_is_same_writer`` requires
+    same pid AND same live_session_id): every isolated turn failed with "Session ... already
+    has a live owner" (#101416). The slot is real and owned upstream, so the child must
+    neither claim a second one nor be able to release/transfer the parent's: the token is
+    ``enabled=False`` — ``release()`` is a no-op and ``transfer_active_session`` only retargets
+    the token locally, so a compression rotation A->B inside the child never reaches the
+    registry (the parent re-anchors its real lease from the reported ``session_key``, see
+    ``_compute_host_adopt_frame_meta``). NOT ``released=True``: a released token makes the
+    transfer fall through to a real registry claim under the child pid.
+
+    Only installed when the frame's ``active_session_lease`` vouch names THIS stored session
+    id — a parent lease still keyed on a pre-rotation id must not authorize its continuation.
+    Anything else keeps the legacy behaviour — the child claims for itself and any ownership
+    conflict fails CLOSED with the visible refusal.
+    """
+    vouch = frame.get("active_session_lease")
+    if not isinstance(vouch, dict) or session.get("active_session_lease") is not None:
+        return
+    key = str(session.get("session_key") or "")
+    if not key or str(vouch.get("session_id") or "") != key:
+        return
+    from hermes_cli.active_sessions import ActiveSessionLease
+    session["active_session_lease"] = ActiveSessionLease(
+        lease_id=f"borrowed:{vouch.get('lease_id') or sid}", session_id=key,
+        surface=str(frame.get("source") or "desktop"), enabled=False)
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
-    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
+    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
+    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
     if session.get("active_session_lease") is not None:
         return None
     key = str(session.get("session_key") or "")
@@ -198,10 +232,12 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
 
 
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
-    """Snapshot leases still backed by this process's live session records."""
+    """Snapshot leases still backed by this process's live session records (plus leases deferred past a
+    close for an unsettled isolated turn — still ours until the child settles)."""
     with _sessions_lock:
         return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
+                } | set(_deferred_active_session_leases)
 
 
 @contextlib.contextmanager
@@ -484,8 +520,47 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
                     "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
         except Exception:
             logger.debug("failed waiting for session turn thread", exc_info=True)
+    if end_reason != "tui_shutdown":
+        _settle_isolated_turn_before_close(session)
     _teardown_session(session, end_reason=end_reason)
     return True
+
+
+# lease_id -> REAL lease of a closed session whose isolated child turn has not settled yet. Still live
+# authority for the orphan sweep (``_own_live_lease_ids``); released by ``_release_deferred_active_session_lease``.
+_deferred_active_session_leases: dict[str, Any] = {}
+
+
+def _settle_isolated_turn_before_close(session: dict) -> None:
+    """An isolated turn runs in the compute-host child, not on ``_run_thread``: interrupt it and give it the
+    same close grace, and if it still has not settled keep the REAL lease out of finalize's release — the
+    completion callback releases it on the correlated turn.end/turn.error (child death fails pending turns
+    the same way). The RPC close is bounded; ownership ends with the child's last write, never with the
+    grace timer, else a second backend acquires the stored session while the child is still writing."""
+    if not session.get("_compute_host_turn_id") or not _session_uses_compute_host(session):
+        return
+    with contextlib.suppress(Exception):
+        _interrupt_session_turn(_lifecycle_own_sid(session), session)
+    deadline = time.monotonic() + _TURN_SETTLE_BEFORE_CLOSE_SECONDS
+    while session.get("_compute_host_turn_id") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    with session["history_lock"]:
+        if not session.get("_compute_host_turn_id") or (lease := session.pop("active_session_lease", None)) is None:
+            return
+        session["_deferred_active_session_lease"] = lease
+        _deferred_active_session_leases[str(lease.lease_id)] = lease
+    logger.warning("isolated turn still live after %.1fs close grace; holding lease for %s until the child settles",
+                   _TURN_SETTLE_BEFORE_CLOSE_SECONDS, session.get("session_key"))
+
+
+def _release_deferred_active_session_lease(session: dict) -> None:
+    """Settlement half of ``_settle_isolated_turn_before_close``; a no-op for sessions that never deferred."""
+    lease = session.pop("_deferred_active_session_lease", None)
+    if lease is None:
+        return
+    _deferred_active_session_leases.pop(str(lease.lease_id), None)
+    if (err := _lease_retry(3, lease.release)) is not None:
+        logger.warning("Failed to release deferred active session slot", exc_info=err)
 
 
 def _close_session_by_id(
@@ -546,6 +621,14 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(session.get("agent"))
+        # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
+        # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
+        # interrupted completion with its partial output.
+        with contextlib.suppress(Exception):
+            from tools.async_delegation import interrupt_for_session
+            interrupt_for_session(
+                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
+                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
         if not run_thread_alive:
             with session["history_lock"]:
                 if session.get("running"):

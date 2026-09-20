@@ -21,7 +21,8 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT, parse_cron_drain_timeout,
     parse_restart_after_turn_timeout, parse_restart_drain_timeout,
-    parse_signal_interrupt_grace_timeout,
+    launchd_service_label, parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
+    resolve_launchd_capped_drain,
 )
 from gateway.session import SessionSource
 from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
@@ -324,6 +325,39 @@ class GatewayConfigLoadersMixin:
         if raw and value == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT:
             cls._warn_unparsable_timeout("restart_drain_timeout", raw, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
         return value
+
+    @staticmethod
+    def _load_launchd_exit_timeout(drain_timeout: float) -> Optional[float]:
+        """Read the live launchd ``ExitTimeOut`` this job runs under, if any.
+
+        launchd is the one supervisor the gateway cannot size from config: the per-user (gui)
+        domain clamps ``ExitTimeOut`` (measured 60s on macOS 26), and any signal-driven stop that
+        drains past it is SIGKILLed mid-teardown — the unclean-exit half of the state.db
+        corruption class. Returns ``None`` (fail-open, drain unchanged) when not launchd-owned or
+        when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
+        the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
+        """
+        label = launchd_service_label()
+        if label is None:
+            return None
+        # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
+        exit_timeout = read_launchd_exit_timeout_s(label)
+        if exit_timeout is None:
+            return None
+        effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
+        if effective < drain_timeout:
+            logger.warning(
+                "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
+                "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
+                "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
+                drain_timeout, exit_timeout, label, effective,
+            )
+        else:
+            logger.info(
+                "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
+                label, exit_timeout, drain_timeout,
+            )
+        return exit_timeout
 
     @classmethod
     def _load_env_or_agent_cfg_timeout(cls, env_var: str, cfg_key: str, parse, default: float) -> float:

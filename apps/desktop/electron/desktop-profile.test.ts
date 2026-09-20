@@ -8,6 +8,7 @@ import { test } from 'vitest'
 import {
   createDesktopProfilePreferences,
   resolveDesktopConnectionRequest,
+  resolveDesktopWindowLaunch,
   resolveDesktopWindowRoute
 } from './desktop-profile'
 import { WindowConnectionRouteRegistry } from './window-connection-route'
@@ -66,6 +67,15 @@ test('explicit routes are strict and never fall back to a different source windo
     connectionId: 'remote-a',
     profile: 'work'
   })
+  // Only an explicit route pins the window's New-session default; an inherited
+  // or fallback route seeds boot alone.
+  assert.deepEqual(resolveDesktopWindowLaunch(explicit, routes.get(1), fallback), { ...explicit, profileWindow: true })
+  assert.deepEqual(resolveDesktopWindowLaunch(undefined, routes.get(1), fallback), {
+    connectionId: 'remote-a',
+    profile: 'work',
+    profileWindow: false
+  })
+  assert.deepEqual(resolveDesktopWindowLaunch(undefined, null, fallback), { ...fallback, profileWindow: false })
   assert.deepEqual(routes.get(1), { connectionId: 'remote-a', profile: 'work', registryScoped: true })
   assert.throws(() => resolveDesktopWindowRoute({ profile: 'work' }, routes.get(1), fallback))
   assert.throws(() => resolveDesktopWindowRoute({ connectionId: null, profile: '../work' }, routes.get(1), fallback))

@@ -7615,6 +7615,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
         "properties": {
           "text": {
             "anyOf": [
@@ -7627,6 +7628,18 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "title": "CompleteSlashParams",
@@ -10353,7 +10366,7 @@
       },
       "ErrorSurface": {
         "additionalProperties": true,
-        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint).",
+        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint,\n+ ``resets_at`` epoch seconds when the provider named when its limit lifts).",
         "properties": {
           "layer": {
             "title": "Layer",
@@ -10390,6 +10403,18 @@
             ],
             "default": null,
             "title": "Model"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
           }
         },
         "required": [
@@ -20757,6 +20782,13 @@
             },
             "title": "Previewsessions",
             "type": "array"
+          },
+          "sessionIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sessionids",
+            "type": "array"
           }
         },
         "required": [
@@ -21870,6 +21902,18 @@
             ],
             "default": null,
             "title": "Voice Context"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
           },
           "truncate_before_user_ordinal": {
             "anyOf": [
@@ -25185,6 +25229,11 @@
             "title": "Reasoning Effort",
             "type": "string"
           },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
+            "type": "string"
+          },
           "service_tier": {
             "default": "",
             "title": "Service Tier",
@@ -26033,6 +26082,11 @@
           "reasoning_effort": {
             "default": "",
             "title": "Reasoning Effort",
+            "type": "string"
+          },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
             "type": "string"
           },
           "service_tier": {
@@ -28181,7 +28235,21 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "properties": {},
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
         "title": "SkillsReloadParams",
         "type": "object"
       },

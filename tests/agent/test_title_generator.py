@@ -5,9 +5,13 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.title_generator import (
+    MAX_TITLE_INPUT_CHARS,
+    build_title_input,
+    derive_title,
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    wait_for_title_upgrades,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -15,6 +19,49 @@ from hermes_state import SessionDB
 
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
+
+    @pytest.mark.parametrize(
+        ("instruction", "paste_preview", "expected_parts"),
+        [
+            ("@file:/tmp/composer-pastes/pasted_content_1.txt", "Quarterly incident analysis for the database migration",
+             ["Quarterly incident analysis"]),
+            ("Analyze this", "Quarterly incident analysis for the database migration", ["Analyze this", "Quarterly incident analysis"]),
+            ("Prepare the deployment follow-up", "Quarterly incident analysis", ["Prepare the deployment follow-up", "Quarterly incident analysis"]),
+        ],
+    )
+    def test_generated_paste_preview_reaches_the_shared_title_input(self, instruction, paste_preview, expected_parts):
+        """A Desktop large paste stays an @file attachment for the turn, but its preview informs BOTH title
+        paths (derive_title instant + generate_title model input) through the one shared input."""
+        title_input = build_title_input(instruction, paste_preview)
+
+        assert all(part in title_input for part in expected_parts)
+        assert "@file:" not in title_input
+        # Paste-only opener (just the generated ref): the instant title is the paste's topic, not the path.
+        lead = paste_preview if instruction.startswith("@file:") else instruction
+        assert derive_title(instruction, paste_preview).startswith(lead[:12])
+
+    def test_expanded_paste_ref_footer_does_not_demote_the_preview(self):
+        """The titler receives the opener AFTER @-reference expansion: the generated ref carries a
+        `--- Context Warnings ---` (or `--- Attached Context ---`) footer, which must not turn a
+        paste-only opener into "instruction + trailing preview" (live wire finding on #114984)."""
+        ref = "@file:/home/u/.hermes/attachments/pasted_content_2026-09-18_14-09-43-735_d0ee85.txt"
+        preview = "Quarterly incident analysis for the database cluster"
+        for footer in (f"\n\n--- Context Warnings ---\n- {ref}: path is outside the allowed workspace",
+                       "\n\n--- Attached Context ---\n\n### file: pasted_content.txt\n" + preview):
+            title_input = build_title_input(ref + footer, preview)
+
+            assert title_input.startswith(preview)
+            assert "---" not in title_input and "@file:" not in title_input
+            assert derive_title(ref + footer, preview).startswith("Quarterly incident analysis")
+
+    def test_title_input_budget_and_manual_attachments_stay_unread(self):
+        title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)
+
+        assert len(title_input) == MAX_TITLE_INPUT_CHARS
+        assert title_input.startswith("Describe the release plan")
+        assert title_input.endswith("p" * 20)
+        # No preview => an ordinary manual attachment ref is never read for titling.
+        assert build_title_input("Summarize @file:notes.txt", None) == "Summarize @file:notes.txt"
 
 
 
@@ -607,6 +654,62 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "and now something else", history)
         assert db.get_session_title("sess-1") == "Existing name"
         mock_auto.assert_not_called()
+
+    @pytest.mark.parametrize("title, provisional", [
+        ("Friendly greeting", True),
+        ("'Friendly greeting in chat'", True),
+        ("Friendly greeting card design", False),
+        ("Friendly greetings and pleasantries", False),
+    ])
+    def test_only_the_exact_greeting_placeholder_is_provisional(self, title, provisional):
+        """A topical title that merely starts with the phrase keeps its ``llm`` rank."""
+        from agent.title_generator import _is_provisional_greeting_title
+        assert _is_provisional_greeting_title(title) is provisional
+
+    def test_upgrades_a_provisional_greeting_on_a_substantive_second_turn(self, tmp_path):
+        """A bare "hi" opener leaves only placeholders (instant slice / the model's greeting title);
+        the next real request must still be allowed to name the session."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        answers = iter(["Friendly greeting", "Debug scheduler failures"])
+
+        def stub_call_llm(**kwargs):
+            resp = MagicMock()
+            resp.choices[0].message.content = next(answers)
+            resp.choices[0].message.reasoning = None
+            return resp
+
+        history = [{"role": "user", "content": "hi how are you"}]
+        with patch("agent.title_generator.call_llm", side_effect=stub_call_llm), \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "hi how are you", history)
+            wait_for_title_upgrades(10)
+            assert db.get_session_title_source("sess-1") == "derived"
+            history += [{"role": "assistant", "content": "Well, thanks."},
+                        {"role": "user", "content": "help me debug the scheduler"}]
+            maybe_auto_title(db, "sess-1", "help me debug the scheduler", history)
+            wait_for_title_upgrades(10)
+
+        assert db.get_session_title("sess-1") == "Debug scheduler failures"
+        assert db.get_session_title_source("sess-1") == "llm"
+
+    def test_a_placeholder_title_stops_retrying_after_the_third_turn(self, tmp_path):
+        """A derived name gets turns 2-3 to upgrade, not a model call on every later turn."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "hi", source="derived")
+        history = [{"role": "user", "content": f"turn {n}"} for n in range(3)]
+        with patch("agent.title_generator.auto_title_session") as mock_auto, \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+            assert mock_auto.call_count == 1  # turn 3: the placeholder still gets a model shot
+            history.append({"role": "user", "content": "turn 3"})
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+        assert mock_auto.call_count == 1  # turn 4: capped, no call
 
     def test_instant_title_declines_a_name_collision(self, tmp_path):
         """A colliding derived title is skipped, not scanned into 'hi #2'.

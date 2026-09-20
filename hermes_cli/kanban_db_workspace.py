@@ -17,6 +17,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 import contextlib
 
+from hermes_cli.worktree_ops import release_lsp_clients
+
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
@@ -152,6 +154,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # source tree; without this, completion would rmtree the user's data.
             # See #28818.
             if _is_managed_scratch_path(wp):
+                release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
@@ -223,6 +226,7 @@ def _cleanup_worktree_workspace(
                 return
         # No --force: git's own dirty guard re-verifies at removal time, so if
         # the tree became dirty since our check (TOCTOU) removal fails safe.
+        release_lsp_clients(str(worktree_path))
         result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
         if result.returncode != 0:
             # Windows can retain a directory handle briefly after cwd changes.
@@ -269,6 +273,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 continue
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
+                release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:

@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -434,10 +435,94 @@ class TestGatewayRuntimeStatus:
             adapter._fatal_error_code = adapter._fatal_error_message = None
             adapter._fatal_error_retryable = True
             adapter._mark_connected()
+        assert status.flush_runtime_status(timeout=2.0)
         entry = status.read_runtime_status()["platforms"]["telegram"]
         assert entry["state"] == "connected"
         assert entry["needs_attention"] is False
         assert entry["retrying_since"] is None
+
+
+class TestRuntimeStatusBackgroundWriter:
+    def test_blocked_write_does_not_block_publish_and_burst_coalesces(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        write_started = threading.Event()
+        release_write = threading.Event()
+        publish_returned = threading.Event()
+        writes = []
+
+        def controlled_write(_path, payload):
+            writes.append(payload)
+            if len(writes) == 1:
+                write_started.set()
+                assert release_write.wait(timeout=5.0)
+
+        writer = status._RuntimeStatusWriter(write_fn=controlled_write)
+        monkeypatch.setattr(status, "_runtime_status_writer", writer)
+
+        def publish_initial_status():
+            status.publish_runtime_status(
+                platform="reviewer:slack", platform_state="fatal"
+            )
+            publish_returned.set()
+
+        caller = threading.Thread(target=publish_initial_status)
+        caller.start()
+        try:
+            assert write_started.wait(timeout=2.0)
+            assert publish_returned.wait(timeout=2.0)
+            status.publish_runtime_status(
+                gateway_state="running",
+                active_work=["telegram:dm:1"],
+                multiplex_standalone_reason="single-profile",
+            )
+            status.publish_runtime_status(
+                platform="telegram",
+                platform_state="connected",
+                ingress_url="https://example.test/p/default/telegram",
+                listener_base="http://127.0.0.1:8080",
+            )
+            status.publish_runtime_status(drop_profile_platforms="reviewer")
+            for active_agents in range(50):
+                status.publish_runtime_status(active_agents=active_agents)
+        finally:
+            release_write.set()
+            caller.join(timeout=2.0)
+
+        assert writer.flush(timeout=2.0)
+        assert len(writes) == 2
+        final = writes[-1]
+        assert final["gateway_state"] == "running"
+        assert final["active_agents"] == 49
+        assert final["active_work"] == ["telegram:dm:1"]
+        assert final["multiplex_standalone_reason"] == "single-profile"
+        assert "reviewer:slack" not in final["platforms"]
+        assert final["platforms"]["telegram"]["ingress_url"].endswith("/telegram")
+        assert final["platforms"]["telegram"]["listener_base"] == "http://127.0.0.1:8080"
+
+    def test_sync_write_can_bound_a_blocked_persistence_wait(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        write_started = threading.Event()
+        release_write = threading.Event()
+
+        def blocked_write(_path, _payload):
+            write_started.set()
+            assert release_write.wait(timeout=5.0)
+
+        writer = status._RuntimeStatusWriter(write_fn=blocked_write)
+        monkeypatch.setattr(status, "_runtime_status_writer", writer)
+        try:
+            persisted = status.write_runtime_status(
+                gateway_state="starting", wait_timeout=0.05
+            )
+            assert write_started.wait(timeout=2.0)
+            assert persisted is False
+        finally:
+            release_write.set()
+        assert writer.flush(timeout=2.0)
 
 
 class TestGetProcessStartTime:
@@ -1224,6 +1309,15 @@ class TestGatewayBusyDerivation:
             gateway_running=True, gateway_state="running", active_agents=0
         ) is False
 
+    def test_degraded_gateway_with_work_is_busy_and_drainable(self):
+        # Serving with a parked platform (#91547): in-flight turns must not look idle to NAS.
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="degraded", active_agents=2
+        ) is True
+        assert status.derive_gateway_drainable(
+            gateway_running=False, gateway_state="degraded"
+        ) is False
+
 
 class TestRespawnStormBreaker:
     def test_no_storm_under_threshold(self, tmp_path, monkeypatch):
@@ -1244,6 +1338,24 @@ class TestLaunchdPlistRespawnGovernance:
         assert "<key>ThrottleInterval</key>" in plist
         assert "<key>ExitTimeOut</key>" in plist
         assert "<key>KeepAlive</key>" in plist
+
+    def test_plist_exit_timeout_uses_full_gui_domain_clamp(self, tmp_path, monkeypatch):
+        """launchd's gui domain clamps ExitTimeOut at 60s; ask for all of it.
+
+        Anything above 60 is silently clamped, anything below throws away
+        drain headroom the gateway could have used before SIGKILL.
+        """
+        import re
+
+        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
+        from hermes_cli.gateway import generate_launchd_plist
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plist = generate_launchd_plist()
+        m = re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", plist)
+        assert m, plist
+        # Ask for the whole gui-domain clamp, and leave room for post-drain cleanup inside it.
+        assert int(m.group(1)) >= LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S > LAUNCHD_STOP_CLEANUP_RESERVE_S
 
 
 class TestPermissionErrorOnLockFile:
@@ -1533,3 +1645,16 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)
+
+
+def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
+    """A watchdog-stamped ``degraded`` of a dead process is a current failure under the same rule as
+    ``startup_failed`` (#113372): kept while the operator wants the gateway running, ``stopped`` once
+    ``hermes gateway stop`` records the intent. The startup-time ``degraded`` (retryable platforms, no
+    watchdog exit_reason) of a dead process is just ``stopped``."""
+    watchdog = {"gateway_state": "degraded", "exit_reason": "loop_liveness_watchdog"}
+    assert status.retained_gateway_state(watchdog) == "degraded"
+    assert status.retained_gateway_state({**watchdog, "exit_reason": "shutdown_watchdog"}) == "degraded"
+    assert status.retained_gateway_state({**watchdog, "desired_state": "stopped"}) == "stopped"
+    assert status.retained_gateway_state({"gateway_state": "degraded", "exit_reason": None}) == "stopped"
+    assert status.retained_gateway_state({"gateway_state": "startup_failed", "exit_reason": "x"}) == "startup_failed"

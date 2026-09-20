@@ -258,7 +258,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
   return (
     <div className="relative min-w-0 flex-1">
       {open ? (
-        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) py-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 shadow-lg">
           {options.map((option, index) => (
             <RowButton
               className={cn(

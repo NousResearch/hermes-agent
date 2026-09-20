@@ -810,7 +810,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     agent._cached_system_prompt_static = parts["stable"]
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
-        agent._emit_status(warning)
+        agent._emit_diagnostic_status(warning)
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
 

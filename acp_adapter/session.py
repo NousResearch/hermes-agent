@@ -159,6 +159,9 @@ class SessionManager:
         the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
         self._sessions: Dict[str, SessionState] = {}
         self._lock = threading.Lock()
+        # Serializes DB restores: session construction runs off the event loop, so two
+        # overlapping session/load for one id must share a single agent build.
+        self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
 
@@ -178,7 +181,12 @@ class SessionManager:
         a process restart) when it is not in memory; ``None`` if unknown."""
         with self._lock:
             state = self._sessions.get(session_id)
-        return state if state is not None else self._restore(session_id)
+        if state is not None:
+            return state
+        with self._restore_lock:
+            with self._lock:
+                state = self._sessions.get(session_id)  # a concurrent restore may have installed it
+            return state if state is not None else self._restore(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
@@ -373,13 +381,17 @@ class SessionManager:
     # ---- internal -----------------------------------------------------------
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
-                    requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None):
+                    requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
+                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
+        """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
+        them from the config-declared MCP servers (fresh session)."""
         if self._agent_factory is not None:
             return self._agent_factory()
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_constants import resolve_reasoning_config
 
         config = load_config()
         model_cfg = config.get("model")
@@ -395,19 +407,28 @@ class SessionManager:
         ]
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
+            "enabled_toolsets": (list(enabled_toolsets) if enabled_toolsets is not None
+                                 else _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers)),
+            "disabled_toolsets": list(disabled_toolsets) if disabled_toolsets is not None else None,
             "model": model or default_model,
             "cwd": cwd,
+            # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
+            # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
+            # models). Resolved against the session's model so per-model overrides apply.
+            "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
+        resolve_error: Exception | None = None
         try:
             runtime = resolve_runtime_provider(
                 requested=requested_provider or config_provider, target_model=(model or default_model) or None)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
+                "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
-        except Exception:
+        except Exception as exc:
+            resolve_error = exc
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
@@ -425,7 +446,15 @@ class SessionManager:
         except Exception:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
-        agent = AIAgent(**kwargs)
+        try:
+            agent = AIAgent(**kwargs)
+        except Exception as exc:
+            # The bare-AIAgent fallback dies with "No LLM provider configured. Run `hermes setup`" on a
+            # machine that is configured and was working a call earlier; the swallowed resolution
+            # failure (revoked OAuth, disabled provider, ...) is the actionable error (#91090).
+            if resolve_error is not None:
+                raise resolve_error from exc
+            raise
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent

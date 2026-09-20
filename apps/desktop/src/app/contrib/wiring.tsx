@@ -149,6 +149,7 @@ import {
   titlebarToolsWidthCss
 } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
+import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
@@ -1272,6 +1273,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
+  // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
+  // renderer paints its own min/max/close (main decides via customWindowControls).
+  const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
@@ -1313,6 +1317,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onOpenSettings={() => navigate(SETTINGS_ROUTE)}
             tools={rightTitlebarTools}
           />
+        )}
+        {!isHudWindow() && customWindowControls && (
+          <WslgWindowControls isFullscreen={Boolean(connection?.isFullscreen)} isMaximized={Boolean(connection?.isMaximized)} />
         )}
         {children}
       </div>

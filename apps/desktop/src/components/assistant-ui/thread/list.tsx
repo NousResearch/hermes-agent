@@ -88,8 +88,8 @@ const RENDER_BUDGET = 600
 // over ALL of them — measured as the 4-zone collapse in the long-session
 // matrix (worst-second 8fps while 1-2 zones held 50+). Sharing the budget
 // keeps "screens of scrollback" constant instead of "turns per pane": a pane
-// a quarter the height gets a quarter the page, floored at a quarter budget
-// (MIN_VISIBLE_GROUPS still floors the turn count regardless of weight).
+// gets its proportional share of the page (MIN_VISIBLE_GROUPS still floors the
+// turn count regardless of weight).
 // Panes that already backfilled keep their mounted content when the count
 // changes — the share only caps where NEW backfills stop.
 const $mountedTranscriptPanes = atom(0)
@@ -118,9 +118,7 @@ const FIRST_PAINT_BUDGET = 20
 export const HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40
 
 export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): number =>
-  hidden
-    ? HIDDEN_TRANSCRIPT_RENDER_BUDGET
-    : Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+  hidden ? HIDDEN_TRANSCRIPT_RENDER_BUDGET : Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes))
 
 // "Show earlier" raises renderBudget ABOVE paneBudget (one pane page per click).
 // The render-phase cap must only snap a hot-hidden pane down to its retention
@@ -280,11 +278,20 @@ export function buildGroups(signature: string): MessageGroup[] {
 
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
-// regardless of weight. Returns the index of that first visible group.
-export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number, minVisible = 0): number {
-  let firstVisible = groups.length
+// regardless of weight (the exempt newest turn counts as one of them). With
+// `exemptNewest` the newest turn is kept AND left out of the sum, so a turn
+// whose weight is still changing cannot move the cut. Returns the index of that
+// first visible group.
+export function firstVisibleGroupIndex(
+  groups: readonly MessageGroup[],
+  budget: number,
+  minVisible = 0,
+  exemptNewest = false
+): number {
+  const budgetedEnd = exemptNewest ? Math.max(0, groups.length - 1) : groups.length
+  let firstVisible = budgetedEnd
 
-  for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
+  for (let i = budgetedEnd - 1, weight = 0; i >= 0; i--) {
     weight += groups[i].weight
     firstVisible = i
 
@@ -481,7 +488,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Cut the budget during RENDER, not in the post-commit layout effect. An
   // effect-time cut is too late: React would first build the whole tree with
-  // the full budget (up to 300 cost units of markdown + syntax highlighting),
+  // the full budget (up to 600 cost units of markdown + syntax highlighting),
   // commit it, and only then re-render at the small budget. The render-phase
   // state adjustment restarts this component immediately — before any child
   // renders — so the heavy commit never happens.
@@ -579,15 +586,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }))
   }, [groups, weightSignature])
 
-  // The turn floor applies to a real page only. During the first-paint budget
-  // the point is a small synchronous commit; forcing 8 turns into it would put
-  // back exactly the freeze FIRST_PAINT_BUDGET exists to avoid, and the rAF
-  // backfill a frame later fills them in anyway.
-  const hiddenCount = firstVisibleGroupIndex(
-    weightedGroups,
-    renderBudget,
-    renderBudget >= paneBudget ? MIN_VISIBLE_GROUPS : 0
-  )
+  // The turn floor and the newest-turn exemption apply to a real page only.
+  // During the first-paint budget the point is a small synchronous commit;
+  // forcing 8 turns into it — or a whole extra turn behind an unbudgeted
+  // newest one — would put back exactly the freeze FIRST_PAINT_BUDGET exists
+  // to avoid, and the rAF backfill a frame later fills them in anyway.
+  //
+  // On a real page the newest turn is exempt from the history budget so its
+  // growing — then completed — weight never advances the cut boundary. A
+  // moving cut unmounts older rows, shrinks scrollHeight, and the browser
+  // clamp looks like a user scroll-up to use-stick-to-bottom.
+  const fullPage = renderBudget >= paneBudget
+
+  const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this
   // array, and an inline slice handed it a fresh array every render — so the
@@ -914,8 +925,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     stopScroll()
 
+    // Every scrollTop this effect writes is read back here, so the `scroll`
+    // event it fires is recognised as ours below and cannot cancel the restore.
+    let ownScrollTop: number | null = null
+
+    const applyTarget = (node: HTMLElement) => {
+      node.scrollTop = threadScrollTargetTop(target, node)
+      ownScrollTop = node.scrollTop
+    }
+
     applyRestoreRef.current = () => {
-      el.scrollTop = threadScrollTargetTop(target, el)
+      applyTarget(el)
     }
 
     applyRestoreRef.current()
@@ -949,7 +969,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       stableFrames = height === lastHeight && !clamped ? stableFrames + 1 : 0
       lastHeight = height
-      node.scrollTop = threadScrollTargetTop(target, node)
+      applyTarget(node)
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
@@ -1009,13 +1029,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       // ResizeObserver runs before paint; waiting for the next settle rAF
       // exposes a frame at the old offset when deferred markdown grows.
-      // Reading offsets still ignore composer-only resizes once settled.
-      if (
-        !loadSettledRef.current ||
-        target.kind === 'bottom' ||
-        shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)
-      ) {
-        el.scrollTop = threadScrollTargetTop(target, el)
+      // Once settled, only a transcript-row height change may re-pin — for a
+      // bottom target too: a composer-only resize (every keystroke) used to
+      // yank a view the user had moved away from the bottom back down.
+      if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
+        applyTarget(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
     })
@@ -1050,6 +1068,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
     }
 
+    // A position neither this effect nor use-stick-to-bottom produced is the
+    // user's (scrollbar drag, rail jump, find-in-page reveal) and ends the
+    // restore like wheel input does — otherwise the next ResizeObserver tick
+    // would rewrite scrollTop over a genuine scroll.
+    const onScroll = () => {
+      if (el.scrollTop === ownScrollTop || el.scrollTop === threadScrollTargetTop(target, el)) {
+        return
+      }
+
+      cancelRestore()
+    }
+
     jumpRestoreRef.current = () => {
       cancelRestore()
       // A jump replaces reading intent, including an in-flight prepend anchor.
@@ -1059,11 +1089,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       liveScrollStateRef.current = target
 
       applyRestoreRef.current = () => {
-        el.scrollTop = threadScrollTargetTop(target, el)
+        applyTarget(el)
       }
 
       loadSettledRef.current = true
-      el.scrollTop = threadScrollTargetTop(target, el)
+      applyTarget(el)
 
       if (contentRef.current) {
         resizeObserver.observe(contentRef.current)
@@ -1073,6 +1103,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('pointerdown', cancelRestore, { passive: true })
     el.addEventListener('keydown', cancelRestore)
 
@@ -1082,6 +1113,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       resizeObserver.disconnect()
       jumpRestoreRef.current = null
       el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('scroll', onScroll)
       el.removeEventListener('pointerdown', cancelRestore)
       el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)

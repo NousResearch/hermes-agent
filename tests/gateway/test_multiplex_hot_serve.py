@@ -15,6 +15,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.run_profile_reconcile import profile_serve_signature
+from gateway.status import flush_runtime_status
 
 
 class _Adapter:
@@ -75,6 +76,7 @@ def _mkprofile(home, name, env=""):
 
 
 def _served_record(home):
+    flush_runtime_status()
     return json.loads((home / "gateway_state.json").read_text(encoding="utf-8")).get("served_profiles")
 
 

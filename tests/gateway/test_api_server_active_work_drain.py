@@ -8,6 +8,7 @@ turns once the gateway starts draining.
 """
 
 import asyncio
+import hashlib
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,7 +18,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
@@ -408,8 +411,77 @@ class TestInterruptActiveRuns:
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
         healthy.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
+    def test_shutdown_marker_does_not_swallow_status_failures(self):
+        """``_set_run_status`` already contains the only fallible step (store persist);
+        the shutdown marker must not hide a programming error behind a second net."""
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        with patch.object(adapter, "_set_run_status", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                _api_runs._mark_shutdown_interrupted_runs(adapter, ["run-1"])
+        assert adapter._shutdown_interrupted_run_ids == {"run-1"}
+
 
 class TestShutdownInterruptReachesEveryApiTurn:
+    @pytest.mark.parametrize("late_outcome", ["success", "failure"])
+    @pytest.mark.asyncio
+    async def test_shutdown_terminalizes_durable_run_before_late_completion(
+        self, tmp_path, late_outcome
+    ):
+        runner, _adapter = make_restart_runner()
+        api = APIServerAdapter(PlatformConfig(enabled=True))
+        api._run_idempotency_store.close()
+        api._run_idempotency_store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        runner.adapters = {Platform.API_SERVER: api}
+        app = _make_admission_app(api)
+
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        agent = _parked_agent(loop, started, release)
+        if late_outcome == "failure":
+            def _late_failure(user_message=None, conversation_history=None, task_id=None):
+                loop.call_soon_threadsafe(started.set)
+                release.wait(_TURN_UNBLOCK_TIMEOUT)
+                raise RuntimeError("late failure")
+
+            agent.run_conversation.side_effect = _late_failure
+        run_id = None
+        try:
+            with patch.object(api, "_create_agent", return_value=agent):
+                async with TestClient(TestServer(app)) as client:
+                    request = asyncio.ensure_future(
+                        client.post(
+                            "/v1/runs",
+                            json={"input": "hello"},
+                            headers={"Idempotency-Key": "shutdown-run"},
+                        )
+                    )
+                    await asyncio.wait_for(started.wait(), _TURN_UNBLOCK_TIMEOUT)
+                    response = await request
+                    assert response.status == 202
+                    run_id = (await response.json())["run_id"]
+
+                    runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+                    for _ in range(100):
+                        if run_id not in api._active_run_tasks:
+                            break
+                        await asyncio.sleep(0.01)
+        finally:
+            release.set()
+            api._run_idempotency_store.close()
+
+        scope = hashlib.sha256(b"default\0unauthenticated-test-listener").hexdigest()
+        status_store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        try:
+            record = status_store.status_for_run(scope, run_id)
+        finally:
+            status_store.close()
+        assert record is not None
+        assert record["status"]["status"] == "interrupted"
+        assert record["status"]["last_event"] == "run.interrupted"
+        assert record["status"]["error"] == "Gateway shutdown interrupted the run."
+        assert api._shutdown_interrupted_run_ids == set()
+
     @pytest.mark.asyncio
     async def test_chat_completions_turn_is_interrupted(self):
         """A non-``/v1/runs`` API turn, end to end through the real handler.
@@ -539,7 +611,7 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.write_runtime_status"), \
+             patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"):
             await runner.stop()
 
@@ -591,7 +663,7 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(type(loop), "time", _fast_time)
         try:
             with patch("gateway.status.remove_pid_file"), \
-                 patch("gateway.status.write_runtime_status"), \
+                 patch("gateway.status.publish_runtime_status"), \
                  patch("cron.scheduler.mark_job_run"):
                 await runner.stop()
         finally:
@@ -603,5 +675,4 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
-
 

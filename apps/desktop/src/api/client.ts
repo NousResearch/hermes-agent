@@ -139,7 +139,7 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //
 // A profile is not a machine-global name — it belongs to ONE gateway. The
 // Capabilities surface can be pointed at any (connection, profile) pair
-// (SkillsView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
+// (CapabilitiesView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
 // its REST helpers accept either the legacy string form or an explicit scope
 // object:
 //

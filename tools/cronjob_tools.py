@@ -397,9 +397,9 @@ def _reap_stale_executions(job_name: str) -> None:
     try:
         # Reap any execution row this job (or any job) left stranded 'claimed'/ 'running' by a dead owner
         # process -- e.g. a PRIOR one-shot `hermes cron run` invocation whose dispatched runner died with
-        # the exiting process before writing a terminal status (issue #86721). Safe and cheap: only
-        # provably-dead owners (PID gone, or PID reused by a different process per its start time) are
-        # reaped; a genuinely live owner's row is left untouched.
+        # the exiting process before writing a terminal status (issue #86721). Safe and cheap: provably-dead
+        # owners (PID gone, or PID reused by a different process per its start time) are reaped, as is a
+        # live owner whose claim is older than the derived stale bound (the process itself is not killed).
         from cron.executions import recover_interrupted_executions
         _reclaimed = recover_interrupted_executions()
         if _reclaimed:
@@ -456,6 +456,12 @@ def _try_dispatch_background_run(
     Returns None when background delivery is unavailable (caller runs sync); ``{"claimed":
     False}`` on a lost claim; ``{"claimed": True, "dispatched": True, "delegation_id"}``; or
     ``{"claimed": True, "dispatched": False, ...}`` when the pool was full and it ran inline."""
+    job_id = job["id"]
+    job_name = str(job.get("name") or job_id)
+    # Reap BEFORE the async/sync branch: the one-shot `hermes cron run` path returns early
+    # below, and this is the only moment it heals a stale claim left by a killed prior run (#113923).
+    _reap_stale_executions(job_name)
+
     # Finite sessions cannot route a detached result back after the turn ends (delegate_task's gate).
     try:
         from gateway.session_context import async_delivery_supported
@@ -463,10 +469,6 @@ def _try_dispatch_background_run(
             return None
     except Exception:
         pass
-
-    job_id = job["id"]
-    job_name = str(job.get("name") or job_id)
-    _reap_stale_executions(job_name)
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).

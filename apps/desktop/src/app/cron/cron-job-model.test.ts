@@ -8,6 +8,7 @@ import {
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
+import { nextRunOverdueMs } from './job-state'
 
 describe('jobIsScriptOnly', () => {
   it('is true when no_agent is set and a script is present', () => {
@@ -141,5 +142,23 @@ describe('cronEditorUpdates', () => {
 
     expect('model' in updates).toBe(false)
     expect('provider' in updates).toBe(false)
+  })
+})
+
+describe('nextRunOverdueMs', () => {
+  const now = Date.parse('2026-09-17T20:35:00+04:00')
+
+  it('flags an active job whose stored slot sits past the scheduler grace (#114309)', () => {
+    const job = { enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'scheduled' }
+
+    expect(nextRunOverdueMs(job, now)).toBe(now - Date.parse(job.next_run_at))
+  })
+
+  it('keeps upcoming, within-grace, paused and unparseable slots as plain next runs', () => {
+    expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T21:00:00+04:00' }, now)).toBeNull()
+    expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T20:30:00+04:00' }, now)).toBeNull()
+    expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)).toBeNull()
+    expect(nextRunOverdueMs({ enabled: false, next_run_at: '2026-09-17T13:34:18+04:00' }, now)).toBeNull()
+    expect(nextRunOverdueMs({ enabled: true, next_run_at: 'not-a-date' }, now)).toBeNull()
   })
 })

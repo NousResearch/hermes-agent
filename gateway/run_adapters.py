@@ -657,8 +657,12 @@ class GatewayAdapterLifecycleMixin:
             if not await _idle(10):  # re-check every 10 seconds
                 return
 
-    def _flag_reconnect_needs_attention(self, platform, info: dict, now: float) -> None:
-        """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker."""
+    def _flag_reconnect_needs_attention(
+        self, platform, info: dict, now: float, *, status_key: Optional[str] = None
+    ) -> None:
+        """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
+        is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
+        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key."""
         from gateway.run import _reconnect_needs_attention
         if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
             return
@@ -668,10 +672,10 @@ class GatewayAdapterLifecycleMixin:
             "%s has been failing/reconnecting continuously for %.1f hours (%d attempts) — flagging "
             "NEEDS_ATTENTION. Retries continue, but this usually means a permanent problem (revoked "
             "credentials, missing intents, broken sidecar). Check `hermes status` / `/platform list`.",
-            platform.value, queued_for / 3600.0, info.get("attempts", 0),
+            status_key or platform.value, queued_for / 3600.0, info.get("attempts", 0),
         )
         self._update_platform_runtime_status(
-            platform.value, platform_state="retrying", needs_attention=True,
+            status_key or platform.value, platform_state="retrying", needs_attention=True,
             retrying_since=(datetime.now(timezone.utc) - timedelta(seconds=queued_for)).isoformat(),
         )
 
@@ -842,18 +846,18 @@ class GatewayAdapterLifecycleMixin:
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
-            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
             # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
             with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
-                from gateway.status import write_runtime_status
-                write_runtime_status(served_profiles=[])
+                from gateway.status import publish_runtime_status
+                publish_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
         except Exception:
             return 0
-        active = get_active_profile_name() or "default"
+        active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
@@ -893,7 +897,7 @@ class GatewayAdapterLifecycleMixin:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
             self._note_served_profiles(profile_homes)
@@ -902,7 +906,7 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            publish_runtime_status(served_profiles=served)
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
@@ -1191,8 +1195,10 @@ class GatewayAdapterLifecycleMixin:
 
     async def _run_secondary_profile_reconnect(self, profile_name: str, platform: Platform) -> None:
         """Reconnect a retryable secondary adapter under its own profile scope."""
-        from gateway.run import _reconnect_backoff
+        from gateway.run import _profile_runtime_scope, _reconnect_backoff
         attempts = 0
+        # Same escalation shape as the primary queue entry; ``queued_at`` is this task's start.
+        queue_info = {"queued_at": time.monotonic(), "attempts": 0}
         current_task = asyncio.current_task()
         try:
             while self._running:
@@ -1231,6 +1237,13 @@ class GatewayAdapterLifecycleMixin:
                 if not self._running:
                     return
                 attempts += 1
+                queue_info["attempts"] = attempts
+                profile_home = self._profile_home_or_none(profile_name)
+                # The attempt above already hydrated this profile's secret sources off-loop.
+                with self._scope_or_null(
+                        functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
+                    self._flag_reconnect_needs_attention(
+                        platform, queue_info, time.monotonic(), status_key=f"{profile_name}:{platform.value}")
                 backoff = _reconnect_backoff(attempts)
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name
@@ -1348,34 +1361,49 @@ class GatewayAdapterLifecycleMixin:
         """``scope_factory(profile_home)`` or a nullcontext when the profile home is unknown."""
         return scope_factory(profile_home) if profile_home is not None else contextlib.nullcontext()
 
-    @staticmethod
-    def _stamp_event_profile(event, profile_name: str) -> None:
-        """Best-effort: stamp ``source.profile`` on an inbound event that has none yet."""
-        with suppress(Exception):
-            if getattr(event, "source", None) is not None and not event.source.profile:
-                event.source.profile = profile_name
+    def _canonicalize(self, source, *, transport_profile: Optional[str] = None,
+                      primary_home: Optional[Path] = None):
+        """Runner-side identity seam: the pinned :class:`RoutingIdentity` of *source*, resolving it
+        once when absent. ``transport_profile`` names a secondary's own bot (its handlers know it by
+        construction); ``None`` = the primary/shared bot. ``None`` result = rejected route under
+        multiplexing (the caller drops; the ingress gate warns once) or a source that cannot resolve
+        (bare test rigs) — the legacy readers then stay in force."""
+        if source is None:
+            return None
+        from gateway.session_identity import canonical_identity
+        try:
+            identity = canonical_identity(
+                source, runner=self, transport_profile=transport_profile, primary_home=primary_home)
+        except Exception:
+            logger.debug("identity resolution failed; legacy readers stay in force", exc_info=True)
+            return None
+        if transport_profile and not getattr(source, "profile", None):
+            with suppress(Exception):
+                source.profile = transport_profile  # a secondary's own event is at least its own
+        return identity
 
     def _make_profile_message_handler(self, profile_name: str):
-        """Message handler that stamps source.profile, then delegates under the profile scope
-        (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be visible here)."""
+        """Message handler that canonicalizes the event's identity FIRST, then delegates under the
+        profile scope (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be
+        visible here)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event):
-            self._stamp_event_profile(event, profile_name)
+            self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
             async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_message(event)
 
         return _handler
 
     def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile, then resolve busy policy under the profile scope
+        """Busy-path twin: canonicalize FIRST, then resolve busy policy under the profile scope
         (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event, _session_key):
-            self._stamp_event_profile(event, profile_name)
+            self._canonicalize(event.source, transport_profile=profile_name)
             async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
@@ -1415,32 +1443,13 @@ class GatewayAdapterLifecycleMixin:
         return _handler
 
     def _admit_primary_source(self, source, default_home: Path) -> Optional[Path]:
-        """Stamp the transport home (authorization) and routed profile on a primary-adapter source and
-        return the runtime home to scope the turn under; ``None`` when the route targets an unserved
-        profile. ``_authorization_profile_home`` is in-process only (serialization ignores dynamic attrs);
-        route ≠ admitting bot."""
-        source._authorization_profile_home = default_home
-        if (
-            not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-            and not self._stamp_routed_profile(source)
-        ):
-            source.profile_route_rejected = True
-        if getattr(source, "profile_route_rejected", False) is True:
-            return None
-        return (
-            self._resolve_profile_home_for_source(source)
-            if getattr(source, "profile", None) else default_home
-        )
-
-    def _stamp_routed_profile(self, source) -> bool:
-        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
-        from gateway.profile_routing import ProfileRouteRejected
-        try:
-            source.profile = self._profile_name_for_source(source)
-        except ProfileRouteRejected:
-            return False
-        return True
+        """Canonicalize a primary-adapter source (transport home for authorization, routed profile
+        for the runtime) and return the runtime home to scope the turn under; ``None`` when the
+        route targets an unserved profile. Route ≠ admitting bot."""
+        identity = self._canonicalize(source, primary_home=default_home)
+        if identity is not None:
+            return identity.runtime_home
+        return None if getattr(source, "profile_route_rejected", False) is True else default_home
 
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
@@ -1482,8 +1491,7 @@ class GatewayAdapterLifecycleMixin:
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event, source):
-            if getattr(source, "profile", None) is None:
-                source.profile = profile_name
+            self._canonicalize(source, transport_profile=profile_name)
             with self._scope_or_null(_profile_runtime_scope, profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
@@ -1495,8 +1503,10 @@ class GatewayAdapterLifecycleMixin:
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
-            source._authorization_profile_home = default_home
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            profile_home = self._admit_primary_source(source, default_home)
+            if profile_home is None:
+                return None  # rejected route: same disposition as the message ingress gate
+            with _profile_runtime_scope(profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
@@ -1608,8 +1618,9 @@ class GatewayAdapterLifecycleMixin:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
                 return self._is_user_authorized(source)
-            source._authorization_profile_home = transport_home
-            if not self._stamp_routed_profile(source):
+            # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
+            # profile's pairing store is consulted, allowlists read under the transport home.
+            if self._canonicalize(source, primary_home=transport_home) is None:
                 return False  # fail-closed, like the ``_handle_message`` ingress gate
             return self._is_user_authorized_for_source(source)
         return check

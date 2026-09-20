@@ -103,10 +103,14 @@ def _locked(home: Path | str):
 
 
 def _read(path: Path) -> dict[str, Any] | None:
+    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        raise ValueError(f"ticket {path.name} is not a JSON object ({type(record).__name__})")
+    return record
 
 
 # Tickets already reported unreadable by this process. The live poller rescans the
@@ -163,6 +167,7 @@ def _write(path: Path, record: dict[str, Any]) -> None:
 def deliver_to_live_owner(
     profile_home: Path | str, owner: dict[str, Any], message: str,
     *, delivery_id: str | None = None, author: dict[str, Any] | None = None,
+    notification_category: str = "result",
 ) -> dict[str, Any]:
     """Return durable admission immediately, without waiting for the owner.
 
@@ -177,12 +182,15 @@ def deliver_to_live_owner(
         path = root / f"{key}.json"
         existing = _read(path)
         if existing is not None:
-            if existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author:
+            if (existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author
+                    or existing.get("notification_category", "result") != notification_category):
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))
+        if notification_category == "diagnostic":
+            record["notification_category"] = notification_category
         _write(path, record)
         return record
 

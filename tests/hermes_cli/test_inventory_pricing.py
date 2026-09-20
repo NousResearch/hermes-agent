@@ -46,6 +46,18 @@ def test_apply_pricing_formats_per_model_prices(monkeypatch):
     assert pricing["b/free"]["input"] == "free"
 
 
+def test_apply_pricing_flags_subscription_billed_rows_for_nous_only(monkeypatch):
+    """The GUI picker needs to know a row's listed price does not apply to this user."""
+    shared = {"prompt": "0.000003", "completion": "0.000015", "billing_mode": "openai_token_sharing"}
+    _patch_pricing(monkeypatch, free_tier=True,
+                   pricing={"nous": {"openai/gpt": shared}, "openrouter": {"openai/gpt": shared}})
+    rows = [{"slug": "nous", "models": ["openai/gpt"]}, {"slug": "openrouter", "models": ["openai/gpt"]}]
+    inv._apply_pricing(rows)
+
+    assert rows[0]["pricing"]["openai/gpt"]["billing_mode"] == "openai_token_sharing"
+    assert "billing_mode" not in rows[1]["pricing"]["openai/gpt"]
+
+
 def test_apply_pricing_free_models_get_flat_100_percent_sale(monkeypatch):
     """Free models show -100% chrome; was_* only when original was served."""
     _patch_pricing(

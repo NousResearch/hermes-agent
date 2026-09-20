@@ -219,14 +219,23 @@ def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
     return bool(pricing.get(model_id)) and _zero_priced(pricing.get(model_id), ("prompt", "completion"), "1")
 
 
+def _needs_no_nous_credits(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
+    """True when a $0-balance account can run *model_id*: it is free, or the gateway marked it as
+    billed to the caller's ChatGPT subscription."""
+    from hermes_cli.models_pricing import is_subscription_billed
+
+    return _is_model_free(model_id, pricing) or is_subscription_billed(pricing.get(model_id))
+
+
 def partition_nous_models_by_tier(
     model_ids: list[str], pricing: dict[str, dict[str, str]], free_tier: bool
 ) -> tuple[list[str], list[str]]:
-    """Split Nous models into (selectable, unavailable): free-tier users may only select free models
-    (paid ones are returned as unavailable, shown grayed out)."""
+    """Split Nous models into (selectable, unavailable): free-tier users may only select models that
+    need no Nous credits — free ones, plus those served on their ChatGPT subscription (paid ones are
+    returned as unavailable, shown grayed out)."""
     if not free_tier or not pricing:  # no pricing → can't determine, show everything
         return (model_ids, [])
-    selectable = [mid for mid in model_ids if _is_model_free(mid, pricing)]
+    selectable = [mid for mid in model_ids if _needs_no_nous_credits(mid, pricing)]
     return (selectable, [mid for mid in model_ids if mid not in selectable])
 
 
@@ -484,6 +493,9 @@ def recommended_nous_default_model() -> dict[str, Any]:
     model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
     if free_tier:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
+        # The silent default stays a free model: a subscription-billed row spends the user's ChatGPT
+        # plan limits, which is theirs to opt into from the picker.
+        model_ids = [mid for mid in model_ids if _is_model_free(mid, pricing)] or model_ids
     return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
 

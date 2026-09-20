@@ -16,6 +16,7 @@ logger = logging.getLogger("hermes_cli.auth")
 _CUSTOM_LABEL = "Enter custom model name"
 _SKIP_LABEL = "Skip (keep current)"
 _CURRENT_SUFFIX = "  ← currently in use"
+_SUBSCRIPTION_BILLED_SUFFIX = "  ChatGPT subscription"
 
 
 def _confirm_selection_guards(
@@ -59,8 +60,10 @@ class _ModelPickerRows:
         self, all_models: List[str], pricing: Optional[Dict[str, Dict[str, str]]], *,
         current_model: str, sale_chrome: bool,
     ) -> None:
-        from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
+        from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount, is_subscription_billed
         self.current_model = current_model
+        # Rows billed to the user's ChatGPT subscription: the listed price does not apply to them.
+        self._subscription_billed = {m for m in all_models if pricing and is_subscription_billed(pricing.get(m))}
         self.has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
         # Leave room for a leading "★ " on sale rows (Nous only).
         name_pad = 3 if sale_chrome else 2
@@ -82,7 +85,7 @@ class _ModelPickerRows:
             pct: int | None = None
             was_inp = was_out = ""
             inp, out, cache = "", "", ""
-            if p:
+            if p and mid not in self._subscription_billed:
                 inp = _format_price_per_mtok(p.get("prompt", ""))
                 out = _format_price_per_mtok(p.get("completion", ""))
                 cache_read = p.get("input_cache_read", "")
@@ -121,6 +124,8 @@ class _ModelPickerRows:
         if self.has_cache:
             price_part += f"  {cache:>{self.cache_col}}"
         segs.append((price_part, None))
+        if mid in self._subscription_billed:
+            segs.append((_SUBSCRIPTION_BILLED_SUFFIX, "dim"))
         if on_sale:
             segs.append((f"  -{pct}%", "yellow"))
             if was_inp or was_out:

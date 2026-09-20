@@ -576,9 +576,11 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
     ``cached_only`` never hits the network: unknown Nous entitlement fails closed (``free_tier_pending``,
     all models locked) and missing pricing is marked ``pricing_pending``."""
     from hermes_cli.models_pricing import (
+        SUBSCRIPTION_BILLING_MODE,
         _format_price_per_mtok,
         compute_sale_discount,
         get_pricing_for_provider,
+        is_subscription_billed,
     )
     from hermes_cli.models import (
         check_nous_free_tier,
@@ -635,6 +637,8 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 "cache": _format_price_per_mtok(cache_raw) if cache_raw else None,
                 "free": inp == "free" and out in ("free", ""),  # both input and output cost nothing
             }
+            if slug == "nous" and is_subscription_billed(p):
+                entry["billing_mode"] = SUBSCRIPTION_BILLING_MODE  # listed price does not apply to this user
             # Sale chrome is Nous Portal-only (other catalogs' nested pricing.original is ignored); free
             # models get flat -100% chrome, was_* only when the gateway served an original.
             if slug == "nous":

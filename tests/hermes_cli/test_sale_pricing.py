@@ -185,3 +185,34 @@ def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     assert "a/b" in fetch_models_with_pricing(base_url="https://example.test")
     assert len(calls) == 1
 
+
+
+def _catalog_response(payload):
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(payload).encode()
+    resp.__enter__ = lambda self: self
+    resp.__exit__ = lambda *a: False
+    return resp
+
+
+def test_fetch_models_with_pricing_copies_subscription_billing_mode_for_nous_only(monkeypatch):
+    """The gateway marks rows served on the caller's ChatGPT subscription; only the Nous catalog is
+    trusted to say so, and only the known value is carried."""
+    payload = {"data": [
+        {"id": "openai/gpt-shared", "billing_mode": "openai_token_sharing",
+         "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+        {"id": "openai/gpt-other", "billing_mode": "something_else",
+         "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+    ]}
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request",
+                        lambda req, timeout=8.0: _catalog_response(payload))
+
+    models_pricing._pricing_cache.clear()
+    nous = fetch_models_with_pricing(api_key="sk-test", base_url="https://example.test",
+                                     force_refresh=True, include_sale_original=True)
+    assert nous["openai/gpt-shared"]["billing_mode"] == "openai_token_sharing"
+    assert nous["openai/gpt-shared"]["prompt"] == "0.000002"  # listed price is left alone
+    assert "billing_mode" not in nous["openai/gpt-other"]
+
+    other = fetch_models_with_pricing(api_key="sk-test", base_url="https://example.test", force_refresh=True)
+    assert "billing_mode" not in other["openai/gpt-shared"]

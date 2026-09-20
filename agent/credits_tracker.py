@@ -133,7 +133,8 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     """True when *model* is a Nous free-tier model, using ONLY local data: (1) ``:free`` suffix — canonical
     Nous free SKU marker; (2) ``stealth/`` prefix — stealth-preview SKUs are free without the suffix
     (naming-convention trust: a PAID ``stealth/`` model would wrongly suppress the banner); (3) a PEEK into
-    ``hermes_cli.models``' pricing cache (filled by the model picker; a miss never fetches). Fail-open to
+    ``hermes_cli.models``' pricing cache (filled by the model picker; a miss never fetches), where a row
+    billed to the user's ChatGPT subscription counts too: it runs on a depleted account just the same. Fail-open to
     False (depleted notice still shows): a wrong warning is recoverable noise; hiding it masks a real block."""
     if not model:
         return False
@@ -147,11 +148,11 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     if _is_nous_welcome_route(base_url):
         return True
     try:
-        from hermes_cli.models import _is_model_free
+        from hermes_cli.models import _needs_no_nous_credits
         from hermes_cli.models_pricing import peek_cached_pricing
 
         pricing = peek_cached_pricing(base_url)  # owns the /v1-suffix and auth-state key details
-        return bool(pricing) and _is_model_free(model, pricing)
+        return bool(pricing) and _needs_no_nous_credits(model, pricing)
     except Exception:
         return False
 

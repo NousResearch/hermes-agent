@@ -182,6 +182,19 @@ class TestPartitionNousModelsByTier:
         assert unav == []
 
 
+    def test_subscription_billed_model_is_selectable_on_free_tier(self):
+        """A row the gateway serves on the user's ChatGPT subscription needs no Nous credits, so a
+        free-tier user may select it whatever price it lists."""
+        models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4", "xiaomi/mimo-v2-pro"]
+        pricing = {
+            "anthropic/claude-opus-4.6": self._PAID,
+            "openai/gpt-5.4": {**self._PAID, "billing_mode": "openai_token_sharing"},
+            "xiaomi/mimo-v2-pro": self._FREE,
+        }
+        sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
+        assert sel == ["openai/gpt-5.4", "xiaomi/mimo-v2-pro"]
+        assert unav == ["anthropic/claude-opus-4.6"]
+
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]

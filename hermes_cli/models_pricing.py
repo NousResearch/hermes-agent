@@ -189,6 +189,16 @@ def _pricing_entry(pricing: dict, prompt_key: str = "prompt", completion_key: st
     return entry
 
 
+# Nous gateway ``billing_mode`` on a catalog row: served on the caller's own ChatGPT subscription
+# (OpenAI token sharing), so it costs no Nous credits whatever price the row lists.
+SUBSCRIPTION_BILLING_MODE = "openai_token_sharing"
+
+
+def is_subscription_billed(entry: Any) -> bool:
+    """True when a picker pricing *entry* is billed to the caller's ChatGPT subscription."""
+    return isinstance(entry, dict) and entry.get("billing_mode") == SUBSCRIPTION_BILLING_MODE
+
+
 def _per_token(per_mtok: Any) -> str:
     """$/MTok → the per-token price string the picker expects."""
     return str(float(per_mtok) / 1_000_000)
@@ -210,7 +220,8 @@ def fetch_models_with_pricing(
     """Fetch ``/v1/models`` (any OpenRouter-compatible endpoint) → ``{model_id: {prompt, completion,
     ...}}``, cached per *base_url* and per credential so one caller's catalog never answers
     another's read. *include_sale_original* (Nous Portal only) copies the gateway's pre-discount
-    ``pricing.original`` rates through as a nested ``original`` dict for sale chrome."""
+    ``pricing.original`` rates through as a nested ``original`` dict for sale chrome, and the row's
+    ``billing_mode`` when it is :data:`SUBSCRIPTION_BILLING_MODE` (no other catalog is trusted to say so)."""
     from hermes_cli.models import _HERMES_USER_AGENT
     url_root = (base_url or "").rstrip("/")
     cache_key = url_root + _pricing_auth_fingerprint(api_key)
@@ -243,6 +254,8 @@ def fetch_models_with_pricing(
                               if original.get(key) not in (None, "")}
                 if orig_entry.get("prompt") or orig_entry.get("completion"):
                     entry["original"] = orig_entry
+            if include_sale_original and item.get("billing_mode") == SUBSCRIPTION_BILLING_MODE:
+                entry["billing_mode"] = SUBSCRIPTION_BILLING_MODE
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)

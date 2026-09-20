@@ -339,6 +339,23 @@ class TestIsFreeTierModel:
         assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/v1/") is True
 
 
+    def test_subscription_billed_model_suppresses_depleted(self, monkeypatch):
+        """A model billed to the user's ChatGPT subscription keeps running at $0 balance, so the
+        depleted notice ("run /topup") would be wrong for it."""
+        from agent.credits_tracker import is_free_tier_model
+        from hermes_cli import models_pricing
+
+        paid = {"prompt": "0.000001", "completion": "0.000002"}
+        monkeypatch.setattr(models_pricing, "_pricing_cache", {
+            "https://inference-api.nousresearch.com": {
+                "openai/gpt-shared": {**paid, "billing_mode": "openai_token_sharing"},
+                "openai/gpt-billed": paid,
+            }
+        })
+        base = "https://inference-api.nousresearch.com/v1"
+        assert is_free_tier_model("openai/gpt-shared", base) is True
+        assert is_free_tier_model("openai/gpt-billed", base) is False
+
     def test_nous_welcome_host_is_free_without_pricing(self, monkeypatch):
         """Anything the welcome host serves is the free tier, with no pricing lookup: the portal seeds
         paid_access=False for a free-tier identity ($0 by design), and that must never raise

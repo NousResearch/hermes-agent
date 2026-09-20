@@ -969,6 +969,8 @@ hermes doctor [--fix]
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
 
+Exit status: `0` when the report lists no unresolved problems, `1` when at least one remains (including problems `--fix` could not repair), so a health gate or CI step can trust `hermes doctor` as a check.
+
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 
 Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):

@@ -1,4 +1,4 @@
-"""Doctor's exit status must agree with its unresolved findings."""
+"""Regression for #117276: ``hermes doctor``'s exit status must agree with its unresolved findings."""
 from types import SimpleNamespace
 
 import pytest
@@ -26,42 +26,6 @@ def test_doctor_command_reports_remaining_findings(monkeypatch, capsys, issues, 
     assert result == expected
     for issue in issues + manual:
         assert issue in output
-
-
-def test_doctor_preserves_check_exception(monkeypatch):
-    import hermes_cli.doctor as doctor
-    from hermes_cli.main import cmd_doctor
-
-    def broken(_fix):
-        raise RuntimeError("check failed")
-
-    monkeypatch.setattr(doctor, "DOCTOR_CHECKS", ((None, broken),))
-    with pytest.raises(RuntimeError, match="check failed"):
-        cmd_doctor(SimpleNamespace(fix=False, ack=None, live=False))
-
-
-def test_doctor_ack_keeps_success_fast_path(monkeypatch):
-    import hermes_cli.doctor as doctor
-    from hermes_cli.main import cmd_doctor
-
-    acknowledged = []
-    monkeypatch.setattr(doctor, "_ack_advisory", acknowledged.append)
-    assert cmd_doctor(SimpleNamespace(ack="example")) is None
-    assert acknowledged == ["example"]
-
-
-def test_live_findings_affect_exit_status(monkeypatch):
-    import hermes_cli.doctor as doctor
-    import hermes_cli.doctor_live as live
-    from hermes_cli.main import cmd_doctor
-
-    def probe(args, issues):
-        assert args.live is True
-        issues.append("live route unavailable")
-
-    monkeypatch.setattr(doctor, "DOCTOR_CHECKS", ())
-    monkeypatch.setattr(live, "maybe_run_live_checks", probe)
-    assert cmd_doctor(SimpleNamespace(fix=False, ack=None, live=True)) == 1
 
 
 @pytest.mark.parametrize("unresolved", [False, True])

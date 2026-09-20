@@ -326,6 +326,50 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
+    @pytest.mark.parametrize("host_needs_bypass", [True, False])
+    def test_launch_mirrors_the_session_lane_sandbox_bypass(self, tmp_path, host_needs_bypass):
+        """The real-profile launch must apply the same Chromium sandbox bypass as the session lane.
+
+        ``_launch_real_profile_chrome`` builds the Chrome argv itself, so agent-browser's
+        ``_apply_chromium_sandbox_args`` — the only place the session lane's bypass lands — never
+        runs for this lane. On a root / Docker / AppArmor-userns host Chromium then exits at once
+        ("Running as root without --no-sandbox is not supported"), so the bypass has to be mirrored
+        here. It must stay conditional: on a host that can sandbox, neither flag appears.
+        """
+        import tools.browser_tool as bt
+        self._reset()
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt_session, "_needs_chromium_sandbox_bypass",
+                          return_value=host_needs_bypass), \
+             patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            bt_real_profile._real_profile_cdp()
+        argv = captured["chrome_argv"]
+        # Bypass present exactly when the host needs it — not unconditionally.
+        assert ("--no-sandbox" in argv) is host_needs_bypass
+        assert ("--disable-dev-shm-usage" in argv) is host_needs_bypass
+        self._reset()
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

@@ -49,3 +49,42 @@ def test_keyword_only_history_after_full_turn_decays():
     ]
     # 期望: 0 — 完整无关一轮问答后,旧任务关键词信号必须已衰减(推导:这正是kvnloo点名的sticky complexity形态)
     assert ar._session_work_depth(msgs) == 0  # 期望: 0
+
+
+# ── Explicit user override (/reasoning <level>) must win ────────────────
+# Detection signal: each turn's request is rebuilt fresh from
+# agent.reasoning_config; the plugin's own rewrites are NOT fed back. So an
+# effort CHANGE between consecutive requests of one session can only come
+# from the user running /reasoning — the plugin must then stand down.
+
+def test_user_raised_effort_mid_session_is_respected():
+    # Turn 1: plugin saw medium baseline (its own rewrite target recorded).
+    req1 = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "extra_body": {"reasoning": {"enabled": True, "effort": "medium"}},
+    }
+    plugin_mod_state_reset()
+    r1 = ar.adaptive_llm_request_middleware(
+        request=req1, session_id="ov", turn_id="t1", api_call_count=1,
+    )
+    assert r1 is None or r1["request"]["extra_body"]["reasoning"]["effort"] in ("minimal", "low")
+    # Turn 2: user ran /reasoning high → wire now carries high (≠ plugin target)
+    req2 = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "谢谢"}],
+        "extra_body": {"reasoning": {"enabled": True, "effort": "high"}},
+    }
+    r2 = ar.adaptive_llm_request_middleware(
+        request=req2, session_id="ov", turn_id="t2", api_call_count=1,
+    )
+    # 期望: None — 用户显式高档位不被降档
+    assert r2 is None
+
+
+def plugin_mod_state_reset() -> None:
+    """Clear plugin session state between override tests."""
+    ar._TURN_ERRORS.clear()
+    ar._LAST_RESPONSE_STATS.pop("ov", None)
+    ar._SESSION_EFFORT_MEMORY.pop("ov", None)
+    ar._SESSION_OVERRIDE.discard("ov")

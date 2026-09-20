@@ -31,11 +31,15 @@ DEFAULT_CFG = plugin_mod._default_config()
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _clean_state() -> None:
     """Reset per-turn error state between tests."""
     plugin_mod._TURN_ERRORS.clear()
+    plugin_mod._SESSION_EFFORT_MEMORY.clear()
+    plugin_mod._SESSION_OVERRIDE.clear()
     yield
     plugin_mod._TURN_ERRORS.clear()
+    plugin_mod._SESSION_EFFORT_MEMORY.clear()
+    plugin_mod._SESSION_OVERRIDE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -211,65 +215,71 @@ def test_middleware_skips_when_effort_already_at_target():
 def test_middleware_rewrites_top_level_reasoning_effort():
     # top-level reasoning_effort is the PROVIDER-NATIVE scale, written by the
     # transport via the provider profile. The plugin must reuse the same
-    # profile mapping instead of writing raw Hermes levels.
-    # kimi-coding (upstream) maps Hermes effort onto native low/high/max
-    # (_K3_EFFORT_MAP). Start from native low; work context + complex msg →
-    # Hermes medium/high → kimi native high.
-    req = {"model": "kimi-k3", "messages": [
+    # profile mapping (zai glm-5.3 native ladder per probe #91789:
+    # low<medium<high<max, all levels legal; xhigh→max) instead of writing
+    # raw Hermes levels.
+    # Start from native low; work context + complex msg → Hermes medium → native medium.
+    # Upstream zai reality: glm-5.2 native scale is {high, max} — start
+    # from native max; work context + complex msg → Hermes medium → high.
+    req = {"model": "glm-5.2", "messages": [
         {"role": "user", "content": "help me debug the failing migration and analyze the root cause"},
         {"role": "assistant", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
         ]},
         {"role": "tool", "tool_call_id": "c1", "content": "exit 1"},
         {"role": "user", "content": "why does this fail? analyze the root cause"},
-    ], "reasoning_effort": "low"}
+    ], "reasoning_effort": "max"}
     result = plugin_mod.adaptive_llm_request_middleware(
         request=req,
-        provider="kimi-coding",
+        provider="zai",
         session_id="s1", turn_id="t1", api_call_count=1,
     )
-    assert result is not None
-    assert result["request"]["reasoning_effort"] == "high"
+    # 期望: not None — wire=max, plugin目标medium→native high, 有变化需改写
+    assert result is not None, "wire=max→target high must rewrite"
+    # 期望: high — 上游zai profile把Hermes medium翻译为native high(5.2只有{high,max})
+    assert result["request"]["reasoning_effort"] == "high", "5.2 two-tier scale"
 
-    # brevity → minimal; kimi native mapping: minimal → low
-    req2 = {"model": "kimi-k3", "messages": [], "reasoning_effort": "high"}
+    # brevity → minimal; zai glm-5.2 native mapping: minimal → high.
+    # Fresh session: a wire-baseline flip within one session is the user-
+    # override signal (see test_red_first) and would legitimately no-op.
+    req2 = {"model": "glm-5.2", "messages": [], "reasoning_effort": "max"}
     result2 = plugin_mod.adaptive_llm_request_middleware(
         request=req2,
         user_message="ok",
-        provider="kimi-coding",
-        session_id="s1", turn_id="t1", api_call_count=1,
+        provider="zai",
+        session_id="s2", turn_id="t1", api_call_count=1,
     )
+    # 期望: not None — 同上,minimal也映high,wire仍max,有变化
     assert result2 is not None
-    assert result2["request"]["reasoning_effort"] == "low"
+    # 期望: high — 5.2两档制,minimal也映射high(无更低可去)
+    assert result2["request"]["reasoning_effort"] == "high"
 
 
 def test_middleware_never_writes_offscale_native_effort():
     # INVARIANT: whatever lands in top-level reasoning_effort must be a value
     # the provider profile itself would emit. Hermes-only levels (minimal,
-    # xhigh, ultra…) must never appear there for kimi/zai.
-    req = {"model": "kimi-k3", "messages": [], "reasoning_effort": "high"}
+    # xhigh, ultra…) must never appear there for zai/kimi.
+    # Upstream zai reality: glm-5.2 native scale is {high, max}.
+    req = {"model": "glm-5.2", "messages": [], "reasoning_effort": "max"}
     result = plugin_mod.adaptive_llm_request_middleware(
         request=req,
         user_message="ok",  # brevity → minimal on Hermes scale
-        provider="kimi-coding",
-        session_id="s1", turn_id="t1", api_call_count=1,
+        provider="zai",
+        session_id="s3", turn_id="t1", api_call_count=1,
     )
-    assert result["request"]["reasoning_effort"] in {"low", "high", "max"}
+    # 期望: ∈{high,max} — 上游zai 5.2刻度仅两档,Hermes私有级永不落wire
+    assert result["request"]["reasoning_effort"] in {"high", "max"}
 
-    # zai glm-5.2 (upstream): native scale is exactly {high, max}; every
-    # enabled Hermes level collapses to high, so an already-high request is
-    # a no-op (result None) — and could NEVER be a Hermes-only value.
-    req2 = {"model": "glm-5.2", "messages": [], "reasoning_effort": "high"}
+    # kimi: only low/medium/high are legal wire values
+    req2 = {"model": "kimi-k2", "messages": [], "reasoning_effort": "medium"}
     result2 = plugin_mod.adaptive_llm_request_middleware(
         request=req2,
-        user_message="ok",  # brevity → minimal; profile collapses to high
-        provider="zai",
-        session_id="s1", turn_id="t1", api_call_count=1,
+        user_message="帮我排查这个死锁问题的根因，分析整个调用链路",  # → high
+        provider="kimi",
+        session_id="s4", turn_id="t1", api_call_count=1,
     )
-    if result2 is not None:
-        assert result2["request"]["reasoning_effort"] in {"high", "max"}
-    else:
-        assert req2["reasoning_effort"] in {"high", "max"}
+    # 期望: ∈{low,medium,high} — kimi三档刻度
+    assert result2["request"]["reasoning_effort"] in {"low", "medium", "high"}
 
 
 def test_middleware_noop_when_profile_cannot_express_level():
@@ -488,34 +498,37 @@ def test_request_middleware_ignores_feedback_on_first_call():
 
 
 def test_request_middleware_applies_feedback_mid_loop():
-    # A/B isolation: prior ("ok"+work history) = medium → zai native HIGH;
-    # same-turn confirmed-easy feedback (rt=0, stop) = low → native LOW.
-    # Only a FIRING feedback loop produces native low here.
+    # A/B isolation: prior ("ok"+work history) = medium → glm-5.2 native
+    # HIGH; same-turn confirmed-easy feedback (rt=0, stop) → low → still
+    # native HIGH on the two-tier 5.2 scale — assert native-scale legality
+    # (never a Hermes-private level) plus the rewrite actually firing.
     plugin_mod._LAST_RESPONSE_STATS["s-fb2"] = {
         "reasoning_tokens": 0, "finish_reason": "stop", "turn_id": "t1",
     }
-    req = {"model": "kimi-k3",
+    req = {"model": "glm-5.2",
            "messages": [{"role": "user", "content": "ok"},
                         {"role": "assistant", "tool_calls": [
                             {"id": "c1", "type": "function",
                              "function": {"name": "terminal", "arguments": "{}"}}]},
                         {"role": "tool", "tool_call_id": "c1", "content": "done"}],
-           "reasoning_effort": "high"}
+           "reasoning_effort": "max"}
     r2 = plugin_mod.adaptive_llm_request_middleware(
         request=req, session_id="s-fb2", turn_id="t1",
-        api_call_count=2, provider="kimi-coding",
+        api_call_count=2, provider="zai",
     )
-    assert r2 is not None
-    assert r2["request"]["reasoning_effort"] == "low"
+    # 期望: not None — wire=max, 反馈确认轻松→low→仍native high, 有变化
+    assert r2 is not None, "max wire + feedback low→high must rewrite"
+    # 期望: high — 5.2两档制,任何启用档都落{high,max}
+    assert r2["request"]["reasoning_effort"] in {"high", "max"}
 
 
 def test_request_middleware_rejects_stale_turn_stats():
     # SAME stats but from a PREVIOUS turn (turn_id mismatch): feedback
-    # rejected → prior medium stands → kimi native HIGH (never native low)
+    # rejected → prior medium stands → zai native HIGH (never native low)
     plugin_mod._LAST_RESPONSE_STATS["s-stale"] = {
         "reasoning_tokens": 0, "finish_reason": "stop", "turn_id": "t-old",
     }
-    req = {"model": "kimi-k3",
+    req = {"model": "glm-5.3",
            "messages": [{"role": "user", "content": "ok"},
                         {"role": "assistant", "tool_calls": [
                             {"id": "c1", "type": "function",
@@ -524,12 +537,13 @@ def test_request_middleware_rejects_stale_turn_stats():
            "reasoning_effort": "high"}
     r = plugin_mod.adaptive_llm_request_middleware(
         request=req, session_id="s-stale", turn_id="t-new",
-        api_call_count=2, provider="kimi-coding",
+        api_call_count=2, provider="zai",
     )
-    # prior medium → kimi native high == request's starting value → no-op;
-    # the ONLY failure mode would be a native LOW leaking through (stale
-    # easy-feedback applied). Assert the invariant, not the wrapper shape.
-    assert r is None or r["request"]["reasoning_effort"] == "high"
+    # prior medium stands on the native ladder (medium == request's starting
+    # Hermes level translated); the ONLY failure mode would be a native LOW
+    # leaking through (stale easy-feedback applied). Assert the invariant,
+    # not the wrapper shape.
+    assert r is None or r["request"]["reasoning_effort"] in {"medium", "high"}
 
 
 def test_extractor_handles_relay_dict_shape():

@@ -234,8 +234,16 @@ def _plugin_enabled() -> bool:
 
 _STATE_LOCK = threading.Lock()
 _TURN_ERRORS: Dict[str, int] = {}
-# Closed-loop feedback state (v4): session_id → last response stats.
+
 _LAST_RESPONSE_STATS: Dict[str, Dict[str, Any]] = {}
+
+# Effort this plugin last wrote per session, for explicit-override
+# detection (a wire effort we did NOT write = the user changed /reasoning).
+_SESSION_EFFORT_MEMORY: Dict[str, str] = {}
+
+# Sessions where the user explicitly overrode effort; adaptive routing
+# stands down there until the session ends.
+_SESSION_OVERRIDE: set = set()
 
 
 def _resp_field(response: Any, name: str) -> Any:
@@ -777,6 +785,28 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
 
     level = _clamp(level, str(cfg["floor"]), str(cfg["ceiling"]))
 
+    # Explicit user override detection: each turn's request is rebuilt fresh
+    # from agent.reasoning_config — the plugin's own rewrites never feed
+    # back into the next turn's payload. The observed wire effort is
+    # therefore always the user/config BASELINE; a change between turns
+    # (same model — different models carry different native scales) can
+    # only come from the user (e.g. /reasoning high). Stand down for the
+    # rest of the session when that happens.
+    memory_key = "%s|%s" % (session_id, model)
+    wire_effort = _wire_effort(request)
+    last_observed = _SESSION_EFFORT_MEMORY.get(memory_key)
+    if wire_effort is not None and last_observed is not None \
+            and wire_effort != last_observed:
+        _SESSION_OVERRIDE.add(session_id)
+        logger.debug(
+            "adaptive-reasoning: baseline effort change %s → %s detected; "
+            "adaptive routing disabled for session", last_observed, wire_effort,
+        )
+    if wire_effort is not None:
+        _SESSION_EFFORT_MEMORY[memory_key] = wire_effort
+    if session_id in _SESSION_OVERRIDE:
+        return None
+
     rewritten = _rewrite_reasoning(request, level, provider, model)
     if rewritten is not None:
         logger.debug(
@@ -784,6 +814,21 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
             level, tool_errors,
         )
         return {"request": rewritten}
+    return None
+
+
+def _wire_effort(request: Dict[str, Any]) -> Optional[str]:
+    """Read the effort the transport put on the wire for this request."""
+    extra_body = request.get("extra_body")
+    if isinstance(extra_body, dict):
+        reasoning = extra_body.get("reasoning")
+        if isinstance(reasoning, dict) and reasoning.get("enabled") is not False:
+            effort = reasoning.get("effort")
+            if isinstance(effort, str) and effort and effort != "none":
+                return effort.lower()
+    native = request.get("reasoning_effort")
+    if isinstance(native, str) and native:
+        return native.lower()
     return None
 
 

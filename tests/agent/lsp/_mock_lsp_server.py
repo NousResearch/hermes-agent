@@ -114,6 +114,12 @@ def main():
             return 0
 
         if "id" in msg and msg.get("method") == "initialize":
+            if script == "init_error":
+                # A conformant JSON-RPC error to `initialize`, then exit: the client must
+                # surface it as an LSPRequestError carrying the exit details.
+                write_message({"jsonrpc": "2.0", "id": msg["id"],
+                               "error": {"code": -32602, "message": "bad init"}})
+                return 0
             if script in {"slow", "slow_tree"}:
                 time.sleep(1.0)
             write_message(

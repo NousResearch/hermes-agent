@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
-from agent.lsp.protocol import LSPProtocolError
+from agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -93,6 +93,23 @@ async def test_aborted_start_reports_exit_status_and_stderr_tail(tmp_path: Path)
     assert "signal" in message
     # stderr tail reached the failure report
     assert "JavaScript heap out of memory" in message
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_initialize_error_response_keeps_its_exception_type(tmp_path: Path):
+    """A JSON-RPC error to ``initialize`` must surface as the LSPRequestError the server sent,
+    with the exit details appended -- not as a TypeError from re-instantiating an exception
+    class whose constructor is not ``(message)``."""
+    client = _client(tmp_path, "init_error")
+
+    with pytest.raises(LSPRequestError) as excinfo:
+        await client.start()
+
+    assert excinfo.value.code == -32602
+    message = str(excinfo.value)
+    assert "bad init" in message
+    assert "server exited" in message
     await client.shutdown()
 
 

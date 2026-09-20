@@ -145,17 +145,20 @@ def _resolve_converse_session(self, profile: Optional[str], input_rate: int, out
     captures at *input_rate*.
     """
     import numpy as np
+    from hermes_cli.config import load_config
     from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
     from tools.voice_converse_loop import (
-        ConverseSession, resample_synth, resolve_converse_synthesizer)
+        ConverseSession, parse_smart_turn_config, resample_synth, resolve_converse_synthesizer)
 
     stt_model = _converse_stt_model(self, profile)
     with self._profile_scope(profile):
         cfg = _load_tts_config()
         synth = resample_synth(resolve_converse_synthesizer(cfg), output_rate)
         cap = _resolve_max_text_length(_get_provider(cfg), cfg)
+        endpoint_model, endpoint_threshold = parse_smart_turn_config(load_config())
     return synth, cap, ConverseSession(
-        np, stt_model=stt_model, input_rate=input_rate, quiet_interval=quiet_interval)
+        np, stt_model=stt_model, input_rate=input_rate, quiet_interval=quiet_interval,
+        endpoint_model=endpoint_model, endpoint_threshold=endpoint_threshold)
 
 
 async def _await_start_frame(

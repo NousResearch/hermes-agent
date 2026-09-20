@@ -65,6 +65,11 @@ class _FakeGateway:
         # This fake has no API server adapter, so it is always idle.
         return 0
 
+    def _active_api_worker_count(self):
+        # Worker-scoped API count the SessionDB close gate reads live (#116535).
+        # This fake runs no executor turns, so it is always idle.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 

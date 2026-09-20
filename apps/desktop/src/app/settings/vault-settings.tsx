@@ -16,11 +16,12 @@ import {
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
+import { KeyRound, Lock, Plus, Search, ShieldLock, Trash2 } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -29,6 +30,7 @@ import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
+import { filterVaultItems, type VaultKindFilter } from './vault-filter'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
@@ -269,6 +271,18 @@ export function VaultSettings() {
 
   const items = useMemo(() => data ?? [], [data])
 
+  // Search + kind chips narrow the merged local/manager list; filtering is renderer-side because
+  // `vault.list` already returns the full metadata set (never secrets).
+  const [query, setQuery] = useState('')
+  const [kindFilter, setKindFilter] = useState<VaultKindFilter>('all')
+  const visibleItems = useMemo(() => filterVaultItems(items, query, kindFilter), [items, kindFilter, query])
+  const filtersActive = query.trim() !== '' || kindFilter !== 'all'
+
+  const clearFilters = useCallback(() => {
+    setQuery('')
+    setKindFilter('all')
+  }, [])
+
   // Clears the secret fields with the rest of the form — the password/CVC
   // never outlive the dialog.
   const closeAdd = useCallback(() => {
@@ -393,16 +407,57 @@ export function VaultSettings() {
           </Button>
         }
         icon={ShieldLock}
-        meta={items.length > 0 ? v.count(items.length) : undefined}
+        meta={
+          items.length > 0
+            ? filtersActive
+              ? v.matchCount(visibleItems.length, items.length)
+              : v.count(items.length)
+            : undefined
+        }
         title={v.title}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {v.blurb}
       </p>
 
+      {items.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-(--ui-text-tertiary)" />
+            <Input
+              aria-label={v.searchLabel}
+              className="pl-7"
+              onChange={event => setQuery(event.target.value)}
+              placeholder={v.searchPlaceholder}
+              type="search"
+              value={query}
+            />
+          </div>
+          <SegmentedControl
+            onChange={setKindFilter}
+            options={[
+              { id: 'all', label: v.kindFilterAll },
+              { id: 'login', label: v.kinds.login },
+              { id: 'payment', label: v.kinds.payment },
+              { id: 'address', label: v.kinds.address }
+            ]}
+            value={kindFilter}
+          />
+        </div>
+      )}
+
       {!isPending && items.length === 0 && <EmptyState description={v.emptyDesc} title={v.empty} />}
 
-      {items.map(item => (
+      {items.length > 0 && visibleItems.length === 0 && (
+        <div className="grid place-items-center">
+          <EmptyState className="min-h-32" description={v.noMatchesDesc} title={v.noMatches} />
+          <Button className="-mt-6 mb-4" onClick={clearFilters} size="sm" type="button" variant="outline">
+            {v.clearFilters}
+          </Button>
+        </div>
+      )}
+
+      {visibleItems.map(item => (
         <ListRow
           action={
             item.backend && item.backend !== 'local' ? (

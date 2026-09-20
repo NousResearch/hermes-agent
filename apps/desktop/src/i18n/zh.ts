@@ -472,6 +472,13 @@ export const zh = defineLocale({
       blurb:
         '说一句“登录 GitHub”，智能体就会代你登录。第一次遇到登录页时它会当场向你要登录信息，之后就自动完成。密码在本机加密保存并直接填入页面——模型永远看不到。',
       count: n => `已保存 ${n} 项`,
+      matchCount: (shown, total) => `${shown} / ${total}`,
+      searchPlaceholder: '按标签、账号或站点搜索',
+      searchLabel: '搜索已保存项',
+      kindFilterAll: '全部',
+      noMatches: '没有匹配的项目',
+      noMatchesDesc: '换个关键词试试，或清除筛选条件。',
+      clearFilters: '清除筛选',
       loadFailed: '无法加载保险库条目',
       empty: '尚未保存任何内容',
       emptyDesc: '这里不必手动添加。让智能体登录某个网站时，它会当场向你询问一次登录信息。若想提前录入，可点“添加”。',

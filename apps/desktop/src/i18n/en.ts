@@ -585,6 +585,13 @@ export const en: Translations = {
       blurb:
         'Say "log into GitHub" and the agent signs in for you. The first time it meets a sign-in page it asks you for the login right there; after that it just works. Passwords are encrypted on this machine and filled straight into the page — the model never sees them.',
       count: n => `${n} saved`,
+      matchCount: (shown, total) => `${shown} of ${total}`,
+      searchPlaceholder: 'Search by label, identifier or site',
+      searchLabel: 'Search saved items',
+      kindFilterAll: 'All',
+      noMatches: 'No matching items',
+      noMatchesDesc: 'Try a different search or clear the filters.',
+      clearFilters: 'Clear filters',
       loadFailed: 'Could not load vault items',
       empty: 'Nothing saved yet',
       emptyDesc:

@@ -523,6 +523,13 @@ export interface Translations {
       title: string
       blurb: string
       count: (n: number) => string
+      matchCount: (shown: number, total: number) => string
+      searchPlaceholder: string
+      searchLabel: string
+      kindFilterAll: string
+      noMatches: string
+      noMatchesDesc: string
+      clearFilters: string
       loadFailed: string
       empty: string
       emptyDesc: string

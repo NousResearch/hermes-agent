@@ -331,6 +331,13 @@ export const zhHant = defineLocale({
       blurb:
         '說一句「登入 GitHub」，代理就會代你登入。第一次遇到登入頁時它會當場向你索取登入資訊，之後就自動完成。密碼在本機加密儲存並直接填入頁面——模型永遠看不到。',
       count: n => `已儲存 ${n} 項`,
+      matchCount: (shown, total) => `${shown} / ${total}`,
+      searchPlaceholder: '依標籤、帳號或網站搜尋',
+      searchLabel: '搜尋已儲存項目',
+      kindFilterAll: '全部',
+      noMatches: '沒有符合的項目',
+      noMatchesDesc: '換個關鍵字試試，或清除篩選條件。',
+      clearFilters: '清除篩選',
       loadFailed: '無法載入保險庫項目',
       empty: '尚未儲存任何內容',
       emptyDesc: '這裡不必手動新增。讓代理登入某個網站時，它會當場向你詢問一次登入資訊。若想提前輸入，可按「新增」。',

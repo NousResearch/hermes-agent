@@ -8,7 +8,9 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import tempfile
+from time import monotonic
 from typing import Any, Callable
 
 import yaml
@@ -18,10 +20,11 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 
 _SCHEMA_VERSION = 1
 _EXCLUDED_NAMES = {
-    "auth.json", ".env", "state.db-wal", "state.db-shm", "gateway.pid",
+    "auth.json", ".env", "state.db", "state.db-wal", "state.db-shm", "gateway.pid",
     "gateway_state.json", "processes.json", "node_modules", "__pycache__",
 }
 _EXCLUDED_SUFFIXES = (".sock", ".pid", ".pyc", ".pyo", ".tmp")
+_CONCURRENT_ROOTS = frozenset({"logs", "cache", "tmp"})
 _DEFAULT_SHARED_ROOTS = {
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
     "local-models", "llama.cpp", "managed-node",
@@ -31,6 +34,7 @@ _SLICE_ROOTS: dict[str, tuple[str, ...]] = {
     "persona_skills_memory": (
         "SOUL.md", "AGENTS.md", "CLAUDE.md", ".cursorrules", "skills", "memories", "memory",
     ),
+    "session_state": ("sessions", "checkpoints"),
     "cron_platform_gateway": ("cron", "platforms",),
 }
 _CONFIG_KEYS: dict[str, frozenset[str] | None] = {
@@ -103,7 +107,11 @@ def _source_generation() -> str:
 
 
 def _excluded(relative: Path) -> bool:
-    return any(part in _EXCLUDED_NAMES for part in relative.parts) or relative.name.endswith(_EXCLUDED_SUFFIXES)
+    return (
+        bool(relative.parts and relative.parts[0] in _CONCURRENT_ROOTS)
+        or any(part in _EXCLUDED_NAMES for part in relative.parts)
+        or relative.name.endswith(_EXCLUDED_SUFFIXES)
+    )
 
 
 def _iter_profile_files(source: Path):
@@ -130,10 +138,12 @@ def _manifest(source: Path) -> list[dict[str, Any]]:
     return entries
 
 
-def _source_fingerprint(source: Path) -> dict[str, tuple[int, str]]:
-    """Private byte-level source guard; secret paths/hashes never enter the report."""
+def _guarded_fingerprint(source: Path) -> dict[str, tuple[int, str]]:
+    """Fingerprint immutable inspected inputs, excluding separately snapshotted live state."""
     result: dict[str, tuple[int, str]] = {}
     for path, relative in _iter_profile_files(source):
+        if _excluded(relative):
+            continue
         try:
             data = path.read_bytes()
         except OSError:
@@ -163,6 +173,50 @@ def _write_config(candidate: Path, config: dict[str, Any]) -> None:
     )
 
 
+def _config_without_secrets(config: dict[str, Any], *, keep_references: bool) -> dict[str, Any]:
+    """Copy config without credentials; unresolved ``${VAR}`` references remain safe on disk."""
+    from hermes_cli.config import _ENV_PLACEHOLDER_RE, _is_secret_config_key
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            for key, child in value.items():
+                if isinstance(key, str) and _is_secret_config_key(key):
+                    if keep_references and isinstance(child, str) and _ENV_PLACEHOLDER_RE.match(child):
+                        result[key] = child
+                    continue
+                result[key] = clean(child)
+            return result
+        if isinstance(value, list):
+            return [clean(child) for child in value]
+        return copy.deepcopy(value)
+
+    return clean(config)
+
+
+def _snapshot_state_db(source: Path, candidate: Path, *, timeout_seconds: float = 1.0) -> bool:
+    """Take a bounded online backup, including committed WAL state, without writing source."""
+    source_db = source / "state.db"
+    if not source_db.exists():
+        return True
+    target_db = candidate / "state.db"
+    deadline = monotonic() + timeout_seconds
+
+    def progress(_status: int, _remaining: int, _total: int) -> None:
+        if monotonic() >= deadline:
+            raise TimeoutError("state snapshot deadline exceeded")
+
+    source_uri = f"file:{source_db.as_posix()}?mode=ro"
+    try:
+        with sqlite3.connect(source_uri, uri=True, timeout=0.1) as source_conn:
+            with sqlite3.connect(target_db, timeout=0.1) as target_conn:
+                source_conn.backup(target_conn, pages=256, progress=progress, sleep=0.01)
+        return True
+    except (OSError, sqlite3.Error, TimeoutError):
+        target_db.unlink(missing_ok=True)
+        return False
+
+
 def _copy_entry(source: Path, candidate: Path, relative: str) -> None:
     src = source / relative
     if not src.exists() or src.is_symlink():
@@ -182,6 +236,23 @@ def _copy_entry(source: Path, candidate: Path, relative: str) -> None:
     elif src.is_file() and not _excluded(Path(relative)):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst, follow_symlinks=False)
+
+
+def _prepare_candidate(
+    parent: Path,
+    source: Path,
+    label: str,
+    disk_config: dict[str, Any],
+    included_slices: list[str],
+) -> tuple[Path, bool]:
+    candidate = parent / label
+    candidate.mkdir()
+    _write_config(candidate, disk_config)
+    for slice_id in included_slices:
+        for relative in _SLICE_ROOTS.get(slice_id, ()):
+            _copy_entry(source, candidate, relative)
+    state_ready = "session_state" not in included_slices or _snapshot_state_db(source, candidate)
+    return candidate, state_ready
 
 
 def _default_probe(config: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
@@ -233,29 +304,38 @@ def run_isolation_diagnostic(
     source = (source or get_hermes_home()).resolve()
     probe = probe or (lambda _candidate, config, runtime: _default_probe(config, runtime))
     before = _manifest(source)
-    source_fingerprint = _source_fingerprint(source)
+    source_fingerprint = _guarded_fingerprint(source)
 
     # Use the raw diagnostic reader plus the normal effective-config transform. The
     # general loader seeds profile files and writes last-known-good backups, which would
     # violate isolate mode's source-byte invariant merely by observing the profile.
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.config_effective import _effective
-    source_config = _effective(read_user_config_raw(source / "config.yaml"))
-    runtime = runtime_override or _resolve_source_runtime(source_config)
+    source_config_raw = read_user_config_raw(source / "config.yaml")
+    source_config = _effective(source_config_raw)
+    runtime = runtime_override if runtime_override is not None else _resolve_source_runtime(source_config)
     runtime = dict(runtime)
     # A diagnostic request must not bench/rotate/persist a source credential pool.
     runtime["credential_pool"] = None
-    minimal = _minimal_config(source_config)
-    candidate = Path(tempfile.mkdtemp(prefix=f".hermes-isolate-{source.name}-", dir=source.parent))
+    safe_effective = _config_without_secrets(source_config, keep_references=False)
+    safe_raw = _config_without_secrets(source_config_raw, keep_references=True)
+    minimal = _minimal_config(safe_effective)
+    disk_minimal = _minimal_config(safe_raw)
+    candidate_parent = Path(tempfile.mkdtemp(prefix=f".hermes-isolate-{source.name}-", dir=source.parent))
     report = IsolationReport(
         source_profile=_profile_name(source),
         source_generation=_source_generation(),
         source_manifest=before,
-        candidate_location=str(candidate),
+        candidate_location=str(candidate_parent),
     )
     effective = copy.deepcopy(minimal)
+    disk_effective = copy.deepcopy(disk_minimal)
+    included_slices: list[str] = []
+    unresolved = False
     try:
-        _write_config(candidate, effective)
+        candidate, _ = _prepare_candidate(
+            candidate_parent, source, "00-control", disk_effective, included_slices
+        )
         control = _probe_candidate(candidate, effective, runtime, probe)
         control_status = _probe_status(control)
         report.control = {"status": control_status, "runtime": control}
@@ -263,15 +343,20 @@ def run_isolation_diagnostic(
             report.classification = "below_profile_layer"
             return report
 
-        for slice_id in _SLICE_ORDER:
-            effective.update(_slice_config(source_config, slice_id))
-            _write_config(candidate, effective)
-            for relative in _SLICE_ROOTS.get(slice_id, ()):
-                _copy_entry(source, candidate, relative)
-            if slice_id == "session_state" and any(
-                (source / name).exists() for name in ("state.db", "state.db-wal", "state.db-shm")
-            ):
+        for index, slice_id in enumerate(_SLICE_ORDER, start=1):
+            included_slices.append(slice_id)
+            effective.update(_slice_config(safe_effective, slice_id))
+            disk_effective.update(_slice_config(safe_raw, slice_id))
+            candidate, state_ready = _prepare_candidate(
+                candidate_parent,
+                source,
+                f"{index:02d}-{slice_id}",
+                disk_effective,
+                included_slices,
+            )
+            if not state_ready:
                 report.slices.append(SliceResult(slice_id, "needs_quiescence"))
+                unresolved = True
                 continue
             payload = _probe_candidate(candidate, effective, runtime, probe)
             status = _probe_status(payload, control)
@@ -286,21 +371,16 @@ def run_isolation_diagnostic(
                 }
                 break
         else:
-            report.classification = "healthy"
+            report.classification = "needs_quiescence" if unresolved else "healthy"
         return report
     finally:
         try:
-            shutil.rmtree(candidate)
+            shutil.rmtree(candidate_parent)
             report.cleanup_status = "removed"
         except OSError:
             report.cleanup_status = "failed"
-        if _source_fingerprint(source) != source_fingerprint:
-            report.classification = "source_changed"
-            report.culprit = {
-                "slice": None,
-                "component": "source_integrity",
-                "evidence": ["source profile manifest changed during isolation"],
-            }
+        if _guarded_fingerprint(source) != source_fingerprint:
+            report.classification = "needs_quiescence"
 
 
 def render_isolation_report(report: IsolationReport) -> None:

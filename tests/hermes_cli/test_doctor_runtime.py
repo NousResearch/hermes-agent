@@ -12,6 +12,7 @@ class _FakeAgent:
     def __init__(self):
         self.prompt_calls = 0
         self.request_calls = 0
+        self.close_calls = 0
         self._last_api_first_chunk_at = None
 
     def _build_system_prompt(self, instruction):
@@ -26,6 +27,9 @@ class _FakeAgent:
         doctor_runtime.time = lambda: 10.0
         self._last_api_first_chunk_at = 10.025
         return SimpleNamespace(choices=[])
+
+    def close(self):
+        self.close_calls += 1
 
 
 def _install_runtime_seams(monkeypatch, *, plugin_error=None):
@@ -74,6 +78,7 @@ def test_runtime_probe_uses_one_request_and_emits_redacted_stable_report(monkeyp
     payload = doctor_runtime.run_runtime_diagnostic().to_dict()
 
     assert agent.prompt_calls == 1 and agent.request_calls == 1
+    assert agent.close_calls == 1
     assert payload["schema_version"] == 1
     assert payload["resolved_runtime"] == {
         "provider": "custom",
@@ -100,6 +105,17 @@ def test_runtime_phase_failure_isolated_and_persistence_disabled(monkeypatch):
     assert payload["error_class"] == "RuntimeError"
     assert "contains secret material" not in repr(payload)
     assert agent.request_calls == 1
+    assert agent.close_calls == 1
+
+    failed_prompt_agent = _FakeAgent()
+    failed_prompt_agent._build_system_prompt = lambda _instruction: (_ for _ in ()).throw(
+        ValueError("prompt details")
+    )
+    monkeypatch.setattr(doctor_runtime, "_build_agent", lambda runtime, model: failed_prompt_agent)
+    failed_prompt = doctor_runtime.run_runtime_diagnostic().to_dict()
+    assert failed_prompt["failed_phase"] == "prompt_construction"
+    assert failed_prompt_agent.request_calls == 0
+    assert failed_prompt_agent.close_calls == 1
 
     seen = {}
 

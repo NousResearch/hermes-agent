@@ -282,6 +282,11 @@ def _probe_candidate(
     cleanup_safe = True
     try:
         payload = probe(candidate, config, runtime)
+        if any(
+            phase.get("name") == "agent_resource_cleanup" and phase.get("status") == "fail"
+            for phase in payload.get("phases", [])
+        ):
+            cleanup_safe = False
     finally:
         try:
             from hermes_cli.mcp_startup import (

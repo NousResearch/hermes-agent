@@ -230,32 +230,35 @@ def run_runtime_diagnostic(
         report.pre_dispatch_ms = sum(p.elapsed_ms for p in report.phases)
         return report
 
-    prompt = _record_phase(
-        report,
-        "prompt_construction",
-        lambda: agent._build_system_prompt(
-            "Runtime diagnostic only. Reply exactly OK and do not call tools."
-        ),
-    )
-    report.pre_dispatch_ms = sum(p.elapsed_ms for p in report.phases)
-    if prompt is None:
-        return report
-
-    provider_result = _record_phase(
-        report,
-        "provider_first_chunk",
-        lambda: _minimal_request(agent, prompt),
-        slow_ms=_PROVIDER_SLOW_MS,
-    )
-    if provider_result is not None:
-        report.provider_ttfb_ms, report.provider_total_ms = provider_result
-        report.hermes_first_chunk_ms = report.pre_dispatch_ms + report.provider_ttfb_ms
-        report.likely_bottleneck = (
-            "local_pre_dispatch"
-            if report.pre_dispatch_ms > report.provider_ttfb_ms
-            else "provider_or_network"
+    try:
+        prompt = _record_phase(
+            report,
+            "prompt_construction",
+            lambda: agent._build_system_prompt(
+                "Runtime diagnostic only. Reply exactly OK and do not call tools."
+            ),
         )
-    return report
+        report.pre_dispatch_ms = sum(p.elapsed_ms for p in report.phases)
+        if prompt is None:
+            return report
+
+        provider_result = _record_phase(
+            report,
+            "provider_first_chunk",
+            lambda: _minimal_request(agent, prompt),
+            slow_ms=_PROVIDER_SLOW_MS,
+        )
+        if provider_result is not None:
+            report.provider_ttfb_ms, report.provider_total_ms = provider_result
+            report.hermes_first_chunk_ms = report.pre_dispatch_ms + report.provider_ttfb_ms
+            report.likely_bottleneck = (
+                "local_pre_dispatch"
+                if report.pre_dispatch_ms > report.provider_ttfb_ms
+                else "provider_or_network"
+            )
+        return report
+    finally:
+        _record_phase(report, "agent_resource_cleanup", agent.close)
 
 
 def render_runtime_report(report: RuntimeReport) -> None:

@@ -72,6 +72,7 @@ import {
   isFileEditTool,
   isPreviewableTarget,
   looksRedundant,
+  resolveSealedToolResult,
   type SearchResultRow,
   selectMessageRunning,
   stripInlineDiffChrome,
@@ -362,24 +363,39 @@ function ToolEntry({ part }: ToolEntryProps) {
   // the referentially-stable args/result so the memos hold across deltas.
   const { args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
 
+  // A tool that completes after its turn settled lands its result in a fresh
+  // tail message (no active stream left to merge into), so the sealed row in
+  // the earlier message keeps painting "Result unavailable" while the result
+  // sits in the same thread under the same tool_call_id. Re-resolve sealed
+  // resultless rows against the thread before painting. Only sealed rows
+  // qualify, so live rows keep their timers and every other row
+  // short-circuits without scanning.
+  const restoredResult = useAuiState(state =>
+    result === undefined && completedAt !== undefined && toolCallId
+      ? resolveSealedToolResult(state.thread.messages, toolCallId)
+      : undefined
+  )
+
+  const resolvedResult = result ?? restoredResult
+
   const stablePart = useMemo<ToolPart>(
     () => ({
       args,
       completedAt,
       isError,
-      result,
+      result: resolvedResult,
       toolResultMetadata,
       timestamp,
       toolCallId,
       toolName,
       type: 'tool-call'
     }),
-    [args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
+    [args, completedAt, isError, resolvedResult, toolResultMetadata, timestamp, toolCallId, toolName]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
-  const isPending = messageRunning && result === undefined && completedAt === undefined
+  const isPending = messageRunning && resolvedResult === undefined && completedAt === undefined
   // Subscribe to this tool's diff only, so a live patch for one tool doesn't
   // re-render every mounted tool row (the factory caches a per-id atom).
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
@@ -399,10 +415,12 @@ function ToolEntry({ part }: ToolEntryProps) {
   // presentation-only completion marker, never manufacture a result.
   const view = useMemo(() => {
     const p =
-      !isPending && result === undefined ? { ...stablePart, completedAt: stablePart.completedAt ?? 0 } : stablePart
+      !isPending && resolvedResult === undefined
+        ? { ...stablePart, completedAt: stablePart.completedAt ?? 0 }
+        : stablePart
 
     return buildToolView(p, inlineDiff)
-  }, [inlineDiff, isPending, result, stablePart])
+  }, [inlineDiff, isPending, resolvedResult, stablePart])
 
   // Keep counts and saved disclosure intent, but never mount code while hidden.
   // Failed edits still expose their explanation.

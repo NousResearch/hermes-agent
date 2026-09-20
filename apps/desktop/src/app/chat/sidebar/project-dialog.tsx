@@ -282,7 +282,7 @@ export function ProjectDialog() {
             <span className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{p.ideaLabel}</span>
             <div className="relative">
               <Textarea
-                className="min-h-20 pr-8 text-[0.8125rem]"
+                className="min-h-20 pe-8 text-[0.8125rem]"
                 disabled={submitting}
                 onChange={event => setIdea(event.target.value)}
                 placeholder={p.ideaPlaceholder}

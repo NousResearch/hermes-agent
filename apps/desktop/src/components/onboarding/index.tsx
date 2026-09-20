@@ -708,7 +708,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
         {manual ? <span /> : <ChooseLaterLink />}
-        <Button className="-mr-2 font-medium" onClick={() => openKeyForm()} size="xs" type="button" variant="text">
+        <Button className="-me-2 font-medium" onClick={() => openKeyForm()} size="xs" type="button" variant="text">
           {t.onboarding.haveApiKey}
         </Button>
       </div>

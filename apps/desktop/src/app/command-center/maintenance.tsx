@@ -399,7 +399,7 @@ function MemoryFileRow({
     <div className="flex items-center justify-between gap-3 py-2">
       <div className="min-w-0">
         <span className="text-[length:var(--conversation-text-font-size)] font-medium">{label}</span>
-        <span className="ml-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        <span className="ms-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           {sizeLabel}
         </span>
       </div>

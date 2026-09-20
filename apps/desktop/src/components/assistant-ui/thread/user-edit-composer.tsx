@@ -869,7 +869,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               // Match the main composer: allow macOS replacements, not spellcheck.
               autoCorrect={isMacPlatform() ? 'on' : 'off'}
               className={cn(
-                'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
+                'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pe-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}

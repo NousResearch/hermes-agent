@@ -101,7 +101,7 @@ export function ShareControls({ imported = false, onImport, onResetMap, shareCod
           <div className="group/code relative">
             <textarea
               aria-label={t.starmap.shareTitle}
-              className="h-24 w-full resize-none rounded-md bg-foreground/5 p-2.5 pr-9 font-mono text-xs leading-relaxed break-all text-muted-foreground/90 outline-none transition placeholder:text-muted-foreground/50 focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring/40"
+              className="h-24 w-full resize-none rounded-md bg-foreground/5 p-2.5 pe-9 font-mono text-xs leading-relaxed break-all text-muted-foreground/90 outline-none transition placeholder:text-muted-foreground/50 focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring/40"
               onChange={e => {
                 setValue(e.target.value)
                 setError(null)

@@ -129,7 +129,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
       </div>
 
       {expanded && (
-        <div className="ml-1.5 border-l-2 border-(--ui-accent-secondary)/25 pb-4 pl-4 pr-4">
+        <div className="ms-1.5 border-l-2 border-(--ui-accent-secondary)/25 pb-4 ps-4 pe-4">
           {inlineFields.map(field => (
             <div className="border-b border-border/40 last:border-b-0" key={field.key}>
               <ListRow

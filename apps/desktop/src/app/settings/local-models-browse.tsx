@@ -196,7 +196,7 @@ export function LocalModelsBrowseSection(): ReactElement {
     <SettingsSection
       aside={
         <Button onClick={sideload} size="sm" variant="outline">
-          <FolderOpen className="mr-1 size-3.5" />
+          <FolderOpen className="me-1 size-3.5" />
           {copy.sideloadButton}
         </Button>
       }
@@ -244,7 +244,7 @@ export function LocalModelsBrowseSection(): ReactElement {
               />
 
               {openRepo === hit.repo && (
-                <div className="ml-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 pl-3">
+                <div className="ms-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 ps-3">
                   {listing && (
                     <p className="col-span-full flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
                       <Loader2 className="size-3 animate-spin" />
@@ -298,7 +298,7 @@ export function LocalModelsBrowseSection(): ReactElement {
                         ) : (
                           <span className="flex items-center justify-between gap-2">
                             <Pill tone={fitTone(group.fit)}>
-                              <Cpu className="mr-1 size-3" />
+                              <Cpu className="me-1 size-3" />
                               {group.fit === 'fits-gpu'
                                 ? copy.pillFitsGpu
                                 : group.fit === 'needs-ram'

@@ -123,7 +123,7 @@ export function ProviderConfigModal({
               <h3 className="border-b border-(--ui-accent-secondary)/30 pb-1.5 font-mono text-[0.68rem] uppercase tracking-wide text-(--ui-accent-secondary)">
                 {group}
               </h3>
-              <div className="pl-1">
+              <div className="ps-1">
                 {fields.map(field => (
                   <div className="border-b border-border/40 last:border-b-0" key={field.key}>
                     <ListRow

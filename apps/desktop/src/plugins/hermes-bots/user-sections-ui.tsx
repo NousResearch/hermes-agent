@@ -181,13 +181,13 @@ export function UserSectionHeader({
       <DropdownMenuContent align="end">
         {items.map(item => (
           <DropdownMenuItem disabled={item.disabled} key={item.label} onSelect={item.onSelect}>
-            <Codicon className="mr-1.5" name={item.icon} />
+            <Codicon className="me-1.5" name={item.icon} />
             {item.label}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onDelete} variant="destructive">
-          <Codicon className="mr-1.5" name="trash" />
+          <Codicon className="me-1.5" name="trash" />
           {t.common.delete}
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -285,7 +285,7 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
     <div
       className={cn(
         'relative min-w-0 rounded-md transition-[background-color,box-shadow] duration-100',
-        nested && 'ml-2.5 border-l border-(--ui-stroke-tertiary) pl-1',
+        nested && 'ms-2.5 border-l border-(--ui-stroke-tertiary) ps-1',
         // While a drag is live, every valid target gets a faint outline so the
         // user can see where a drop is allowed before hovering one.
         armed && 'ring-1 ring-inset ring-(--ui-stroke-secondary)',

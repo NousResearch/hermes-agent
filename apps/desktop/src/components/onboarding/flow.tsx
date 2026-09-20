@@ -93,7 +93,7 @@ export function FlowPanel({
   if (flow.status === 'awaiting_user') {
     return (
       <Step title={t.onboarding.signInWith(title)}>
-        <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+        <ol className="list-decimal space-y-1 ps-5 text-sm text-muted-foreground">
           <li>{t.onboarding.openedBrowser(title)}</li>
           <li>{t.onboarding.authorizeThere}</li>
           <li>{t.onboarding.copyAuthCode}</li>
@@ -204,7 +204,7 @@ function CodeBlock({ copied, onCopy, text }: { copied: boolean; onCopy: () => vo
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border border-(--stroke-nous) px-3 py-2">
       <code className="min-w-0 flex-1 truncate font-mono text-sm">
-        <span className="mr-2 select-none text-muted-foreground">$</span>
+        <span className="me-2 select-none text-muted-foreground">$</span>
         {text}
       </code>
       <Button onClick={onCopy} size="sm" variant="outline">

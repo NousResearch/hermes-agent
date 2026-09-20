@@ -256,8 +256,13 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
         <DropdownMenuGroup>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger hideChevron>
+<<<<<<< HEAD
               {f.grouping}
-              <span className="ml-auto flex items-center gap-1 pl-4 text-(--ui-text-tertiary)">
+              <span className="ml-auto flex items-center gap-1 ps-4 text-(--ui-text-tertiary)">
+=======
+              Grouping
+              <span className="ms-auto flex items-center gap-1 ps-4 text-(--ui-text-tertiary)">
+>>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                 {groupingLabel}
                 <Codicon name="chevron-right" size="1rem" />
               </span>

@@ -172,7 +172,7 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
         </div>
       </div>
 
-      <div className="min-w-0 pl-13">
+      <div className="min-w-0 ps-13">
         <RowOutcome
           copy={copy}
           onAdvanced={() => setAdvancedOpen(true)}

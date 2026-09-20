@@ -261,7 +261,7 @@ function VirtualizedReviewList({
 
 // Depth-0 rows align their icon to the panel header's dither glyph: the tree
 // body has px-1 (4px) and the header glyph sits at px-2.5 (10px) + the label's
-// pl-2 (8px) = 18px, so the base inset is 18 − 4 = 14px.
+// ps-2 (8px) = 18px, so the base inset is 18 − 4 = 14px.
 const ROW_BASE_INSET = 14
 
 function rowStyle(depth: number): CSSProperties {
@@ -290,7 +290,7 @@ function ReviewDirRow({
   return (
     <>
       <div
-        className="group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground"
+        className="group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pe-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground"
         onClick={toggle}
         style={rowStyle(depth)}
       >
@@ -389,7 +389,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
       <div
         aria-selected={selected}
         className={cn(
-          'group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground',
+          'group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pe-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground',
           selected && 'bg-(--ui-row-active-background) text-foreground'
         )}
         draggable

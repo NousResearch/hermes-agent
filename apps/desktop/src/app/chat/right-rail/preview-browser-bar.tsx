@@ -183,7 +183,7 @@ export function PreviewBrowserBar({
         <Input
           aria-invalid={invalid || undefined}
           aria-label={copy.address}
-          className={cn('pr-7', loading && 'pl-6')}
+          className={cn('pe-7', loading && 'ps-6')}
           inputMode="url"
           onBlur={() => setDraft(null)}
           onChange={event => setDraft(event.target.value)}

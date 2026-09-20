@@ -66,7 +66,7 @@ async def test_state_preserves_both_informational_obligations(tmp_path, monkeypa
             cleanup, = [a for a in actions if a.get('task_id') == 'retained-cleanup']
             assert retry['blocked'] and retry['attempts'] == 2 and retry['reason_code'] == 'retained'
             assert cleanup['state'] == 'pending' and cleanup['reason_code'] == 'unlink_pending'
-            assert not any(a['kind'] in {'retry', 'discard', 'approve'} for a in actions)
+            assert not any(a['kind'] in {'retry', 'discard', 'approval'} for a in actions)
             assert not forbidden_calls and raw.total_changes == before
             assert all(s.lstrip().split()[0].upper() in {'SELECT', 'BEGIN', 'ROLLBACK'} for s in trace), trace
         finally:

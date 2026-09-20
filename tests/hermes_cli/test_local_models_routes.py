@@ -139,6 +139,7 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
 def test_hardware_plain_facts(client):
     data = client.get("/api/local-models/hardware").json()
     assert isinstance(data["uma"], bool)
+    assert isinstance(data["vram_known"], bool)
     assert data["ram_total_bytes"] > 0
     assert data["vram_total_bytes"] >= 0
     # GPU fields are None-able (non-NVIDIA machines) but must exist.

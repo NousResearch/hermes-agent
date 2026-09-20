@@ -292,7 +292,9 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     if vram is None:
         # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
         # Silicon) — conservative for discrete AMD until a vendor probe lands.
-        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        budget = _uma_budget(ram_total if planning else ram_avail, ram_total)
+        budget.vram_known = False
+        return budget
 
     total, free = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))

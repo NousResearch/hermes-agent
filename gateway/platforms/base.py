@@ -4003,6 +4003,8 @@ class BasePlatformAdapter(ABC):
         if mode != "natural":  # custom mode tolerates malformed env vars
             lo = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", str(lo))), lo)
             hi = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", str(hi))), hi)
+            if lo < 0 or hi < 0 or lo > hi:
+                lo, hi = 800, 2500
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
     async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:

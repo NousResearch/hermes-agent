@@ -4198,6 +4198,12 @@ class BasePlatformAdapter(ABC):
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                # Delivery may be accepted by the platform even when its acknowledgement never
+                # returns.  Pause before the first outbound await so that an idle turn cannot keep
+                # refreshing typing while its answer is already visible.
+                if (text_content or extracted.images or media_files or extracted.local_files
+                        or _tts_paths):
+                    self._typing_paused.add(event.source.chat_id)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

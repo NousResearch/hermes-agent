@@ -32,6 +32,8 @@ from gateway.platforms.base import (
     PlatformConfig,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource, build_session_key
 
 
 class _StubAdapter(BasePlatformAdapter):
@@ -52,6 +54,45 @@ class _StubAdapter(BasePlatformAdapter):
 
 
 class TestKeepTypingTimeoutPerTick:
+    @pytest.mark.asyncio
+    async def test_final_delivery_stall_pauses_typing_refresh(self, monkeypatch):
+        adapter = _StubAdapter()
+        send_started = asyncio.Event()
+        typing_calls = []
+
+        async def stalled_send(chat_id, content, reply_to=None, metadata=None):
+            send_started.set()
+            await asyncio.Event().wait()
+
+        async def send_typing(chat_id, metadata=None):
+            typing_calls.append(chat_id)
+
+        async def rapid_typing(chat_id, metadata=None, stop_event=None):
+            await BasePlatformAdapter._keep_typing(
+                adapter, chat_id, interval=0.01, metadata=metadata, stop_event=stop_event)
+
+        monkeypatch.setattr(adapter, "send", stalled_send)
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        monkeypatch.setattr(adapter, "_keep_typing", rapid_typing)
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="answer"))
+        event = MessageEvent(
+            text="question",
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm"),
+        )
+        task = asyncio.create_task(
+            adapter._process_message_background(event, build_session_key(event.source)))
+        try:
+            await asyncio.wait_for(send_started.wait(), timeout=1.0)
+            calls_at_delivery = len(typing_calls)
+            await asyncio.sleep(0.05)
+
+            assert len(typing_calls) == calls_at_delivery
+            assert "123" in adapter._typing_paused
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
     @pytest.mark.asyncio
     async def test_slow_send_typing_does_not_block_cadence(self, monkeypatch):
         """A send_typing that hangs longer than the per-tick budget must be

@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -164,11 +164,8 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
 
 
 def _claim_age_seconds(claimed_at: str) -> float:
-    """Seconds since ``claimed_at`` (aware ISO from hermes_time.now; naive is read as UTC)."""
-    claimed_dt = datetime.fromisoformat(claimed_at)
-    if claimed_dt.tzinfo is None:
-        claimed_dt = claimed_dt.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - claimed_dt).total_seconds()
+    """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from hermes_time.now)."""
+    return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:

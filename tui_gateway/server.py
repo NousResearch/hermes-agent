@@ -1525,7 +1525,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
         provider = billing_provider
     base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
-    reasoning_config = model_config.get("reasoning_config")
+    # Legacy rows stored only the effective value. Its provenance is unknowable, so treating it
+    # as explicit would leak the old model's default after the first resumed switch.
+    reasoning_config_override = model_config.get("reasoning_config_override")
     # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
     # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.
     if provider and not _is_routable_provider(provider):
@@ -1548,8 +1550,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "model": model, "provider": provider or None, "base_url": base_url or None, "api_mode": api_mode or None}
     if provider:
         overrides["provider_override"] = provider
-    if isinstance(reasoning_config, dict):
-        overrides["reasoning_config_override"] = reasoning_config
+    if isinstance(reasoning_config_override, dict):
+        overrides["reasoning_config_override"] = reasoning_config_override
     if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
     return overrides
@@ -1585,18 +1587,37 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     return config
 
 
+def _sync_compression_reasoning_marker(agent, reasoning_override) -> None:
+    """Mirror the explicit ``reasoning_config_override`` marker onto the agent's session-init ``model_config``.
+    Conversation compression publishes the child row from that dict, so without the marker the child stores only
+    the effective ``reasoning_config``; a later resume then reads it as a legacy value and drops the explicit pin."""
+    init_config = getattr(agent, "_session_init_model_config", None)
+    if not isinstance(init_config, dict):
+        return
+    if isinstance(reasoning_override, dict):
+        init_config["reasoning_config_override"] = dict(reasoning_override)
+    else:
+        init_config.pop("reasoning_config_override", None)
+
+
 def _persist_live_session_runtime(session: dict | None) -> None:
     """Persist active session runtime so future resumes restore the same footer."""
     live = _live_session_agent_db(session)
     if live is None:
         return
     agent, session_key, db = live
+    reasoning_override = (session or {}).get("create_reasoning_override")
+    _sync_compression_reasoning_marker(agent, reasoning_override)
     try:
         row = db.get_session(session_key) or {}
         model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
+        if isinstance(reasoning_override, dict):
+            model_config["reasoning_config_override"] = reasoning_override
+        else:
+            model_config.pop("reasoning_config_override", None)
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -2400,6 +2421,8 @@ def _make_agent(
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
+    # A resumed explicit pin must survive a compaction on the very first turn, before any runtime persist runs.
+    _sync_compression_reasoning_marker(agent, reasoning_config_override)
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
@@ -2514,7 +2537,11 @@ def _deferred_session_record(
     return {
         "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
-        "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
+        "created_at": now, "cwd": cwd,
+        "create_reasoning_override": (
+            (resume_runtime_overrides or {}).get("reasoning_config_override")
+            if isinstance(resume_runtime_overrides, dict) else None),
+        "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
         "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
         "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,

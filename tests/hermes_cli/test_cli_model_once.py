@@ -119,7 +119,7 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
     import cli as cli_mod
 
     class Agent(_FakeAgent):
-        _primary_runtime = None
+        _primary_runtime: dict | None = None
         _rate_limited_until = 123
 
         def __init__(self):
@@ -128,12 +128,15 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
             self.provider = "anthropic"
 
         def _restore_primary_runtime(self):
+            assert self._primary_runtime is not None
             self.model = self._primary_runtime["model"]
             self.provider = self._primary_runtime["provider"]
+            self.reasoning_config = self._primary_runtime["reasoning_config"]
             return True
 
     stub = _StubCLI()
-    stub.agent = Agent()
+    agent = Agent()
+    stub.agent = agent
     snapshot = {
         "model": "old/model",
         "provider": "openrouter",
@@ -143,9 +146,12 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
         "base_url": "",
         "explicit_base_url": "",
         "api_mode": "chat_completions",
+        "reasoning_config": {"enabled": True, "effort": "high"},
+        "_session_reasoning_config": {"enabled": True, "effort": "high"},
         "agent_primary_runtime": {
             "model": "old/model",
             "provider": "openrouter",
+            "reasoning_config": {"enabled": True, "effort": "low"},
         },
     }
 
@@ -154,3 +160,6 @@ def test_cli_restore_model_runtime_prefers_primary_runtime():
     assert stub.agent.model == "old/model"
     assert stub.agent.provider == "openrouter"
     assert stub.agent.calls == []
+    assert agent.reasoning_config == snapshot["reasoning_config"]
+    assert agent._primary_runtime is not None
+    assert agent._primary_runtime["reasoning_config"] == snapshot["reasoning_config"]

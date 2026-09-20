@@ -3903,7 +3903,8 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     assert "post-compression reply" in texts
 
 
-def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
+@pytest.mark.parametrize("reasoning_field", ["reasoning_config", "reasoning_config_override"])
+def test_session_resume_passes_stored_runtime_to_agent(monkeypatch, reasoning_field):
     captured = {}
 
     class FakeDB:
@@ -3912,7 +3913,11 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "id": target,
                 "model": "gpt-5.4",
                 "billing_provider": "openai-codex",
-                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
+                "model_config": json.dumps({
+                    reasoning_field: {"enabled": True, "effort": "high"},
+                    "service_tier": "priority", "base_url": "https://custom.example/v1",
+                    "api_mode": "chat_completions",
+                }),
             }
 
         def reopen_session(self, target):
@@ -3961,7 +3966,8 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         "api_mode": "chat_completions",
     }
     assert captured["provider_override"] == "openai-codex"
-    assert captured["reasoning_config_override"] == {"enabled": True, "effort": "high"}
+    expected_reasoning = {"enabled": True, "effort": "high"} if reasoning_field == "reasoning_config_override" else None
+    assert captured.get("reasoning_config_override") == expected_reasoning
     assert captured["service_tier_override"] == "priority"
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]

@@ -9,6 +9,8 @@ set reject that with a non-retryable HTTP 400 (#112921, #96012).
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 
 _CFG = {
@@ -24,7 +26,8 @@ def _cli(model, reasoning_config, agent=None):
         model=model, provider="custom:ark", requested_provider="custom:ark", api_key="k",
         base_url="https://ark.example/v3", api_mode="chat_completions", _explicit_api_key=None,
         _explicit_base_url=None, agent=agent, _explicit_model_override=False, _credential_pool=None,
-        reasoning_config=reasoning_config, _console_print=lambda *_a, **_k: None)
+        reasoning_config=reasoning_config, _explicit_reasoning_config=None,
+        _session_reasoning_config=None, _console_print=lambda *_a, **_k: None)
 
 
 def _result(model):
@@ -76,3 +79,30 @@ def test_failed_swap_and_new_session_keep_the_effort_with_the_route():
             cli._resumed, cli._notify_session_boundary = False, lambda *_a, **_k: None
             CLISessionMixin.new_session(cli, silent=True)
         assert cli.reasoning_config == _HIGH
+
+
+@pytest.mark.parametrize(
+    "provenance_field",
+    ["_session_reasoning_config", "_explicit_reasoning_config"],
+)
+def test_live_switch_preserves_session_or_launch_reasoning_override(provenance_field):
+    import cli as cli_mod
+
+    seen = {}
+
+    def _switch(**kwargs):
+        seen.update(kwargs)
+        agent.reasoning_config = kwargs.get("reasoning_config_override", _MEDIUM)
+
+    agent = SimpleNamespace(reasoning_config=_HIGH, switch_model=_switch)
+    cli = _cli("deepseek-v4-flash", _HIGH, agent=agent)
+    setattr(cli, provenance_field, _HIGH)
+
+    with patch.dict(cli_mod.CLI_CONFIG, _CFG):
+        assert CLIModelSwitchMixin._stage_and_swap_model(
+            cli, _result("glm-5.3-flash"), "deepseek-v4-flash"
+        )
+
+    assert cli.reasoning_config == _HIGH
+    assert agent.reasoning_config == _HIGH
+    assert seen["reasoning_config_override"] == _HIGH

@@ -12,6 +12,7 @@ import {
   setModelVisibilityOpen,
   setVisibleModels
 } from '@/store/model-visibility'
+import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
@@ -44,6 +45,7 @@ beforeEach(() => {
   $localRuntimeJobs.set([])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
+  $defaultReasoningEffort.set('')
   setModelVisibilityOpen(false)
   getGlobalModelOptions.mockResolvedValue({
     providers: [{ models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' }]
@@ -60,7 +62,7 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(overrides: Partial<ModelMenuController> = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -68,7 +70,8 @@ function renderMenu() {
     current: { effort: '', fast: false, model: '', provider: '' },
     presetFor: () => ({}),
     select,
-    setOptions: vi.fn()
+    setOptions: vi.fn(),
+    ...overrides
   }
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -83,7 +86,7 @@ function renderMenu() {
     </QueryClientProvider>
   )
 
-  return select
+  return controller
 }
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
@@ -131,6 +134,27 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+
+  it('does not synthesize a missing model preset from the profile default', async () => {
+    $defaultReasoningEffort.set('high')
+    const applyPreset = vi.fn()
+    const select = vi.fn(async () => true)
+
+    renderMenu({
+      applyPreset,
+      current: { effort: '', fast: false, model: 'other-model', provider: 'google' },
+      presetFor: () => ({}),
+      select
+    })
+
+    fireEvent.click(await screen.findByText(/Gemini 3\.1 Pro/i))
+
+    await waitFor(() => expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google'))
+    expect(applyPreset).toHaveBeenCalledWith(
+      { effort: undefined, fast: undefined },
+      { model: 'gemini-3.1-pro', provider: 'google' }
+    )
   })
 })
 

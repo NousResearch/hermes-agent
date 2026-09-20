@@ -46,7 +46,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         model, provider, api_key, base_url, api_mode = (snapshot.get(k, "") for k in _RUNTIME_KEYS)
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
-            api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+            api_mode=api_mode, capabilities=snapshot.get("capabilities"),
+            reasoning_config_override=snapshot.get("reasoning_config"))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
 
@@ -223,11 +224,15 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
 
 def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
     """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
+    reasoning_override = session.get("create_reasoning_override")
+    switch_kwargs = {}
+    if reasoning_override is not None:
+        switch_kwargs["reasoning_config_override"] = reasoning_override
     try:
         agent.switch_model(
             new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
             base_url=result.base_url, api_mode=result.api_mode,
-            capabilities=getattr(result, "runtime_capabilities", None))
+            capabilities=getattr(result, "runtime_capabilities", None), **switch_kwargs)
     except Exception as exc:
         # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
         # restart, persist, marker, override, config write) or the session pins a broken model.

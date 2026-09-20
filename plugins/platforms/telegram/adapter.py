@@ -5369,6 +5369,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
         # 4b) Normalize bullet lists starting with * so they don't collide with italic *
+        # `•` is outside MarkdownV2's reserved set (cf. _escape_mdv2), so the bullet needs no escaping
+        # and survives step 10 untouched. Revisit if the escaper ever widens past ASCII punctuation.
         text = re.sub(r'^(\s*)\*\s+', r'\1• ', text, flags=re.MULTILINE)
         # 5) Bold+Italic ***text*** → *_text_*; Bold **text** → *text*
         text = re.sub(r'\*\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*\*', lambda m: _ph(f"*_{_escape_mdv2(m.group(1))}_*"), text)

@@ -12,6 +12,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -732,6 +733,11 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # The kernel's own commitment for this card (#110080): the protected board
+    # fields as it last left them, and the head of its event chain. See
+    # ``_commit_task_state`` / ``board_state_divergence``.
+    board_state_snapshot: Optional[str] = None
+    event_chain_tip: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -762,6 +768,8 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    # Tamper-evidence commitment (#110080); NULL on rows that predate it.
+    "board_state_snapshot", "event_chain_tip",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -853,6 +861,10 @@ class Event:
     payload: Optional[dict]
     created_at: int
     run_id: Optional[int] = None
+    # Tamper-evidence chain (see ``_append_event``); NULL on rows written
+    # before the chain existed or by a raw-SQL writer.
+    prev_hash: Optional[str] = None
+    event_hash: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Event":
@@ -860,6 +872,7 @@ class Event:
         return cls(
             id=row["id"], task_id=row["task_id"], kind=_lossy_text(row["kind"]),
             payload=_json_or(_lossy_text(row["payload"])), created_at=row["created_at"], run_id=_opt_int(run_id),
+            prev_hash=_row_get(row, "prev_hash"), event_hash=_row_get(row, "event_hash"),
         )
 
 
@@ -966,7 +979,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Tamper-evidence commitment (#110080): ``board_state_snapshot`` is the JSON
+    -- of the protected board fields (status/priority/title/body/assignee/result)
+    -- as the kernel last left them, ``event_chain_tip`` is the hash of the newest
+    -- event row it chained. Both are written by ``_commit_task_state`` and with
+    -- NULL mean "row predates the commitment"; reads compare them against the
+    -- live row and the surviving event log (``verify_event_chain``,
+    -- ``board_state_divergence``).
+    board_state_snapshot TEXT,
+    event_chain_tip      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -983,13 +1005,20 @@ CREATE TABLE IF NOT EXISTS task_comments (
     created_at INTEGER NOT NULL
 );
 
+-- ``prev_hash``/``event_hash`` are the tamper-evidence chain: every row the
+-- kernel writes hashes (prev link + its own fields). A state change that
+-- arrives as raw SQL either leaves NULLs (unsigned) or does not recompute
+-- (mismatch) — see ``verify_event_chain``. Rows predating the chain stay NULL
+-- and are not findings. #110080
 CREATE TABLE IF NOT EXISTS task_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
     run_id     INTEGER,
     kind       TEXT NOT NULL,
     payload    TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    prev_hash  TEXT,
+    event_hash TEXT
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -1935,15 +1964,281 @@ def _insert_comment(
     )
 
 
+# --- Event chain + board commitment (tamper evidence) ---
+#
+# The kernel is the only writer that should ever move a task's board state, and
+# every kernel mutation appends an event. Anything that writes
+# ``tasks``/``task_events`` with raw SQL (the worker in #110080 that ran
+# ``UPDATE tasks SET status='done'`` after the completion gate refused it, and
+# the ``triage -> ready`` write that widened the issue to all board writes)
+# shows up on one of two rails:
+#
+#   * the chain — each event row carries a hash over its own fields plus the
+#     previous row's hash, so an inserted/edited/deleted row stops recomputing
+#     (:func:`verify_event_chain`);
+#   * the card's commitment — ``tasks.board_state_snapshot``/``event_chain_tip``
+#     record what the kernel last left behind, so a raw ``UPDATE tasks`` that
+#     never went through :func:`_append_event` leaves the row diverging from it
+#     (:func:`board_state_divergence`).
+#
+# Both are read-only evidence, not locks: a writer with code access can
+# recompute a whole suffix or rewrite the commitment.
+
+def _ev_get(ev: Any, col: str, default: Any = None) -> Any:
+    """``col`` from a sqlite3.Row, dict, or :class:`Event` (rules see all three)."""
+    try:
+        if hasattr(ev, "keys") and col in ev.keys():
+            return ev[col]
+    except Exception:
+        pass
+    if isinstance(ev, dict):
+        return ev.get(col, default)
+    return getattr(ev, col, default)
+
+
+def _canonical_payload(payload: Any) -> str:
+    """Canonical text for the chain hash, from stored JSON text OR a decoded value.
+
+    ``_append_event`` hashes the value it writes; a reader may hold the raw
+    column text (``sqlite3.Row``) or the decoded payload (:class:`Event`), so
+    both must fold to the same string — parse first when the input is text.
+    """
+    if payload is None:
+        return ""
+    value = payload
+    if isinstance(payload, str):
+        try:
+            value = json.loads(payload)
+        except Exception:
+            value = payload
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except Exception:
+        return str(value)
+
+
+def _event_chain_hash(
+    prev_hash: Optional[str], task_id: Optional[str], run_id: Optional[int],
+    kind: Optional[str], payload: Any, created_at: Any,
+) -> Optional[str]:
+    """sha256 over the link + the event's identity fields; None on unsortable input."""
+    try:
+        body = "\x1f".join((
+            prev_hash or "", str(task_id or ""),
+            "" if run_id is None else str(int(run_id)),
+            str(kind or ""), _canonical_payload(payload), str(int(created_at)),
+        ))
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()
+
+
+# The card-row fields the board projects. Every kernel mutation of one of these
+# appends an event (:func:`_append_event`), which is what makes the commitment
+# below a reconciliation anchor: a raw ``UPDATE tasks SET status/priority/...``
+# leaves the row disagreeing with the state the kernel committed. Adding a field
+# here is only safe if every kernel write path to it is evented.
+_BOARD_PROJECTION_FIELDS = ("status", "priority", "title", "body", "assignee", "result")
+
+# Sentinel: the container handed to a reader simply does not carry the field
+# (a partial SELECT), which is "unknown", not "empty".
+_MISSING = object()
+
+
+def _board_field(task: Any, name: str) -> Any:
+    """``task[name]`` from a Row/dict/Task, or ``_MISSING`` when it never had it."""
+    try:
+        keys = task.keys() if hasattr(task, "keys") else None
+    except Exception:
+        keys = None
+    if keys is not None:
+        return task[name] if name in keys else _MISSING
+    if isinstance(task, dict):
+        return task[name] if name in task else _MISSING
+    return getattr(task, name, _MISSING)
+
+
+def board_projection(task: Any) -> Optional[dict]:
+    """The protected board fields of ``task``, or None when the container can't say.
+
+    ``bytes`` cells are decoded exactly as :class:`Task` does (``_lossy_text``),
+    so a raw ``sqlite3.Row`` and a ``Task`` fold to the same dict.
+    """
+    if task is None:
+        return None
+    values = {name: _board_field(task, name) for name in _BOARD_PROJECTION_FIELDS}
+    if any(value is _MISSING for value in values.values()):
+        return None
+    return {name: _lossy_text(value) for name, value in values.items()}
+
+
+def _projection_json(state: dict) -> str:
+    return json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+
+
+def board_state_divergence(task: Any) -> dict[str, dict[str, Any]]:
+    """Protected board fields that no longer match the kernel's commitment (#110080).
+
+    ``{}`` = nothing to report, including for rows written before the commitment
+    existed (NULL snapshot). A non-empty result means ``tasks`` was changed by
+    something that did not go through the kernel: the disclosed ``triage ->
+    ready`` write, or a direct priority/title/body/assignee/result write.
+
+    Ceiling: the comparison is against the *last* commitment, so the next kernel
+    event for the card re-commits whatever the row then holds. It reports state
+    that no kernel write produced, not a permanent record of every such write —
+    the evented rules (``out_of_band_transition`` on terminals) are the durable
+    half.
+    """
+    committed_raw = _board_field(task, "board_state_snapshot")
+    if not committed_raw or committed_raw is _MISSING:
+        return {}
+    try:
+        committed = json.loads(committed_raw)
+    except Exception:
+        return {}
+    current = board_projection(task)
+    if not isinstance(committed, dict) or current is None:
+        return {}
+    return {
+        name: {"committed": committed.get(name), "found": current.get(name)}
+        for name in _BOARD_PROJECTION_FIELDS
+        if committed.get(name) != current.get(name)
+    }
+
+
+def _commit_task_state(
+    conn: sqlite3.Connection, task_id: str, tail_hash: Optional[str], event_hash: Optional[str],
+) -> None:
+    """Record on the card what the kernel just committed: the chain head + the board state.
+
+    ``tail_hash`` is the newest chained event before this append. The tip only
+    advances across a continuous tail: once the stored tip names a hash that no
+    longer sits at the end of the log, a row was deleted from the log's end and
+    the stale tip is *kept* so the next legitimate append cannot silently heal
+    the evidence (a delete of a middle row is caught by ``chain_broken``; the
+    tail has no successor to expose it — #110080 review).
+    """
+    row = conn.execute(
+        "SELECT event_chain_tip, " + ", ".join(_BOARD_PROJECTION_FIELDS) + " FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:  # event for a task row that no longer exists
+        return
+    tip = _row_get(row, "event_chain_tip")
+    if tip is None or tip == tail_hash:
+        tip = event_hash
+    state = {name: _lossy_text(row[name]) for name in _BOARD_PROJECTION_FIELDS}
+    conn.execute(
+        "UPDATE tasks SET board_state_snapshot = ?, event_chain_tip = ? WHERE id = ?",
+        (_projection_json(state), tip, task_id),
+    )
+
+
+def verify_event_chain(
+    task_id: str, events: Iterable[Any], *, task: Any = None,
+) -> list[dict]:
+    """Read-only audit of ONE task's event log against its chain hashes (#110080).
+
+    Findings (empty list = the log the kernel wrote, nothing to report):
+      * ``unsigned_event`` — a NULL-hash row following a hashed one: something
+        INSERTed into ``task_events`` without going through :func:`_append_event`.
+      * ``hash_mismatch`` — ``event_hash`` doesn't recompute from the row's own
+        fields + its stored ``prev_hash``: the row was edited after the fact.
+      * ``chain_broken`` — ``prev_hash`` skips a row that used to sit between it
+        and the previous hashed row: an event was deleted.
+      * ``chain_tail_missing`` — the card's committed chain tip
+        (``tasks.event_chain_tip``) names an event hash that is not the newest
+        surviving chained row: the *end* of the log was deleted, which no
+        successor row can expose. Needs ``task=``; a stale tip is deliberately
+        not re-committed, so a later legitimate append cannot heal it.
+
+    Rows that predate the chain (NULL hash, no hashed row before them) are
+    legacy, not findings; a pruned prefix (``gc_events``) keeps each surviving
+    row anchored on the hash it still carries. Ceiling: anyone who can read
+    this code can recompute a whole suffix — this is evidence, not a lock.
+    """
+    findings: list[dict] = []
+    prev_hash: Optional[str] = None
+    saw_hash = False
+    for ev in events:
+        stored = _ev_get(ev, "event_hash")
+        event_id = _ev_get(ev, "id")
+        kind = _ev_get(ev, "kind")
+        if not stored:
+            if saw_hash:
+                findings.append({
+                    "kind": "unsigned_event", "event_id": event_id, "event_kind": kind,
+                    "detail": "event row has no chain hash but follows hashed rows",
+                })
+            continue
+        row_prev = _ev_get(ev, "prev_hash")
+        expected = _event_chain_hash(
+            row_prev, _ev_get(ev, "task_id") or task_id, _ev_get(ev, "run_id"),
+            kind, _ev_get(ev, "payload"), _ev_get(ev, "created_at"),
+        )
+        if expected != stored:
+            findings.append({
+                "kind": "hash_mismatch", "event_id": event_id, "event_kind": kind,
+                "detail": "event_hash does not recompute from this row's fields",
+            })
+        elif prev_hash is not None and row_prev != prev_hash:
+            findings.append({
+                "kind": "chain_broken", "event_id": event_id, "event_kind": kind,
+                "detail": "prev_hash does not link to the previous surviving event",
+            })
+        prev_hash = stored
+        saw_hash = True
+    # ``prev_hash`` now holds the newest surviving chained row (None = the log
+    # carries no chained row at all); the card's tip is the only witness of a
+    # deleted tail.
+    if task is not None:
+        tip = _board_field(task, "event_chain_tip")
+        if tip is not _MISSING and tip and tip != prev_hash:
+            findings.append({
+                "kind": "chain_tail_missing", "event_id": None, "event_kind": None,
+                "detail": "the card's chain tip names an event row that is no longer in the log",
+            })
+    return findings
+
+
 def _append_event(
     conn: sqlite3.Connection, task_id: str, kind: str, payload: Optional[dict] = None, *,
     run_id: Optional[int] = None,
 ) -> None:
-    """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped)."""
-    conn.execute(
-        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-        "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),
-    )
+    """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped).
+
+    Rows are chained per task (:func:`verify_event_chain`) and the card's
+    commitment is refreshed in the same statement pair
+    (:func:`_commit_task_state`); the link is read inside the same write txn, so
+    concurrent writers can't fork it.
+    """
+    payload_text = _json_or_null(payload)
+    created_at = int(time.time())
+
+    def _insert() -> None:
+        prev = conn.execute(
+            "SELECT event_hash FROM task_events WHERE task_id = ? AND event_hash IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1", (task_id,),
+        ).fetchone()
+        prev_hash = _row_get(prev, "event_hash")
+        event_hash = _event_chain_hash(prev_hash, task_id, run_id, kind, payload, created_at)
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at, prev_hash, event_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, run_id, kind, payload_text, created_at, prev_hash, event_hash),
+        )
+        # The caller has already applied its mutation inside this txn, so the row
+        # now holds what the kernel means to commit for the board projection.
+        _commit_task_state(conn, task_id, prev_hash, event_hash)
+
+    if getattr(conn, "in_transaction", False):
+        _insert()
+    else:
+        # Autocommit caller: the head read + insert must share a txn or two
+        # writers could both chain onto the same row.
+        with write_txn(conn):
+            _insert()
 
 
 def _end_run(
@@ -4138,11 +4433,17 @@ def task_age(task: Task) -> dict:
 # --- Retention + garbage collection ---
 
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
-    """Prune old done/archived events, retaining decomposition identity until task deletion."""
+    """Prune old done/archived events, retaining decomposition identity until task deletion.
+
+    Terminal transitions (``completed``/``archived``) are retained too: they are
+    the audit anchor that pairs a terminal ``tasks.status`` with its event, so
+    pruning them would make an old completed task look out-of-band (#110080).
+    """
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
+            "DELETE FROM task_events WHERE created_at < ? "
+            "AND kind NOT IN ('decomposed', 'completed', 'archived') AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
     return int(cur.rowcount or 0)

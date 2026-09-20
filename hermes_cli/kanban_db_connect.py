@@ -837,6 +837,12 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Tamper-evidence commitment (#110080): the board fields the kernel last
+    # committed for the card, and the head of its event chain. NULL = the row
+    # predates the commitment, which readers treat as "not evidence" rather than
+    # as a divergence.
+    ("board_state_snapshot", "board_state_snapshot TEXT"),
+    ("event_chain_tip", "event_chain_tip TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -904,9 +910,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
 
     # task_events.run_id back-fills as NULL for historical events (they predate
-    # runs and can't be attributed).
-    if "run_id" not in _column_names(conn, "task_events"):
-        _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
+    # runs and can't be attributed); prev_hash/event_hash (#110080) back-fill as
+    # NULL for the SAME reason — unchained rows are skipped by the verifier
+    # instead of being reported as tampered.
+    event_cols = _column_names(conn, "task_events")
+    for name, ddl in (
+        ("run_id", "run_id INTEGER"),
+        ("prev_hash", "prev_hash TEXT"),
+        ("event_hash", "event_hash TEXT"),
+    ):
+        if name not in event_cols:
+            _add_column_if_missing(conn, "task_events", name, ddl)
 
     # Same ordering rule as the ``tasks`` indexes above: index after column.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")
@@ -1014,7 +1028,8 @@ _REBUILD_SPECS = {
         "CREATE TABLE task_events ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, run_id INTEGER, kind TEXT NOT NULL,"
-        " payload TEXT, created_at INTEGER NOT NULL)",
+        " payload TEXT, created_at INTEGER NOT NULL,"
+        " prev_hash TEXT, event_hash TEXT)",
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
             "CREATE INDEX idx_events_run ON task_events(run_id, id)",

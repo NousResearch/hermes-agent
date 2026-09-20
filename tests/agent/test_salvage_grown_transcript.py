@@ -102,6 +102,7 @@ def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
 
 def test_salvage_preserves_recovery_nudge_around_folded_todo():
     """Last-resort TODO removal must retain other content sharing its user row."""
+    from agent.context_compressor import _skill_pruned_marker
     from agent.conversation_compression import (
         _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
         _durable_compaction_messages,
@@ -114,7 +115,7 @@ def test_salvage_preserves_recovery_nudge_around_folded_todo():
         {"role": "assistant", "content": "ok"},
     ]
     candidate = [
-        {"role": "user", "content": "summary of the ask\n[SKILL_PRUNED: example-skill]"},
+        {"role": "user", "content": f"summary of the ask\n{_skill_pruned_marker('example-skill')}"},
         {
             "role": "assistant",
             "content": "(empty)",

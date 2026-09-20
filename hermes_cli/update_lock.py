@@ -47,6 +47,18 @@ def update_marker_path() -> Path:
     return get_process_hermes_home() / MARKER_NAME
 
 
+def _pid_liveness(pid: int) -> bool | None:
+    """Return True/False only when the owner probe is authoritative."""
+    if pid <= 0:
+        return False
+    try:
+        from gateway.status import _pid_exists
+        return bool(_pid_exists(pid))
+    except Exception as exc:
+        logger.debug("Could not probe pid %s: %s", pid, exc)
+        return None
+
+
 def _pid_alive(pid: int) -> bool:
     """True when a process with ``pid`` currently exists.
 
@@ -55,14 +67,7 @@ def _pid_alive(pid: int) -> bool:
     target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
     dead so a corrupt marker never wedges the lock.
     """
-    if pid <= 0:
-        return False
-    try:
-        from gateway.status import _pid_exists
-        return bool(_pid_exists(pid))
-    except Exception as exc:
-        logger.debug("Could not probe pid %s: %s", pid, exc)
-        return False
+    return _pid_liveness(pid) is True
 
 
 def _handoff_pid() -> int | None:
@@ -98,6 +103,40 @@ class UpdateHolder:
 
     pid: int
     age_seconds: float
+
+
+def read_update_marker_state(*, path: Path | None = None) -> str:
+    """Return ``absent``, ``live``, or ``unknown`` for dispatch authorization.
+
+    Unlike :func:`read_live_update`, an unreadable marker or inconclusive owner
+    probe stays ``unknown`` and is never removed. Dispatch may resume only after
+    absence or staleness is proven.
+    """
+    marker = path or update_marker_path()
+    try:
+        with marker.open(encoding="utf-8") as marker_file:
+            lines = marker_file.read().splitlines()
+            marker_mtime = os.fstat(marker_file.fileno()).st_mtime
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+    try:
+        pid = int(lines[0].strip())
+        started_at = float(lines[1].strip())
+    except (IndexError, ValueError):
+        marker_age = time.time() - marker_mtime
+        return "absent" if marker_age > UPDATE_MARKER_MAX_AGE_SECONDS else "unknown"
+
+    age = time.time() - started_at
+    if age > UPDATE_MARKER_MAX_AGE_SECONDS:
+        return "absent"
+    liveness = _pid_liveness(pid)
+    if liveness is None:
+        return "unknown"
+    if not liveness:
+        return "absent"
+    return "live"
 
 
 def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:

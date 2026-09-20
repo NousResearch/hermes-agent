@@ -99,6 +99,8 @@ class CanonicalOutputRetry:
     def _prepare_artifact_retry_store(self):
         def prepare(conn):
             _epoch(conn, self._output_epoch)
+            from gateway.hosted_room_task_scan import initialize
+            initialize(conn)
             conn.execute('''CREATE TABLE IF NOT EXISTS hosted_room_artifact_retries (
                 room_id TEXT NOT NULL, task_id TEXT NOT NULL, execution_generation INTEGER NOT NULL,
                 member_id TEXT NOT NULL, attempts INTEGER NOT NULL, next_attempt_at REAL NOT NULL,
@@ -352,14 +354,20 @@ class CanonicalOutputRetry:
             self._complete_stopped_output_from_receipt(conn, task, metadata, operation)
         self.authority.db._execute_write(finish)
 
-    def _unblock_authenticated_output_routes(self, room_id):
+    def _unblock_authenticated_output_routes(self, room_id, *, tasks=None):
         """Consume Route's exact authenticated CAS notification on normal ticks."""
         if not self._output_retry_ready:
             return
         def unblock(conn):
             self._output_owner(conn)
-            rows = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND blocked=1',
-                                (room_id,)).fetchall()
+            if tasks is None:
+                rows = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND blocked=1',
+                                    (room_id,)).fetchall()
+            else:
+                rows = [row for task in tasks for row in conn.execute(
+                    'SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? '
+                    'AND execution_generation=? AND blocked=1',
+                    (room_id, task['identity'].task_id, task['execution_generation']))]
             for row in rows:
                 member_id = row['member_id']
                 link = conn.execute('SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?',

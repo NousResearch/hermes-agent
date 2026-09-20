@@ -364,6 +364,16 @@ class RoomArtifactOutbox:
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not {'hosted_room_output_artifacts', 'hosted_room_output_generation_fences'} <= names:
             raise OutputCleanupUnavailable('Output inventory unavailable')
+        required = {
+            'hosted_room_output_artifacts': {'artifact_id', 'scope_key', 'scope_json', 'name', 'kind',
+                'mime', 'size', 'sha256', 'blob_name', 'created_at', 'acknowledged_at',
+                'ack_message_event_id', 'receipt_expires_at', 'cleanup_required_at', 'blob_reclaimed_at'},
+            'hosted_room_output_generation_fences': {'lineage_key', 'lineage_json', 'lineage_identity',
+                'max_generation', 'retired_generation', 'updated_at'},
+        }
+        if any(not columns <= {r['name'] for r in conn.execute('PRAGMA table_info(' + table + ')')}
+               for table, columns in required.items()):
+            raise OutputCleanupUnavailable('Output inventory schema unavailable')
         value = cls.__new__(cls)
         value.db_path = Path(db.db_path)
         value.root = value.db_path.parent / 'hosted-room-artifact-outbox'

@@ -2,6 +2,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from gateway import hosted_room_driver as tasks
@@ -22,7 +23,8 @@ async def dispatch(client, method, **params):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fault', [None, 'unlink', 'fsync', 'commit',
-    'drift_epoch', 'drift_instance', 'drift_cancel', 'drift_admission', 'drift_draining', 'input_hold'])
+    'drift_epoch', 'drift_instance', 'drift_cancel', 'drift_admission', 'drift_draining',
+    'input_ok', 'input_image_ok', 'input_hold', 'input_bytes', 'input_digest', 'input_recipient', 'input_generation', 'input_session'])
 async def test_native_stop_retires_exact_local_cancelled_output(tmp_path, monkeypatch, fault, request):
     from tools import hosted_room_artifact
     from gateway.session_hosted_output import current_output_binding
@@ -59,7 +61,7 @@ async def test_native_stop_retires_exact_local_cancelled_output(tmp_path, monkey
             return ''
         runner._handle_message = handle
         input_manifest = None
-        if fault == 'input_hold':
+        if fault and fault.startswith('input_'):
             from gateway.runtime_ownership import process_ownership
             process_ownership.reserve([tmp_path])
             request.addfinalizer(lambda: process_ownership.release(tmp_path))
@@ -68,7 +70,14 @@ async def test_native_stop_retires_exact_local_cancelled_output(tmp_path, monkey
             item = service.attachments.put(room_id='room', upload_id='input', name='input.txt',
                 kind='file', mime='text/plain', data=b'original canonical input')
             input_manifest = [{k: item[k] for k in ('attachment_id', 'name', 'kind', 'mime', 'size')}]
+            if fault == 'input_image_ok':
+                import base64
+                image = service.attachments.put(room_id='room', upload_id='image-input', name='pixel.png',
+                    kind='image', mime='image/png', data=base64.b64decode(
+                        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1cAAAAASUVORK5CYII='))
+                input_manifest.append({k: image[k] for k in ('attachment_id', 'name', 'kind', 'mime', 'size')})
         work = asyncio.create_task(execute_group_turn(authority, service, input_manifest=input_manifest))
+
         client = connection(authority, service)
         fail_cleanup = [False]
         if fault in {'unlink', 'fsync'}:
@@ -81,6 +90,33 @@ async def test_native_stop_retires_exact_local_cancelled_output(tmp_path, monkey
             monkeypatch.setattr('gateway.hosted_room_output_discard.os.' + fault, failing)
         try:
             await asyncio.wait_for(shared.wait(), 8)
+            if input_manifest:
+                with authority.db._read_ctx() as conn:
+                    input_before = [dict(r) for r in conn.execute('SELECT * FROM input_custody_refs')]
+                    from gateway.hosted_room_input_reclamation import copy_path
+                    input_paths = [copy_path(authority.db, dict(r)) for r in conn.execute("SELECT * FROM input_custody_copies WHERE namespace='v3'")]
+                    admitted = json.loads(conn.execute('SELECT payload_json FROM session_admissions').fetchone()[0])
+                    input_paths.extend(Path(r['path']) for r in admitted.get('attachments_v1', {}).get('media', []))
+                assert input_before
+                # Original source bytes may have aged out of read authority;
+                # cleanup uses retained metadata plus its own input custody only.
+                authority.db._execute_write(lambda conn: conn.execute('UPDATE hosted_room_attachments SET expires_at=0'))
+                if fault == 'input_hold':
+                    # Damaged retained evidence is unavailable, never a fresh capture.
+                    authority.db._execute_write(lambda conn: conn.execute('DELETE FROM input_custody_refs'))
+                elif fault == 'input_bytes':
+                    input_paths[0].write_bytes(b'changed retained input')
+                elif fault in {'input_digest', 'input_recipient'}:
+                    assignment = "sha256='" + '0' * 64 + "'" if fault == 'input_digest' else "recipient_member_ids_json='[]'"
+                    authority.db._execute_write(lambda conn: conn.execute('UPDATE hosted_room_attachments SET ' + assignment))
+                elif fault == 'input_generation':
+                    authority.db._execute_write(lambda conn: conn.execute('UPDATE input_custody_refs SET generation=generation+1'))
+                elif fault == 'input_session':
+                    authority.db._execute_write(lambda conn: conn.execute("UPDATE input_custody_refs SET target_session_id='foreign'"))
+                input_bytes = [p.read_bytes() for p in input_paths]
+                def no_recapture(*args, **kwargs):
+                    raise AssertionError('cleanup must not read or recapture source inputs')
+                monkeypatch.setattr('gateway.hosted_room_input_preparation.resolve_inputs', no_recapture)
             answer = await dispatch(client, 'stop', room_id='room', cancel_id='exact-stop')
             assert answer.get('result') == {'cancelled': 1}, answer
             await asyncio.wait_for(signalled.wait(), 3)
@@ -113,11 +149,17 @@ async def test_native_stop_retires_exact_local_cancelled_output(tmp_path, monkey
             rpc, request, receipt, task, binding = result
         current = tasks.get_task(service.db_path, task['identity'])
         assert not (current.get('result') or {}).get('artifacts')
-        if fault == 'input_hold':
+        if input_manifest:
+            assert [p.read_bytes() for p in input_paths] == input_bytes
+        if fault in {'input_ok', 'input_image_ok'}:
+            with authority.db._read_ctx() as conn:
+                assert [dict(r) for r in conn.execute('SELECT * FROM input_custody_refs')] == input_before
+            fault = None
+        if fault and fault.startswith('input_'):
             held = [r for r in service.status('room')['pending_actions'] if r['kind'] == 'output_cleanup']
             assert held and held[0]['reason_code'] == 'input_binding_unavailable'
             assert owned_paths and all(path.exists() for path in owned_paths)
-            return  # explicit partial-scope hold, never cleanup success
+            return  # exact damaged evidence remains a hold, never cleanup success
         if fault:
             import time
             from gateway.session_hosted_output_lifecycle import records
@@ -174,9 +216,20 @@ async def test_native_stop_retires_exact_local_cancelled_output(tmp_path, monkey
         outbox = RoomArtifactOutbox(service.db_path)
         for scope, item in siblings:
             assert outbox.read(scope, item['artifact_id'])[1] == output.read_bytes()
+        # An interrupted scan with intervening task drift needs a fresh revision pass.
+        service.prepare_room(binding)
         assert not [x for x in service.status('room')['pending_actions'] if x['kind'] == 'output_cleanup']
         service.prepare_room(binding)
         assert tasks.get_task(service.db_path, task['identity'])['execution_generation'] == current['execution_generation']
+        if input_manifest and len(input_manifest) > 1:
+            from gateway.hosted_room_input_custody import custody_holds
+            from hermes_state_mutation_retirement import retire_prunable
+            media, = admitted['attachments_v1']['media']
+            with authority.db._read_ctx() as conn:
+                assert custody_holds(conn, authority.db.db_path, media)
+            assert authority.db._execute_write(lambda conn: retire_prunable(conn, [producer[0].ref.session_id])) == [producer[0].ref.session_id]
+            with authority.db._read_ctx() as conn:
+                assert not custody_holds(conn, authority.db.db_path, media)
 
 @pytest.mark.asyncio
 async def test_unknown_requires_explicit_exact_discard_before_cleanup(tmp_path, monkeypatch):

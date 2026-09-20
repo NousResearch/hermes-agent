@@ -22,13 +22,27 @@ def key_for(task):
         [asdict(task['identity']), task['execution_generation']], sort_keys=True).encode()).hexdigest()
 
 
-def records(conn, room_id):
+def records(conn, room_id, *, pending_limit=None):
+    suffix = " AND json_extract(value,'$.state') IS NOT 'completed' ORDER BY key LIMIT ?" if pending_limit else ''
     return [(r['key'], json.loads(r['value'])) for r in conn.execute(
-        "SELECT key,value FROM state_meta WHERE key LIKE ? AND json_extract(value,'$.room_id')=?",
-        (PREFIX + '%', room_id))]
+        "SELECT key,value FROM state_meta WHERE key LIKE ? AND json_extract(value,'$.room_id')=?" + suffix,
+        (PREFIX + '%', room_id, pending_limit) if pending_limit else (PREFIX + '%', room_id))]
 
 
 class CanonicalOutputLifecycle:
+    def prepare_room(self, *args, **kwargs):
+        # Refuse before inherited pathname-based room/policy helpers can run.
+        with self._output_policy_read():
+            pass
+        return super().prepare_room(*args, **kwargs)
+
+    def _cleanup_write(self, operation):
+        if self.authority.db is not self._output_db:
+            raise RoomArtifactError('Group Chat cleanup owner replaced')
+        with self._output_db.live_write_connection() as conn:
+            self._output_owner(conn)
+            return operation(conn)
+
     def stop_room(self, *args, **kwargs):
         with self._policy_lock, self._output_policy_read():
             pass
@@ -101,12 +115,17 @@ class CanonicalOutputLifecycle:
         require_output_task(conn, scope, row['cancel_generation'], status=row['status'])
         base.update(scope=scope.as_mapping(), scope_key=scope.key, lineage_identity=scope.lineage_json,
                     admission={k: admission[k] for k in (
-            'admission_id', 'request_id', 'principal_id', 'target_session_id', 'owner_epoch', 'generation', 'payload_json')})
+            'admission_id', 'request_id', 'principal_id', 'target_session_id', 'owner_epoch', 'generation',
+            'payload_json', 'payload_digest', 'intent')})
         if payload.get('attachments'):
-            # Resultless cleanup cannot reconstruct input custody by reading or
-            # recapturing aged files. Keep this case blocked until its exact
-            # retained preparation binding is available at this writer seam.
-            base['unavailable'] = 'input_binding_unavailable'
+            from gateway.hosted_room_input_retained import retained_hosted_input
+            from hermes_state_runtime import RuntimeStoreError
+            import sqlite3
+            try:
+                base['input_binding'] = retained_hosted_input(conn, self.authority.db,
+                    room_id=identity.room_id, member_id=member, task_payload=payload, admission=admission)
+            except (RuntimeStoreError, sqlite3.OperationalError):
+                base['unavailable'] = 'input_binding_unavailable'
         return base, admission
 
     def _reconcile_stopped_output(self, task, *, capture_only=False):
@@ -116,6 +135,10 @@ class CanonicalOutputLifecycle:
             snapshot, admission = self._cleanup_snapshot(conn, task)
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else None
+            if old and old['state'] == 'pending':
+                # Damaged inventory does not spend attempts or mutate the exact
+                # retained physical obligation, much less initialize a store.
+                RoomArtifactOutbox.borrow_existing(self.authority.db, conn)
             if old is not None and old['binding'] != snapshot:
                 # Existing exact explicit discard may resolve unknown. It does
                 # not readmit the input or transfer the original owner binding.
@@ -149,7 +172,7 @@ class CanonicalOutputLifecycle:
                     record['reason_code'] = 'inventory_unavailable'
             conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(record, sort_keys=True)))
             return record
-        record = self.authority.db._execute_write(stage)
+        record = self._cleanup_write(stage)
         if capture_only or record['state'] != 'pending' or record['next_attempt_at'] > now:
             return record['state'] == 'completed'
         def complete(conn):
@@ -163,7 +186,7 @@ class CanonicalOutputLifecycle:
             done = dict(record, state='completed', blobs=[], reason_code='completed', next_attempt_at=0)
             conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(done, sort_keys=True), key))
         try:
-            self.authority.db._execute_write(complete)
+            self._cleanup_write(complete)
         except Exception as exc:
             if not (retryable(exc) or isinstance(exc, OutputCleanupUnavailable)):
                 raise
@@ -174,7 +197,7 @@ class CanonicalOutputLifecycle:
                               next_attempt_at=float(self._artifact_clock()) + min(300, 2 ** min(attempts, 8)))
                 conn.execute('UPDATE state_meta SET value=? WHERE key=? AND value=?',
                              (json.dumps(failed, sort_keys=True), key, json.dumps(record, sort_keys=True)))
-            self.authority.db._execute_write(pending)
+            self._cleanup_write(pending)
             return False
         return True
 
@@ -217,8 +240,13 @@ class CanonicalOutputLifecycle:
             raise RoomArtifactError('Group Chat cleanup authority changed')
 
     def output_cleanup_status(self, room_id):
-        with self.authority.db._read_ctx() as conn:
-            self._output_owner(conn)
-            return [dict(kind='output_cleanup', **{k: r[k] for k in (
+        with self._output_policy_read() as conn:
+            rows = records(conn, room_id, pending_limit=BATCH + 1)
+            result = [dict(kind='output_cleanup', **{k: r[k] for k in (
                 'task_id', 'member_id', 'execution_generation', 'state', 'reason_code', 'attempts', 'next_attempt_at')})
-                for _, r in records(conn, room_id) if r['state'] != 'completed']
+                for _, r in rows[:BATCH]]
+            from gateway.hosted_room_task_scan import pending
+            if pending(conn, room_id) or len(rows) > BATCH:
+                result.append(dict(kind='output_cleanup', task_id='', member_id='', execution_generation=0,
+                    state='waiting', reason_code='enumeration_pending', attempts=0, next_attempt_at=0))
+            return result

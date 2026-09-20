@@ -57,19 +57,26 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
         # Direct callers retain exception reporting; scheduler callers consume the
         # durable disposition after every independent sibling has had a chance.
         with self._output_room_lock(str(room['room_id'])):
+            with self._output_policy_read():
+                pass
             self._prune_output_retry_metadata(str(room['room_id']))
-            self._unblock_authenticated_output_routes(str(room['room_id']))
             changed, errors = False, []
-            for stopping in self._list_tasks(str(room['room_id']), ('stopping',)):
+            from gateway.hosted_room_task_scan import page, finish
+            def inventory(conn):
+                self._output_owner(conn)
+                return page(conn, str(room['room_id']))
+            scan, batch = self._cleanup_write(inventory)
+            self._unblock_authenticated_output_routes(str(room['room_id']), tasks=batch)
+            for stopping in (t for t in batch if t['status'] == 'stopping'):
                 self._reconcile_stopped_output(stopping)
-            for unknown in self._list_tasks(str(room['room_id']), ('indeterminate',)):
+            for unknown in (t for t in batch if t['status'] == 'indeterminate'):
                 with self.authority.db._read_ctx() as conn:
                     stopped = conn.execute("SELECT 1 FROM hosted_room_events WHERE room_id=? "
                         "AND kind='room.stop_requested' AND seq>? LIMIT 1",
                         (room['room_id'], unknown['payload']['source_event_seq'])).fetchone()
                 if stopped is not None:
                     self._reconcile_stopped_output(unknown)
-            for task in self._list_tasks(str(room["room_id"]), ("deferred", "settled", "failed", "cancelled")):
+            for task in (t for t in batch if t['status'] in {'deferred', 'settled', 'failed', 'cancelled'}):
                 metadata, progress = None, ['publish']
                 has_output = isinstance(task.get('result'), Mapping) and bool(task['result'].get('artifacts'))
                 try:
@@ -103,6 +110,10 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
                             errors.append(exc)
             if errors:
                 raise errors[0]
+            def advance(conn):
+                self._output_owner(conn)
+                finish(conn, str(room['room_id']), scan, batch)
+            self._cleanup_write(advance)
             return changed
 
     def _recheck_output_completion(self, task, completed):

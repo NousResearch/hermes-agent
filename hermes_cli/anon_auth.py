@@ -1071,6 +1071,7 @@ from hermes_cli.anon_sign_in import (  # noqa: E402
     Unavailable as Unavailable,
     Waiting as Waiting,
     _RETIRED_REASONS as _RETIRED_REASONS,
+    account_reauthentication_required as account_reauthentication_required,
     _default_persist_guard as _default_persist_guard,
     _outcome_state as _outcome_state,
     format_wait_line as format_wait_line,

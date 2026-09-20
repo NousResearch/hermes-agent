@@ -89,7 +89,11 @@ class GatewayLoginCommandsMixin:
                 live.cancelled = True
 
         state = await self._run_login_blocking(anon_auth.current_nous_state)
-        if state and not anon_auth.is_guest_state(state):
+        if (
+            state
+            and not anon_auth.is_guest_state(state)
+            and not anon_auth.account_reauthentication_required(state)
+        ):
             return anon_auth.UPGRADE_ALREADY_SIGNED_IN
 
         with lock:

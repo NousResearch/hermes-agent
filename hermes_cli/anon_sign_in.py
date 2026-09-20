@@ -294,6 +294,22 @@ def _default_persist_guard(is_cancelled: Callable[[], bool]) -> Callable[[], Con
     return _guard
 
 
+def account_reauthentication_required(state: Optional[Dict[str, Any]]) -> bool:
+    """Whether a paid Nous account was quarantined and needs a fresh device-code grant."""
+    if not isinstance(state, dict):
+        return False
+    from hermes_cli import anon_auth as _core
+    if _core.is_guest_state(state):
+        return False
+    error = state.get("last_auth_error")
+    return (
+        isinstance(error, dict)
+        and error.get("relogin_required") is True
+        and not state.get("access_token")
+        and not state.get("refresh_token")
+    )
+
+
 def run_sign_in(
     *,
     timeout_seconds: float = 15.0,
@@ -303,11 +319,11 @@ def run_sign_in(
     scope: Optional[Callable[[], ContextManager[Any]]] = None,
     client_factory: Optional[Callable[[float, Any], ContextManager[httpx.Client]]] = None,
 ) -> Iterator[SignInState]:
-    """Sign the free tier into a Nous account, keeping its connectors. Yields :class:`SignInState`s.
+    """Sign in or replace a quarantined Nous grant. Yields :class:`SignInState`s.
 
-    One composition behind every surface: it reads the current identity itself, mints one when there
-    is none, registers the connector transfer, holds ONE absolute deadline across both waits,
-    persists only after a completed transfer AND a token grant, and runs
+    One composition behind every surface: it reads the current identity itself, registers the
+    connector transfer when upgrading the free tier, holds ONE absolute deadline across its waits,
+    persists only after a token grant (and, for an upgrade, a completed transfer), and runs
     :func:`settle_after_upgrade` exactly once per completion. It always ends by yielding exactly one
     state whose ``terminal`` is True -- a persist or settle failure becomes ``Failed``, never an
     exception out of ``next()``.
@@ -341,12 +357,14 @@ def run_sign_in(
     # bootstrap is the only creator, NS-845 Q1.2).
     precondition_state: Optional[SignInState] = None
     state: Optional[Dict[str, Any]] = None
+    promoting_guest = False
     try:
         with open_scope():
             state = _core.current_nous_state()
-            if state and not _core.is_guest_state(state):
+            promoting_guest = bool(state and _core.is_guest_state(state))
+            if state and not promoting_guest and not account_reauthentication_required(state):
                 precondition_state = AlreadySignedIn()
-            elif not state or not _core.guest_enabled():
+            elif not state or (promoting_guest and not _core.guest_enabled()):
                 precondition_state = Unavailable()
     except Exception as exc:
         # An unreadable auth store means the same thing here: there is no free tier to sign in from.
@@ -370,42 +388,52 @@ def run_sign_in(
         open_client = client_factory or _nous_http_client
         with open_client(timeout_seconds, verify) as client:
             device = _request_device_code(client, portal, client_id, scope_str)
-            intent = _core.register_promotion_intent(
-                client, portal, anon_token, user_code=str(device["user_code"]),
-                device_code=str(device["device_code"]))
-            # The browser leg is the consent page for THIS sign-in (claim_url), not the generic
-            # device page: it shows both identities and the button. Relative paths are
-            # portal-relative.
-            link = str(intent.get("claim_url") or "")
-            if link.startswith("/"):
-                link = f"{portal}{link}"
-            link = link or str(device["verification_uri_complete"])
-            expires_in = min(int(device["expires_in"]), int(intent.get("expires_in") or device["expires_in"]))
-            interval = int(intent.get("interval") or device.get("interval") or 5)
+            if promoting_guest:
+                intent = _core.register_promotion_intent(
+                    client, portal, anon_token, user_code=str(device["user_code"]),
+                    device_code=str(device["device_code"]))
+                # The promotion consent page shows both identities and preserves the guest's connectors.
+                link = str(intent.get("claim_url") or "")
+                if link.startswith("/"):
+                    link = f"{portal}{link}"
+                link = link or str(device["verification_uri_complete"])
+                code = str(intent["claim_code"])
+                expires_in = min(
+                    int(device["expires_in"]), int(intent.get("expires_in") or device["expires_in"]))
+                interval = int(intent.get("interval") or device.get("interval") or 5)
+            else:
+                link = str(device.get("verification_uri_complete") or device["verification_uri"])
+                code = str(device["user_code"])
+                expires_in = int(device["expires_in"])
+                interval = int(device.get("interval") or 5)
             deadline = time.monotonic() + max(1, expires_in)
-            yield Code(link=link, code=str(intent["claim_code"]), expires_in=expires_in, interval=interval)
+            yield Code(link=link, code=code, expires_in=expires_in, interval=interval)
             if is_cancelled():   # nothing is approved anywhere yet: a cancel always wins here
                 yield Superseded()
                 return
             yield Waiting()
 
-            remaining = max(1, int(deadline - time.monotonic()))
-            outcome = _core.wait_for_promotion(
-                client, portal, str(intent["claim_code"]),
-                expires_in=remaining, interval=interval, cancelled=is_cancelled)
-            status = str(outcome.get("status") or "unknown")
-            if status != "completed":
-                # A cancel is authoritative for every non-completed outcome, including the
-                # {"status": "cancelled"} the hook returns.
-                if is_cancelled():
+            if promoting_guest:
+                remaining = max(1, int(deadline - time.monotonic()))
+                outcome = _core.wait_for_promotion(
+                    client, portal, str(intent["claim_code"]),
+                    expires_in=remaining, interval=interval, cancelled=is_cancelled)
+                status = str(outcome.get("status") or "unknown")
+                if status != "completed":
+                    # A cancel is authoritative for every non-completed outcome, including the
+                    # {"status": "cancelled"} the hook returns.
+                    if is_cancelled():
+                        yield Superseded()
+                        return
+                    # Scoped: a retiring outcome clears the identity out of this profile's auth store.
+                    with open_scope():
+                        ended = _outcome_state(outcome, anon_token)
+                    yield ended
+                    return
+                if post_promotion_cancelled():
                     yield Superseded()
                     return
-                # Scoped: a retiring outcome clears the identity out of this profile's auth store.
-                with open_scope():
-                    ended = _outcome_state(outcome, anon_token)
-                yield ended
-                return
-            if post_promotion_cancelled():
+            elif is_cancelled():
                 yield Superseded()
                 return
 

@@ -118,6 +118,27 @@ class StreamTransportMixin:
             except Exception as e:
                 logger.debug("%s preview cleanup failed (%s): %s", label, stale_id, e)
 
+    def abandoned_preview_ids(self) -> set:
+        """Previews a GATEWAY-sent final replaces after this consumer gave up on the current segment
+        (every edit refused, so nothing here delivered the answer). Public seam for the gateway's
+        abandoned-preview cleanup.
+
+        Only the single frozen bubble of a non-split segment is handed over. Segment-only, because
+        earlier segments are finalized preambles the reader already has. Single bubble, because
+        adapters cap a long final by message count or length and still report success (Discord keeps
+        the first N-1 chunks, WeCom and others cut at their limit): one bubble holds at most one
+        platform message of the reply's prefix, which any successful final send covers, while a split
+        chain or several bubbles could hold more than a capped final delivered."""
+        if self._turn_split_delivery:
+            return set()
+        stale = {sid for sid in self._stale_preview_ids(segment_only=True) if sid}
+        return stale if len(stale) == 1 else set()
+
+    async def delete_abandoned_previews(self, stale_ids) -> None:
+        """Best-effort delete of ``abandoned_preview_ids()`` once the replacement has landed.
+        ``retry_on_false``: the flood window that stranded the preview can refuse the delete too."""
+        await self._delete_previews(set(stale_ids), label="Abandoned preview", retry_on_false=True)
+
     def _resolve_draft_streaming(self) -> bool:
         """cfg.transport "draft"/"auto" → the adapter's supports_draft_streaming probe
         ("draft" logs the downgrade); "edit"/"off" → False."""

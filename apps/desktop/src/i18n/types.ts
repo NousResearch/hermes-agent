@@ -2347,6 +2347,14 @@ export interface Translations {
   }
 
   sidebar: {
+    tags: {
+      label: string
+      newTag: string
+      createAndAssign: string
+      empty: string
+      loadError: string
+      updateError: string
+    }
     gatewayGroups: {
       grouping: string
       rename: string

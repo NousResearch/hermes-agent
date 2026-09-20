@@ -2775,6 +2775,15 @@ export const en: Translations = {
   },
 
   sidebar: {
+    tags: {
+      label: 'Tags',
+      newTag: 'New tag',
+      createAndAssign: 'Create and assign',
+      empty: 'No tags',
+      loadError: 'Could not load tags',
+      updateError: 'Could not update tags'
+    },
+
     gatewayGroups: {
       grouping: 'Gateway & profile',
       rename: 'Rename group',

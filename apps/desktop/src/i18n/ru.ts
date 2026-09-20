@@ -2550,6 +2550,15 @@ export const ru = defineLocale({
     missingBody: 'Этот артефакт больше нет в локальном реестре.'
   },
   sidebar: {
+    tags: {
+      label: 'Теги',
+      newTag: 'Новый тег',
+      createAndAssign: 'Создать и назначить',
+      empty: 'Нет тегов',
+      loadError: 'Не удалось загрузить теги',
+      updateError: 'Не удалось обновить теги'
+    },
+
     gatewayGroups: {
       grouping: 'Шлюз и профиль',
       rename: 'Переименовать группу',

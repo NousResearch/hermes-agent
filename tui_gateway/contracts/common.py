@@ -117,6 +117,7 @@ class StoredSessionRow(OpenModel):
     git_branch: str | None = None
     git_repo_root: str | None = None
     parent_session_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
     pinned: bool | None = None
     unread: bool | None = None
     archived: bool | None = None

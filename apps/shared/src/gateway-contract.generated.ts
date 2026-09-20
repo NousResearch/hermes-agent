@@ -1996,6 +1996,7 @@ export interface ProjectTreeSession {
   git_branch?: string | null
   git_repo_root?: string | null
   parent_session_id?: string | null
+  tags?: string[]
   pinned?: boolean | null
   unread?: boolean | null
   archived?: boolean | null
@@ -2616,6 +2617,7 @@ export interface SessionListRow {
   started_at?: number
   message_count?: number
   source?: string
+  tags?: string[]
 }
 export interface SessionMostRecentParams {
   profile?: string | null
@@ -2647,6 +2649,18 @@ export interface SessionActiveItem {
   title: string
 }
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working' | 'streaming' | 'resuming'
+export interface SessionTagsListParams {
+  profile?: string | null
+}
+export interface SessionTagsResult {
+  tags: string[]
+}
+export interface SessionTagsSetParams {
+  profile?: string | null
+  tag: string
+  assigned: boolean
+  session_id: string
+}
 /** ``session_id`` is the STORED id. */
 export interface SessionDeleteParams {
   session_id: string
@@ -4536,6 +4550,10 @@ export interface RpcMethods {
   'session.status': { params: SessionStatusParams; result: SessionStatusResult }
   /** Inject text into the next tool result without interrupting the turn. */
   'session.steer': { params: SessionCorrectionParams; result: SessionCorrectionResult }
+  /** List the profile's persistent tag catalogue, including unassigned tags. */
+  'session.tags.list': { params: SessionTagsListParams; result: SessionTagsResult }
+  /** Assign/unassign a tag on a stored session's compression root; assigning creates the tag. */
+  'session.tags.set': { params: SessionTagsSetParams; result: SessionTagsResult }
   /** Read or set a live session's title; a title set before the row exists is queued. */
   'session.title': { params: SessionTitleParams; result: SessionTitleResult }
   /** Drop the last user turn (and everything after it) from an idle session. */
@@ -4803,6 +4821,8 @@ export const RPC_METHODS = [
   'session.set_hidden',
   'session.status',
   'session.steer',
+  'session.tags.list',
+  'session.tags.set',
   'session.title',
   'session.undo',
   'session.usage',

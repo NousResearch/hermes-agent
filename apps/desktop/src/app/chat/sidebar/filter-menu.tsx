@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useState } from 'react'
 
 import { sessionDotClassName } from '@/app/chat/session-status-dot'
 import { Button } from '@/components/ui/button'
@@ -34,6 +35,7 @@ import {
   $sidebarShowAllSessions,
   $sidebarShowArchived,
   $sidebarStatusFilter,
+  $sidebarTagFilter,
   $sidebarViewCustomized,
   $sidebarWorkspaceNodeOpen,
   resetSidebarView,
@@ -51,7 +53,8 @@ import {
   toggleSidebarProfileFilter,
   toggleSidebarProjectFilter,
   toggleSidebarRowMeta,
-  toggleSidebarStatusFilter
+  toggleSidebarStatusFilter,
+  toggleSidebarTagFilter
 } from '@/store/layout'
 import {
   $profiles,
@@ -67,6 +70,8 @@ import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
+
+import { useTagCatalogue } from './use-tag-catalogue'
 
 interface Option<T extends string = string> {
   /** A status dot's full className, from the row's own vocabulary. */
@@ -163,6 +168,10 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const cardRows = useStore($sidebarCardRows)
   const profileRailVisible = useStore($profileRailVisible)
   const showAllSessions = useStore($sidebarShowAllSessions)
+  const tagFilter = useStore($sidebarTagFilter)
+  const [filterOpen, setFilterOpen] = useState(false)
+  const { tags: catalogue, error: tagsError } = useTagCatalogue(filterOpen)
+  const tags = [...new Set([...catalogue, ...tagFilter])].sort()
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
@@ -226,7 +235,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   })
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={setFilterOpen}>
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Filters"
@@ -326,6 +335,21 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
         <DropdownMenuGroup>
           <DropdownMenuLabel>Filters</DropdownMenuLabel>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>{t.sidebar.tags.label}</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
+              {tagsError && <DropdownMenuItem disabled>{t.sidebar.tags.loadError}</DropdownMenuItem>}
+              {!tagsError && tags.length === 0 && <DropdownMenuItem disabled>{t.sidebar.tags.empty}</DropdownMenuItem>}
+              {tags.map(tag => (
+                <OptionCheckbox
+                  checked={tagFilter.includes(tag)}
+                  key={tag}
+                  onCheck={() => toggleSidebarTagFilter(tag)}
+                  option={{ id: tag, label: tag }}
+                />
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
 
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>Status</DropdownMenuSubTrigger>

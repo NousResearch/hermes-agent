@@ -25,6 +25,7 @@ from hermes_cli.web_models import (
 from hermes_cli.web_routers._common import log as _log, http_failure
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import is_transient_sqlite_error
+from tui_gateway.contracts.sessions import SessionTagAssignment
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -387,7 +388,12 @@ async def search_sessions(
                 add_lineage_result(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
-            return {"results": list(seen.values())}
+            results = list(seen.values())
+            # Hydrate after deduplication in one batch, including content-only hits.
+            tags = db.get_session_tags_batch([row["session_id"] for row in results])
+            for row in results:
+                row["tags"] = tags.get(row["session_id"], [])
+            return {"results": results}
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
         return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
@@ -477,6 +483,29 @@ async def get_session_stats(profile: Optional[str] = None):
     return await asyncio.to_thread(_with_db, profile, _stats, read_only=True)
 
 
+@manage_router.get("/api/sessions/tags")
+async def get_session_tags(profile: Optional[str] = None):
+    """Persistent profile catalogue, including tags without current assignments."""
+    return await asyncio.to_thread(
+        _with_db, profile, lambda db: {"tags": db.list_session_tags()}, read_only=True)
+
+
+@manage_router.put("/api/sessions/{session_id}/tags")
+async def set_session_tag(
+    session_id: str, body: SessionTagAssignment, profile: Optional[str] = None,
+):
+    def _set(db):
+        # Writes require an exact durable id, never a title/prefix guess.
+        if db.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        try:
+            return {"tags": db.set_session_tag(session_id, body.tag, body.assigned)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return await asyncio.to_thread(_with_db, profile, _set, read_only=False)
+
+
 @manage_router.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     def _detail(db):
@@ -486,6 +515,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         # Always stamp the owner: unowned default-profile rows made multi-profile
         # clients resolve them to whichever gateway happened to be active.
+        session["tags"] = db.get_session_tags(sid)
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
         return session

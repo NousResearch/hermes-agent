@@ -5,7 +5,7 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, StrictBool, field_validator
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
@@ -200,6 +200,7 @@ class SessionListRow(Result):
     started_at: float = 0
     message_count: int = 0
     source: str = ""
+    tags: list[str] = Field(default_factory=list)
 
 
 class SessionListResult(Result):
@@ -253,6 +254,35 @@ method("session.active_list", params=SessionActiveListParams, result=SessionActi
 
 
 # ── stored-row mutation ───────────────────────────────────────────────────────────────────────
+
+
+class SessionTagsListParams(ProfileParams):
+    pass
+
+
+class SessionTagsResult(Result):
+    tags: list[str]
+
+
+class SessionTagAssignment(Params):
+    tag: str
+    assigned: StrictBool
+
+    @field_validator("tag")
+    @classmethod
+    def validate_tag(cls, value: str) -> str:
+        from hermes_state_tags import normalize_session_tag
+        return normalize_session_tag(value)
+
+
+class SessionTagsSetParams(SessionTagAssignment, ProfileParams):
+    session_id: str
+
+
+method("session.tags.list", params=SessionTagsListParams, result=SessionTagsResult,
+       doc="List the profile's persistent tag catalogue, including unassigned tags.")
+method("session.tags.set", params=SessionTagsSetParams, result=SessionTagsResult,
+       doc="Assign/unassign a tag on a stored session's compression root; assigning creates the tag.")
 
 
 class SessionDeleteParams(SessionParams):

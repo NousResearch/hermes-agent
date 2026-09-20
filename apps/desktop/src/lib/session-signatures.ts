@@ -29,6 +29,7 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       // whose only delta is a flag has to swap in or the reconciler reads a
       // frozen copy forever. An idle conversation never moves any of the
       // fields above again, which is exactly when a pin gets toggled (#76919).
+      JSON.stringify(session.tags ?? []) === JSON.stringify(other.tags ?? []) &&
       session.pinned === other.pinned &&
       session.archived === other.archived
     )

@@ -308,6 +308,7 @@ function SidebarSessionRowImpl({
         </span>
       ))}
       <SessionActionsMenu
+        connectionId={session.connection_id}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -316,6 +317,7 @@ function SidebarSessionRowImpl({
         pinned={isPinned}
         profile={session.profile}
         sessionId={session.id}
+        tags={session.tags}
         title={title}
         unread={unread}
       >
@@ -337,6 +339,7 @@ function SidebarSessionRowImpl({
 
   return (
     <SessionContextMenu
+      connectionId={session.connection_id}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -345,6 +348,7 @@ function SidebarSessionRowImpl({
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
+      tags={session.tags}
       title={title}
       unread={unread}
     >

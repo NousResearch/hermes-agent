@@ -2275,6 +2275,14 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    tags: {
+      label: '標籤',
+      newTag: '新標籤',
+      createAndAssign: '建立並指派',
+      empty: '沒有標籤',
+      loadError: '無法載入標籤',
+      updateError: '無法更新標籤'
+    },
     gatewayGroups: {
       grouping: '閘道與設定檔',
       rename: '重新命名群組',

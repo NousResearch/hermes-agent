@@ -1934,8 +1934,55 @@ def _dispatch_lane_task(
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    expected_skills_json = row["skills"] if "skills" in row.keys() else None
+    claimed = claim(
+        conn,
+        task_id,
+        ttl_seconds=ttl_seconds,
+        expected_assignee=assignee,
+        expected_skills_json=expected_skills_json,
+        enforce_snapshot=True,
+    )
     if claimed is None:
+        current = conn.execute(
+            "SELECT status, assignee, skills, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is not None
+            and current["status"] == lane
+            and current["claim_lock"] is None
+            and (
+                current["assignee"] != assignee
+                or current["skills"] != expected_skills_json
+            )
+        ):
+            current_task_skills = _kb._json_or(current["skills"], [])
+            metadata = {
+                "reason": "preclaim_snapshot_changed",
+                "lane": lane,
+                "validated_assignee": assignee,
+                "current_assignee": current["assignee"],
+                "validated_effective_skills": effective_skills,
+                "current_effective_skills": effective_worker_skills(
+                    current_task_skills, lane=lane,
+                ),
+            }
+            with _kb.write_txn(conn):
+                run_id = _kb._synthesize_ended_run(
+                    conn,
+                    task_id,
+                    outcome="spawn_failed",
+                    error="assignee or skills changed after pre-claim validation",
+                    metadata=metadata,
+                )
+                _kb._append_event(
+                    conn,
+                    task_id,
+                    "preclaim_snapshot_changed",
+                    metadata,
+                    run_id=run_id,
+                )
         return False
     try:
         resolved_branch_name = None

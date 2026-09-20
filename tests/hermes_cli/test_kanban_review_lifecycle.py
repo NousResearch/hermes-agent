@@ -790,6 +790,116 @@ def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
     assert events[-1].payload["effective_skills"] == ["domain-specific-review", "sdlc-review"]
 
 
+def test_review_dispatch_does_not_claim_assignee_changed_during_validation(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spawned owner must be the owner whose exact skillset was validated."""
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    validated: list[tuple[str, list[str]]] = []
+    spawned: list[tuple[str, list[str]]] = []
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="racy reviewer", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+
+        def unavailable(assignee, skills):
+            validated.append((assignee, list(skills)))
+            if len(validated) == 1:
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET assignee = 'alternate-reviewer' WHERE id = ?",
+                        (task_id,),
+                    )
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.kanban_skill_validation.unavailable_profile_skills", unavailable,
+        )
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _workspace: spawned.append(
+                (task.assignee, list(task.skills or []))
+            ),
+        )
+
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+        runs = kb.list_runs(conn, task_id)
+
+    assert validated == [("reviewer", ["sdlc-review"])]
+    assert spawned == [] and result.spawned == []
+    assert task is not None and task.status == "review"
+    assert task.current_run_id is None and task.claim_lock is None and task.worker_pid is None
+    assert events[-1].kind == "preclaim_snapshot_changed"
+    assert events[-1].payload is not None
+    assert events[-1].payload.get("validated_assignee") == "reviewer"
+    assert events[-1].payload.get("current_assignee") == "alternate-reviewer"
+    assert runs[-1].outcome == "spawn_failed" and runs[-1].ended_at is not None
+    assert runs[-1].metadata == events[-1].payload
+
+
+def test_review_dispatch_does_not_claim_skills_changed_during_validation(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persisted-skill race cannot spawn a skillset validated from a stale row."""
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    raced_skill = "newly-persisted-unavailable-review-skill"
+    validated: list[list[str]] = []
+    spawned: list[str] = []
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="racy skills", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+
+        def unavailable(_assignee, skills):
+            snapshot = list(skills)
+            validated.append(snapshot)
+            if len(validated) == 1:
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET skills = ? WHERE id = ?",
+                        (json.dumps([raced_skill]), task_id),
+                    )
+                return []
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.kanban_skill_validation.unavailable_profile_skills", unavailable,
+        )
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _workspace: spawned.append(task.id),
+        )
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+        runs = kb.list_runs(conn, task_id)
+
+    assert validated == [["sdlc-review"]]
+    assert spawned == [] and result.spawned == []
+    assert task is not None and task.status == "review"
+    assert task.current_run_id is None and task.claim_lock is None and task.worker_pid is None
+    assert events[-1].kind == "preclaim_snapshot_changed"
+    assert events[-1].payload is not None
+    assert events[-1].payload.get("validated_effective_skills") == ["sdlc-review"]
+    assert events[-1].payload.get("current_effective_skills") == [raced_skill, "sdlc-review"]
+    assert runs[-1].outcome == "spawn_failed" and runs[-1].ended_at is not None
+    assert runs[-1].metadata == events[-1].payload
+
+
 def test_review_dispatch_honors_global_and_per_profile_caps(
     kanban_home: Path,
     monkeypatch: pytest.MonkeyPatch,

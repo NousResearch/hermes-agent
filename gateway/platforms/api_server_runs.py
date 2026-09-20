@@ -317,6 +317,17 @@ def _durable_run_status(self, request: "web.Request", run_id: str, *, receipt_id
     from gateway.platforms.api_server_authority_runs import run_projection
     canonical = run_projection(self, run_id, receipt_identity=receipt_identity)
     if canonical is not None:
+        # Projection can bypass hydration after re-serve. Rebind only through
+        # the current routed store's authenticated ownership of this exact run.
+        store = _run_receipt_store(self, request=request)
+        scope = self._run_idempotency_scope(request)
+        if store.owns_run(scope, run_id):
+            self._run_receipt_stores[run_id] = store
+            self._run_idempotency_ids.add(run_id)
+            self._run_owners[run_id] = scope
+        elif run_id in self._run_idempotency_ids:
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('run_receipt_owner_unavailable')
         return canonical
     status = self._run_statuses.get(run_id)
     store = _run_receipt_store(self, request=request, run_id=run_id)
@@ -337,6 +348,7 @@ def _durable_run_status(self, request: "web.Request", run_id: str, *, receipt_id
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
         store.update_status(run_id, status)
+    self._run_receipt_stores[run_id] = store
     self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope

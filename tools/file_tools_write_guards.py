@@ -7,7 +7,11 @@ deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 (ALWAYS ask), ``_check_approval_required_write`` (normal gate),
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
-whole-file overwrite of content this task never saw or that changed since.
+whole-file overwrite of content this task never saw or that changed since;
+temp-dir paths (``/tmp``, ``$TMPDIR``, ``/var/folders``) skip that staleness
+refusal (world-writable scratch space; overwriting a previous run's artifact
+is the intended outcome), while the sensitive-path hard-deny and
+binary-document guards still apply to them.
 """
 
 import fnmatch
@@ -489,6 +493,31 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "still current — refer to that instead of re-reading.")
 
 
+def _temp_path_exempt(resolved: str | None) -> bool:
+    """True when *resolved* realpaths into a temp directory, so the stale-
+    overwrite blocker's staleness refusal does not apply to it.
+
+    Temp dirs are world-writable scratch space; cron jobs reuse canonical
+    temp names across runs, and overwriting the previous run's artifact with
+    the fresh one is the intended outcome, not data loss. Decided on the
+    REALPATH, never the raw input: a symlink planted in /tmp pointing at a
+    real user file resolves to the real path and is NOT exempt. Both
+    ``/var/folders`` spellings are required because macOS ``realpath``
+    canonicalises ``/var/...`` to ``/private/var/...`` (``/var`` is a symlink
+    to ``/private/var``), which makes a lone ``"/var/folders/"`` prefix check
+    dead code there.
+    """
+    if not resolved:
+        return False
+    real = os.path.realpath(resolved)
+    if real.startswith("/private/tmp/") or real.startswith("/tmp/"):
+        return True
+    tmpdir = os.environ.get("TMPDIR", "")
+    if tmpdir and real.startswith(os.path.realpath(tmpdir)):
+        return True
+    return real.startswith("/var/folders/") or real.startswith("/private/var/folders/")
+
+
 def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:
     """Reason write_file must NOT replace the existing file, else ``None``.
 
@@ -500,6 +529,11 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     paths and the file-state kill switch all let the write proceed.
     """
     if file_state.guard_disabled():
+        return None
+    if _temp_path_exempt(resolved):
+        # Temp paths are exempt from the staleness refusal only; the
+        # sensitive-path hard-deny and binary-document guards run before
+        # this one and are unaffected.
         return None
     stale = file_state.check_stale(task_id, resolved) if resolved else None
     if stale:

@@ -562,6 +562,93 @@ Resolve a pending approval for a run that is waiting on a human decision (for ex
 
 MCP trust-gate consent — a write-capable tool on a server configured `trust: untrusted` — surfaces the same way: the run emits an `approval.request` event and parks in `waiting_for_approval` until this endpoint resolves it (`once` runs the tool, `deny` blocks it).
 
+### POST /v1/runs/\{run_id\}/clarify
+
+Answer one pending clarify question on a run created by `POST /v1/runs`.
+`/v1/capabilities` advertises `features.run_clarify_response`,
+`features.clarify_events`, and the `endpoints.run_clarify` route.
+The run's `/events` stream emits:
+
+```json
+{
+  "event": "clarify.request",
+  "timestamp": 1790000000,
+  "run_id": "run_abc123",
+  "clarify_id": "question-id",
+  "question": "Which environments?",
+  "choices": ["Staging (Recommended)", "Production"],
+  "multi_select": true
+}
+```
+
+`choices` is an array of display strings, or `null` for an open-ended question.
+`multi_select` is a boolean and is false without choices. The server also sends
+the base numbered prompt as `message.delta`, preserving text-only rendering. A structured client can use `clarify.request` to render
+its controls. A clarify wait leaves the run's current status unchanged.
+
+Both body fields are required:
+
+```json
+{"clarify_id": "question-id", "response": "[\"Staging (Recommended)\", \"Production\"]"}
+```
+
+- A string resolves this exact question, passing the string unchanged to the
+  clarify registry (maximum 65,536 characters). Send a choice's display string
+  or the user's typed answer.
+  For multiple selections, send a **JSON-encoded array of labels inside the
+  string**, as above; a JSON array directly in `response` is invalid. This
+  endpoint does not translate numeric choices or response aliases. The clarify
+  tool performs its existing answer cleanup, including removal of the
+  `(Recommended)` suffix. An empty string follows the tool's existing no-answer
+  behavior.
+- `null` selects “Other / type an answer.” It marks the question as awaiting
+  text, without resolving it, consuming it, or extending its timeout. Submit
+  the typed answer as a subsequent string response using the same two IDs.
+  The base fallback still sets the registry's awaiting-text flag, but ordinary
+  chat/session messages are not intercepted for a run-scoped question. API
+  clients must submit typed answers to this endpoint; the flag alone does not
+  route a later chat message to this run. Open-ended questions also accept a
+  string directly.
+
+Success returns HTTP 200:
+
+```json
+{
+  "object": "hermes.run.clarify_response",
+  "run_id": "run_abc123",
+  "clarify_id": "question-id",
+  "resolved": true,
+  "awaiting_text": false
+}
+```
+
+For `response: null`, these booleans are `resolved: false` and
+`awaiting_text: true`. Repeating `null` while the question remains pending is
+allowed; repeating an answer after resolution is rejected.
+
+Authorization uses the approval endpoint's API-key/profile ownership check or
+room grant with **`approve` permission**. Run IDs and question IDs must match
+the exact pending registry entry; sharing a conversation/session ID grants no
+access to another run's question. The server never selects the newest run or
+the oldest pending question on behalf of this endpoint.
+
+| HTTP status | Meaning |
+| --- | --- |
+| 400 `invalid_clarify_response` | Invalid JSON/body, missing field, invalid question ID (non-string, blank, or over 256 characters), or response other than string/null. |
+| 401 / 403 | Authentication or room-grant permission/revocation failure, using the same errors as approval. |
+| 404 | Run unknown or owned by another caller/profile. |
+| 409 `clarify_not_pending` | Question unknown, expired, already answered, retired, bound to another run/session, or run stopping/terminal. |
+
+When a card is answered, expires, or is cancelled, the stream emits
+`clarify.retired` with the common `event`, `timestamp`, and `run_id` fields plus
+`clarify_id` and a display `notice`. Text clients also receive the notice as
+`message.delta`. Remove or disable the card's controls on retirement. Repeated
+retirement is a no-op. The existing clarify timeout still applies (non-positive
+means unlimited); selecting “Other” does not restart it. Stop/shutdown releases
+pending waits. Stream delivery remains subject to the existing run transport
+lifetime; this endpoint does not add durable card replay or a new SSE surface
+to Chat Completions, Responses, or session-chat requests.
+
 ## Jobs API (background scheduled work)
 
 The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.
@@ -690,7 +777,7 @@ to the routed profile**:
 - A named profile with no `API_SERVER_KEY` of its own fails closed — its
   prefix is unreachable until you set one.
 - Runs are per-profile scoped: `/v1/runs/{run_id}` and its `events`, `stop`,
-  `steer`, and `approval` routes only answer for the profile that created
+  `steer`, `approval`, and `clarify` routes only answer for the profile that created
   the run (including runs started via `/api/sessions/{id}/chat/stream`);
   another profile's run id returns `404`, never `403`.
 

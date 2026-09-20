@@ -1,0 +1,15 @@
+name: cron-bulletin
+repo: https://github.com/lvabarajithan/hermes-cron-bulletin
+sha: 3d7a572cfa59a641fd5aac6456a72b4be3e9fe66
+tier: community
+category: desktop
+description: Central Hermes Desktop inbox for reports produced by local cron runs.
+maintainer: Abarajithan
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/lvabarajithan/hermes-cron-bulletin/3d7a572cfa59a641fd5aac6456a72b4be3e9fe66/docs/cron-bulletin.png"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

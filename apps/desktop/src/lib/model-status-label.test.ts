@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts, modelPillParts, providerSegment } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
@@ -48,6 +48,64 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
     expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
     expect(formatModelPillLabel('')).toBe('No model')
+  })
+
+  describe('the provider segment', () => {
+    it('shows the provider beside the model name when it adds information', () => {
+      expect(modelPillParts('gpt-5.5', { provider: 'openai' })).toEqual({
+        fast: false,
+        name: 'GPT-5.5',
+        provider: 'openai'
+      })
+      expect(modelPillParts('gpt-5.5', { fastMode: true, provider: 'openai' }).provider).toBe('openai')
+    })
+
+    it('hides the provider when the model id already carries the same prefix', () => {
+      expect(modelPillParts('openai/gpt-5.5', { provider: 'openai' }).provider).toBe('')
+      // Case-insensitive: the catalog slug and the id prefix may differ only in case.
+      expect(modelPillParts('OpenAI/gpt-5.5', { provider: 'openai' }).provider).toBe('')
+    })
+
+    it('keeps the provider when the id prefix names a different upstream', () => {
+      // Relay rows carry the upstream vendor in the deeper path, so the top-level
+      // prefix still adds a distinct fact — both halves are information.
+      expect(
+        modelPillParts('openrouter/anthropic/claude-opus-4.8', { provider: 'openrouter' }).provider
+      ).toBe('openrouter')
+    })
+
+    it('does not hide a provider that is only a substring of the id prefix', () => {
+      expect(modelPillParts('openai-custom/gpt-6', { provider: 'openai' }).provider).toBe('openai')
+    })
+
+    it('hides the provider when none is known', () => {
+      expect(modelPillParts('gpt-5.5').provider).toBe('')
+      expect(modelPillParts('gpt-5.5', { provider: '   ' }).provider).toBe('')
+      expect(providerSegment('gpt-5.5', undefined)).toBe('')
+    })
+
+    it('handles provider slugs carrying colons or slashes', () => {
+      expect(providerSegment('gpt-5.5', 'custom:corp/gateway')).toBe('custom:corp/gateway')
+    })
+
+    it('keeps the no-model placeholder free of a provider', () => {
+      expect(modelPillParts('', { provider: 'nous' })).toEqual({
+        fast: false,
+        name: 'No model',
+        provider: ''
+      })
+      expect(modelPillParts('', { fastMode: true, provider: 'nous' })).toEqual({
+        fast: false,
+        name: 'No model',
+        provider: ''
+      })
+    })
+
+    it('agrees with the string form on Fast', () => {
+      expect(modelPillParts('anthropic/claude-opus-4.8-fast').fast).toBe(true)
+      expect(modelPillParts('openai/gpt-5.5', { fastMode: true }).fast).toBe(true)
+      expect(modelPillParts('openai/gpt-5.5').fast).toBe(false)
+    })
   })
 
   describe('currentPickerSelection', () => {

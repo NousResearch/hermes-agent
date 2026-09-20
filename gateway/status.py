@@ -985,8 +985,10 @@ def _prepare_runtime_status_update(
             _runtime_status_state_path = path
             _runtime_status_state = (
                 (_read_json_file(path) if load_existing else None) or _build_runtime_status_record())
-        payload = copy.deepcopy(_runtime_status_state)
-        previous_payload = copy.deepcopy(payload)
+        # The module snapshot is only ever reassigned (never mutated in place) and
+        # submit() copies again, so the previous snapshot can be handed out as-is.
+        previous_payload = _runtime_status_state
+        payload = copy.deepcopy(previous_payload)
         current_record = _build_pid_record()
         payload.setdefault("platforms", {})
         if not isinstance(payload["platforms"], dict):
@@ -1029,7 +1031,7 @@ def _prepare_runtime_status_update(
                 updated_at=_utc_now_iso(), writer_pid=current_record["pid"],
                 writer_start_time=current_record["start_time"])
             payload["platforms"][platform] = platform_payload
-        _runtime_status_state = copy.deepcopy(payload)
+        _runtime_status_state = payload
         return path, payload, previous_payload
 
 

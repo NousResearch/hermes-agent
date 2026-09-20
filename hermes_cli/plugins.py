@@ -1131,9 +1131,54 @@ for _name, _method in list(vars(PluginContext).items()):
 del _name, _method
 
 
+_HOOK_TIMEOUT_CACHE_LOCK = threading.Lock()
+# Sentinel distinct from every real signature AND from None (which
+# _load_config_cache_sig returns when there is no config file to key on).
+_UNRESOLVED_HOOK_TIMEOUT_SIG: Any = object()
+_HOOK_TIMEOUT_CACHE: Dict[str, Any] = {
+    "sig": _UNRESOLVED_HOOK_TIMEOUT_SIG,
+    "value": None,
+}
+
+
+def _reset_hook_callback_timeout_cache() -> None:
+    """Drop the memoized hook-callback timeout. For tests and config reloads."""
+    with _HOOK_TIMEOUT_CACHE_LOCK:
+        _HOOK_TIMEOUT_CACHE["sig"] = _UNRESOLVED_HOOK_TIMEOUT_SIG
+        _HOOK_TIMEOUT_CACHE["value"] = None
+
+
 def _resolve_hook_callback_timeout() -> float:
     """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
-    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``)."""
+    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``).
+
+    Memoized on the config file's cache signature. ``invoke_hook`` calls this
+    once per hook invocation, and a gateway fires hooks on every inbound
+    message — so this was a full config read per message, on the event loop.
+    The value only changes when config.yaml does; every other call is a dict
+    lookup.
+    """
+    try:
+        from hermes_cli.config import _load_config_cache_sig, get_config_path
+        _, sig = _load_config_cache_sig(get_config_path())
+    except Exception:
+        sig = None
+
+    if sig is not None and _HOOK_TIMEOUT_CACHE["sig"] == sig:
+        value = _HOOK_TIMEOUT_CACHE["value"]
+        if isinstance(value, float):
+            return value
+
+    resolved = _resolve_hook_callback_timeout_uncached()
+    if sig is not None:
+        with _HOOK_TIMEOUT_CACHE_LOCK:
+            _HOOK_TIMEOUT_CACHE["sig"] = sig
+            _HOOK_TIMEOUT_CACHE["value"] = resolved
+    return resolved
+
+
+def _resolve_hook_callback_timeout_uncached() -> float:
+    """Read + validate ``plugins.hook_callback_timeout``; see the memoized wrapper above."""
     default = _HOOK_CALLBACK_TIMEOUT_SECS
     try:
         from hermes_cli.config import load_config_readonly

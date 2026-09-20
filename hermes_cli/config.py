@@ -2285,6 +2285,37 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    # Lock-free fast path for cache hits.
+    #
+    # A cache hit costs ~0.024ms, but it used to sit behind `_CONFIG_LOCK` —
+    # which `save_config()` holds across an atomic YAML write. Measured: the
+    # same cached read takes 10010ms when another thread holds the lock. On a
+    # gateway this lands on the event loop, because the per-message hook path
+    # (`invoke_hook` -> `_resolve_hook_callback_timeout`) reads config, so one
+    # background config write stalls every inbound message for the duration.
+    #
+    # The lock never protected the cache dict itself: CPython dict get/setitem
+    # are atomic under the GIL, and the cached tuple is replaced wholesale
+    # rather than mutated in place, so a reader sees either the complete old
+    # tuple or the complete new one. The lock's real job is serializing the
+    # rebuild (parse + merge + expand) and the writers. Worst case on a race
+    # is a redundant rebuild, which the locked path below re-checks and
+    # collapses.
+    try:
+        config_path = get_config_path()
+        path_key = str(config_path)
+        cached = _LOAD_CONFIG_CACHE.get(path_key)
+        if cached is not None:
+            _, fast_sig = _load_config_cache_sig(config_path)
+            if fast_sig is not None and cached[:8] == fast_sig:
+                env_snapshot = cached[9] if len(cached) > 9 else {}
+                if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
+                    return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
+    except Exception:
+        # Any surprise here falls through to the locked path, which is the
+        # original fully-defensive implementation.
+        pass
+
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()

@@ -313,8 +313,13 @@ class HostedRoomPolicyCheckpoint:
             cursor = next_cursor
         return cursor
 
-    def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
-        """Return only the oldest active discussion and its watermark set."""
+    def snapshot(self, *, room_id: str, latest_seq: int,
+                 held_output_threads: Callable[[sqlite3.Connection], frozenset[str]] | None = None) -> PolicySnapshot:
+        """Oldest eligible discussion; exact Output holds defer whole causal threads.
+
+        The canonical Output owner supplies and validates holds on this same
+        snapshot transaction. Ordinary policy/FIFO callers have no exclusions.
+        """
         self.sync(room_id=room_id, latest_seq=latest_seq)
         with self._transaction() as conn:
             cursor = conn.execute(
@@ -323,9 +328,11 @@ class HostedRoomPolicyCheckpoint:
                 raise hosted_rooms.RoomNotFoundError("hosted room checkpoint not found")
             through_seq = int(cursor["through_seq"])
             stopped_through_seq = int(cursor["stopped_through_seq"])
+            held = sorted(held_output_threads(conn)) if held_output_threads is not None else []
+            exclusion = f" AND thread_id NOT IN ({','.join('?' for _ in held)})" if held else ''
             thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
-                   WHERE room_id=? AND completed=0 AND latest_user_seq>?
-                   ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()
+                   WHERE room_id=? AND completed=0 AND latest_user_seq>?""" + exclusion +
+                   " ORDER BY latest_user_seq, thread_id LIMIT 1", (room_id, stopped_through_seq, *held)).fetchone()
             if thread is None:
                 return PolicySnapshot(
                     through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={})

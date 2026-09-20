@@ -1,13 +1,13 @@
 name: hermes-telegram-ux
 repo: https://github.com/pler1y/hermes-telegram-ux
-sha: 9abdfa41ee51879bd392b55796b6f2d3da84bac5
-version: "2.0.0"
-description: Task-aware temporary Telegram progress grounded in Hermes tool events and results, with automatic cleanup.
+sha: de19ddc1772e8b605d1ee97d18d0101d68dc6455
+version: "2.1.0"
+description: Task-aware temporary Telegram progress driven by real tool events, results and public model milestones, with automatic cleanup.
 maintainer: pler1y
 tier: community
 category: platform
-requires_hermes: '>=0.21.3'
-docs_url: https://github.com/pler1y/hermes-telegram-ux/blob/9abdfa41ee51879bd392b55796b6f2d3da84bac5/README.md
+requires_hermes: '>=0.21.0'
+docs_url: https://github.com/pler1y/hermes-telegram-ux/blob/de19ddc1772e8b605d1ee97d18d0101d68dc6455/README.md
 platforms:
 - linux
 - macos

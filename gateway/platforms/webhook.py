@@ -641,24 +641,29 @@ class WebhookAdapter(BasePlatformAdapter):
                     or not callable(getattr(target_adapter, "handle_message", None))):
                 return _json_error("Configured source platform is unavailable", 503)
 
-        def decode_media(names: tuple[str, ...]) -> bytes | None:
-            value = next((payload[name] for name in names if name in payload), None)
-            if value is None:
-                return None
-            if not isinstance(value, str) or not value:
-                raise ValueError
-            decoded = base64.b64decode(value, validate=True)
-            if not decoded:
-                raise ValueError
-            return decoded
+        audio_bytes = None
+        image_bytes = None
+        # Base64 media is synthetic-source ingress only. Ordinary webhook routes create their own
+        # text events, so caching attachments here would acknowledge and then discard them.
+        if source_platform is not None:
+            def decode_media(names: tuple[str, ...]) -> bytes | None:
+                value = next((payload[name] for name in names if name in payload), None)
+                if value is None:
+                    return None
+                if not isinstance(value, str) or not value:
+                    raise ValueError
+                decoded = base64.b64decode(value, validate=True)
+                if not decoded:
+                    raise ValueError
+                return decoded
 
-        try:
-            audio_bytes = decode_media(("audio_base64", "voice_base64"))
-            image_bytes = decode_media(("screenshot_base64", "image_base64"))
-        except (ValueError, binascii.Error):
-            return _json_error("Invalid media payload", 400)
-        if audio_bytes is not None and image_bytes is not None:
-            return _json_error("Only one media payload is supported per webhook", 400)
+            try:
+                audio_bytes = decode_media(("audio_base64", "voice_base64"))
+                image_bytes = decode_media(("screenshot_base64", "image_base64"))
+            except (ValueError, binascii.Error):
+                return _json_error("Invalid media payload", 400)
+            if audio_bytes is not None and image_bytes is not None:
+                return _json_error("Only one media payload is supported per webhook", 400)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)

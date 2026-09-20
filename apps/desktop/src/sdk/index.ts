@@ -57,6 +57,7 @@ import {
   requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
+  retainGatewayForSessionTurn,
   retireLocalProfileGateways,
   type SpawnPriority
 } from '@/store/gateway'
@@ -107,6 +108,14 @@ import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import {
+  type PluginSessionSubmitInput,
+  type PluginSessionSubmitResult,
+  type PluginSessionSubmitStatus,
+  submitToPluginSession
+} from './session-delivery'
+
+export type { PluginSessionSubmitInput, PluginSessionSubmitResult, PluginSessionSubmitStatus }
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1456,6 +1465,29 @@ export const host = {
 
     return retainGatewayForAgent(null, route.trim() || 'default')
   },
+
+  /** Deliver one turn to ONE stored session on ONE route — no credentials, no
+   *  foreground switch. `storedSessionId` is durable, the reply's
+   *  `runtimeSessionId` ephemeral. The route-hold → resume → turn-hold → submit
+   *  sequence is owned here, and delivery is always `queued: true` so it lands
+   *  after an active turn and never steers one.
+   *
+   *  Never retried automatically — a timed-out submit may already have been
+   *  accepted, so reconcile the transcript. Fails closed on foreign ownership;
+   *  feature-detect it (`typeof host.submitToSession === 'function'`). */
+  submitToSession: async (
+    route: PluginProfileRoute | string,
+    input: PluginSessionSubmitInput
+  ): Promise<PluginSessionSubmitResult> =>
+    submitToPluginSession(
+      {
+        request: (target, method, params) => requestPluginProfile(target, method, params),
+        retainRoute: retainGatewayForAgent,
+        retainTurn: retainGatewayForSessionTurn
+      },
+      route,
+      input
+    ),
 
   /** Read persisted sessions from a profile's owning source without dialing
    *  that profile's gateway. The source primary opens state.db directly. */

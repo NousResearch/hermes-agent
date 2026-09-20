@@ -11,6 +11,7 @@ from gateway.platforms.api_server import APIServerAdapter
 from gateway.run import GatewayRunner
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.session import SessionSource
+from gateway.session_identity import RoutingIdentity
 
 
 def _session_chat_app(adapter):
@@ -167,6 +168,8 @@ async def test_runner_uses_named_profile_target_without_default_fallback():
             return SimpleNamespace(success=True)
 
     runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner._primary_profile_name = "default"
     runner.adapters = {Platform.DISCORD: Target(default_calls)}
     runner._profile_adapters = {"named": {Platform.DISCORD: Target(named_calls)}}
     source = SessionSource(platform=Platform.DISCORD, chat_id="99", chat_type="group", profile="named")
@@ -178,6 +181,74 @@ async def test_runner_uses_named_profile_target_without_default_fallback():
     await runner._deliver_api_final_response(session_source=source, content="no fallback", surface="session_chat")
     assert named_calls == [("99", "done", None, None)]
     assert default_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport_profile,runtime_profile", [("default", "named"), ("named", "default")])
+async def test_fanout_preserves_restored_transport_identity(tmp_path, transport_profile, runtime_profile):
+    default = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(success=True)))
+    named = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(success=True)))
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner._primary_profile_name = "default"
+    runner.adapters = {Platform.DISCORD: default}
+    runner._profile_adapters = {"named": {Platform.DISCORD: named}}
+    source = SessionSource(platform=Platform.DISCORD, chat_id="99", profile=runtime_profile)
+    source._identity = RoutingIdentity(
+        transport_profile=transport_profile, runtime_profile=runtime_profile,
+        authorization_home=tmp_path / transport_profile, runtime_home=tmp_path / runtime_profile,
+    )
+    owner, other = (default, named) if transport_profile == "default" else (named, default)
+
+    await runner._deliver_api_final_response(session_source=source, content="done", surface="session_chat")
+    owner.send.assert_awaited_once_with("99", "done", reply_to=None, metadata=None)
+    other.send.assert_not_awaited()
+
+    # A disconnected receiving bot must not hand the reply to the runtime profile's bot.
+    (runner.adapters if transport_profile == "default" else runner._profile_adapters["named"]).clear()
+    await runner._deliver_api_final_response(session_source=source, content="offline", surface="session_chat")
+    assert owner.send.await_count == 1
+    other.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_api_completion_does_not_wait_for_native_delivery(monkeypatch, stream):
+    api = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+    started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def blocked_delivery(**_kwargs):
+        started.set()
+        await release.wait()
+        finished.set()
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+    api.set_final_response_fanout_handler(blocked_delivery)
+    monkeypatch.setattr(api, "_prepare_session_chat", AsyncMock(return_value=(_source_context(source), None)))
+    monkeypatch.setattr(api, "_conversation_history_for_session", AsyncMock(return_value=[]))
+    monkeypatch.setattr(api, "_run_agent", AsyncMock(return_value=({"completed": True, "final_response": "done"}, {})))
+    path = "/api/sessions/session-1/chat" + ("/stream" if stream else "")
+
+    try:
+        async with TestClient(TestServer(_session_chat_app(api))) as client:
+            async def complete_response():
+                response = await client.post(path, json={"message": "hello"})
+                assert response.status == 200
+                if stream:
+                    assert "event: run.completed" in await response.text()
+                else:
+                    assert (await response.json())["message"]["content"] == "done"
+
+            try:
+                await asyncio.wait_for(complete_response(), timeout=5)
+                await asyncio.wait_for(started.wait(), timeout=5)
+                assert not finished.is_set()
+            finally:
+                release.set()
+                await _wait_for_fanout(api)
+        assert finished.is_set()
+    finally:
+        api._response_store.close()
 
 
 def test_lifecycle_wires_final_response_fanout_handler():

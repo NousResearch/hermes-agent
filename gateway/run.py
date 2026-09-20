@@ -3359,11 +3359,7 @@ class GatewayRunner(
         self, *, session_source: SessionSource, content: str, surface: str,
     ) -> None:
         """Deliver a completed API turn through the exact native adapter owning its source."""
-        profile = (getattr(session_source, "profile", None) or "").strip()
-        if profile and profile != "default":
-            adapter = (getattr(self, "_profile_adapters", {}) or {}).get(profile, {}).get(session_source.platform)
-        else:
-            adapter = (getattr(self, "adapters", {}) or {}).get(session_source.platform)
+        adapter = self._delivery_adapter_for(session_source)
         if adapter is None:
             logger.warning("API native delivery unavailable surface=%s platform=%s", surface, session_source.platform.value)
             return

@@ -129,3 +129,25 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+@pytest.mark.linux_only
+def test_completion_reuses_bound_pr_receipt_from_prior_run(github):
+    published_pr = "https://github.com/acme/repo/pull/7"
+    with connect() as conn:
+        tid = kb.create_task(conn, title="rework", completion_contract="acme/repo")
+        kb._synthesize_ended_run(
+            conn, tid, outcome="review_requested", metadata={"published_pr": published_pr},
+        )
+        assert kb.block_task(conn, tid, reason="Waiting for operator", kind="needs_input")
+
+        assert kb.complete_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()[0])
+        assert receipt["ok"]

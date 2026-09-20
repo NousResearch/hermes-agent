@@ -418,10 +418,16 @@ function ToolEntry({ part }: ToolEntryProps) {
   const previewTarget = view.previewTarget
   // The session whose transcript this row is IN, which is not necessarily the
   // primary one: a tool row inside a session tile must feed that tile's composer.
-  const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId } = useSessionView()
+
+  const {
+    $cwd: $sessionCwd,
+    $runtimeId: $sessionRuntimeId,
+    $storedId: $sessionStoredId,
+    $messages: $sessionMessages
+  } = useSessionView()
 
   useEffect(() => {
-    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (view.status !== 'success' || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
@@ -430,10 +436,12 @@ function ToolEntry({ part }: ToolEntryProps) {
     // or cwd change.
     const sessionId = $sessionRuntimeId.get()
 
-    if (sessionId) {
-      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '')
+    // A route switch can paint the previous assistant row while these atoms
+    // already describe the next chat. Only that chat's own messages may feed it.
+    if (sessionId && $sessionMessages.get().some(message => message.id === messageId)) {
+      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '', $sessionStoredId.get() ?? sessionId)
     }
-  }, [$sessionCwd, $sessionRuntimeId, isPending, previewTarget])
+  }, [$sessionCwd, $sessionRuntimeId, $sessionStoredId, $sessionMessages, messageId, previewTarget, view.status])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

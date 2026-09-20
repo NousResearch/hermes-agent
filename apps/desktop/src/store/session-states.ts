@@ -35,6 +35,7 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -1943,6 +1944,7 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
+  dropPreviewArtifactsForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2078,6 +2080,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateTranscriptTailsForProfile(from, to)
   migrateRememberedNavigationForProfile(from, to)
   migrateSessionOwnerHintsForProfile(from, to)
+  migratePreviewArtifactsForProfile(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

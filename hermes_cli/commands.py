@@ -326,8 +326,12 @@ def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
     return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
 
 
-def desktop_surface_registry() -> dict[str, str]:
-    """``/name`` (and every alias) -> ``desktop`` disposition, for each command that has one.
+def desktop_surface_registry() -> dict[str, str | None]:
+    """``/name`` (and every alias) -> ``desktop`` disposition for EVERY registry command.
+
+    Offered built-ins (no ``desktop=`` value) map to ``None``: the desktop needs their names
+    too, or offline it cannot tell ``/context`` from a skill command and files it under
+    Skills / routes it down the extension path until the live catalog warms up.
 
     The desktop app reads this live from ``commands.catalog``; the copy committed at
     ``apps/desktop/src/lib/desktop-slash-registry.json`` (``scripts/dump_desktop_slash_registry.py``)
@@ -335,9 +339,8 @@ def desktop_surface_registry() -> dict[str, str]:
     command's desktop disposition is authored. A test on each side fails when the two drift.
     """
     return {
-        f"/{key}": cmd.desktop
+        f"/{key}": cmd.desktop or None
         for cmd in COMMAND_REGISTRY
-        if cmd.desktop
         for key in (cmd.name, *cmd.aliases)
     }
 

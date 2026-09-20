@@ -834,6 +834,16 @@ npx --version
 
 Then verify your config and restart Hermes.
 
+The startup summary in `agent.log` names every server that did not register, with the recorded
+connect error, so you never have to work out the failing one by elimination:
+
+```
+MCP: registered 116 tool(s) from 4 server(s) (2 failed: github (Connection closed); notion (HTTP 401 from POST https://mcp.notion.com/mcp))
+```
+
+A server that was skipped this pass because it is still inside its retry cooldown from an earlier
+failure is listed as `not attempted (in retry cooldown)`.
+
 ### Remote (HTTP) server rejects the connection
 
 `hermes mcp test <name>` reports what the server actually answered. When the MCP SDK can only say

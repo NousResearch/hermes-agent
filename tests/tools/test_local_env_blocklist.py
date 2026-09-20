@@ -976,8 +976,13 @@ class TestPythonpathSelectiveStrip:
             captured["env"] = kwargs.get("env", {})
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
+            # The kernel's reader threads drain with read1(); a bare MagicMock never returns
+            # EOF there, so the stderr thread spins forever appending mocks (a 1 GB/min leak
+            # that outlived the test and OOM-killed the worker five times).
             proc.stdout.read.return_value = b""
+            proc.stdout.read1.return_value = b""
             proc.stderr.read.return_value = b""
+            proc.stderr.read1.return_value = b""
             proc.wait.return_value = 0
             proc.returncode = 0
             proc.poll.return_value = 0

@@ -51,6 +51,9 @@ def _checkpoint_path() -> Path:
     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
+# Tail of the output a completion notification carries. Right for a build log; a spawner whose
+# output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
+COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 
@@ -519,6 +522,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -558,7 +562,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -942,6 +946,66 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if cls._proc_alive(proc):
                     proc.kill()  # SIGKILL on POSIX
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
+
+    @staticmethod
+    def _live_descendants(pid: int) -> List[int]:
+        """PIDs of living non-zombie descendants of host PID ``pid`` (best-effort)."""
+        try:
+            import psutil
+            children = psutil.Process(pid).children(recursive=True)
+        except Exception:
+            return []
+        return [c.pid for c in children if ProcessRegistry._proc_alive(c)]
+
+    # SIGKILL / taskkill are asynchronous: the kernel needs a scheduling tick to
+    # tear the process down and the parent must reap it before poll()/isalive()
+    # stop saying "alive". Verifying survivors in that window flagged every
+    # escalated kill as incomplete.
+    _KILL_SETTLE_SECONDS = 1.0
+
+    def _post_kill_survivors(self, session: "ProcessSession") -> List[int]:
+        """Host PIDs still alive once the kill signals have had time to land (#115490).
+
+        Fail-closed: anything unverifiable counts as a survivor, so a kill
+        that leaves a live tree can never write a killed receipt. Sandbox
+        (env) sessions have no host-visible tree and are unverifiable by
+        design — they return no survivors, preserving existing behavior."""
+        deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
+        while True:
+            survivors = self._probe_survivors(session)
+            if not survivors or time.monotonic() >= deadline:
+                return survivors
+            time.sleep(0.05)
+
+    def _probe_survivors(self, session: "ProcessSession") -> List[int]:
+        survivors: List[int] = []
+        proc = getattr(session, "process", None)
+        if proc is not None:
+            try:
+                root_alive = proc.poll() is None
+            except Exception:
+                root_alive = True
+            if root_alive:
+                survivors.append(getattr(proc, "pid", None) or session.pid)
+        pty = getattr(session, "_pty", None)
+        if pty is not None:
+            try:
+                pty_alive = bool(pty.isalive())
+            except Exception:
+                pty_alive = self._is_host_pid_alive(session.pid)
+            if pty_alive:
+                survivors.append(session.pid)
+        if session.pid_scope == "host" and session.pid:
+            if self._host_pid_is_ours(session.pid, session.host_start_time):
+                if session.pid not in survivors:
+                    survivors.append(session.pid)
+                survivors.extend(
+                    pid for pid in self._live_descendants(session.pid)
+                    if pid not in survivors)
+            # A dead/recycled root has no PID-scope descendants left to find:
+            # reparented orphans are outside PID scope (systemd scope stop,
+            # issued before this check, covers the cgroup case).
+        return [pid for pid in survivors if pid]
 
     # ----- Spawn -----
 
@@ -1447,6 +1511,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
+            limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
+            cut = len(session.output_buffer) - limit
             notification = {
                 "type": "completion",
                 "session_id": session.id,
@@ -1456,7 +1522,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
-                "output": _output_tail(session, 2000),
+                "output": _output_tail(session, limit),
+                # A consumer that relays the output (a bot DM's reply) must know it is not whole.
+                **({"output_cut": cut} if cut > 0 else {}),
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
@@ -1946,6 +2014,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # descendants reparented inside the cgroup.
             if session.systemd_unit:
                 _stop_systemd_unit(session.systemd_unit)
+            # Post-kill verification (#115490): the signals above can leave
+            # survivors (SIGTERM-ignoring daemons, scope escapees). A kill that
+            # leaves a live tree must not write a killed receipt or prune the
+            # session — the survivors would become unmanageable. Keep the
+            # session running so it stays listed and killable.
+            with session._lock:
+                signal_race_exited = session.exited
+            # A reader that finalised the session mid-signal already proved
+            # real exit; only a still-running session needs tree-death proof.
+            survivors = [] if signal_race_exited else self._post_kill_survivors(session)
+            if survivors:
+                alive = ", ".join(map(str, survivors))
+                logger.warning(
+                    "Kill incomplete for %s: %d process(es) still alive (%s) — session kept running",
+                    session.id, len(survivors), alive)
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Kill incomplete: {len(survivors)} process(es) still alive "
+                        f"({alive}); session running"),
+                    "session_id": session.id, "survivors": survivors,
+                    "process_running": True}
             # Capture output, mark consumed, THEN expose ``exited`` to watcher tasks —
             # closes the delayed-notification race without losing the transcript.
             with session._lock:

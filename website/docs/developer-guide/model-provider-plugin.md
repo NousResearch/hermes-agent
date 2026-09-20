@@ -76,6 +76,7 @@ That's it. After dropping these two files, the following **auto-wire** with no o
 |---|---|---|
 | Credential resolution | `hermes_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` populated from profile |
 | `--provider` CLI flag | `hermes_cli/main.py` | Accepts `acme-inference` |
+| `/model --provider`, model picker switch | `hermes_cli/providers.py::resolve_provider_full` | Resolves `acme-inference` and every alias to the profile (switch lands on `name`, so `acme` persists as `acme-inference`); user `providers:` / `custom_providers:` blocks keep precedence. A profile with an empty `base_url` (endpoint minted at runtime) resolves too, on the last rung |
 | `hermes model` picker | `hermes_cli/models.py` | Appears in `CANONICAL_PROVIDERS`, model list fetched from `{base_url}/models` |
 | `hermes doctor` | `hermes_cli/doctor.py` | Health check for `ACME_API_KEY` + `{base_url}/models` probe |
 | `hermes setup` | `hermes_cli/config.py` | `ACME_API_KEY` appears in `OPTIONAL_ENV_VARS` and the setup wizard |
@@ -303,9 +304,19 @@ register_provider(ProviderProfile(
 
 In a fresh Hermes process, `get_provider_profile("gmi").base_url` returns the staging URL. No repo patch, no rebuild. Because user plugins are discovered after bundled ones, the user `register_provider()` call wins.
 
+The override also reaches the runtime. Built-in providers have a row in `hermes_cli.auth.PROVIDER_REGISTRY` (the table `resolve_runtime_provider()` reads its endpoint and env vars from); a `$HERMES_HOME` plugin re-registering that name rewrites the row's profile-derived fields, so inference goes to the staging URL, not the bundled one:
+
+| Profile field | Registry row field | When |
+|---|---|---|
+| `base_url` | `inference_base_url` | profile sets a non-empty `base_url` |
+| `env_vars` (non-URL entries) | `api_key_env_vars` | api-key row and profile sets `env_vars` |
+| `env_vars` (final `*_BASE_URL` / `*_URL` entry) | `base_url_env_var` | profile declares one; otherwise the built-in env var (e.g. `GMI_BASE_URL`) stays |
+
+Only a **user** plugin (`$HERMES_HOME/plugins/model-providers/` or an installed `kind: model-provider` plugin) triggers this; a bundled profile never rewrites a built-in row, and `copilot`, `kimi-coding`, `kimi-coding-cn` and `zai` keep their bespoke credential resolution. A field the profile leaves empty keeps the built-in value. A `*_BASE_URL` env var still wins over both.
+
 ## api_mode selection
 
-Four values are recognized. Hermes picks one based on:
+Four built-in values are recognized (`chat_completions`, `codex_responses`, `anthropic_messages`, `bedrock_converse`), plus any mode a plugin registers itself. Hermes picks one based on:
 
 1. User explicit override (`config.yaml` `model.api_mode` when set)
 2. OpenCode's per-model dispatch (`opencode_model_api_mode` for Zen and Go)
@@ -314,6 +325,24 @@ Four values are recognized. Hermes picks one based on:
 5. Default `chat_completions`
 
 Set `profile.api_mode` to match the default your provider ships — it acts as a hint. User URL overrides still win.
+
+### Shipping your own wire dialect
+
+A plugin that speaks a protocol none of the built-in transports cover registers one and names it in the profile:
+
+```python
+from agent.transports import register_transport
+from agent.transports.chat_completions import ChatCompletionsTransport
+
+class MyDialectTransport(ChatCompletionsTransport):
+    api_mode = "mydialect"
+    # override convert_messages / build_kwargs / normalize_response as needed
+
+register_transport("mydialect", MyDialectTransport)
+register_provider(ProviderProfile(name="myprovider", api_mode="mydialect", ...))
+```
+
+Every `api_mode` gate (`determine_api_mode`, runtime resolution, agent construction, delegation) accepts a mode iff the transport registry knows it; a profile naming a mode nobody registered still degrades to `chat_completions`.
 
 ## Auth types
 

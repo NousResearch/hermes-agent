@@ -22413,7 +22413,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
 
     try:
         # Rewind 1: cut before "third" (last user turn). Survivors: turns
-        # "first" + "second" (+ assistant replies) — re-inserted as NEW rows.
+        # "first" + "second" (+ assistant replies) keep their rows (#82956).
         resp1 = server.handle_request(
             {
                 "id": "1",
@@ -22436,46 +22436,27 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
             row_id_map[str(original_row_ids[0])],
             row_id_map[str(original_row_ids[2])],
         ]
-        # They must be NEW rows — the old ids are archived (active=0) now.
-        assert set(survivors).isdisjoint(set(original_row_ids))
+        # Only the dropped suffix is archived: the kept rows keep their ids and
+        # the map says so; the two cut turns map to None.
+        assert survivors == [original_row_ids[0], original_row_ids[2]]
         assert row_id_map == {
-            str(original_row_ids[0]): survivors[0],
-            str(original_row_ids[1]): sess["history"][1]["_row_id"],
-            str(original_row_ids[2]): survivors[1],
-            str(original_row_ids[3]): sess["history"][3]["_row_id"],
+            **{str(rid): rid for rid in original_row_ids[:4]},
             str(original_row_ids[4]): None,
             str(original_row_ids[5]): None,
         }
         assert "999999" not in row_id_map
         sess["running"] = False
 
-        # Rewind 2a: the STALE pre-rewind id for "second" must fail closed.
-        stale_resp = server.handle_request(
+        # Rewind 2: the id the client cached BEFORE rewind 1 is still the live row
+        # (no 4018 refusal, no rebind dance) — the user-facing point of #82956.
+        resp2 = server.handle_request(
             {
                 "id": "2",
                 "method": "prompt.submit",
                 "params": {
                     "session_id": sid,
-                    "text": "rewound second (stale id)",
+                    "text": "rewound second (same id)",
                     "truncate_before_row_id": original_row_ids[2],
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
-        assert stale_resp.get("error") is not None
-        assert stale_resp["error"]["code"] == 4018
-        assert len(sess["history"]) == 4  # nothing cut
-
-        # Rewind 2b: the RETURNED survivor id for "second" must succeed.
-        resp2 = server.handle_request(
-            {
-                "id": "3",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewound second (fresh id)",
-                    "truncate_before_row_id": survivors[1],
                     "truncate_before_user_ordinal": 1,
                     "confirm_truncate": True,
                 },
@@ -22486,7 +22467,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         assert sess["history"][0]["content"] == "first"
         active = db.get_messages_as_conversation(session_key)
         # The cut, plus the prompt just sent (durable at submit, #111868).
-        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (fresh id)"]
+        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (same id)"]
         # And the second response rebinds again: one surviving user turn.
         survivors2 = resp2["result"].get("survivor_user_row_ids")
         assert isinstance(survivors2, list) and len(survivors2) == 1

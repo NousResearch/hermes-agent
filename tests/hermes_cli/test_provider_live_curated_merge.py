@@ -108,15 +108,58 @@ class TestGenericProviderLiveCuratedMerge:
         assert "ox-alpha-free" not in result
         assert {"deepseek-v4-flash", "kimi-k3", "omen-alpha"} <= set(result)
 
+    def test_opencode_zen_merge_does_not_resurrect_retired_model(self):
+        """#115496 bug class, end-to-end through provider_model_ids with the REAL curated floor:
+        the Zen relay (GET /zen/v1/models) retired x-preview-f-free (the picker-facing id for Ox
+        Alpha) 2026-09-19. The live-first merge must not resurrect it from the curated floor
+        (models_catalog_static.py still lists it first), or the picker keeps offering a model that
+        now 401s (REVERT-PROOF: a stale floor re-adds it and this fails)."""
+        assert "opencode-zen" in _LIVE_FIRST_PICKER_PROVIDERS
+        live = ["kimi-k3", "gpt-5.6-sol", "claude-opus-5"]  # current Zen relay (no x-preview-f-free)
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("opencode-zen")
+
+        assert "x-preview-f-free" not in result
+        assert {"kimi-k3", "gpt-5.6-sol", "claude-opus-5"} <= set(result)
+
+
+    def test_opencode_zen_offline_catalog_drops_retired_model(self):
+        """#115496 without a key: no live fetch, so provider_model_ids serves the curated floor merged
+        with models.dev — both still carry the retired x-preview-f-free. The final rows must not."""
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(None)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "", "base_url": ""},
+            ),
+            patch("agent.models_dev.list_agentic_models", return_value=["x-preview-f-free", "kimi-k3"]),
+        ):
+            result = provider_model_ids("opencode-zen")
+
+        assert "x-preview-f-free" not in result
+        assert "kimi-k3" in result
+
 
 @pytest.mark.parametrize("live", [["live-only"], [], None])
 def test_authoritative_catalog_is_shared_with_setup(monkeypatch, live):
     from types import SimpleNamespace
-    from providers.base import ProviderProfile
-    from hermes_cli import model_setup_flows, models
 
-    profile = ProviderProfile(name="catalog-test", base_url="https://example.test/v1",
-                              model_catalog_authoritative=True, fallback_models=("fallback",))
+    from hermes_cli import model_setup_flows, models
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(
+        name="catalog-test",
+        base_url="https://example.test/v1",
+        model_catalog_authoritative=True,
+        fallback_models=("fallback",),
+    )
     monkeypatch.setattr(profile, "fetch_models", lambda **kw: live)
     monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
     monkeypatch.setattr(models, "_api_key_credentials", lambda name: ("test-key", profile.base_url))
@@ -124,5 +167,13 @@ def test_authoritative_catalog_is_shared_with_setup(monkeypatch, live):
     monkeypatch.setitem(models._PROVIDER_MODELS, profile.name, ["stale-curated"])
     expected = ["fallback"] if live is None else live
     assert models._profile_live_catalog(profile.name) == expected
-    assert model_setup_flows._api_key_provider_model_list(
-        profile.name, SimpleNamespace(name="Catalog test"), "test-key", "", profile.base_url) == expected
+    assert (
+        model_setup_flows._api_key_provider_model_list(
+            profile.name,
+            SimpleNamespace(name="Catalog test"),
+            "test-key",
+            "",
+            profile.base_url,
+        )
+        == expected
+    )

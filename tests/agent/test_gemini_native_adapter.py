@@ -792,20 +792,23 @@ def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
 @pytest.mark.parametrize(
     "api_key, configured, expected_prefix",
     [
-        # Express key + default Studio host: the only place it can never work → aiplatform express surface.
-        ("AQ.express-key", None, "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
-        # Control: Studio key keeps the Studio host.
+        # AQ. keys exist for BOTH AI Studio and Vertex express mode (#115306): the prefix never
+        # reroutes, so an AI-Studio AQ. key keeps working on the default Studio host.
+        ("AQ.studio-key", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # Control: legacy AIza Studio key keeps the Studio host too.
         ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
-        # An explicit aiplatform base (host root or versioned) is completed to the publishers form.
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form —
+        # the express key's only route to aiplatform now that the prefix no longer reroutes.
         ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
         ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
         # An explicit proxy is never overridden by the key shape.
-        ("AQ.express-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+        ("AQ.studio-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
     ],
 )
-def test_native_client_routes_vertex_express_keys_to_aiplatform(api_key, configured, expected_prefix):
-    """Vertex express keys (``AQ.``) 403 on generativelanguage; the request must hit
-    ``aiplatform.googleapis.com/v1beta1/publishers/google/models/…`` unless the user pointed elsewhere."""
+def test_native_client_never_reroutes_aq_keys_off_the_configured_surface(api_key, configured, expected_prefix):
+    """Google issues ``AQ.`` keys for both AI Studio and Vertex express mode, so the key prefix must
+    not decide the surface (#115306): the default (or explicitly configured) base is used verbatim,
+    and an explicit aiplatform base is completed to ``…/publishers/google/models/…``."""
     from agent.gemini_native_adapter import GeminiNativeClient
 
     seen = []

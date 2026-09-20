@@ -6,6 +6,7 @@ Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the re
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -28,11 +29,25 @@ def _relay_root() -> Path:
     return _hermes_root(Path(_default_home()))
 
 
-def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:
+def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
+                  timeout: float = TURN_ATTEMPT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    """One relayed turn; the cap bounds the TURN, not the child (#114980). ``-Q`` prints its answer
+    only after the one-shot exit linger (a teammate's reply during it may become that answer), so a
+    child that exits under the cap is booked from its streams as before; one still lingering at the
+    cap is booked from its turn report — its answer and outcome, never a timeout — and left to finish
+    the linger that protects its own handoff. Only a turn that never ends is a timeout."""
+    from hermes_cli.quiet_single_query import run_reported_turn
     from tools.bot_relay import local_delivery_command
-    return subprocess.run(
-        local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
+    report = f"{tmp}.turn.json"
+    try:
+        # The relay pins UTF-8 on every platform (#93590): its child is the bootstrapped hermes_cli
+        # and its answer is relayed verbatim, unlike the cron lane's locale-decoded tails.
+        return run_reported_turn(
+            local_delivery_command(profile, tmp), env=os.environ if env is None else env,
+            report_path=report, timeout=timeout, exit_grace=None, encoding="utf-8")
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(report)
 
 
 @method("bot_relay.roster.sync")
@@ -79,6 +94,12 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         resolved = "default" if profile.lower() == "hermes" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
+        # The sender stamped itself with its bare @handle; a relayed "@hermes" is ANOTHER machine's
+        # default, so re-stamp it with the form this gateway can reply to (#103731).
+        from tools.bot_mode_probe import local_taken_forms
+        from tools.bot_relay import qualify_sender_stamp, read_remote_roster
+        message = qualify_sender_stamp(message, params.get("from_handle"), params.get("from_connection"),
+                                       read_remote_roster(root), local_taken_forms(root))
 
         # When THIS gateway already hosts the target's Bot Chat live, the subprocess transport is
         # fenced out by the single-owner lease and the payload dropped. Land the DM in the live
@@ -94,14 +115,26 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             and _session_live_title(
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
         # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
-        from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
-        from tui_gateway.methods_browser_control import _is_authenticated_identity
+        from tools.bot_relay import (
+            DeliveryAuthor, delivery_env, delivery_turn_author, relaying_principal_author)
+        from tui_gateway.methods_browser_control import _is_authenticated_identity, _principal_digest
         sender_fields = ("from_profile", "from_handle", "from_connection")
-        # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
-        if (any(params.get(k) for k in sender_fields)
-                and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
-            return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
-        author = delivery_turn_author(*(params.get(k) for k in sender_fields))
+        identity = getattr(current_transport(), "auth_identity", None)
+        if _is_authenticated_identity(identity):
+            # A logged-in client's sender fields are NOT trusted — but the delivery is not refused
+            # either: the Desktop is itself a logged-in client on every gateway that requires sign-in
+            # (it mints a ws-ticket carrying the signed-in {user_id, provider} —
+            # hermes_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
+            # for exactly the auth-gated gateways it serves; only ``?internal=`` callers are
+            # identity-exempt and the Desktop cannot present one. Nor is the author dropped: an
+            # unattributed turn is the HUMAN's to the recipient's memory (Honcho routes it into the
+            # human session and allows conclusion / profile / mirror writes), so a bot DM must stay
+            # bot-authored. The author is derived from the caller's minted identity instead — stable,
+            # unspoofable, and ``is_bot`` — whether or not the client named a sender. The human-facing
+            # "Message from 🤖 …" signature stays in the text the sender composed.
+            author = relaying_principal_author(_principal_digest(identity))
+        else:
+            author = delivery_turn_author(*(params.get(k) for k in sender_fields))
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.

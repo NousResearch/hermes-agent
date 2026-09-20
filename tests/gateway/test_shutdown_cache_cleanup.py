@@ -65,6 +65,10 @@ class _FakeGateway:
         # This fake has no API server adapter, so it is always idle.
         return 0
 
+    def _mark_api_runs_shutdown_requested(self):
+        # No API server adapter -> no durable runs to stamp with the drain boundary (#115133).
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 

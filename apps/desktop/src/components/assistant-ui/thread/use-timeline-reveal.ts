@@ -27,7 +27,9 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
   useEffect(() => {
     const viewport = options.viewport.current
 
-    if (!viewport) {return}
+    if (!viewport) {
+      return
+    }
     let current: AbortController | null = null
 
     const onReveal = (event: Event) => {
@@ -38,7 +40,9 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
       const abort = () => controller.abort()
       request.signal.addEventListener('abort', abort, { once: true })
 
-      if (request.signal.aborted) {controller.abort()}
+      if (request.signal.aborted) {
+        controller.abort()
+      }
       const timeout = window.setTimeout(abort, 15000)
       const valid = () => !controller.signal.aborted
       const find = (id: string) => viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
@@ -47,26 +51,45 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
         latest.current.prepare()
         let id = request.id
         const rowId = request.rowId ?? (id.startsWith('history:') ? Number(id.slice(8)) : undefined)
-        const loaded = rowId === undefined ? undefined : [...(latest.current.history.currentMessages ?? []), ...view.$messages.get()].find(message => message.rowId === rowId)
+        const loaded =
+          rowId === undefined
+            ? undefined
+            : [...(latest.current.history.currentMessages ?? []), ...view.$messages.get()].find(
+                message => message.rowId === rowId
+              )
         id = loaded?.id ?? id
 
-        if (find(id)) {return id}
+        if (find(id)) {
+          return id
+        }
 
-        if (rowId !== undefined && !latest.current.groups.some(group => group.id === id) && latest.current.history.revealRow) {
+        if (
+          rowId !== undefined &&
+          !latest.current.groups.some(group => group.id === id) &&
+          latest.current.history.revealRow
+        ) {
           const target = await latest.current.history.revealRow(rowId, controller.signal)
 
-          if (!target || !valid()) {return false}
+          if (!target || !valid()) {
+            return false
+          }
           id = target
         } else if (id === EARLIER_TIMELINE_ID) {
           const state = latest.current
 
-          if (!state.olderAvailable && !state.hiddenCount) {return false}
+          if (!state.olderAvailable && !state.hiddenCount) {
+            return false
+          }
           state.revealBudget(state.renderBudget + 600)
 
-          if (!state.hiddenCount) {await state.expandWindow()}
+          if (!state.hiddenCount) {
+            await state.expandWindow()
+          }
         }
 
-        if (!valid()) {return false}
+        if (!valid()) {
+          return false
+        }
 
         // React commits and late row mounts wake this observer; no polling loop.
         return await new Promise<string | false>(resolve => {
@@ -81,17 +104,25 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
           const cancelled = () => finish(false)
 
           const check = () => {
-            if (!valid()) {return finish(false)}
+            if (!valid()) {
+              return finish(false)
+            }
             const state = latest.current
-            const index = id === EARLIER_TIMELINE_ID ? Math.max(0, state.hiddenCount - 1) : state.groups.findIndex(group => group.id === id)
+            const index =
+              id === EARLIER_TIMELINE_ID
+                ? Math.max(0, state.hiddenCount - 1)
+                : state.groups.findIndex(group => group.id === id)
 
             if (index >= 0) {
               const budget = state.groups.slice(index).reduce((sum, group) => sum + group.weight, 0) + 1
 
-              if (budget > state.renderBudget) {state.revealBudget(budget)}
+              if (budget > state.renderBudget) {
+                state.revealBudget(budget)
+              }
             }
 
-            const node = id === EARLIER_TIMELINE_ID ? viewport.querySelector<HTMLElement>('[data-message-id]') : find(id)
+            const node =
+              id === EARLIER_TIMELINE_ID ? viewport.querySelector<HTMLElement>('[data-message-id]') : find(id)
 
             if (node && (id !== EARLIER_TIMELINE_ID || node.dataset.messageId !== first)) {
               latest.current.prepare()
@@ -100,14 +131,24 @@ export function useTimelineReveal(options: TimelineRevealOptions) {
           }
 
           const observer = new MutationObserver(check)
-          observer.observe(viewport, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-message-id'] })
+          observer.observe(viewport, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['data-message-id']
+          })
           controller.signal.addEventListener('abort', cancelled, { once: true })
           check()
         })
-      })().then(result => request.complete(result), () => request.complete(false)).finally(() => {
-        clearTimeout(timeout)
-        request.signal.removeEventListener('abort', abort)
-      })
+      })()
+        .then(
+          result => request.complete(result),
+          () => request.complete(false)
+        )
+        .finally(() => {
+          clearTimeout(timeout)
+          request.signal.removeEventListener('abort', abort)
+        })
     }
 
     viewport.addEventListener(TIMELINE_REVEAL_EVENT, onReveal)

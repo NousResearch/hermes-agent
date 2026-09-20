@@ -11,12 +11,24 @@ it('carries fresh catalog evidence into the guide and the exact working-profile 
   vi.stubGlobal('window', { hermesDesktop: { api } })
 
   const entry = {
-    name: 'future-studio', auth_type: 'none', installed: false, enabled: false,
+    name: 'future-studio',
+    auth_type: 'none',
+    installed: false,
+    enabled: false,
     detected_apps: ['Future Studio'],
-    suggest: { keywords: ['future studio'], applications: ['Future Studio'], examples: ['Make a scene in Future Studio'], requires_app: true }
+    suggest: {
+      keywords: ['future studio'],
+      applications: ['Future Studio'],
+      examples: ['Make a scene in Future Studio'],
+      requires_app: true
+    }
   }
 
-  api.mockResolvedValue({ entries: [entry], diagnostics: [], discovery: { scope: 'backend', status: 'ok', platform: 'darwin' } })
+  api.mockResolvedValue({
+    entries: [entry],
+    diagnostics: [],
+    discovery: { scope: 'backend', status: 'ok', platform: 'darwin' }
+  })
   const scope = { connectionId: 'remote-studio', profile: 'default' }
   const evidence = await readOnboardingCapabilities(scope)
   const guide = buildChatOnboardingSeedMessages('Hi', true, evidence)
@@ -41,12 +53,14 @@ it('reads only the pinned backend and degrades safely on old or unavailable disc
   const scope = { connectionId: 'remote-studio', profile: 'hermes-setup' }
   api.mockResolvedValueOnce({ entries: [], diagnostics: [] })
   expect(await readOnboardingCapabilities(scope)).toBe('')
-  expect(api).toHaveBeenCalledWith(expect.objectContaining({
-    connectionId: scope.connectionId,
-    profile: scope.profile,
-    path: '/api/mcp/catalog?detect_apps=true',
-    timeoutMs: 5000
-  }))
+  expect(api).toHaveBeenCalledWith(
+    expect.objectContaining({
+      connectionId: scope.connectionId,
+      profile: scope.profile,
+      path: '/api/mcp/catalog?detect_apps=true',
+      timeoutMs: 5000
+    })
+  )
 
   api.mockRejectedValueOnce(new Error('Offline'))
   expect(await readOnboardingCapabilities(scope)).toBe('')

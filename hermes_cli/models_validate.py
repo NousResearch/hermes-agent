@@ -469,12 +469,40 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
+def _profile_owned_catalog(normalized: str) -> Optional[list[str]]:
+    """The profile's catalog when the profile serves it from an endpoint of its own —
+    ``models_url`` pointing somewhere other than the generic ``{base_url}/models``.
+    For such relays that generic listing is a different product line (#101705), so it
+    must not validate models the profile's catalog excludes (#116667). ``None`` when
+    the profile has no separate endpoint (a bare ``fetch_models`` override may just
+    re-shape the generic listing) or its catalog is unavailable — those keep the
+    generic listing as their validator."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(normalized)
+    if profile is None or not profile.models_url:
+        return None
+    generic = (profile.base_url or "").rstrip("/") + "/models"
+    if profile.models_url.rstrip("/") == generic:
+        return None
+    return _static_catalog(normalized) or None
+
+
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
     tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
+    owned = _profile_owned_catalog(req.normalized)
+    if owned is not None:
+        # The catalog endpoint the profile declares decides: a miss there is a reject, never an
+        # acceptance by the generic listing, which for such relays lists a different product line.
+        match = _match_in_catalog(req.lookup, owned, suggest_query=req.requested)
+        if match.exact:
+            return _accept()
+        return _reject(
+            f"Model `{req.requested}` was not found in this provider's catalog.{match.suggestion_text}")
     if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
         return _accept()
     api_models = _m.fetch_api_models(req.api_key, req.base_url)

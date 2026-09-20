@@ -94,6 +94,7 @@ afterEach(() => {
   closeSecondaryGateways()
   gatewayMocks.instances.length = 0
   vi.clearAllMocks()
+  vi.restoreAllMocks()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -418,6 +419,7 @@ describe('secondary reconnect backoff (#83134)', () => {
 
   it('climbs the ladder while the backend stays down after a stable session', async () => {
     vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5) // deterministic ladder: 150/300/600/…
     installWork()
 
     await ensureGatewayForProfile('work')
@@ -438,6 +440,7 @@ describe('secondary reconnect backoff (#83134)', () => {
 
   it('treats an accept-then-close socket as a failed attempt', async () => {
     vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
     installWork()
     gatewayMocks.connect.mockResolvedValue(undefined)
 

@@ -1,6 +1,7 @@
 """PUT /api/memory/providers/{name}/config saves without selecting unless asked; host-owned storage takes partial saves."""
 
 import json
+import sys
 import textwrap
 
 import pytest
@@ -39,17 +40,41 @@ DECLARED = '''
         ProviderField(key="api_key", label="API key", kind="secret", env_key="PROBE_KEY"),
     ))
 '''
+# An unchanged external Honcho: its own client and oauth modules, imported next to the provider module.
+HONCHO_LIKE = {
+    "config_schema.py": '''
+        from plugins.memory.config_schema import STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField
+        CONFIG_SCHEMA = ProviderConfigSchema(name="probe", label="Probe", storage=STORAGE_HONCHO_HOST_BLOCK, fields=(
+            ProviderField(key="workspace", label="Workspace"), ProviderField(key="apiKey", label="Key", kind="secret")))
+    ''',
+    "client.py": '''
+        from hermes_constants import get_hermes_home
+        def resolve_active_host(): return "probe-host"
+        def resolve_config_path(): return get_hermes_home() / "probe-honcho.json"
+        def _host_block(raw, host): return (raw.get("hosts") or {}).get(host, {})
+    ''',
+    "oauth.py": '''
+        import contextlib, json, threading
+        ACCESS_TOKEN_PREFIX = "hch-at-"
+        _refresh_lock = threading.Lock()
+        @contextlib.contextmanager
+        def _config_refresh_lock(path): yield
+        def _read_config_strict(path): return json.loads(path.read_text()) if path.exists() else {}
+    ''',
+}
 
 URL = "/api/memory/providers/probe/config"
 
 
-def _install(home, *, runtime=INERT_RUNTIME, raw_schema=None, declared=None, config=None, env="", terminal="local"):
+def _install(home, *, runtime=INERT_RUNTIME, raw_schema=None, declared=None, config=None, env="", terminal="local", **companions):
     plugin = home / "plugins/probe"
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.yaml").write_text("name: probe\n")
     (plugin / "__init__.py").write_text(f"SCHEMA = {raw_schema!r}\n" + textwrap.dedent(runtime))
     if declared:
         (plugin / "config_schema.py").write_text(textwrap.dedent(declared))
+    for filename, source in companions.items():
+        (plugin / filename).write_text(textwrap.dedent(source))
     if config is not None:
         (home / "probe").mkdir(exist_ok=True)
         (home / "probe/config.json").write_text(json.dumps(config))
@@ -122,3 +147,29 @@ def test_malformed_submission_is_rejected_before_any_secret_is_written(config_ap
     response = client.put(URL + "?surface=declared", json={"values": {"count": "many", "api_key": "new"}, "activate": False})
     assert response.status_code == 400, response.text
     assert (home / ".env").read_text() == "PROBE_KEY=old\n" and not (home / "probe/config.json").exists()
+
+
+def test_external_honcho_reads_and_writes_through_its_own_client_and_oauth(config_api, monkeypatch):
+    client, homes = config_api
+    home = homes["default"]
+    _install(home, runtime="# MemoryProvider\n", **HONCHO_LIKE)
+    for name in ("plugins.memory.honcho", "plugins.memory.honcho.client", "plugins.memory.honcho.oauth"):
+        monkeypatch.setitem(sys.modules, name, None)  # the bundled namespace is gone; importing it raises
+    url = URL + "?surface=declared"
+    assert [f["key"] for f in client.get(url).json()["fields"]] == ["workspace", "apiKey"]
+    assert client.put(url, json={"values": {"workspace": "ws", "apiKey": "k"}, "activate": False}).status_code == 200
+    assert json.loads((home / "probe-honcho.json").read_text()) == {"hosts": {"probe-host": {"workspace": "ws", "apiKey": "k"}}}
+    fields = {f["key"]: f for f in client.get(url).json()["fields"]}
+    assert fields["workspace"]["value"] == "ws" and fields["apiKey"]["is_set"] is True
+
+
+def test_another_profile_never_sees_the_launch_environment(config_api, monkeypatch):
+    client, homes = config_api
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://launch-only")
+    runtime = NATIVE_RUNTIME[:NATIVE_RUNTIME.index("        def save_config")]
+    _install(homes["b"], runtime=runtime, raw_schema=[{"key": "endpoint", "env_var": "OPENVIKING_ENDPOINT"}])
+    url = URL + "?surface=declared&profile=b"
+    field = client.get(url).json()["fields"][0]
+    assert field["value"] == "" and field["is_set"] is False
+    assert client.put(url, json={"values": {"endpoint": field["value"]}, "activate": False}).status_code == 200
+    assert "launch-only" not in (homes["b"] / "config.yaml").read_text()

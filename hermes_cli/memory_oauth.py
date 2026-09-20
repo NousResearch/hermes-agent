@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
+import atexit
 import importlib
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_routers._common import scoped_to_thread
+from plugins.memory import contract
 
 router = APIRouter(prefix="/api/memory/providers")
-
-# Clients only ever see these states and this detail text; provider strings never cross.
-STATE_DETAIL = {
-    "idle": "",
-    "pending": "Waiting for browser consent",
-    "connected": "Connected",
-    "error": "Authorization did not complete",
-}
-AUTH_KINDS = frozenset({"oauth", "apikey"})
 _UNSUPPORTED = {"supported": False, "state": "unsupported", "connected": False, "auth": None, "detail": ""}
+
+atexit.register(contract.shutdown_oauth)
 
 
 def _resolve_flow(provider: str):
@@ -32,34 +27,32 @@ def _resolve_flow(provider: str):
         raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
 
 
-def normalize_status(raw: Any) -> dict:
-    """Reduce a hook's dict to state, connected and auth."""
-    data = raw if isinstance(raw, dict) else {}
-    state = data.get("state") if data.get("state") in STATE_DETAIL else "error"
-    status: dict = {"state": state, "detail": STATE_DETAIL[state]}
-    if data.get("connected") is True:
-        status["connected"] = True
-    if "auth" in data:
-        status["auth"] = data["auth"] if data["auth"] in AUTH_KINDS else None
-    return status
-
-
 def _oauth_response(provider: str, *, start: bool, declared: bool) -> dict:
+    from hermes_constants import get_hermes_home
     from plugins.memory import find_provider_dir
 
+    external = contract.for_provider(provider)
     try:
-        flow = _resolve_flow(provider)
-    except HTTPException:
-        if declared and find_provider_dir(provider) is not None:
-            return dict(_UNSUPPORTED)
-        raise
-    try:
-        # The flow resolves its config path eagerly inside this scope; its worker thread outlives it.
-        raw = flow.start_loopback_flow_background() if start else flow.get_flow_status()
-    except Exception as exc:
-        action = "start" if start else "read"
-        raise HTTPException(status_code=500, detail=f"Failed to {action} {provider} OAuth{'' if start else ' status'}: {exc}")
-    status = normalize_status(raw)
+        status = external.oauth(get_hermes_home().resolve(), start=start) if external is not None else None
+    except contract.CompanionError:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not use {provider} OAuth connect. Check the provider installation and retry.",
+        ) from None
+    if status is None:
+        try:
+            flow = _resolve_flow(provider)
+        except HTTPException:
+            if declared and find_provider_dir(provider) is not None:
+                return dict(_UNSUPPORTED)
+            raise
+        try:
+            # The flow resolves its config path eagerly inside this scope; its worker thread outlives it.
+            raw = flow.start_loopback_flow_background() if start else flow.get_flow_status()
+        except Exception as exc:
+            action = "start" if start else "read"
+            raise HTTPException(status_code=500, detail=f"Failed to {action} {provider} OAuth{'' if start else ' status'}: {exc}")
+        status = contract.normalize_status(raw)
     return {**status, "supported": True} if declared else status
 
 

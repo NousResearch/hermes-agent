@@ -254,10 +254,17 @@ def _read_memory_provider_existing_values(name: str) -> Dict[str, Any]:
 
 
 def _env_lookup(env_key: Optional[str]) -> str:
+    """The owning home's value, read as the runtime reads it: its .env, then the profile's secret scope.
+    Raw ``os.environ`` would show the launch profile's value in another profile's form; an unscoped
+    read under multiplexing (the plugins hub) counts as unset for the same reason."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
     from hermes_cli.config import load_env
     if not env_key:
         return ""
-    return str(load_env().get(env_key) or os.environ.get(env_key) or "")
+    try:
+        return str(load_env().get(env_key) or get_secret(env_key) or "")
+    except UnscopedSecretError:
+        return ""
 
 
 def _coerce_bool(value: Any, *, default: bool = False) -> bool:

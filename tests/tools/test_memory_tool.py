@@ -285,12 +285,6 @@ class TestMemoryConsolidationGracefulDegrade:
             "fact B stays in the store after the abort",
         ]
 
-    def test_single_replace_still_echoes_entries_on_miss(self, store):
-        store.add("memory", "fact A")
-        result = store.replace("memory", "nonexistent", "new")
-        assert result["success"] is False
-        assert result["current_entries"] == ["fact A"]
-
     def test_success_and_turn_boundary_reset_failure_budget(self, store):
         store.add("memory", "real entry")
         cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN

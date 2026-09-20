@@ -464,6 +464,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `pre_gateway_status` | Directive/control | Outbound status/notice callback, before the built-in noise filtering; `{"action": "suppress"}` drops it (e.g. de-duplicating a repeated provider-outage error). | `platform`, `event_type`, `message` | Status text may include provider error details. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
@@ -1252,6 +1253,46 @@ def buffer_or_rewrite(event, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+---
+
+### `pre_gateway_status`
+
+Fires **once per outbound status/notice callback**, before `gateway/run.py::_prepare_gateway_status_message`'s own noise filtering (which strips transient aux/compression chatter and sanitizes provider errors). This is the interception point for de-duplicating repeated status text — e.g. the same provider-outage error emitted on every retry tick.
+
+**Callback signature:**
+
+```python
+def my_callback(platform, event_type, message, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | `Platform` | The target messaging platform for this status callback. |
+| `event_type` | `str` | The status callback's event key (e.g. a compaction or retry status name). |
+| `message` | `str` | The candidate status text, stripped but not yet sanitized/filtered. |
+
+**Return value:** `None` or a dict. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal filtering on error.
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "suppress"}` | Drop this status message entirely — nothing is sent or edited on the platform. |
+| Anything else / `None` | Normal delivery — the built-in noise filtering and sanitization still apply. |
+
+**Example — suppress a provider-outage error once it has already been shown for this chat:**
+
+```python
+_last_error = {}
+
+def dedup_provider_errors(platform, event_type, message, **kwargs):
+    if _last_error.get(platform) == message:
+        return {"action": "suppress"}
+    _last_error[platform] = message
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_status", dedup_provider_errors)
 ```
 
 ---

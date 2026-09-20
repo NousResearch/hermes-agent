@@ -131,6 +131,11 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # pre_gateway_status: once per outbound status/notice callback, BEFORE
+    # gateway/run.py::_prepare_gateway_status_message's own noise filtering — e.g. so a plugin can
+    # de-duplicate a provider-outage error repeated across ticks. Kwargs: platform, event_type,
+    # message. Return {"action": "suppress"} -> drop; anything else -> normal delivery.
+    "pre_gateway_status",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.

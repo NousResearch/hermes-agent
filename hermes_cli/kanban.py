@@ -356,21 +356,51 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+
+    # Same shape as the agent-facing `kanban_create` tool schema, so a `pre_tool_call` plugin
+    # written against that tool also covers `hermes kanban create` on the CLI (#116455).
+    hook_args = {
+        "title": args.title, "assignee": args.assignee, "body": args.body,
+        "parents": list(args.parent or ()), "tenant": args.tenant, "priority": args.priority,
+        "workspace_kind": ws_kind, "workspace_path": ws_path,
+        "project": getattr(args, "project", None),
+        "triage": bool(getattr(args, "triage", False)),
+        "idempotency_key": getattr(args, "idempotency_key", None),
+        "max_runtime_seconds": max_runtime,
+        "initial_status": getattr(args, "initial_status", "running"),
+        "skills": getattr(args, "skills", None) or None,
+        "model": getattr(args, "model_override", None),
+        "provider": getattr(args, "provider_override", None),
+        "goal_mode": bool(getattr(args, "goal_mode", False)),
+        "goal_max_turns": getattr(args, "goal_max_turns", None),
+        "completion_contract": getattr(args, "completion_contract", None),
+    }
+    try:
+        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+        block_message, modified_args = _dispatch_pre_tool_call_hooks("kanban_create", hook_args)
+    except Exception:
+        block_message, modified_args = None, None
+    if block_message is not None:
+        return _err(f"kanban: {block_message}")
+    if modified_args is not None:
+        hook_args.update(modified_args)
+
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
-            conn, title=args.title, body=args.body, assignee=args.assignee,
+            conn, title=hook_args["title"], body=hook_args["body"], assignee=hook_args["assignee"],
             created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
-            project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
-            parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
-            provider_override=getattr(args, "provider_override", None),
-            goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
-            completion_contract=getattr(args, "completion_contract", None),
-            initial_status=getattr(args, "initial_status", "running"),
+            workspace_kind=hook_args["workspace_kind"], workspace_path=hook_args["workspace_path"],
+            branch_name=branch_name,
+            project_id=hook_args["project"], tenant=hook_args["tenant"], priority=hook_args["priority"],
+            parents=tuple(hook_args["parents"] or ()), triage=bool(hook_args["triage"]),
+            idempotency_key=hook_args["idempotency_key"],
+            max_runtime_seconds=hook_args["max_runtime_seconds"], skills=hook_args["skills"] or None,
+            max_retries=max_retries, model_override=hook_args["model"],
+            provider_override=hook_args["provider"],
+            goal_mode=bool(hook_args["goal_mode"]),
+            goal_max_turns=hook_args["goal_max_turns"],
+            completion_contract=hook_args["completion_contract"],
+            initial_status=hook_args["initial_status"],
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
         )

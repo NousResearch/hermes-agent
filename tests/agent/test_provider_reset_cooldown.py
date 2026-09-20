@@ -6,8 +6,29 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.error_classifier import FailoverReason
-from agent.fallback_cooldown import _arm_rate_limit_cooldown
 from agent.turn_recovery import route_classified_error
+from run_agent import AIAgent
+
+
+def _agent_with_one_fallback():
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+            model="primary/model", quiet_mode=True, skip_context_files=True, skip_memory=True,
+            fallback_model=[{"provider": "openai-codex", "model": "gpt-5.5"}],
+        )
+    agent.client = None
+    return agent
+
+
+def _fallback_client():
+    client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex", api_key="fb-key")
+    client.chat = SimpleNamespace(completions=SimpleNamespace(create=lambda *a, **k: None))
+    return client
 
 
 @pytest.mark.parametrize(
@@ -20,25 +41,36 @@ from agent.turn_recovery import route_classified_error
         (1_699_999_999, 60),
     ],
 )
-def test_rate_limit_cooldown_prefers_only_valid_future_provider_resets(
-    reset_at, expected_seconds,
-):
-    agent = SimpleNamespace(
-        provider="openrouter",
-        _primary_runtime={"provider": "openrouter"},
-        _fallback_activated=False,
-        _rate_limit_backoff_count=0,
-    )
+def test_fallback_switch_benches_primary_until_valid_future_provider_reset(reset_at, expected_seconds):
+    """Drives the production entry (agent._try_activate_fallback -> try_activate_fallback):
+    the reset_at kwarg must reach the cooldown arming, not just the helper."""
+    agent = _agent_with_one_fallback()
     with (
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
         patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
         patch("agent.fallback_cooldown.time.monotonic", return_value=500),
     ):
-        armed = _arm_rate_limit_cooldown(
-            agent, FailoverReason.rate_limit, reset_at=reset_at,
-        )
+        assert agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=reset_at) is True
 
-    assert armed == expected_seconds
+    assert agent.model == "gpt-5.5"
     assert agent._rate_limited_until == 500 + expected_seconds
+
+
+@pytest.mark.parametrize(("threshold", "switched"), [(0, True), (120, False)])
+def test_min_switch_reset_seconds_keeps_primary_when_reset_is_imminent(threshold, switched):
+    """Opt-in fallback.min_switch_reset_seconds (#117484): a reset 30 s out is below a 120 s
+    threshold, so the turn stays on the primary and no cooldown is armed; 0 (default) switches."""
+    agent = _agent_with_one_fallback()
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
+        patch("hermes_cli.config.load_config", return_value={"fallback": {"min_switch_reset_seconds": threshold}}),
+        patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
+    ):
+        activated = agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=1_700_000_030)
+
+    assert activated is switched
+    assert (agent.model == "gpt-5.5") is switched
+    assert (getattr(agent, "_rate_limited_until", None) is not None) is switched
 
 
 def test_eager_rate_limit_fallback_forwards_extracted_reset_time():

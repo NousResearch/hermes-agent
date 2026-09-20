@@ -11,6 +11,37 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
 
 
+def _provider_reset_delay(reset_at) -> float | None:
+    """Seconds until the provider-declared reset, or None when missing/invalid/expired."""
+    from agent.credential_pool import _parse_absolute_timestamp
+    parsed = _parse_absolute_timestamp(reset_at)
+    delay = parsed - time.time() if parsed is not None else None
+    if delay is not None and math.isfinite(delay) and delay > 0:
+        return delay
+    return None
+
+
+def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
+    """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
+    rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
+    the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
+    rate-limit failovers leaving the primary with a valid future ``reset_at``."""
+    if reason not in _RATE_LIMIT_FAILOVER_REASONS or getattr(agent, "_fallback_activated", False):
+        return False
+    try:
+        from hermes_cli.config import load_config
+        threshold = float((load_config() or {}).get("fallback", {}).get("min_switch_reset_seconds") or 0)
+    except Exception:
+        return False
+    if threshold <= 0:
+        return False
+    delay = _provider_reset_delay(reset_at)
+    if delay is None or delay >= threshold:
+        return False
+    logging.info("Rate limit resets in %.0f s (< fallback.min_switch_reset_seconds=%.0f): staying on the primary", delay, threshold)
+    return True
+
+
 def _arm_rate_limit_cooldown(
     agent, reason: "FailoverReason | None", reset_at=None,
 ) -> int | None:
@@ -30,10 +61,8 @@ def _arm_rate_limit_cooldown(
         return None
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1
-    from agent.credential_pool import _parse_absolute_timestamp
-    parsed_reset_at = _parse_absolute_timestamp(reset_at)
-    provider_delay = parsed_reset_at - time.time() if parsed_reset_at is not None else None
-    if provider_delay is not None and math.isfinite(provider_delay) and provider_delay > 0:
+    provider_delay = _provider_reset_delay(reset_at)
+    if provider_delay is not None:
         backoff_seconds = math.ceil(provider_delay)
         source = "provider reset"
     else:

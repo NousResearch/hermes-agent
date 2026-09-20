@@ -89,18 +89,39 @@ def _succeeded(result: Any) -> bool:
     return result is not None and getattr(result, "returncode", 1) == 0
 
 
-def _child_environment() -> dict[str, str]:
-    """Return an environment that cannot self-identify as the gateway owner."""
+def _launch_profile() -> str:
+    """Profile this recovery process was launched as: ``<root>/profiles/<name>`` in ``HERMES_HOME`` names it,
+    anything else is the default profile. Mirrors ``hermes_cli.profiles.profile_root_for_env_home`` without
+    importing it — this module stays stdlib-only at import time."""
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if home:
+        path = os.path.normpath(home)
+        if os.path.basename(os.path.dirname(path)) == "profiles":
+            return os.path.basename(path)
+    return "default"
+
+
+def _child_environment(profile: str | None = None) -> dict[str, str]:
+    """Return an environment that cannot self-identify as the gateway owner.
+
+    One updater environment relaunches EVERY profile, so a child for another profile would inherit
+    this process's authorization gates (``DISCORD_ALLOWED_CHANNELS``, ``GATEWAY_ALLOW_ALL_USERS`` ...)
+    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
+    dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
+    """
     env = os.environ.copy()
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"
+    if profile is not None and profile != _launch_profile():
+        from tools.environments.local_env_policy import strip_profile_gate_env
+        strip_profile_gate_env(env)
     return env
 
 
 def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     """Run one profile restart without inheriting the updater's process state."""
-    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "env": _child_environment()}
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "env": _child_environment(profile)}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     else:

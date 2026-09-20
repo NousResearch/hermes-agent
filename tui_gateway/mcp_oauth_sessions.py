@@ -14,7 +14,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # session_id -> record wrapping the shared DashboardOAuthFlow bridge plus bookkeeping.
 _sessions: Dict[str, Dict[str, Any]] = {}
@@ -49,6 +49,8 @@ def _validate_client_redirect_uri(uri: str) -> str:
 def _start_loopback_listener(flow) -> "http.server.HTTPServer":
     """Bind a loopback callback listener feeding ``flow.deliver_callback``; returns the
     HTTPServer already serving on a daemon thread (caller pins ``flow.redirect_uri`` from it)."""
+    from tools.mcp_oauth import _parse_redirect_query
+
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 — stdlib naming
             parsed = urlparse(self.path)
@@ -56,12 +58,10 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
                 self.send_response(404)
                 self.end_headers()
                 return
-            qs = parse_qs(parsed.query)
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:
-                flow.deliver_callback(
-                    **{k: (qs.get(k) or [None])[0] for k in ("code", "state", "error")})
+                flow.deliver_callback(**_parse_redirect_query(parsed.query))
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400
@@ -85,7 +85,7 @@ def _probe_with_rollback(
     server_name: str, cfg: dict, hermes_home: str, flow, reconnect_live: bool) -> None:
     """Run the OAuth probe; on ANY failure restore the prior token file + manager entry."""
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
-    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth import HermesTokenStorage, login_connect_timeout
     from tools.mcp_oauth_manager import get_manager
     manager = get_manager()
     storage = HermesTokenStorage(server_name)
@@ -93,8 +93,7 @@ def _probe_with_rollback(
     previous_entry = None
     try:
         previous_entry = manager.remove(server_name, hermes_home=hermes_home)
-        timeout = max(float(cfg.get("connect_timeout", 0) or 0), 315)
-        tools = _probe_single_server(server_name, cfg, connect_timeout=timeout)
+        tools = _probe_single_server(server_name, cfg, connect_timeout=login_connect_timeout(cfg))
         if not _oauth_tokens_present(server_name):
             raise RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
@@ -133,7 +132,8 @@ def _worker(
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)
     except Exception as exc:
-        msg = str(exc)
+        from tools.mcp_dashboard_oauth import exception_message
+        msg = exception_message(exc)
         with suppress(Exception):
             from tools.mcp_oauth import humanize_oauth_registration_error
             msg = humanize_oauth_registration_error(
@@ -199,8 +199,9 @@ def start_flow(
             time.sleep(0.1)
         if not auth_url:
             raise TimeoutError("Timed out waiting for MCP authorization URL")
-    except Exception:
-        flow.mark_error("Timed out waiting for MCP authorization URL")
+    except Exception as exc:
+        from tools.mcp_dashboard_oauth import exception_message
+        flow.mark_error(exception_message(exc))  # no-op when the worker already recorded the cause
         _shutdown_listener(rec)
         raise
     # ``flow`` mirrors the provider-OAuth discriminator: open a URL then poll (no user_code).
@@ -255,7 +256,7 @@ def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str
 
 def deliver_callback_flow(
     session_id: str, server_name: str, *, code: Optional[str], state: Optional[str],
-    error: Optional[str] = None) -> Dict[str, Any]:
+    error: Optional[str] = None, iss: Optional[str] = None) -> Dict[str, Any]:
     """Relay a client-captured OAuth redirect into a session's flow (remote-backend companion
     to ``start_flow(client_redirect_uri=...)``); ``deliver_callback`` still verifies ``state``
     and rejects replays. Returns ``{ok: true}`` or ``{ok: false, error_message}``."""
@@ -263,7 +264,7 @@ def deliver_callback_flow(
     if rec is None:
         return {"ok": False, "error_message": err}
     try:
-        rec["flow"].deliver_callback(code=code, state=state, error=error)
+        rec["flow"].deliver_callback(code=code, state=state, error=error, iss=iss)
     except ValueError as exc:
         return {"ok": False, "error_message": str(exc)}
     return {"ok": True, "session_id": session_id}

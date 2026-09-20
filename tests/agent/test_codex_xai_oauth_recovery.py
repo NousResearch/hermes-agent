@@ -403,7 +403,7 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
         def mark_exhausted_and_rotate(self, **_kwargs):
             return None
 
-        def has_available(self):
+        def has_available(self, **_kwargs):
             return False
 
     agent._credential_pool = _FakePool()
@@ -457,6 +457,7 @@ def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
             error_context=None,
             api_key_hint=None,
             failure_reason=None,
+            model=None,
         ):
             assert status_code == 403
             assert api_key_hint == "test-key"

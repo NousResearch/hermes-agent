@@ -799,7 +799,7 @@ class LineAdapter(BasePlatformAdapter):
         except Exception:
             hermes_home = Path.home().joinpath(".hermes").resolve()
         resolved = path.resolve()
-        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):
+        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
             logger.warning("LINE: refusing to serve outside allowed roots: %s", resolved)
             return web.Response(status=403, text="forbidden")
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"

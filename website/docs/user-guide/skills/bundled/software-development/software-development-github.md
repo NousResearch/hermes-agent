@@ -21,7 +21,7 @@ GitHub via gh CLI: PRs, issues, reviews, repos, auth.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `github`, `gh`, `git`, `pull-requests`, `issues`, `code-review`, `repos`, `auth`, `ci` |
-| Related skills | [`codebase-inspection`](/docs/user-guide/skills/bundled/software-development/software-development-codebase-inspection), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) |
+| Related skills | [`codebase-inspection`](./software-development-codebase-inspection.md), [`requesting-code-review`](./software-development-requesting-code-review.md) |
 
 ## Reference: full SKILL.md
 

@@ -167,6 +167,10 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    # Every origin the password manager bound to this item (manager backends only;
+    # ``origin`` is the first/primary one). Fill matching stays exact-origin against
+    # this list — no wildcard or subdomain inference is ever derived from it.
+    allowed_origins: tuple = ()
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -181,6 +185,8 @@ class VaultItemMeta:
             out["identifier_type"] = self.identifier_type
         if self.has_otp:
             out["has_otp"] = True
+        if len(self.allowed_origins) > 1:
+            out["allowed_origins"] = list(self.allowed_origins)
         return out
 
 
@@ -275,7 +281,14 @@ class VaultStore:
             raise VaultError(
                 "vault file could not be decrypted (key mismatch or corruption)"
             ) from exc
-        data = json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise VaultError(
+                "vault file is corrupted (invalid JSON)"
+            ) from exc
+        if not isinstance(data, dict):
+            raise VaultError("vault file is corrupted (unexpected shape)")
         items = data.get("items", [])
         return items if isinstance(items, list) else []
 

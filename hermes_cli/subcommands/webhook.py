@@ -42,6 +42,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         help="Filter/transform script under ~/.hermes/scripts/. The route "
         "payload is passed as JSON on stdin; empty stdout, [SILENT], or a "
         "nonzero exit code ignores the webhook.")
+    wh_sub.add_argument(
+        "--cron-job", default="",
+        help="Fire an existing cron job (by ID or name) when this route receives an event, instead of "
+        "starting a fresh agent run. The rendered --prompt template is passed to the job as transient "
+        "per-run context; the job's own prompt, skills, and delivery settings apply. Mutually exclusive "
+        "with --deliver-only.")
 
     webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
 

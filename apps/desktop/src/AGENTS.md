@@ -15,13 +15,23 @@ The desktop has **no build/runtime dependency on the dashboard frontend**: it sp
 NOT embed `hermes --tui` — own composer, transcript, slash pipeline.
 
 **One backward-compat fallback:** `serve` is newer, so the spawn (`electron/backend-command.ts` +
-`backendSupportsServe()` in `electron/main.ts`) checks whether the resolved runtime registers `serve`
+`createBackendServeSupportResolver()` in `electron/backend-serve-support.ts`) checks whether the runtime registers `serve`
 and ONLY when it does not (older managed install / PATH `hermes` not yet updated) rewrites argv to
 legacy `dashboard --no-open`. Without it a new app against an un-upgraded runtime crashes on an
 unknown subcommand and bricks every mid-upgrade user. Keep it narrow and tested.
 
 Lifecycle: `serve` dies with the app by design; the messaging gateway survives it (spawned detached
 via `/api/gateway/*`). Never re-parent the gateway under the backend — `gateway/AGENTS.md`.
+
+The backend the app spawns is a **pooled `hermes serve --port 0` per (connection, profile)**: its
+launch home is that profile, `HERMES_DESKTOP=1` is set, and its in-process cron ticker stands down
+for homes a running gateway already serves. One process may still host sessions from several homes
+(`tui_gateway/AGENTS.md` § Profile scope); the first non-launch home flips `set_multiplex_active`.
+Remote connections (SSH, URL+token, Cloud) reach a backend with no desktop env var that may serve
+several profiles from one process. Every lifecycle/status/settings REST call against a pooled
+backend carries `?profile=` (or the `profile` param) and every new-session tile records an owner
+route; a backend-side scope fix is probed twice — with the profile as the launch home of a pooled
+backend (env-bound) and as a secondary served by one process (override-bound).
 
 ## Slash commands: curated client-side, dispatched to the backend
 

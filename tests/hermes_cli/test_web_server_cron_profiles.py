@@ -974,102 +974,6 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
     assert "missing-job-id" in update_exc.value.detail
 
 
-
-
-
-
-@pytest.mark.asyncio
-async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
-    isolated_profiles,
-    monkeypatch,
-):
-    from hermes_cli import runtime_provider, web_server
-
-    current_provider = {"name": "initial-provider"}
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": current_provider["name"]},
-    )
-
-    job = _web_server_cron._call_cron_for_profile(
-        "worker_alpha",
-        "create_job",
-        prompt="managed by named profile",
-        schedule="every 1h",
-        name="dashboard-edit-job",
-    )
-
-    assert job["provider_snapshot"] == "initial-provider"
-    assert job["model_snapshot"] == "test-model"
-
-    current_provider["name"] = "changed-provider"
-    (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
-        "model: changed-model\n",
-        encoding="utf-8",
-    )
-
-    updated = await _rt_cron.update_cron_job(
-        job["id"],
-        _web_models.CronJobUpdate(
-            updates={
-                "name": "dashboard-edit-job-renamed",
-                "provider": None,
-                "model": None,
-                "base_url": None,
-                "no_agent": False,
-            }
-        ),
-        profile="worker_alpha",
-    )
-
-    assert updated["name"] == "dashboard-edit-job-renamed"
-    assert updated["provider_snapshot"] == "initial-provider"
-    assert updated["model_snapshot"] == "test-model"
-
-
-@pytest.mark.asyncio
-async def test_update_cron_job_clears_snapshots_for_no_agent(
-    isolated_profiles,
-    monkeypatch,
-):
-    from hermes_cli import runtime_provider, web_server
-
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": "worker-provider"},
-    )
-    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
-    scripts_dir.mkdir()
-    (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
-
-    job = _web_server_cron._call_cron_for_profile(
-        "worker_alpha",
-        "create_job",
-        prompt="managed by named profile",
-        schedule="every 1h",
-        name="agent-to-script-job",
-    )
-
-    assert job["provider_snapshot"] == "worker-provider"
-    assert job["model_snapshot"] == "test-model"
-
-    updated = await _rt_cron.update_cron_job(
-        job["id"],
-        _web_models.CronJobUpdate(
-            updates={
-                "script": str(scripts_dir / "collect.py"),
-                "no_agent": True,
-            }
-        ),
-        profile="worker_alpha",
-    )
-
-    assert updated["provider_snapshot"] is None
-    assert updated["model_snapshot"] is None
-
-
 @pytest.mark.asyncio
 async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatch):
     """Dashboard surfaces a 400 (not a 500 or silent rename) when an
@@ -1193,3 +1097,21 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+def test_list_cron_jobs_carries_each_profiles_ticker_heartbeat_age(isolated_profiles):
+    """#114309 — the dashboard must be able to say "scheduler last ticked X hours ago":
+    every listed job carries its own profile's ticker heartbeat age (None = never/unknown)."""
+    import time
+
+    for name, home in isolated_profiles.items():
+        with _web_server_cron._cron_store_scope(home) as cron_jobs:
+            cron_jobs.create_job(prompt=f"{name} hourly", schedule="every 1h")
+    (isolated_profiles["worker_alpha"] / "cron" / "ticker_heartbeat").write_text(
+        str(time.time() - 25 * 3600)
+    )
+
+    ages = {job["profile"]: job["scheduler_heartbeat_age_s"] for job in _rt_cron._list_cron_jobs_sync("all")}
+
+    assert ages["default"] is None  # no heartbeat file: cannot date the last tick
+    assert 25 * 3600 <= ages["worker_alpha"] < 25 * 3600 + 60

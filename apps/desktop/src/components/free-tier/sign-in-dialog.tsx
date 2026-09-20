@@ -18,7 +18,7 @@ import {
 import { getGlobalModelOptions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, Loader2 } from '@/lib/icons'
-import { FREE_TIER_MODEL, NOUS_PROVIDER_ID, refreshFreeTierStatus } from '@/store/free-tier'
+import { FREE_TIER_MODEL, friendlyWait, NOUS_PROVIDER_ID, refreshFreeTierStatus } from '@/store/free-tier'
 import {
   $freeTierSignIn,
   beginFreeTierSignIn,
@@ -188,14 +188,21 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
         )}
 
         {state.status === 'failed' && (
-          <Screen body={failureBody(state.kind, state.message, copy)} heading={failureHeading(state.kind, copy)}>
+          <Screen
+            body={failureBody(state.kind, state.message, state.retryAfter, copy)}
+            heading={failureHeading(state.kind, copy)}
+          >
             <Actions>
               <Button onClick={() => closeFreeTierSignIn()} size="sm" type="button" variant="text">
-                {copy.notNow}
+                {state.kind === 'unavailable' ? copy.done : copy.notNow}
               </Button>
-              <Button onClick={retry} type="button">
-                {state.kind === 'superseded' ? copy.startAgain : copy.tryAgain}
-              </Button>
+              {/* A terminal refusal (this version, a locked session, a proof-of-work
+                  request) has nothing to retry: the backend's sentence names the way out. */}
+              {state.kind === 'unavailable' ? null : (
+                <Button onClick={retry} type="button">
+                  {state.kind === 'superseded' ? copy.startAgain : copy.tryAgain}
+                </Button>
+              )}
             </Actions>
           </Screen>
         )}
@@ -207,11 +214,25 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
 type FreeTierCopy = Translations['freeTier']
 
 function failureHeading(kind: FreeTierSignInFailure, copy: FreeTierCopy): string {
-  return kind === 'timed_out' ? copy.timedOutHeading : copy.didNotComplete
+  switch (kind) {
+    case 'busy':
+      return copy.busyHeading
+
+    case 'timed_out':
+      return copy.timedOutHeading
+
+    default:
+      return copy.didNotComplete
+  }
 }
 
-function failureBody(kind: FreeTierSignInFailure, message: null | string, copy: FreeTierCopy): string {
+function failureBody(kind: FreeTierSignInFailure, message: null | string, retryAfter: number, copy: FreeTierCopy): string {
   switch (kind) {
+    case 'busy':
+      // The backend's sentence already names the wait it was given; ours fills
+      // in when an older backend sent none.
+      return message ?? copy.busyBody(friendlyWait(retryAfter || 60))
+
     case 'rejected':
       return copy.rejectedBody
 
@@ -224,9 +245,12 @@ function failureBody(kind: FreeTierSignInFailure, message: null | string, copy: 
     case 'timed_out':
       return copy.timedOutBody
 
+    case 'unreachable':
+      return message ?? copy.unreachableBody
+
     default:
       // The backend's own wording when it sent one — it names the specific
-      // refusal (a busy account, a transport failure) better than we can.
+      // refusal (this version, a locked session) better than we can.
       return message ?? copy.errorBody
   }
 }

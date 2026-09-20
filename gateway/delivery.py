@@ -252,9 +252,19 @@ class DeliveryRouter:
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 
     async def _deliver_to_platform(self, target: DeliveryTarget, content: str,
-                                   metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
-        transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
+                                   metadata: Optional[Dict[str, Any]],
+                                   transport: Optional[DeliveryTransport] = None,
+                                   ) -> Dict[str, Any]:
+        """Deliver content to a messaging platform.
+
+        ``transport`` carries an already-authorized transport past resolution:
+        the cron live lane resolved and authorized it per target (including the
+        SharedRouteAdapters satellite grant), and re-resolving from the plain
+        adapters dict cannot re-derive that grant under satellite config
+        (#115656). Omitted (None) preserves resolution for every other caller.
+        """
+        if transport is None:
+            transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
         if transport is None:
             raise ValueError(f"No adapter configured for {target.platform.value}")
         if not target.chat_id:

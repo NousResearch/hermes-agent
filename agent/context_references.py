@@ -9,12 +9,13 @@ import mimetypes
 import os
 import re
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from agent.model_metadata import estimate_tokens_rough
+from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sizefmt import format_bytes
 
@@ -95,6 +96,14 @@ _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".profile", ".bash_profile", ".zprofile", ".netrc", ".pgpass", ".npmrc", ".pypirc",
 ))
 _TEXT_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
+# Bound the work one message can force: each expanded ref reads at most a bounded prefix /
+# window, and at most this many refs are expanded per message.
+_MAX_EXPANDED_REFERENCES = 16
+# Folder-listing line counts stop paying I/O past this size; bigger files report bytes only.
+_LINE_COUNT_MAX_BYTES = 4 * 1024 * 1024
+# Per-command stdout/stderr ceiling for the ``git``/``rg`` helpers; past it the child is
+# killed and the nonzero returncode routes the caller to its fallback path.
+_MAX_QUIET_OUTPUT_BYTES = 4 * 1024 * 1024
 _FENCE_LANGUAGES = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
     ".json": "json", ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
@@ -178,8 +187,11 @@ def preprocess_context_references(
     except RuntimeError:
         return asyncio.run(coro)
     import concurrent.futures
+    import contextvars
+    # The side thread starts with an empty Context: without the caller's copy the served profile's
+    # HERMES_HOME override is lost and the credential-path guard checks the launch profile's .env.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
 async def preprocess_context_references_async(
@@ -200,10 +212,14 @@ async def preprocess_context_references_async(
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
                           max_inline_tokens=hard_limit)
-        for ref in refs
+        for ref in refs[:_MAX_EXPANDED_REFERENCES]
     )
     expanded = await asyncio.gather(*tasks)
     warnings = [warning for warning, _ in expanded if warning]
+    warnings.extend(
+        f"{ref.raw}: not expanded (maximum {_MAX_EXPANDED_REFERENCES} @-references per message)"
+        for ref in refs[_MAX_EXPANDED_REFERENCES:]
+    )
     blocks = [block for _, block in expanded if block]
     injected_tokens = sum(estimate_tokens_rough(block) for block in blocks)
     result = ContextReferenceResult(
@@ -283,9 +299,54 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
-    text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
-        text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
+        # A ranged ref wants a slice, not the file: stream to the window so a GB-scale
+        # file serves :1-5 without being materialized. Lines are read in bounded pieces
+        # (budget + 1) so even a single-line giant (minified JSON, one-line logs) cannot
+        # force an unbounded string into memory; skipped lines are discarded, not kept.
+        char_budget = None if max_inline_tokens is None else max_inline_tokens * CHARS_PER_TOKEN
+        line_cap = None if char_budget is None else char_budget + 1
+
+        def _next_line(fh, collect: bool, remaining: int | None = None) -> str | None:
+            """One line ("" when skipping), None at EOF. While collecting, stop as soon as the
+            pieces exceed ``remaining``: the caller returns the oversized block and never needs
+            the rest of a giant line, so it is never materialized."""
+            pieces, seen, collected = [], False, 0
+            while True:
+                piece = fh.readline() if line_cap is None else fh.readline(line_cap)
+                if not piece:
+                    break
+                seen = True
+                if collect:
+                    pieces.append(piece)
+                    collected += len(piece)
+                    if remaining is not None and collected > remaining:
+                        break
+                if piece.endswith("\n"):
+                    break
+            return ("".join(pieces) if collect else "") if seen else None
+
+        parts, total_chars = [], 0
+        with path.open(encoding="utf-8") as fh:
+            for _ in range(max(ref.line_start - 1, 0)):
+                if _next_line(fh, collect=False) is None:
+                    break
+            for _ in range((ref.line_end or ref.line_start) - ref.line_start + 1):
+                line = _next_line(fh, collect=True, remaining=None if char_budget is None else char_budget - total_chars)
+                if line is None:
+                    break
+                total_chars += len(line)
+                if char_budget is not None and total_chars > char_budget:
+                    return None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)
+                parts.append(line)
+        text = "".join(parts)
+    else:
+        # estimate_tokens_rough >= bytes/CHARS_PER_TOKEN for every encoding mix, so a
+        # file past that byte ceiling is certainly oversized; refuse without reading it.
+        size = path.stat().st_size
+        if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
+            return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
+        text = path.read_text(encoding="utf-8")
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be
@@ -300,10 +361,48 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
 
 
 def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
-    """subprocess.run with captured text output, no stdin, and no console flash on Windows."""
+    """Captured text output with bounded pipes, no stdin, and no console flash on Windows.
+
+    ``capture_output=True`` buffers the child's entire stdout — an unbounded ``git diff``
+    or ``rg --files`` would materialize a hostile-size stream in memory. Each pipe is
+    drained up to ``_MAX_QUIET_OUTPUT_BYTES``; past it the child is killed and its
+    nonzero returncode routes callers to their existing fallback paths.
+    """
     popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace',
-                          timeout=timeout, stdin=subprocess.DEVNULL, **popen_kwargs, **({} if env is None else {"env": env}))
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **popen_kwargs, **({} if env is None else {"env": env}))
+
+    def _drain(stream, sink: list[bytes]) -> None:
+        total = 0
+        while True:
+            chunk = stream.read1(1 << 16)
+            if not chunk:
+                return
+            total += len(chunk)
+            if total <= _MAX_QUIET_OUTPUT_BYTES:
+                sink.append(chunk)
+            else:
+                proc.kill()
+                return
+
+    sinks: list[list[bytes]] = [[], []]
+    threads = [
+        threading.Thread(target=_drain, args=(stream, sink), daemon=True)
+        for stream, sink in zip((proc.stdout, proc.stderr), sinks)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    for thread in threads:
+        thread.join()
+    stdout, stderr = (b"".join(sink).decode("utf-8", "replace") for sink in sinks)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
@@ -340,6 +439,9 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+    from agent.file_safety import is_nt_namespace_path
+    if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
+        raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
     if allowed_root is not None and not _is_under(resolved, allowed_root):
         raise ValueError("path is outside the allowed workspace")
@@ -394,9 +496,10 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
 
 def _is_binary_file(path: Path) -> bool:
     mime = mimetypes.guess_type(path.name)[0]
-    return bool(mime and not mime.startswith("text/") and not path.name.endswith(_TEXT_EXTENSIONS)) or (
-        b"\x00" in path.read_bytes()[:4096]
-    )
+    if mime and not mime.startswith("text/") and not path.name.endswith(_TEXT_EXTENSIONS):
+        return True
+    with path.open("rb") as fh:  # sniff only; read_bytes() materialized the whole file
+        return b"\x00" in fh.read(4096)
 
 
 def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
@@ -489,9 +592,19 @@ def _oversized_text_reference_block(ref: ContextReference, path: Path, text_toke
 
 
 def _file_metadata(path: Path) -> str:
-    if not _is_binary_file(path):
-        try:
-            return f"{path.read_text(encoding='utf-8').count(chr(10)) + 1} lines"
-        except Exception:
-            pass
-    return f"{path.stat().st_size} bytes"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "unknown size"
+    # A listing line is a summary, not content: past the cap, byte size conveys the
+    # same "how big is this" without a full scan per entry.
+    if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
+        return f"{size} bytes"
+    try:
+        with path.open("rb") as fh:
+            # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
+            # matches a decoded newline count while streaming instead of read_text.
+            lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
+        return f"{lines + 1} lines"
+    except Exception:
+        return f"{size} bytes"

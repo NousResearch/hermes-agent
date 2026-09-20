@@ -83,6 +83,31 @@ class TestAdapterInit:
         assert adapter._reply_prefix == "Bot\\n"
 
 
+class TestBridgeEnvironment:
+    @pytest.mark.parametrize(
+        ("configured", "explicit_env", "expected"),
+        [
+            ("Custom Bot\\n", None, "Custom Bot\\n"),
+            ("", None, ""),
+            ("Config Bot\\n", "Env Bot\\n", "Env Bot\\n"),
+        ],
+    )
+    def test_reply_prefix_reaches_bridge_with_existing_precedence(
+        self, monkeypatch, configured, explicit_env, expected
+    ):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        if explicit_env is not None:
+            monkeypatch.setenv("WHATSAPP_REPLY_PREFIX", explicit_env)
+
+        adapter = WhatsAppAdapter(
+            PlatformConfig(enabled=True, extra={"reply_prefix": configured})
+        )
+
+        assert adapter._bridge_env()["WHATSAPP_REPLY_PREFIX"] == expected
+
+
 class TestReadReceiptPolicyOrdering:
     @pytest.mark.asyncio
     async def test_accepted_receipt_key_is_sent_to_bridge(self):

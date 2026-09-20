@@ -1036,19 +1036,24 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db):
+    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        traced_connections = []
+        read_ctx = db._read_ctx
+
+        @contextlib.contextmanager
+        def trace_read_context():
+            with read_ctx() as conn:
+                conn.set_trace_callback(statements.append)
+                traced_connections.append(conn)
+                yield conn
+
+        monkeypatch.setattr(db, "_read_ctx", trace_read_context)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -1073,7 +1078,7 @@ class TestFTS5Search:
             assert default[0]["context"]
             assert context_query_count() == 2
         finally:
-            for conn in traced_connections:
+            for conn in {id(conn): conn for conn in traced_connections}.values():
                 conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
@@ -1377,8 +1382,19 @@ class TestPruneSessions:
             older_than_days=90, source="cron", archived=False
         )} == {"ended"}
 
-
-
+    def test_negative_older_than_days_rejected_at_every_prune_boundary(self, db):
+        """A negative bound builds a FUTURE cutoff that matches every ended session (and every
+        never-active keyed row) — the SessionDB API must raise, naming the allowed range, instead
+        of mass-deleting; ``sessions.retention_days: -1`` reaches these paths from config (#116361)."""
+        db.create_session(session_id="ended", source="cli")
+        db.end_session("ended", "done")
+        db.create_session(session_id="keyed", source="telegram", session_key="telegram:dm:1")
+        for call in (db.prune_sessions, db.list_prune_candidates, db.count_prune_matches,
+                     db.list_never_active_keyed_sessions, db.prune_never_active_keyed_sessions):
+            with pytest.raises(ValueError, match=">= 0"):
+                call(older_than_days=-1)
+        assert db.get_session("ended") is not None
+        assert db.get_session("keyed") is not None
 
 
 class TestPruneSessionFilters:
@@ -2896,6 +2912,79 @@ class TestListSessionsRich:
         ).fetchall()
         assert child_id not in {row["id"] for row in ephemeral}
 
+    def test_reopen_keeps_branch_provenance_out_of_legacy_reset_backfill(self, db):
+        """A same-key branch is never rewritten as a reset successor on reopen."""
+        lane_key = "agent:main:telegram:dm:branch"
+        db.create_session("branch_parent", "telegram", session_key=lane_key)
+        db.create_session(
+            "branch_child",
+            "telegram",
+            session_key=lane_key,
+            parent_session_id="branch_parent",
+            model_config={"_branched_from": "branch_parent"},
+        )
+        db.end_session("branch_parent", "session_switch")
+
+        db.reopen_session("branch_parent")
+
+        child = db.get_session("branch_child")
+        assert child is not None
+        assert json.loads(child["model_config"]) == {"_branched_from": "branch_parent"}
+        assert "branch_child" in [row["id"] for row in db.list_sessions_rich(source="telegram")]
+
+    def test_reopen_does_not_backfill_child_that_precedes_reset_boundary(self, db):
+        """A pre-marker branch cannot become a reset child after a later reopen cycle."""
+        lane_key = "agent:main:telegram:dm:legacy-branch"
+        db.create_session("legacy_branch_parent", "telegram", session_key=lane_key)
+        db.create_session(
+            "legacy_branch_child",
+            "telegram",
+            session_key=lane_key,
+            parent_session_id="legacy_branch_parent",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (100.0, "legacy_branch_child")
+        )
+        db._conn.commit()
+        db.end_session("legacy_branch_parent", "branched")
+        db.reopen_session("legacy_branch_parent")
+        db.end_session("legacy_branch_parent", "session_switch")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ? WHERE id = ?", (200.0, "legacy_branch_parent")
+        )
+        db._conn.commit()
+
+        db.reopen_session("legacy_branch_parent")
+
+        child = db.get_session("legacy_branch_child")
+        assert child is not None
+        assert child["model_config"] is None
+
+    def test_reopen_backfills_legacy_reset_child_of_cycled_parent(self, db):
+        """A markerless reset child from an earlier boundary is still frozen after the parent was
+        reopened and re-ended later (its started_at precedes the parent's current ended_at)."""
+        lane_key = "agent:main:telegram:dm:cycled"
+        db.create_session("cycled_parent", "telegram", session_key=lane_key)
+        db.end_session("cycled_parent", "session_reset")
+        db.create_session(
+            "cycled_reset_child", "telegram", session_key=lane_key, parent_session_id="cycled_parent"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", ("cycled_parent",)
+        )
+        db._conn.commit()
+        db.end_session("cycled_parent", "session_switch")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ended_at + 100 WHERE id = ?", ("cycled_parent",)
+        )
+        db._conn.commit()
+
+        db.reopen_session("cycled_parent")
+
+        child = db.get_session("cycled_reset_child")
+        assert json.loads(child["model_config"]) == {"_reset_from": "cycled_parent"}
+        assert "cycled_reset_child" in [row["id"] for row in db.list_sessions_rich(source="telegram")]
+
     def test_reset_parent_does_not_surface_unrelated_child(self, db):
         db.create_session(
             "reset_parent",
@@ -3094,6 +3183,136 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("root1") == "tip1"
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
+
+    def test_reset_fork_sibling_does_not_steal_tip_projection(self, db):
+        """A reset fork child (``model_config._reset_from``, ended LATER than the
+        real continuation) must not win the chain-step tiebreak. It is a separate
+        user-visible conversation that already lists as its own row, so letting
+        the lineage tip land on it hides the true continuation and shows the
+        reset sibling twice (#114271)."""
+        import time as _time
+        t0 = _time.time() - 3600
+
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+        db.append_message("root1", "user", "help me refactor auth")
+        t_compress_root = t0 + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_root, "compression", "root1"),
+        )
+
+        db.create_session("mid1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t_compress_root + 1, "mid1"),
+        )
+        db.append_message("mid1", "user", "continuing")
+        t_compress_mid = t_compress_root + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_mid, "compression", "mid1"),
+        )
+
+        # Real tip: closed by the startup orphan reap, LAST ACTIVE EARLIER than
+        # the reset fork, so the old tiebreak (last_active DESC) preferred the fork.
+        db.create_session("tip1", "cli", parent_session_id="mid1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=?, last_activity_at=? WHERE id=?",
+            (t_compress_mid + 1, t_compress_mid + 600, "startup_orphan_reap",
+             t_compress_mid + 600, "tip1"),
+        )
+        db.append_message("tip1", "user", "latest message")
+
+        # Reset fork of mid1: its own conversation, ended session_reset later.
+        db.create_session(
+            "reset1", "cli", parent_session_id="mid1", model_config={"_reset_from": "mid1"},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=?, last_activity_at=? WHERE id=?",
+            (t_compress_mid + 2, t_compress_mid + 900, "session_reset",
+             t_compress_mid + 900, "reset1"),
+        )
+        db.append_message("reset1", "user", "post reset talk")
+        db._conn.commit()
+
+        # The chain/tip follow the real continuation, never the reset fork.
+        assert db.get_compression_tip("root1") == "tip1"
+        assert db.get_compression_tip("mid1") == "tip1"
+
+        # Projection: the lineage surfaces as tip1; reset1 stays exactly its own
+        # single row instead of appearing twice (own row + hijacked projection).
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+        assert ids.count("reset1") == 1
+        assert "tip1" in ids
+        assert "root1" not in ids and "mid1" not in ids
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["preview"].startswith("latest message")
+
+        # The order_by_last_active chain CTE must not fold the reset fork's
+        # later activity into the lineage either: a standalone session active
+        # between the tip and the fork still outranks the projected lineage row.
+        db.create_session("solo", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (t_compress_mid + 300, t_compress_mid + 700, "solo"),
+        )
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+        ordered = db.list_sessions_rich(source="cli", limit=20, order_by_last_active=True)
+        ordered_ids = [s["id"] for s in ordered]
+        assert ordered_ids.count("reset1") == 1
+        assert ordered_ids.index("solo") < ordered_ids.index("tip1")
+
+    def test_reset_fork_of_compressed_parent_is_not_a_lineage_member(self, db):
+        """The Python lineage walk (``get_compression_lineage`` / ``_is_compression_child_row``)
+        must agree with the SQL chain step: a reset fork hanging off a compression-ended parent is
+        its own conversation, so the true tip keeps its ancestors and the fork never enters the
+        lineage even when it started first."""
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "root1"))
+        db.create_session("reset1", "cli", parent_session_id="root1", model_config={"_reset_from": "root1"})
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 11, "reset1"))
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 20, "tip1"))
+        db._conn.commit()
+
+        assert db._is_compression_child_row(db.get_session("reset1")) is False
+        assert db.get_compression_lineage("root1") == ["root1", "tip1"]
+        assert db.get_compression_lineage("tip1") == ["root1", "tip1"]
+        assert db.get_compression_lineage("reset1") == ["reset1"]
+
+    def test_routing_lineage_cte_agrees_with_python_walk_for_reset_fork(self, db):
+        """``record_gateway_session_peer(include_compression_ancestors=True)`` re-keys every row named by
+        ``_COMPRESSION_LINEAGE_CTE``. Resuming a reset fork of a compression-ended parent must
+        re-key only the fork: the CTE has to stop at the reset child exactly like
+        ``get_compression_lineage`` does, or the real lineage's ancestors land on the fork's peer."""
+        import hermes_state_gateway as gateway_mod
+
+        t0 = time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "root"))
+        db.create_session("mid1", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 20, "mid1"))
+        db.create_session("mid2", "cli", parent_session_id="mid1")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 30, "mid2"))
+        db.create_session("tip", "cli", parent_session_id="mid2")
+        db.create_session("reset", "cli", parent_session_id="mid2", model_config={"_reset_from": "mid2"})
+        db._conn.commit()
+
+        sql = gateway_mod._COMPRESSION_LINEAGE_CTE + " SELECT id FROM compression_lineage"
+        with db._read_ctx() as conn:
+            cte = {start: sorted(r[0] for r in conn.execute(sql, (start,)).fetchall()) for start in ("reset", "tip")}
+        assert cte["reset"] == sorted(db.get_compression_lineage("reset")) == ["reset"]
+        assert cte["tip"] == sorted(db.get_compression_lineage("tip")) == ["mid1", "mid2", "root", "tip"]
+
+        db.record_gateway_session_peer("reset", source="cli", user_id="u", session_key="cli:reset-chat",
+                                       chat_id="reset-chat", chat_type="dm", include_compression_ancestors=True)
+        assert db.get_session("reset")["session_key"] == "cli:reset-chat"
+        assert all(db.get_session(s)["session_key"] != "cli:reset-chat" for s in ("root", "mid1", "mid2", "tip"))
 
     def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
         """The projected tip row must carry every chain id. Root and tip
@@ -3694,11 +3913,6 @@ class TestAutoMaintenance:
         assert second["skipped"] is True
         assert second["pruned"] == 0
         assert db.get_session("old2") is not None  # untouched
-
-
-
-
-
 
     def test_auto_prune_deletes_transcript_files(self, db, tmp_path):
         """Issue #3015: auto-prune must also delete on-disk transcript files."""
@@ -5396,12 +5610,12 @@ class TestGetMessagesPagination:
         assert db.get_resume_message_count("seg-5", tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as full:
             db.assert_resume_safe("seg-5", max_messages=10)
-        assert "across its lineage" in str(full.value)
+        assert full.value.scope == "across its lineage"
         assert db.assert_resume_safe("seg-5", max_messages=10, tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as tip:
             db.assert_resume_safe("seg-5", max_messages=3, tip_only=True)
         assert tip.value.message_count == 4
-        assert "in its tip segment" in str(tip.value)
+        assert tip.value.scope == "in its tip segment"
 
     def test_resume_guard_counts_exactly_what_a_branch_resume_loads(self, db):
         """An explicit /branch copy owns its transcript: the guard and the
@@ -5650,6 +5864,41 @@ class TestDisplayMetadataReadPaths:
             target.close()
 
 
+class TestUnknownBlobColumnSurvivesRead:
+    """A `messages` column added by a future migration must not take every reader down with it.
+
+    Every reader here does ``SELECT *``, so a BLOB column reaches the dict unfiltered. FastAPI's
+    response encoder calls ``.decode()`` on any raw ``bytes`` value and dies with
+    ``UnicodeDecodeError`` the moment the bytes are not valid utf-8 — this already happened for
+    the ``display_identity BLOB`` column (hermes_state_common.py) before it got an explicit pop;
+    the next binary column would repeat it with no reader-side defense. See #116510.
+    """
+
+    @staticmethod
+    def _seed_with_future_blob(db):
+        db.create_session("s1", source="desktop")
+        message_id = db.append_message("s1", "user", "hello")
+
+        def _migrate(conn):
+            conn.execute("ALTER TABLE messages ADD COLUMN future_blob BLOB")
+            conn.execute(
+                "UPDATE messages SET future_blob = ? WHERE id = ?", (b"\xff\xfe not utf-8", message_id))
+
+        db._execute_write(_migrate)
+        return message_id
+
+    def test_get_messages_drops_unknown_blob_and_stays_json_safe(self, db):
+        self._seed_with_future_blob(db)
+        messages = db.get_messages("s1")
+        assert messages[0]["content"] == "hello"
+        assert "future_blob" not in messages[0]
+        json.dumps(messages)  # raises TypeError on a raw bytes value, same class of failure as FastAPI's encoder
+
+    def test_get_messages_around_drops_unknown_blob_and_stays_json_safe(self, db):
+        message_id = self._seed_with_future_blob(db)
+        window = db.get_messages_around("s1", message_id)["window"]
+        assert "future_blob" not in window[0]
+        json.dumps(window)
 
 
 class TestGatewayRoutingPkHeal:

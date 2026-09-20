@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
@@ -165,6 +166,19 @@ describe('useDesktopIntegrations', () => {
 
       // sessionRoute('remembered-session') = '/remembered-session'
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+
+    it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      // Typed on the fresh chat while the backend was still coming up.
+      stashSessionDraft(null, 'typed while booting', [])
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      // The composer's scope swap may only carry the draft when the restore announced this key.
+      expect(adoptNewSessionDraft('remembered-session')).toBe(true)
+      expect(takeSessionDraft('remembered-session').text).toBe('typed while booting')
     })
 
     it('waits for sessions before validating a remembered session route', () => {
@@ -418,15 +432,15 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /skills', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+    it('restores a non-session route like /capabilities', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
       // /skills is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/skills', { replace: true })
+      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {

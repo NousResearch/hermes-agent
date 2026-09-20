@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
+from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,12 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 
 
 def profile_serve_signature(home: "Path") -> tuple:
-    """Cheap change detector for a served profile's credentials/config: (mtime_ns, size) per file."""
+    """Cheap change detector for a served profile's credentials/config: file signature per file."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
         try:
             st = os.stat(Path(home) / name)
-            sig.append((st.st_mtime_ns, st.st_size))
+            sig.append(file_signature(st))
         except OSError:
             sig.append(None)
     return tuple(sig)
@@ -217,47 +218,132 @@ class GatewayProfileReconcileMixin:
 
 
 def _mcp_config_reconciler(runner=None):
-    """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry
-    the user removed (or disabled) after boot must stop — a parked one otherwise self-probes every
-    ``_PARKED_RETRY_INTERVAL`` for the life of the process. One ``stat`` per profile per tick; the
-    reconcile runs when ``config.yaml``'s (mtime, size) changed, and again on the next tick while a
-    dropped server was still mid-connect (``pending``) and could not be torn down yet. Interactive
-    OAuth is suppressed — this runs on a housekeeping thread nobody is watching."""
-    from hermes_cli.config import get_config_path
-    seen: dict = {}
-    retry: set = set()
-
-    def _sig(path) -> tuple:
-        try:
-            st = os.stat(path)
-            return (st.st_mtime_ns, st.st_size)
-        except OSError:
-            return (None, None)
+    """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk, every tick
+    after the first (startup discovery owns that one). Reconciling on DRIFT rather than only on a
+    config EDIT is what brings back a server whose FIRST connect failed (#112445): it never reached
+    ``_servers``, so the parked self-probe — a property of a task that connected once — cannot revive
+    it, and its config never changes. The reconcile is a cached config read plus set compares when
+    nothing moved; a server dropped from config is torn down (a parked one otherwise self-probes
+    every ``_PARKED_RETRY_INTERVAL`` for the life of the process) and a missing one is reconnected
+    only once its per-server connect cooldown (30s→600s backoff) has lapsed, so a chronically failing
+    server is retried on that schedule, not every tick. Interactive OAuth is suppressed — this runs
+    on a housekeeping thread nobody is watching."""
+    primed: set = set()
 
     def _reconcile_current(label: str) -> None:
         from tools.mcp_oauth import suppress_interactive_oauth
         from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
-        sig = _sig(get_config_path())
-        prev = seen.get(label)
-        seen[label] = sig
-        if label not in retry and (prev is None or prev == sig):
-            return  # first tick just records the baseline; startup discovery already ran
+        if label not in primed:
+            primed.add(label)
+            return  # first tick: startup discovery already reflects this config (or is still running)
         with suppress_interactive_oauth():
             result = reconcile_mcp_servers_with_config()
-        retry.discard(label)
-        if result["pending"]:
-            retry.add(label)
         if result["removed"] or result["added"]:
-            logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
+            logger.info("MCP servers reconciled with config (%s): removed=%s added=%s",
+                        label, result["removed"], result["added"])
 
-    def _tick() -> None:
-        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        config = getattr(runner, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            _reconcile_current("default")
-            return
-        for profile_name, profile_home in _multiplex_profile_homes(config):
-            with _profile_runtime_scope(Path(profile_home)):
-                _reconcile_current(str(profile_name))
+    return lambda: _for_each_served_profile(runner, _reconcile_current)
 
-    return _tick
+
+def _for_each_served_profile(runner, body) -> None:
+    """Run ``body(profile_label)`` once per served profile, inside that profile's runtime scope.
+
+    Housekeeping runs on a bare thread with no turn on the stack, so nothing binds a profile for it:
+    ``get_hermes_home()`` and ``get_secret()`` see the LAUNCH profile's values, and under
+    ``gateway.multiplex_profiles`` a fail-closed credential read logs ``no profile secret scope on a
+    multiplexed call`` on every tick (the skills-sync pulls resolved Nous credentials this way, four
+    WARNINGs per hourly tick per chore). A single-profile gateway runs ``body`` once, unscoped:
+    there the process env IS the profile's own value — unless a hosted room already flipped the
+    process-wide guard (#112878), in which case the launch profile's OWN scope is bound, as
+    ``run_turn.py::_standalone_launch_scope`` does for turns."""
+    from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        from gateway.run_turn import GatewayTurnMixin
+        with GatewayTurnMixin._standalone_launch_scope():
+            body("default")
+        return
+    for profile_name, profile_home in _multiplex_profile_homes(config):
+        with _profile_runtime_scope(Path(profile_home)):
+            body(str(profile_name))
+
+
+def profile_scoped_chore(runner, chore):
+    """Wrap a zero-arg housekeeping chore that reads the profile's home, config or credentials so it
+    runs once per served profile under that profile's scope (see ``_for_each_served_profile``)."""
+    return lambda: _for_each_served_profile(runner, lambda _label: chore())
+
+
+def migrate_profile_identity_verb(runner):
+    """Build the ``migrate-profile-identity`` control-verb handler for ``hermes profile rename``
+    (#111926). The live multiplexer owns the routing index in memory and writes it back
+    periodically, so a CLI-side rewrite of ``agent:<old>:*`` would be clobbered on the next save;
+    the CLI therefore asks this process to rekey both durable stores AND ``SessionStore._entries``.
+    Runs on the control-socket executor thread; ``rekey_profile_routing`` takes the store lock."""
+
+    def _handler(params: dict) -> dict:
+        old, new = str(params.get("old") or "").strip(), str(params.get("new") or "").strip()
+        if not old or not new or old == new:
+            return {"ok": False, "error": "old/new required and must differ"}
+        store = getattr(runner, "session_store", None)
+        if store is None:
+            return {"ok": False, "error": "live gateway has no session store"}
+        acquired = []
+        try:
+            from hermes_state_registry import acquire, release_or_close
+            db_counts: Dict[str, Dict[str, int]] = {}
+            routing_db = getattr(store, "_routing_db", None)
+            if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
+                db_counts["routing"] = routing_db.rekey_profile_state(old, new)
+            routing_home = getattr(store, "_routing_home", None)
+            profile_path = Path(routing_home) / "profiles" / new / "state.db" if routing_home else None
+            if profile_path is not None and profile_path.exists():
+                profile_db = acquire(profile_path)
+                acquired.append(profile_db)
+                db_counts["profile"] = profile_db.rekey_profile_state(old, new)
+            rekeyed = store.rekey_profile_routing(old, new)
+            return {"ok": True, "rekeyed": rekeyed, "db": db_counts}
+        except Exception as exc:
+            logger.warning("Profile identity migration failed for %r->%r: %s", old, new, exc)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            for db in acquired:
+                try:
+                    release_or_close(db)
+                except Exception:
+                    logger.debug("Failed to release renamed profile state DB", exc_info=True)
+
+    return _handler
+
+
+def purge_profile_identity_verb(runner):
+    """Build the ``purge-profile-identity`` control-verb handler for ``hermes profile delete``
+    (#111926, delete side). The live multiplexer owns the routing index in memory and writes it back
+    periodically, so a CLI-side DELETE of ``agent:<name>:*`` rows would be undone by its next save;
+    the CLI therefore asks this process to drop the durable rows AND ``SessionStore._entries``.
+
+    Deliberately NOT part of ``_unserve_profile()``: that path also unserves names that are still
+    alive elsewhere in the identity story — a rename's old name leaves the served set exactly like a
+    delete does (its directory is gone either way) — and purging there would race the rekey it is
+    supposed to leave intact. Only the delete path invokes this verb. Runs on the control-socket
+    executor thread; ``purge_profile_routing`` takes the store lock."""
+
+    def _handler(params: dict) -> dict:
+        name = str(params.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name required"}
+        store = getattr(runner, "session_store", None)
+        if store is None:
+            return {"ok": False, "error": "live gateway has no session store"}
+        try:
+            db_counts: Dict[str, Dict[str, int]] = {}
+            routing_db = getattr(store, "_routing_db", None)
+            if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
+                db_counts["routing"] = routing_db.purge_profile_state(name)
+            dropped = store.purge_profile_routing(name)
+            return {"ok": True, "dropped": dropped, "db": db_counts}
+        except Exception as exc:
+            logger.warning("Profile identity purge failed for %r: %s", name, exc)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    return _handler

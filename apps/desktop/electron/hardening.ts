@@ -395,6 +395,29 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
   return resolvedPath
 }
 
+/**
+ * Candidate absolute paths to retry when a preview/download target could not
+ * be resolved against the agent's working directory. Attachment references
+ * stored in chat history are frequently HOME-relative (e.g.
+ * "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
+ * ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to cwd
+ * (#115609). Pure and DI-testable: takes `home`/`hermesHome` as arguments
+ * instead of reaching for `app.getPath('home')` / a module-level constant.
+ * Returns an empty array for absolute paths, `file:` URLs, and empty input —
+ * those already had their one real resolution attempt upstream.
+ */
+function homeRelativeAttachmentCandidates(raw, home, hermesHome) {
+  const trimmed = String(raw || '').trim()
+
+  if (!trimmed || /^file:/i.test(trimmed) || path.isAbsolute(trimmed)) {
+    return []
+  }
+
+  const normalized = trimmed.replace(/\\/g, '/')
+
+  return [path.join(home, normalized), path.join(hermesHome, 'attachments', path.basename(normalized))]
+}
+
 async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } }, resolvedPath, purpose, typeLabel) {
   try {
     return await fsImpl.promises.stat(resolvedPath)
@@ -538,6 +561,7 @@ export {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,

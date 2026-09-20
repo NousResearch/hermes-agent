@@ -10,6 +10,7 @@ it), and ``ContentModified`` (-32801) errors are retried with exponential backof
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -33,10 +34,15 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
-SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
+SHUTDOWN_GRACE = 1.0  # seconds after `exit` before SIGTERM, and between SIGTERM and SIGKILL
 # Retry policy for transient ContentModified errors: 0.5, 1.0, 2.0s.
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5
+# Cap on tracked documents: each _DocState pins the file's full text here AND the server mirrors
+# every open document, so an uncapped dict pins everything a long session ever touched on both
+# sides of the pipe until the idle reaper kills the whole client (#62950).  64 covers an active
+# edit loop's working set; evicted files are didClose'd and re-didOpen'ed on their next touch.
+MAX_TRACKED_FILES = 64
 
 _WRITE_ERRORS = (BrokenPipeError, ConnectionResetError, OSError)
 _LIVE_STATES = {"starting", "running"}
@@ -93,7 +99,8 @@ def _end_position(text: str) -> Dict[str, int]:
     # splitlines drops a trailing newline: the end is then the start of the next (empty) line.
     if text.endswith(("\n", "\r")):
         return {"line": len(lines), "character": 0}
-    return {"line": len(lines) - 1, "character": len(lines[-1])}
+    # Positions use UTF-16 code units, matching our advertised positionEncodings.
+    return {"line": len(lines) - 1, "character": len(lines[-1].encode("utf-16-le")) // 2}
 
 
 @dataclass
@@ -283,6 +290,16 @@ class LSPClient:
             "workspace/didChangeWorkspaceFolders", {"event": {"added": [_folder(root)], "removed": []}},
         )
 
+    async def remove_workspace_folder(self, root: str) -> None:
+        """Detach ``root`` from a running multi-root server (a removed worktree) so the process keeps
+        serving its sibling roots instead of being torn down with them.  Idempotent."""
+        if root not in self.workspace_folders:
+            return
+        self.workspace_folders.remove(root)
+        await self._send_notification(
+            "workspace/didChangeWorkspaceFolders", {"event": {"added": [], "removed": [_folder(root)]}},
+        )
+
     async def _initialize(self) -> None:
         params = {
             "rootUri": file_uri(self.workspace_root), "rootPath": self.workspace_root, "processId": os.getpid(),
@@ -299,7 +316,8 @@ class LSPClient:
             await self._send_notification("workspace/didChangeConfiguration", {"settings": self._init_options})
 
     async def shutdown(self) -> None:
-        """Best-effort graceful shutdown: ``shutdown`` + ``exit``, then SIGTERM/SIGKILL.  Idempotent."""
+        """Best-effort graceful shutdown: ``shutdown`` + ``exit``, wait ``SHUTDOWN_GRACE`` for the
+        server to honour ``exit``, then SIGTERM/SIGKILL.  Idempotent."""
         if self._stopping:
             return
         self._stopping = True
@@ -313,6 +331,11 @@ class LSPClient:
                     await self._send_notification("exit", None)
                 except Exception:  # noqa: BLE001
                     pass
+                # Signalling right after ``exit`` races the server's own exit: needless SIGTERM
+                # noise for well-behaved servers and, on Darwin, a reaped-and-reused PID target.
+                if (proc := self._proc) is not None and proc.returncode is None:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
         finally:
             self._state = "stopped"
             await self._cleanup_process()
@@ -491,12 +514,16 @@ class LSPClient:
         )
         if doc is None:
             # Fresh state: anything a pre-open push stashed under this path (relatedDocuments spillover) is discarded.
+            self._docs.pop(abs_path, None)
             self._docs[abs_path] = _DocState(version=0, text=text)
             await self._send_notification(
                 "textDocument/didOpen",
                 {"textDocument": {"uri": uri, "languageId": language_id, "version": 0, "text": text}},
             )
+            await self._evict_lru_docs()
             return 0
+        # pop + reinsert refreshes LRU recency (dicts are insertion-ordered).
+        self._docs[abs_path] = self._docs.pop(abs_path)
         change: Dict[str, Any] = {"text": text}
         if self._sync_kind == 2:
             change["range"] = {"start": {"line": 0, "character": 0}, "end": _end_position(doc.text)}
@@ -512,6 +539,15 @@ class LSPClient:
             {"textDocument": {"uri": uri, "version": new_version}, "contentChanges": [change]},
         )
         return new_version
+
+    async def _evict_lru_docs(self) -> None:
+        """Drop least-recently-touched documents beyond MAX_TRACKED_FILES; didClose the ones the server
+        has open so it releases its mirror too (version -1 entries were never opened)."""
+        while len(self._docs) > MAX_TRACKED_FILES:
+            old_path, old = next(iter(self._docs.items()))
+            del self._docs[old_path]
+            if old.version >= 0:
+                await self._send_notification("textDocument/didClose", {"textDocument": {"uri": file_uri(old_path)}})
 
     async def save_file(self, path: str) -> None:
         """Send didSave for ``path``.  Some linters re-scan only on save."""

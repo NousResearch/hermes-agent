@@ -34,10 +34,11 @@ def _scan(tmp_path: Path, content: str):
     return scan_skill(skill_dir, source="community/test")
 
 
-# The scanner version moved to v2 precisely so cached v1 dangerous verdicts
-# for previously-blocked skills are invalidated and re-scanned.
+# The scanner version moved past v1 precisely so cached v1 dangerous verdicts
+# for previously-blocked skills are invalidated and re-scanned. Later bumps
+# are expected whenever rules change; only regressing to v1 is a bug.
 def test_scanner_version_bumped():
-    assert SCANNER_VERSION == "skills-guard-v2"
+    assert SCANNER_VERSION != "skills-guard-v1"
 
 
 class TestFalsePositivesUnblocked:

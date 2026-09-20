@@ -49,7 +49,8 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
 
 def _compute_host_turn_frame(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    display_metadata: dict | None = None) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -58,6 +59,7 @@ def _compute_host_turn_frame(
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
+        **({"display_metadata": display_metadata} if display_metadata else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
@@ -67,7 +69,24 @@ def _compute_host_turn_frame(
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "auth_user_id": _session_auth_user_id(session),
-        "queued_prompt_generation": queued_prompt_generation}
+        "queued_prompt_generation": queued_prompt_generation,
+        # #101416: vouch that this process already holds the registry lease for this session, so
+        # the child adopts it as an inert token instead of re-claiming and being fenced out by
+        # our own entry ("Session ... already has a live owner"). No lease held = no vouch, and
+        # the child keeps its legacy self-claim path (fail-closed refusal on conflict).
+        "active_session_lease": _active_session_lease_vouch(session)}
+
+
+def _active_session_lease_vouch(session: dict) -> dict | None:
+    """``{lease_id, session_id}`` of the REAL registry lease this process holds for the session's
+    current stored id, else None. Qualified, not a bare bool: after a compression rotation a lease
+    still keyed on the old id must not let a (replacement) child borrow the continuation."""
+    lease = session.get("active_session_lease")
+    if lease is None or getattr(lease, "released", False) or not getattr(lease, "enabled", False):
+        return None
+    if str(lease.session_id) != str(session.get("session_key") or ""):
+        return None
+    return {"lease_id": str(lease.lease_id), "session_id": str(lease.session_id)}
 
 
 def _metadata_mirror(session: dict | None) -> dict:
@@ -80,9 +99,17 @@ def _compute_host_session_info(session: dict) -> dict:
 
 
 def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
-    """Adopt a host frame's session_key / history_version. Caller holds history_lock."""
-    if frame.get("session_key"):
-        session["session_key"] = str(frame.get("session_key"))
+    """Adopt a host frame's session_key / history_version. Caller holds history_lock.
+
+    A rotated ``session_key`` means the child compressed A->B. The child only holds an inert
+    borrowed token (``_install_borrowed_lease``), so the REAL registry lease is re-anchored here,
+    by its owner — never claimed from the child pid (authority stays singular, #103737 review)."""
+    new_key = str(frame.get("session_key") or "")
+    if new_key and new_key != str(session.get("session_key") or ""):
+        if not _transfer_active_session_slot(str(frame.get("sid") or ""), session, new_session_id=new_key):
+            logger.warning("Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+                           frame.get("sid"), session.get("session_key"), new_key)
+        session["session_key"] = new_key
     if frame.get("history_version") is not None:
         with contextlib.suppress(Exception):
             session["history_version"] = max(int(session.get("history_version", 0)),
@@ -90,7 +117,8 @@ def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
 
 
 def _relay_compute_host_rpc(message: dict) -> bool:
-    """Relay host events while retaining the clarify snapshot needed on resume."""
+    """Relay host frames to the client while mirroring the server→client request the host has open, so a
+    reconnecting client gets it back through ``open_requests``."""
     params = message.get("params") if isinstance(message, dict) else None
     if isinstance(message, dict) and message.get("method") == "compute_host.activity":
         if isinstance(params, dict):
@@ -101,17 +129,20 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
-    kind = params.get("type") if isinstance(params, dict) else None
-    if kind in {"clarify.request", "clarify.expire"}:
+    if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
+        # A server request minted by the child: remember it against its session until it is answered/withdrawn.
+        session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
+        if session is not None:
+            with _history_lock(session):
+                session["_compute_host_open_request"] = {
+                    "id": message["id"], "method": message["method"], "params": dict(params)}
+    elif isinstance(params, dict) and params.get("type") == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")
-        request_id = payload.get("request_id") if isinstance(payload, dict) else None
-        if session is not None and request_id:
+        if session is not None and isinstance(payload, dict):
             with _history_lock(session):
-                if kind == "clarify.request":
-                    session["_compute_host_pending_clarify"] = dict(payload)
-                elif _pending_clarify_matches(session, request_id):
-                    session.pop("_compute_host_pending_clarify", None)
+                if _open_request_matches(session, payload.get("id")):
+                    session.pop("_compute_host_open_request", None)
     return write_json(message)
 
 
@@ -119,62 +150,65 @@ def _history_lock(session: dict):
     return session.get("history_lock", threading.Lock())
 
 
-def _pending_clarify_matches(session: dict, request_id) -> bool:
-    """Whether ``session``'s mirrored pending clarify is ``request_id``. Caller holds
-    history_lock."""
-    pending = session.get("_compute_host_pending_clarify")
-    return isinstance(pending, dict) and pending.get("request_id") == request_id
+def _open_request_matches(session: dict, request_id) -> bool:
+    """Whether ``session``'s mirrored open request is ``request_id``. Caller holds history_lock."""
+    mirrored = session.get("_compute_host_open_request")
+    return isinstance(mirrored, dict) and mirrored.get("id") == request_id
 
 
-def _compute_host_clarify_session(request_id: str) -> tuple[str, dict] | None:
-    """Find the parent mirror for one host-owned clarify request."""
+def _compute_host_request_session(request_id: str) -> tuple[str, dict] | None:
+    """Find the parent mirror for one host-owned server request."""
     for sid, session in list(_sessions.items()) if request_id else ():
         with _history_lock(session):
-            if _pending_clarify_matches(session, request_id):
+            if _open_request_matches(session, request_id):
                 return sid, session
     return None
 
 
-def _update_compute_host_clarify_snapshot(sid: str, session: dict, params: dict, result: dict) -> None:
-    """Keep reconnect snapshots accurate while a batch clarify is answered."""
-    request_id = str(params.get("request_id") or "")
-    question_id = str(params.get("question_id") or "")
+def _relay_compute_host_response(frame: dict) -> bool:
+    """Forward a client's response frame to the compute-host child that owns the request. False when no
+    child owns that id."""
+    located = _compute_host_request_session(str(frame.get("id") or ""))
+    if located is None or not _session_uses_compute_host(located[1]):
+        return False
+    sid, session = located
     with _history_lock(session):
-        if not _pending_clarify_matches(session, request_id):
-            return
-        pending = session["_compute_host_pending_clarify"]
-        if result.get("status") == "expired" or not result.get("remaining") and not question_id:
-            session.pop("_compute_host_pending_clarify", None)
-        elif question_id and isinstance(result.get("remaining"), list):
-            pending["answers"] = {**(pending.get("answers") or {}),
-                                  question_id: str(params.get("answer") or "")}
-            if not result["remaining"]:
-                session.pop("_compute_host_pending_clarify", None)
+        session.pop("_compute_host_open_request", None)
+    try:
+        _get_compute_host_supervisor().respond(sid, {"frame": dict(frame)})
+    except Exception:
+        logger.debug("compute-host response relay failed sid=%s", sid, exc_info=True)
+    return True
 
 
-def _respond_compute_host_clarify(rid: str, params: dict) -> dict | None:
-    """Proxy a clarify answer into the process that owns its pending Event."""
-    located = _compute_host_clarify_session(str(params.get("request_id") or ""))
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+    """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
+    answers current for reconnect snapshots. None when the request is not host-owned."""
+    located = _compute_host_request_session(request_id)
     if located is None or not _session_uses_compute_host(located[1]):
         return None
     sid, session = located
     try:
-        ack = _get_compute_host_supervisor().respond(sid, params)
+        ack = _get_compute_host_supervisor().respond(
+            sid, {"lock": {"request_id": request_id, "question_id": question_id, "answer": answer}})
     except Exception as exc:
-        return _err(rid, 5019, f"compute-host clarify response failed: {exc}")
+        return _err(rid, 5019, f"compute-host clarify lock failed: {exc}")
     if ack.get("type") == "respond.error":
-        return _err(rid, 5019, str(ack.get("message") or "compute-host clarify response failed"))
+        return _err(rid, 5019, str(ack.get("message") or "compute-host clarify lock failed"))
     response = ack.get("response")
     if not isinstance(response, dict):
-        return _err(rid, 5019, "compute-host clarify response returned an invalid response")
+        return _err(rid, 5019, "compute-host clarify lock returned an invalid response")
     if "error" in response:
         error = response["error"] if isinstance(response["error"], dict) else {}
-        return _err(rid, int(error.get("code") or 5000),
-                    str(error.get("message") or "clarify response failed"))
-    result = response.get("result")
-    if not isinstance(result, dict):
-        return _err(rid, 5019, "compute-host clarify response returned an invalid result")
-    _update_compute_host_clarify_snapshot(sid, session, params, result)
+        return _err(rid, int(error.get("code") or 5000), str(error.get("message") or "clarify lock failed"))
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    with _history_lock(session):
+        if _open_request_matches(session, request_id):
+            mirrored = session["_compute_host_open_request"]
+            if result.get("status") == "expired" or result.get("remaining") == []:
+                session.pop("_compute_host_open_request", None)
+            else:
+                mirrored["params"]["answers"] = {**(mirrored["params"].get("answers") or {}), question_id: answer}
     return _ok(rid, result)
 
 
@@ -200,11 +234,13 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["running"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
-        session.pop("_compute_host_pending_clarify", None)
+        session.pop("_compute_host_open_request", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
     _apply_compute_host_metadata_mirror(session, frame)
+    # Settlement of a turn whose session was closed mid-flight: the real lease was held for it.
+    _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
         _emit("session.info", sid, info)
@@ -213,11 +249,12 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    display_metadata: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
-                                     display_kind=display_kind)
+                                     display_kind=display_kind, display_metadata=display_metadata)
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex

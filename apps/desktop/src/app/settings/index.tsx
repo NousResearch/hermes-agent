@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
@@ -44,7 +44,8 @@ import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
-import { BillingSettings } from './billing'
+import { BILLING_VIEWS, BillingSettings, type BillingSubView } from './billing'
+import { deriveBillingView, useBillingState, useSubscriptionState } from './billing/use-billing-state'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
@@ -52,8 +53,11 @@ import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { movedSettingsTabRedirect } from './moved-tabs'
 import { NotificationsSettings } from './notifications-settings'
+import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
+import { SettingsSubpageHeader } from './subpage-navigation'
+import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
@@ -91,7 +95,35 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }, [navigate, search])
 
-  const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [activeView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const params = new URLSearchParams(search)
+  const requestedSubpage = params.get('page')
+  const subpage = resolveSettingsSubpage(activeView, params)
+  const needsSubpageRedirect = Boolean(subpage && subpage !== requestedSubpage)
+  const subpageSearch = new URLSearchParams(search)
+
+  if (subpage) {
+    subpageSearch.set('page', subpage)
+  }
+
+  const openSettingsPage = useCallback((view: SettingsViewId, page?: string) => {
+    const next = new URLSearchParams(search)
+
+    for (const key of ['page', 'field', 'setting', 'key', 'aux', 'session', 'kind', 'label', 'origin', 'pview', 'kview', 'bview']) {
+      next.delete(key)
+    }
+
+    next.set('tab', view)
+    const destination = page ?? settingsSubpages(view)[0]?.id
+
+    if (destination) {
+      next.set('page', destination)
+    }
+
+    navigate({ hash, pathname, search: `?${next}` }, { replace: true })
+  }, [hash, navigate, pathname, search])
+
+  const setActiveView = useCallback((view: SettingsViewId) => openSettingsPage(view), [openSettingsPage])
 
   // Connections merged into the unified Gateways page: land old
   // `?tab=connections` routes/bookmarks there instead of a dead entry.
@@ -104,6 +136,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
   const [keysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
+  const [billingView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const billingState = useBillingState()
+  const subscriptionState = useSubscriptionState()
+  const billingPresentation = deriveBillingView(billingState.data, subscriptionState.data)
+  const canViewPlans = billingPresentation.status === 'normal' && Boolean(billingPresentation.plan?.action)
 
   // Jump to a section + its sub-view in one navigate. Two sequential setters
   // would each read the same stale `search` and the second would clobber the
@@ -111,6 +148,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const openSubView = useCallback(
     (tab: SettingsViewId, param: string, value: string, fallback: string) => {
       const params = new URLSearchParams(search)
+
+      for (const key of ['page', 'field', 'setting', 'key', 'aux', 'session', 'kind', 'label', 'origin']) {
+        params.delete(key)
+      }
+
       params.set('tab', tab)
 
       if (value === fallback) {
@@ -171,7 +213,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const navGroups: OverlayNavGroup[] = useMemo(
-    () => [
+    () => ([
       ...SECTIONS.flatMap(s => {
         const view = `config:${s.id}` as SettingsViewId
 
@@ -209,6 +251,22 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       },
       {
         active: activeView === 'billing',
+        children: [
+          {
+            active: activeView === 'billing' && (billingView === 'overview' || !canViewPlans),
+            icon: BarChart3,
+            id: 'bview:overview',
+            label: t.settings.subpages.billingOverview,
+            onSelect: () => openSubView('billing', 'bview', 'overview', 'overview')
+          },
+          ...(canViewPlans ? [{
+            active: activeView === 'billing' && billingView === 'plans',
+            icon: BarChart3,
+            id: 'bview:plans',
+            label: t.settings.subpages.billingPlans,
+            onSelect: () => openSubView('billing', 'bview', 'plans', 'overview')
+          }] : [])
+        ],
         icon: BarChart3,
         id: 'billing',
         label: t.settings.nav.billing,
@@ -312,9 +370,26 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         label: t.settings.nav.about,
         onSelect: () => setActiveView('about')
       }
-    ],
-    [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView]
+    ] as OverlayNavGroup[]).map(group => {
+      const view = group.id as SettingsViewId
+      const children = settingsSubpages(view)
+
+      return children.length ? {
+        ...group,
+        children: children.map(page => ({
+          active: group.active && subpage === page.id,
+          icon: settingsSubpageIcon(page, group.icon),
+          id: `${view}:${page.id}`,
+          label: t.settings.subpages[page.labelKey],
+          onSelect: () => openSettingsPage(view, page.id)
+        }))
+      } : group
+    }),
+    [activeView, billingView, canViewPlans, keysView, providerView, subpage, t, setActiveView, openProviderView, openKeysView, openSettingsPage, openSubView]
   )
+
+  const activeGroup = navGroups.find(group => group.active)
+  const activeChild = activeGroup?.children?.find(child => child.active)
 
   // Type-to-search: printable keystrokes on the Settings surface (outside any
   // field) open the settings-scoped palette, seeded with the character — same
@@ -401,21 +476,22 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const activeSettingsContent =
     activeView === 'config:appearance' ? (
-      <AppearanceSettings />
+      <AppearanceSettings subpage={subpage} />
     ) : activeView === 'about' ? (
-      <AboutSettings />
+      <AboutSettings subpage={subpage} />
     ) : activeView === 'gateway' || activeView === 'connections' ? (
       // 'connections' renders the unified page too so the frame before
       // the alias redirect lands doesn't flash the fallback view.
-      <GatewaySettings />
+      <GatewaySettings subpage={subpage} />
     ) : activeView === 'keybinds' ? (
-      <KeybindSettings />
+      <KeybindSettings subpage={subpage} />
     ) : activeView.startsWith('config:') ? (
       <ConfigSettings
         activeSectionId={activeView.slice('config:'.length)}
         importInputRef={importInputRef}
         onConfigSaved={onConfigSaved}
         onMainModelChanged={onMainModelChanged}
+        subpage={subpage}
       />
     ) : activeView === 'providers' ? (
       <ProvidersSettings
@@ -429,13 +505,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     ) : activeView === 'keys' ? (
       <KeysSettings view={keysView} />
     ) : activeView === 'notifications' ? (
-      <NotificationsSettings />
+      <NotificationsSettings subpage={subpage} />
     ) : activeView === 'billing' ? (
       <BillingSettings />
     ) : activeView === 'vault' ? (
-      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} />
+      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
     ) : (
-      <SessionsSettings />
+      <SessionsSettings subpage={subpage} />
     )
 
   return (
@@ -443,7 +519,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <OverlaySplitLayout>
         <OverlayNav footer={navFooter} groups={navGroups} />
 
-        <OverlayMain className="px-0 pb-0">{activeSettingsContent}</OverlayMain>
+        <OverlayMain className="px-0 pb-0">
+          <SettingsBreadcrumbContext.Provider value>
+            {activeGroup && <SettingsSubpageHeader child={activeChild} group={activeGroup} />}
+            {needsSubpageRedirect ? (
+              <Navigate replace to={{ hash, pathname, search: `?${subpageSearch}` }} />
+            ) : activeSettingsContent}
+          </SettingsBreadcrumbContext.Provider>
+        </OverlayMain>
       </OverlaySplitLayout>
     </OverlayView>
   )

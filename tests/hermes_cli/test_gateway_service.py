@@ -138,6 +138,52 @@ class TestSystemdServiceRefresh:
             "daemon-reload" in str(c) for c in ran
         ), "daemon-reload must not run when write was refused"
 
+    def test_refresh_survives_readonly_unit_and_skips_reload(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A non-writable installed unit (Home Manager/Nix symlink into a
+        read-only store, #107727) must not crash ``gateway restart``: warn,
+        leave the installed unit untouched, skip daemon-reload, and report
+        the refresh as not performed.
+        """
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: (
+                "[Service]\nExecStart=/nix/store/fhs-wrapper hermes serve\n"
+            ),
+        )
+
+        ran = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            ran.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        def readonly_write(self, data, encoding=None):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(gateway_cli.Path, "write_text", readonly_write)
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+
+        assert result is False, "a failed refresh must report False, not crash"
+        assert (
+            unit_path.read_text(encoding="utf-8") == "old unit\n"
+        ), "installed unit must be left untouched"
+        assert not any(
+            "daemon-reload" in str(c) for c in ran
+        ), "daemon-reload must not run when the write failed"
+        assert "Could not refresh" in capsys.readouterr().out
+
 
 class TestTempHomeServiceDefinitionGuard:
     """_temp_home_in_service_definition() — structural temp-dir detection."""

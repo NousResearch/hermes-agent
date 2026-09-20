@@ -21,7 +21,8 @@ function relabelMemberControlFrames(text: string) {
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
   | string
-  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
+  | (Pick<GroupMember, 'name'> &
+      Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */

@@ -51,7 +51,6 @@ describe('JarvisShell', () => {
     $jarvisUi.set({
       activeTool: null,
       activity: [],
-      connected: true,
       sessionId: 's1',
       task: { id: 't1', phase: 'running' },
       voice: 'listening'

@@ -332,6 +332,45 @@ export interface Translations {
     productName: string
     navigationLabel: string
     mainLabel: string
+    dashboard: {
+      activity: {
+        close: string
+        empty: string
+        title: string
+        types: Record<string, string>
+      }
+      activityTitle: string
+      activityNavLabel: string
+      bottomNavigationLabel: string
+      conversationNavLabel: string
+      conversationLabel: string
+      emptyGreeting: (name?: string) => string
+      navigationLabel: string
+      showActivity: string
+      status: {
+        connection: {
+          connected: string
+          disconnected: string
+        }
+        task: {
+          idle: string
+          planning: string
+          running: string
+          approval: string
+          cancelling: string
+          cancelled: string
+          failed: string
+          verified: string
+        }
+        toolIdle: string
+        voice: {
+          idle: string
+          listening: string
+          speaking: string
+          error: string
+        }
+      }
+    }
     views: {
       jarvis: string
       tasks: string

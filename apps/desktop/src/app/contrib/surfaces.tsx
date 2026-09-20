@@ -142,6 +142,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
 
   const chatView = (
     <ChatView
+      dashboard
       gateway={gateway}
       maxVoiceRecordingSeconds={maxVoiceRecordingSeconds}
       modelMenuContent={modelMenuContent}

@@ -28,9 +28,9 @@ export interface JarvisEvent {
 
 export interface JarvisUiState {
   sessionId: string | null
-  connected: boolean
   voice: JarvisVoiceState
   task: { id: string | null; phase: JarvisTaskPhase }
   activeTool: { id: string; label: string } | null
+  result?: string
   activity: readonly JarvisEvent[]
 }

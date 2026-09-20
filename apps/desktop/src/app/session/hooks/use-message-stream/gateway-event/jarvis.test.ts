@@ -1,6 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { createElement } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { JarvisDashboard } from '@/app/jarvis/dashboard'
 import { $jarvisUi, resetJarvisSession } from '@/app/jarvis/store'
+import { I18nProvider } from '@/i18n'
 
 import { publishJarvisGatewayEvent } from './jarvis'
 import type { GatewayEventContext } from './types'
@@ -25,6 +29,10 @@ function context(overrides: Partial<GatewayEventContext> = {}): GatewayEventCont
 describe('publishJarvisGatewayEvent', () => {
   beforeEach(() => {
     resetJarvisSession('active-session')
+  })
+
+  afterEach(() => {
+    cleanup()
   })
 
   it('maps a confirmed active event from the active source into Jarvis state', () => {
@@ -107,5 +115,86 @@ describe('publishJarvisGatewayEvent', () => {
       detail: 'provider rejected the request',
       type: 'task.failed',
     })
+  })
+
+  it('maps a successful message.complete text payload into the verified result', () => {
+    publishJarvisGatewayEvent(
+      context({
+        event: { session_id: 'active-session', type: 'message.complete' },
+        payload: {
+          error: 'technical error field from stale metadata',
+          rendered: 'Rendered fallback',
+          task_id: 'task-1',
+          text: '  Backend answer  ',
+        } as GatewayEventContext['payload'],
+      }),
+    )
+
+    expect($jarvisUi.get().task).toEqual({ id: 'task-1', phase: 'verified' })
+    expect($jarvisUi.get().result).toBe('Backend answer')
+    expect($jarvisUi.get().activity.at(-1)).toMatchObject({
+      detail: 'Backend answer',
+      type: 'task.verified',
+    })
+  })
+
+  it('falls back to rendered content for a successful message.complete result', () => {
+    publishJarvisGatewayEvent(
+      context({
+        event: { session_id: 'active-session', type: 'message.complete' },
+        payload: {
+          rendered: '  Rendered result  ',
+          task_id: 'task-1',
+          text: '   ',
+        } as GatewayEventContext['payload'],
+      }),
+    )
+
+    expect($jarvisUi.get().result).toBe('Rendered result')
+  })
+
+  it('does not invent a verified result for an empty successful message.complete payload', () => {
+    publishJarvisGatewayEvent(
+      context({
+        event: { session_id: 'active-session', type: 'message.complete' },
+        payload: { task_id: 'task-1' } as GatewayEventContext['payload'],
+      }),
+    )
+
+    expect($jarvisUi.get().task).toEqual({ id: 'task-1', phase: 'verified' })
+    expect($jarvisUi.get().result).toBeUndefined()
+  })
+
+  it('carries mapper output through the projector into the dashboard headline', () => {
+    publishJarvisGatewayEvent(
+      context({
+        event: { session_id: 'active-session', type: 'message.complete' },
+        payload: {
+          task_id: 'task-1',
+          text: 'Notatka została utworzona.',
+        } as GatewayEventContext['payload'],
+      }),
+    )
+
+    render(
+      createElement(
+        I18nProvider,
+        {
+          children: createElement(
+            JarvisDashboard,
+            {
+              children: createElement('div', { 'data-testid': 'real-chat' }, 'Real transcript'),
+              connected: true,
+              state: $jarvisUi.get(),
+            }
+          ),
+          configClient: null,
+          initialLocale: 'pl',
+        },
+      )
+    )
+
+    expect(screen.getByRole('heading', { name: 'Notatka została utworzona.' })).toBeTruthy()
+    expect(screen.getByTestId('real-chat')).toBeTruthy()
   })
 })

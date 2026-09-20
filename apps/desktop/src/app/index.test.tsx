@@ -24,7 +24,7 @@ vi.mock('./contrib', async () => {
       const location = useLocation()
 
       return (
-        <div
+        <main
           data-layout-mode={layoutMode ?? 'viewport'}
           data-path={`${location.pathname}${location.search}`}
           data-testid="contrib-runtime"
@@ -54,6 +54,8 @@ describe('desktop app root Jarvis integration', () => {
     renderRoot('/')
 
     expect(screen.getByRole('navigation', { name: 'Główna nawigacja' })).toBeTruthy()
+    expect(screen.getAllByRole('navigation', { name: 'Główna nawigacja' })).toHaveLength(1)
+    expect(screen.getAllByRole('main')).toHaveLength(1)
     expect(screen.getByTestId('contrib-runtime').getAttribute('data-path')).toBe('/')
     expect(screen.getByTestId('contrib-runtime').getAttribute('data-layout-mode')).toBe('embedded')
   })
@@ -88,6 +90,7 @@ describe('desktop app root Jarvis integration', () => {
     renderRoot('/')
 
     expect(screen.queryByRole('navigation', { name: 'Główna nawigacja' })).toBeNull()
+    expect(screen.queryByTestId('jarvis-dashboard')).toBeNull()
     expect(screen.getByTestId('contrib-runtime').getAttribute('data-layout-mode')).toBe('viewport')
   })
 

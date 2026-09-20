@@ -32,7 +32,7 @@ import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles, profileLabel } from '@/store/profile'
 import {
   $connection,
   $contextSuggestions,
@@ -53,6 +53,8 @@ import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcr
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
+import { JarvisDashboard } from '../jarvis/dashboard'
+import { $jarvisUi } from '../jarvis/store'
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
@@ -81,6 +83,7 @@ import {
 import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
+  dashboard?: boolean
   gateway: HermesGateway | null
   modelOptionsOwnerConnectionId?: string
   modelOptionsProfile?: string
@@ -373,8 +376,33 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
   )
 })
 
+function JarvisDashboardFrame({
+  activeGatewayProfile,
+  children
+}: {
+  activeGatewayProfile: string
+  children: React.ReactNode
+}) {
+  const gatewayState = useStore($gatewayState)
+  const profiles = useStore($profiles)
+  const jarvisState = useStore($jarvisUi)
+  const activeProfileRow = profiles.find(profile => profile.name === activeGatewayProfile)
+  const connected = gatewayState === 'open'
+
+  return (
+    <JarvisDashboard
+      connected={connected}
+      profileDisplayName={activeProfileRow ? profileLabel(activeProfileRow) : undefined}
+      state={jarvisState}
+    >
+      {children}
+    </JarvisDashboard>
+  )
+}
+
 const ChatViewContent = memo(function ChatViewContent({
   className,
+  dashboard = false,
   gateway,
   modelOptionsOwnerConnectionId,
   modelOptionsProfile,
@@ -642,7 +670,7 @@ const ChatViewContent = memo(function ChatViewContent({
 
   const overlayKind: DragKind = dragKind === 'files' ? 'files' : sessionDragging && !sessionEdgeHover ? 'session' : null
 
-  return (
+  const chatSurface = (
     <div
       className={cn(
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
@@ -773,5 +801,11 @@ const ChatViewContent = memo(function ChatViewContent({
         )}
       </ChatRuntimeBoundary>
     </div>
+  )
+
+  return dashboard ? (
+    <JarvisDashboardFrame activeGatewayProfile={activeGatewayProfile}>{chatSurface}</JarvisDashboardFrame>
+  ) : (
+    chatSurface
   )
 })

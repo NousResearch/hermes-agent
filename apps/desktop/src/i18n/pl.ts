@@ -310,6 +310,58 @@ export const pl = defineLocale({
     productName: 'AI Evolution Jarvis',
     navigationLabel: 'Główna nawigacja',
     mainLabel: 'Obszar roboczy Jarvisa',
+    dashboard: {
+      activity: {
+        close: 'Zamknij aktywność',
+        empty: 'Brak aktywności w tej rozmowie.',
+        title: 'Co robi Jarvis',
+        types: {
+          'task.approval': 'Oczekuje na zatwierdzenie',
+          'task.cancelled': 'Zatrzymano',
+          'task.cancelling': 'Zatrzymywanie',
+          'task.failed': 'Zadanie nie powiodło się',
+          'task.planning': 'Planowanie',
+          'task.running': 'Wykonywanie',
+          'task.verified': 'Zweryfikowano rezultat',
+          'tool.completed': 'Narzędzie zakończone',
+          'tool.started': 'Narzędzie uruchomione',
+          'voice.listening': 'Słuchanie',
+          'voice.speaking': 'Mówienie',
+          'voice.stopped': 'Głos zatrzymany'
+        }
+      },
+      activityTitle: 'Co robi Jarvis',
+      activityNavLabel: 'Aktywność',
+      bottomNavigationLabel: 'Dolna nawigacja Jarvisa',
+      conversationNavLabel: 'Rozmowa',
+      conversationLabel: 'Rozmowa z Jarvisem',
+      emptyGreeting: name => (name ? `${name}, od czego zaczynamy?` : 'Od czego zaczynamy?'),
+      navigationLabel: 'Nawigacja Jarvisa',
+      showActivity: 'Pokaż aktywność',
+      status: {
+        connection: {
+          connected: 'Połączono',
+          disconnected: 'Brak połączenia'
+        },
+        task: {
+          idle: 'Gotowy',
+          planning: 'Planowanie',
+          running: 'W toku',
+          approval: 'Wymaga zgody',
+          cancelling: 'Zatrzymywanie',
+          cancelled: 'Zatrzymano',
+          failed: 'Błąd',
+          verified: 'Zakończono'
+        },
+        toolIdle: 'Brak aktywnego narzędzia',
+        voice: {
+          idle: 'Głos nieaktywny',
+          listening: 'Słucha',
+          speaking: 'Mówi',
+          error: 'Błąd głosu'
+        }
+      }
+    },
     views: {
       jarvis: 'Jarvis',
       tasks: 'Zadania',

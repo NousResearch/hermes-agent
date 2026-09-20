@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -84,6 +86,8 @@ describe('ChatView render isolation', () => {
     $freshDraftReady.set(false)
     $gatewayState.set('closed')
     $messages.set([assistantMessage('assistant-1', 'Stable historical answer')])
+    $activeGatewayProfile.set('default')
+    $profiles.set([{ display_name: 'Ada', name: 'default' } as never])
     $selectedStoredSessionId.set('stored-1')
     $sessions.set([{ id: 'stored-1', message_count: 1, title: 'Stable chat' } as never])
   })
@@ -101,6 +105,8 @@ describe('ChatView render isolation', () => {
     $freshDraftReady.set(false)
     $gatewayState.set('idle')
     $messages.set([])
+    $activeGatewayProfile.set('default')
+    $profiles.set([])
     $selectedStoredSessionId.set(null)
     $sessions.set([])
   })
@@ -160,5 +166,104 @@ describe('ChatView render isolation', () => {
     // memo(ChatView) with stable props must absorb the parent's idle tick —
     // the transcript (Thread) must not re-render. This is PR #38470's contract.
     expect(threadRenderCount.current).toBe(1)
+  })
+
+  it('wraps the real chat runtime in the Jarvis dashboard without adding product navigation', () => {
+    const props = {
+      dashboard: true,
+      gateway: null,
+      maxVoiceRecordingSeconds: 120,
+      onAddContextRef: vi.fn(),
+      onAddUrl: vi.fn(),
+      onAttachDroppedItems: vi.fn(),
+      onAttachImageBlob: vi.fn(),
+      onBranchInNewChat: vi.fn(),
+      onCancel: vi.fn(),
+      onDeleteSelectedSession: vi.fn(),
+      onEdit: vi.fn(),
+      onPasteClipboardImage: vi.fn(),
+      onPickFiles: vi.fn(),
+      onPickFolders: vi.fn(),
+      onPickImages: vi.fn(),
+      onReload: vi.fn(),
+      onRemoveAttachment: vi.fn(),
+      onRetryResume: vi.fn(),
+      onSteer: vi.fn(),
+      onSubmit: vi.fn(),
+      onThreadMessagesChange: vi.fn(),
+      onToggleSelectedPin: vi.fn(),
+      onTranscribeAudio: vi.fn()
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } }
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/stored-1']}>
+          <I18nProvider configClient={null} initialLocale="pl">
+            <ChatView {...props} />
+          </I18nProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+
+    expect(screen.getByTestId('jarvis-dashboard')).toBeTruthy()
+    expect(screen.getAllByRole('main')).toHaveLength(1)
+    expect(screen.queryByRole('navigation')).toBeNull()
+    expect(screen.getByTestId('thread')).toBeTruthy()
+  })
+
+  it('derives the Jarvis dashboard connection status reactively from the live gateway state', () => {
+    const props = {
+      dashboard: true,
+      gateway: null,
+      maxVoiceRecordingSeconds: 120,
+      onAddContextRef: vi.fn(),
+      onAddUrl: vi.fn(),
+      onAttachDroppedItems: vi.fn(),
+      onAttachImageBlob: vi.fn(),
+      onBranchInNewChat: vi.fn(),
+      onCancel: vi.fn(),
+      onDeleteSelectedSession: vi.fn(),
+      onEdit: vi.fn(),
+      onPasteClipboardImage: vi.fn(),
+      onPickFiles: vi.fn(),
+      onPickFolders: vi.fn(),
+      onPickImages: vi.fn(),
+      onReload: vi.fn(),
+      onRemoveAttachment: vi.fn(),
+      onRetryResume: vi.fn(),
+      onSteer: vi.fn(),
+      onSubmit: vi.fn(),
+      onThreadMessagesChange: vi.fn(),
+      onToggleSelectedPin: vi.fn(),
+      onTranscribeAudio: vi.fn()
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } }
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/stored-1']}>
+          <I18nProvider configClient={null} initialLocale="pl">
+            <ChatView {...props} />
+          </I18nProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+
+    expect(screen.getByText('Brak połączenia')).toBeTruthy()
+
+    act(() => $gatewayState.set('open'))
+
+    expect(screen.getByText('Połączono')).toBeTruthy()
+
+    act(() => $gatewayState.set('connecting'))
+
+    expect(screen.getByText('Brak połączenia')).toBeTruthy()
   })
 })

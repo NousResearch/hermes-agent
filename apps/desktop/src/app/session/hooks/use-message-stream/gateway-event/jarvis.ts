@@ -87,5 +87,9 @@ function jarvisEventDetail(ctx: GatewayEventContext): string | undefined {
     )
   }
 
+  if (event.type === 'message.complete') {
+    return coerceGatewayText(payload?.text).trim() || coerceGatewayText(payload?.rendered).trim() || undefined
+  }
+
   return undefined
 }

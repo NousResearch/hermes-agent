@@ -19,7 +19,11 @@ vi.mock('@/store/session', () => ({
   $gatewayState: atom('open')
 }))
 vi.mock('../chat', () => ({
-  ChatView: ({ gateway }: { gateway: { id?: string } | null }) => <div data-testid="gateway">{gateway?.id}</div>
+  ChatView: ({ dashboard, gateway }: { dashboard?: boolean; gateway: { id?: string } | null }) => (
+    <div data-dashboard={dashboard ? 'true' : 'false'} data-testid="gateway">
+      {gateway?.id}
+    </div>
+  )
 }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
@@ -66,5 +70,29 @@ describe('ChatRoutesSurface', () => {
     })
 
     expect(screen.getByTestId('gateway').textContent).toBe('b')
+  })
+
+  it('mounts the Jarvis dashboard on the production root chat route through the real runtime surface', () => {
+    const actions = { getGateway: () => $gateway.get() } as unknown as WiringActions
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <ChatRoutesSurface actions={actions} />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByTestId('gateway').getAttribute('data-dashboard')).toBe('true')
+  })
+
+  it('keeps full-page auxiliary workspace routes out of the Jarvis dashboard composition', () => {
+    const actions = { getGateway: () => $gateway.get() } as unknown as WiringActions
+
+    render(
+      <MemoryRouter initialEntries={['/skills']}>
+        <ChatRoutesSurface actions={actions} />
+      </MemoryRouter>
+    )
+
+    expect(screen.queryByTestId('gateway')).toBeNull()
   })
 })

@@ -287,6 +287,58 @@ export const zh: Translations = {
     productName: 'AI Evolution Jarvis',
     navigationLabel: 'Main navigation',
     mainLabel: 'Jarvis workspace',
+    dashboard: {
+      activity: {
+        close: 'Close activity',
+        empty: 'No activity in this conversation yet.',
+        title: 'What Jarvis is doing',
+        types: {
+          'task.approval': 'Waiting for approval',
+          'task.cancelled': 'Stopped',
+          'task.cancelling': 'Stopping',
+          'task.failed': 'Task failed',
+          'task.planning': 'Planning',
+          'task.running': 'Running',
+          'task.verified': 'Result verified',
+          'tool.completed': 'Tool completed',
+          'tool.started': 'Tool started',
+          'voice.listening': 'Listening',
+          'voice.speaking': 'Speaking',
+          'voice.stopped': 'Voice stopped'
+        }
+      },
+      activityTitle: 'What Jarvis is doing',
+      activityNavLabel: 'Activity',
+      bottomNavigationLabel: 'Jarvis bottom navigation',
+      conversationNavLabel: 'Conversation',
+      conversationLabel: 'Conversation with Jarvis',
+      emptyGreeting: name => (name ? `${name}, what should Jarvis handle next?` : 'What should Jarvis handle next?'),
+      navigationLabel: 'Jarvis navigation',
+      showActivity: 'Show activity',
+      status: {
+        connection: {
+          connected: 'Connected',
+          disconnected: 'Disconnected'
+        },
+        task: {
+          idle: 'Ready',
+          planning: 'Planning',
+          running: 'Running',
+          approval: 'Needs approval',
+          cancelling: 'Stopping',
+          cancelled: 'Stopped',
+          failed: 'Failed',
+          verified: 'Done'
+        },
+        toolIdle: 'No active tool',
+        voice: {
+          idle: 'Voice idle',
+          listening: 'Listening',
+          speaking: 'Speaking',
+          error: 'Voice error'
+        }
+      }
+    },
     views: {
       jarvis: 'Jarvis',
       tasks: 'Tasks',

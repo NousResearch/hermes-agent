@@ -1178,6 +1178,44 @@ class TestCodexBuildKwargs:
         names = [t.get("name") for t in tools if t.get("type") == "function"]
         assert client_name in names
 
+    def test_xai_policy_failure_on_registry_read_never_swaps_to_native(
+        self, transport, monkeypatch
+    ):
+        """A policy failure on xAI's second read must retain client dispatch.
+
+        The first policy probe can legitimately observe no mandatory provider.
+        If registry resolution then observes an unreadable/changed mandatory
+        policy, that fail-closed result is not permission for native search.
+        """
+        from agent.web_required_provider import RequiredWebProviderError
+
+        monkeypatch.setattr(
+            "agent.web_required_provider.required_provider_name", lambda: None
+        )
+
+        def policy_became_unreadable():
+            raise RequiredWebProviderError(
+                "required_web_provider: cannot read effective policy"
+            )
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            policy_became_unreadable,
+        )
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "Search."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_xai_responses=True,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "hermes_web_search" in names
+
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.

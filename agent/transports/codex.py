@@ -183,6 +183,8 @@ def _xai_prefers_native_web_search() -> bool:
     """
     if _required_web_provider_forbids_native_search():
         return False
+    from agent.web_required_provider import RequiredWebProviderError
+
     try:
         from agent.web_search_registry import get_active_search_provider
 
@@ -193,6 +195,12 @@ def _xai_prefers_native_web_search() -> bool:
         from tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "xai"
+    except RequiredWebProviderError as exc:
+        # The required-policy read above and registry resolution are separate
+        # calls. If policy becomes mandatory or unreadable between them, never
+        # reinterpret that fail-closed result as permission for native search.
+        logger.debug("Required web-provider policy blocks xAI native search: %s", exc)
+        return False
     except Exception:
         return True
 

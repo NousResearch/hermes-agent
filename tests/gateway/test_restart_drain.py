@@ -189,6 +189,33 @@ async def test_request_restart_defers_stop_until_active_turn_finishes():
 
 
 @pytest.mark.asyncio
+async def test_request_restart_waits_for_async_delegation(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 5.0
+    active_delegations = [1]
+    monkeypatch.setattr(
+        "tools.async_delegation.active_count", lambda: active_delegations[0]
+    )
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+
+    await asyncio.sleep(0.25)
+    runner.stop.assert_not_awaited()
+    assert any(
+        unit["kind"] == "async_delegation"
+        for unit in runner._describe_active_work()
+    )
+
+    active_delegations[0] = 0
+    await runner._restart_task
+
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_restart_after_turn_timeout_zero_enters_stop_immediately():
     """restart_after_turn_timeout=0 preserves legacy immediate drain."""
     runner, _adapter = make_restart_runner()

@@ -21,6 +21,7 @@ per-message key — the thread is kept for near one-shots and still dropped for
 recurring jobs and one-shots beyond the horizon window.
 """
 
+import json
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -109,11 +110,20 @@ class TestNearHorizonSlackThreadKept:
     """#117306 — a one-shot firing within the conversation's remaining lifetime delivers back
     into the thread the assistant opened under the asking message."""
 
-    def test_oneshot_within_thread_horizon_keeps_thread(self):
-        with _session_env(_TOP_LEVEL_SLACK):
-            origin = _origin_from_env({"kind": "once", "run_at": _run_at_in(1)})
-        assert origin is not None
-        assert origin["thread_id"] == "1755043010.123456"
+    def test_create_handler_stores_thread_for_near_oneshot(self, tmp_path, monkeypatch, make_cron_provider):
+        """Production entry point: the cronjob_manage create handler passes the schedule
+        into origin capture, so the stored job carries the asking thread."""
+        from cron import jobs
+        from tools import cronjob_tools
+
+        provider = make_cron_provider()
+        monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+        with jobs.use_cron_store(tmp_path / "cron"), _session_env(_TOP_LEVEL_SLACK):
+            result = json.loads(cronjob_tools.registry.dispatch("cronjob_manage", {
+                "action": "create", "schedule": _run_at_in(1), "prompt": "remind me"}))
+            assert result["success"], result
+            stored = jobs.get_job(result["job_id"])
+        assert stored["origin"]["thread_id"] == "1755043010.123456"
 
     def test_oneshot_at_horizon_boundary_keeps_thread(self):
         """The horizon itself (60 minutes) is inside the conversation's lifetime."""

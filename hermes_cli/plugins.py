@@ -155,6 +155,8 @@ VALID_HOOKS: Set[str] = {
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
     # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+    # Decision hooks: pre-dispatch runs at the respawn guard chokepoint; pre-create runs before the write transaction.
+    "pre_kanban_dispatch", "pre_kanban_task_create",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):

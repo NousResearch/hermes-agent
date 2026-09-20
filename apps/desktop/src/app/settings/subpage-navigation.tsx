@@ -18,12 +18,18 @@ export function SettingsSubpageHeader({ group, child }: { group: OverlayNavGroup
       <ChevronRight aria-hidden className="size-3 shrink-0" />
       {child ? (
         <>
-          <Button onClick={group.onSelect} size="inline" variant="text">{group.label}</Button>
+          <Button onClick={group.onSelect} size="inline" variant="text">
+            {group.label}
+          </Button>
           <ChevronRight aria-hidden className="size-3 shrink-0" />
-          <span aria-current="page" className="truncate text-foreground">{child.label}</span>
+          <span aria-current="page" className="truncate text-foreground">
+            {child.label}
+          </span>
         </>
       ) : (
-        <span aria-current="page" className="truncate text-foreground">{group.label}</span>
+        <span aria-current="page" className="truncate text-foreground">
+          {group.label}
+        </span>
       )}
     </nav>
   )

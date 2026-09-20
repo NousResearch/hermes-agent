@@ -1075,7 +1075,10 @@ test('homeRelativeAttachmentCandidates normalizes Windows backslashes before joi
 })
 
 test('homeRelativeAttachmentCandidates returns nothing for an absolute path', () => {
-  assert.deepEqual(homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'), [])
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
 })
 
 test('homeRelativeAttachmentCandidates returns nothing for a file: URL', () => {

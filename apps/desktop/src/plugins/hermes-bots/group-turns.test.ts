@@ -1122,7 +1122,7 @@ describe('in-flight marker', () => {
     expect(room.turns.strandedMarkerIsLive(marker)).toBe(false)
   })
 
-  it('harvests a remote member\'s turn that a previous Desktop process left in flight', async () => {
+  it("harvests a remote member's turn that a previous Desktop process left in flight", async () => {
     const room = await loadRoom()
     const { groupSessionKey } = await import('./group-membership')
 
@@ -1172,9 +1172,7 @@ describe('stranded harvest', () => {
     const activity = await import('./group-activity')
 
     try {
-      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'deploy', 't1', [])).toBe(
-        'long deploy done'
-      )
+      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'deploy', 't1', [])).toBe('long deploy done')
       expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
       expect(activity.$groupActivity.get().Room?.events.map(event => event.kind)).not.toContain('timed-out')
     } finally {
@@ -1325,7 +1323,9 @@ describe('stranded harvest', () => {
     await room.turns.harvestStrandedGroupReply('Dead', member)
 
     expect(room.chat.$groupChats.get().Dead.stranded?.[key]).toBeUndefined()
-    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([['failed', key]])
+    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([
+      ['failed', key]
+    ])
   })
 
   it('never re-submits into a member the harvest just confirmed is still running', async () => {

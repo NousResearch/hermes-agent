@@ -1261,6 +1261,11 @@ class TelegramAdapter(BasePlatformAdapter):
         re.IGNORECASE | re.DOTALL)
     # Hiragana/Katakana, CJK Ext A, CJK Unified, Hangul, CJK Compatibility, CJK ext/compat supplement.
     _RICH_CJK_RE = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\U00020000-\U000323af]")
+    # Fenced code spans, using the same pattern format_message() stashes in its step (1) so routing and
+    # formatting agree on what counts as a fence. Constructs inside a fence are literal text the reader
+    # wants to see verbatim, so they must not steer the rich/legacy decision. An unterminated opening
+    # fence is not a fence here — same as in format_message().
+    _RICH_FENCE_RE = re.compile(r"```(?:[^\n]*\n)?[\s\S]*?```")
 
     def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
         """Math inside <details> crashes Telegram Desktop 6.9.1 (tdesktop#30808); the Bot API accepts
@@ -1292,7 +1297,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
             return True
-        if re.search(r"(?m)^\s*[-*_]{3,}\s*$", content):
+        # A line holding only --- / *** / ___ is a horizontal rule. Fenced code is stripped first:
+        # a message that *documents* rule syntax inside a code fence is literal text, and routing it to
+        # the rich endpoint would swap the client rendering for no gain. `___` on its own is also a
+        # valid empty emphasis marker; treating it as a rule is deliberate (three underscores on a line
+        # never form a usable emphasis span) — revisit if the emphasis grammar ever changes.
+        # Note: only this gate is fence-aware. The table / task-list / <details> / math gates keep
+        # reading raw content (pre-existing behaviour, deliberately out of scope here).
+        if re.search(r"(?m)^\s*[-*_]{3,}\s*$", self._RICH_FENCE_RE.sub("", content)):
             return True
         if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
             return True

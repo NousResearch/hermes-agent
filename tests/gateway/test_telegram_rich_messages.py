@@ -132,6 +132,51 @@ async def test_horizontal_rule_triggers_rich_send(hr):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fenced",
+    [
+        "```\n---\n```",
+        "```yaml\n---\nkey: value\n```",
+        "```md\n---\n```",
+        "```\n***\n```",
+        "```\n___\n```",
+    ],
+)
+async def test_horizontal_rule_inside_code_fence_stays_on_legacy_path(fenced):
+    """A rule *documented* inside a fenced block is literal text, not a live divider.
+
+    Routing it to the rich endpoint would swap the client rendering for no gain, so the
+    horizontal-rule gate must reason about the message with fences removed.
+    """
+    adapter = _make_adapter()
+    content = f"Above the line\n\n{fenced}\n\nBelow the line"
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unterminated_fence_does_not_hide_horizontal_rule():
+    """Boundary: an opening ``` with no closing fence is not a fence (format_message agrees),
+    so a rule after it is still treated as a live rule."""
+    adapter = _make_adapter()
+    content = "Above the line\n\n```\n---\n"
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble():
     adapter = _make_adapter()
 

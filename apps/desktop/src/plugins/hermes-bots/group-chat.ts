@@ -108,11 +108,19 @@ export function groupChatTombstoneMemory(): Record<string, number> {
   return { ...groupChatTombstones }
 }
 
-/** Remember a disband durably, keyed by the room's durable key so a same-name
- *  recreate with a fresh roomId is never blocked. Revision = the room's last
- *  known sync revision + 1, the ordering the live tombstone merge applies. */
+/** Remember a disband durably — ONLY by roomId. A name key would outlive the
+ *  room: a same-name recreate starts at syncRevision 0 and the memory is
+ *  applied on every pull with `deletedRevision >= syncRevision`, so the
+ *  fresh room would be deleted forever. Legacy name-only rooms keep the
+ *  job-scoped tombstone of the pending sync (the pre-#105275 behaviour).
+ *  Revision = the room's last known sync revision + 1, the ordering the
+ *  live tombstone merge applies. */
 export function rememberGroupChatTombstone(name: string, roomId?: null | string, syncRevision?: number) {
-  const key = typeof roomId === 'string' && roomId ? `id:${roomId}` : `name:${name}`
+  if (typeof roomId !== 'string' || !roomId) {
+    return Promise.resolve()
+  }
+
+  const key = `id:${roomId}`
   groupChatTombstones[key] = Math.max(Number(groupChatTombstones[key] || 0), Math.max(0, Number(syncRevision || 0)) + 1)
 
   for (const stale of Object.keys(groupChatTombstones)
@@ -140,7 +148,9 @@ export function hydrateGroupChatTombstones(value: unknown) {
   }
 
   for (const [key, revision] of Object.entries(value as Record<string, unknown>)) {
-    if (key.startsWith('id:') || key.startsWith('name:')) {
+    // Older builds persisted `name:` keys too; they are exactly the memory
+    // that blocks a same-name recreate, so they are dropped on hydrate.
+    if (key.startsWith('id:')) {
       groupChatTombstones[key] = Math.max(0, Number(revision || 0))
     }
   }

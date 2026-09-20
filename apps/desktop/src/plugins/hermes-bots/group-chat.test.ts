@@ -1221,4 +1221,39 @@ describe('sync worker', () => {
     // The read-back merge did not resurrect the room locally either.
     expect('Build' in room.chat.$groupChats.get()).toBe(false)
   })
+
+  // Durable memory is keyed by roomId only: a name key would delete a fresh
+  // same-name room (syncRevision 0) on every pull after the sync window, and
+  // an older persisted `name:` entry must be dropped on hydrate for the same
+  // reason.
+  it('a same-name room recreated after the disband sync window survives a pull that lacks it', async () => {
+    const room = await loadRoom()
+    const view = await import('./group-chat-view')
+
+    room.chat.hydrateGroupChatTombstones({ 'id:room-9': 2, 'name:Core': 7 })
+    expect(room.chat.groupChatTombstoneMemory()).toEqual({ 'id:room-9': 2 })
+
+    // Legacy name-keyed room (no roomId), already published.
+    room.chat.$groupChats.set({
+      Core: {
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'c1', text: 'old', thread: 't' }],
+        sessions: {},
+        syncRevision: 3,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+    await view.disbandGroupChat('Core', [])
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
+    expect('name:Core' in room.chat.groupChatTombstoneMemory()).toBe(false)
+
+    // Sync window over; user recreates the name. Nothing published yet.
+    room.chat.updateGroupChat('Core', current => ({ ...current, roomId: room.chat.mintGroupRoomId() }), { sync: false })
+    room.chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'fresh start', 't2')
+
+    room.gateway.uiMeta['hermes-bots-groups'] = { deleted: {}, rooms: {}, updatedAt: 5, version: 3 }
+    room.gateway.uiMetaRevisions['hermes-bots-groups'] = 9
+    await room.chat.pullGroupChatServerState()
+
+    expect(room.chat.$groupChats.get().Core?.log.map(entry => entry.text)).toEqual(['fresh start'])
+  })
 })

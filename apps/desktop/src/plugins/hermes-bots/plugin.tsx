@@ -223,11 +223,15 @@ export default {
 
     // Hydrate persisted group-chat room logs (epoch/running are runtime-only
     // and always reset — a loop can't survive a window reload anyway).
+    // Disband memory must be in place before the first gateway pull merges
+    // a mirror that may still project a disbanded room (#105275) — the pull
+    // below awaits this, otherwise the first pull resurrects the room until
+    // the next one re-tombstones it.
+    let tombstonesHydrated: Promise<void> = Promise.resolve()
+
     try {
-      // Disband memory must be in place before the first gateway pull merges
-      // a mirror that may still project a disbanded room (#105275).
       // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
-      Promise.resolve(ctx.storage?.get?.('group-chat-tombstones'))
+      tombstonesHydrated = Promise.resolve(ctx.storage?.get?.('group-chat-tombstones'))
         .then(value => hydrateGroupChatTombstones(value))
         .catch(() => undefined)
     } catch {
@@ -310,6 +314,7 @@ export default {
           // Receive before publish. A fresh Desktop with no local room cache
           // must hydrate the gateway projection instead of merely avoiding an
           // empty overwrite and then rendering an empty conversation.
+          await tombstonesHydrated
           await pullGroupChatServerState().catch(() => false)
           scheduleGroupChatServerSync($groupChats.get())
         })

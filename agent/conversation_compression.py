@@ -1897,10 +1897,17 @@ def _lower_threshold_to_aux_context(
     only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
-    new_threshold = compressor.threshold_tokens = aux_context
+    # Install the freshly probed ceiling before touching the trigger so the cap pass
+    # below honours this probe's aux window rather than a stale one (#117093).
+    compressor._aux_context_ceiling = aux_context
+    compressor.threshold_tokens = aux_context
+    # The bare setter bypasses the configured threshold_tokens cap that every other
+    # writer applies via _apply_threshold_tokens_cap(); re-apply it so the live trigger
+    # stays at min(ratio threshold, cap) as documented in config_defaults.py (#117093).
+    compressor._apply_threshold_tokens_cap()
+    new_threshold = compressor.threshold_tokens
     # Durable ceiling: update_model() recomputes threshold_tokens from the main model on every window
     # correction and re-applies this through _apply_threshold_tokens_cap() (#114707).
-    compressor._aux_context_ceiling = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
     if getattr(compressor, "tail_mode", None) == "lean":
         # Keep the window-relative policy owned by the compressor property.

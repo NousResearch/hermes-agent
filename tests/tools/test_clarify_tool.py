@@ -14,6 +14,32 @@ from tools.clarify_tool import (
 )
 
 
+class TestClarifyPerCallControls:
+    def test_controls_reach_single_callback(self):
+        seen = {}
+        def callback(question, choices, timeout=None, auto_select=True):
+            seen.update(timeout=timeout, auto_select=auto_select)
+            return "answer"
+        clarify_tool("Q?", callback=callback, timeout=7, auto_select=False)
+        assert seen == {"timeout": 7, "auto_select": False}
+
+    def test_controls_reach_batch_callback_and_schema(self):
+        seen = {}
+        def callback(question, choices, questions=None, timeout=None, auto_select=True):
+            seen.update(timeout=timeout, auto_select=auto_select, count=len(questions))
+            return {"answers": {"q0": "yes"}}
+        result = json.loads(clarify_tool("", questions=[{"question": "Q?"}], callback=callback,
+                                      timeout=3, auto_select=False))
+        assert result["responses"][0]["user_response"] == "yes"
+        assert seen == {"timeout": 3, "auto_select": False, "count": 1}
+        props = CLARIFY_SCHEMA["parameters"]["properties"]
+        assert props["timeout"]["type"] == ["integer", "null"]
+        assert props["auto_select"]["default"] is True
+
+    def test_invalid_controls_return_tool_error(self):
+        assert "error" in json.loads(clarify_tool("Q?", timeout="7"))
+
+
 class TestClarifyToolBasics:
     """Basic functionality tests for clarify_tool."""
 

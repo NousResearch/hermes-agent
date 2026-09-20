@@ -1325,7 +1325,7 @@ class TurnRunner:
             return False
 
     def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False,
-                               questions=None) -> str:
+                               questions=None, timeout=None, auto_select: bool | None = None) -> str:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
         schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
         timeout. Returns the response string, or a sentinel when none arrived.
@@ -1336,11 +1336,14 @@ class TurnRunner:
         and treated that text as the question's answer.
         """
         if questions:
-            return self._clarify_batch_sync(questions)
-        response, _answered = self._ask_clarify_question(question, choices, multi_select)
+            return self._clarify_batch_sync(questions, timeout=timeout,
+                                             auto_select=True if auto_select is None else auto_select)
+        response, _answered = self._ask_clarify_question(
+            question, choices, multi_select, timeout=timeout,
+            auto_select=True if auto_select is None else auto_select)
         return response
 
-    def _clarify_batch_sync(self, questions) -> str:
+    def _clarify_batch_sync(self, questions, *, timeout=None, auto_select=True) -> str:
         """Answer a batch: one card per question, stop at the first the user never answers.
         Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
         the last question — between two cards it only opens a bubble the next boundary closes."""
@@ -1350,7 +1353,7 @@ class TurnRunner:
         for index, entry in enumerate(questions):
             raw, answered = self._ask_clarify_question(
                 entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
-                rearm=index == last)
+                rearm=index == last, timeout=timeout, auto_select=auto_select)
             if not answered:
                 # The surface's own no-answer text ("could not be delivered", "did not respond
                 # within Nm") rides along as ``notice``: blank answers alone read as user
@@ -1360,7 +1363,8 @@ class TurnRunner:
             answers[entry.get("qid") or f"q{index}"] = raw
         return json.dumps(payload, ensure_ascii=False)
 
-    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
+    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True,
+                              timeout=None, auto_select=True) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
         Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
         for a single question, the batch's ``timed_out`` flag."""
@@ -1415,7 +1419,11 @@ class TurnRunner:
         # failure — immediate or late — retries once as plain text before giving up.
         response, answered = _clarify_send_then_wait(
             fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
-            fallback=_text_fallback)
+            timeout=timeout, auto_select=auto_select, fallback=_text_fallback)
+        # Explicit per-call auto_select applies only when supplied by clarify_tool; direct legacy
+        # callers retain the pre-existing timeout result.
+        if not answered and auto_select and choices and timeout is not None:
+            response, answered = choices[0], True
         # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
         # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
         if not answered:

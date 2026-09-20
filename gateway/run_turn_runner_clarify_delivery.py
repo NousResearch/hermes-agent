@@ -77,6 +77,7 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> Optional
 
 
 def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod,
+                            timeout=None, auto_select=True,
                             fallback: Optional[Callable[[], Any]] = None) -> tuple[str, bool]:
     """Resolve a clarify prompt: send disposition, plain-text fallback, then the bounded wait.
 
@@ -105,13 +106,13 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
         return abort, False
     late = _LateFailureWatch(fut, clarify_id=clarify_id, session_key=session_key,
                              clarify_mod=clarify_mod, fallback=fallback)
-    timeout = clarify_mod.get_clarify_timeout()
-    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+    effective_timeout = clarify_mod.get_clarify_timeout() if timeout is None else timeout
+    response = clarify_mod.wait_for_response(clarify_id, timeout=float(effective_timeout))
     late.disarm()
     if late.undeliverable:
         return late.undeliverable, False
     if response is None or response == "":
-        return f"[user did not respond within {int(timeout / 60)}m]", False
+        return f"[user did not respond within {int(float(effective_timeout) / 60)}m]", False
     return response, True
 
 

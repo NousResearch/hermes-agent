@@ -59,11 +59,22 @@ def _accepts_kwarg(callback, name: str) -> bool:
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-def _invoke_callback(callback, question, choices, multi_select):
-    """Invoke the platform callback, passing multi_select if supported."""
-    if _accepts_kwarg(callback, "multi_select"):
-        return callback(question, choices, multi_select=multi_select)
-    return callback(question, choices)
+def _invoke_callback(callback, question, choices, multi_select, *, timeout=None, auto_select=True):
+    """Invoke a platform callback with optional per-call controls when supported."""
+    kwargs = {}
+    for name, value in (("multi_select", multi_select), ("timeout", timeout), ("auto_select", auto_select)):
+        if _accepts_kwarg(callback, name):
+            kwargs[name] = value
+    return callback(question, choices, **kwargs)
+
+
+def _timeout_controls(timeout, auto_select):
+    """Validate the per-call controls while retaining omitted-argument compatibility."""
+    if timeout is not None and (not isinstance(timeout, int) or isinstance(timeout, bool)):
+        return None, None, "timeout must be an integer or null."
+    if not isinstance(auto_select, bool):
+        return None, None, "auto_select must be a boolean."
+    return timeout, auto_select, None
 
 
 def _json_as(raw: str, kind):
@@ -156,7 +167,7 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, notice
     return json.dumps(result, ensure_ascii=False)
 
 
-def _run_batch(normalized: List[dict], callback, question: str) -> str:
+def _run_batch(normalized: List[dict], callback, question: str, *, timeout=None, auto_select=True) -> str:
     """Dispatch a validated batch. Batch-capable callbacks (``questions`` kwarg) get the
     whole list once and reply ``{"answers": {qid: raw}, "timed_out"?}`` as a dict or JSON
     string (the tui_gateway bridge only carries strings); any other falsy/unparseable reply
@@ -167,7 +178,12 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
     timed_out = False
     notice = None
     if _accepts_kwarg(callback, "questions"):
-        raw = callback(question, None, questions=normalized)
+        kwargs = {"questions": normalized}
+        if _accepts_kwarg(callback, "timeout"):
+            kwargs["timeout"] = timeout
+        if _accepts_kwarg(callback, "auto_select"):
+            kwargs["auto_select"] = auto_select
+        raw = callback(question, None, **kwargs)
         timed_out = _is_timeout(raw)
         if isinstance(raw, str):
             raw = _json_as(raw, dict)  # the sentinel is not JSON -> None, timed_out stays True
@@ -177,7 +193,8 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
             notice = raw.get("notice")
         return _batch_result(normalized, answers, timed_out, notice)
     for entry in normalized:
-        raw = _invoke_callback(callback, entry["question"], entry["choices"], entry["multi_select"])
+        raw = _invoke_callback(callback, entry["question"], entry["choices"], entry["multi_select"],
+                               timeout=timeout, auto_select=auto_select)
         if _is_timeout(raw):
             timed_out = True
             break
@@ -186,7 +203,8 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
 
 
 def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_select: bool = False,
-                 questions: Optional[List[dict]] = None, callback: Optional[Callable] = None) -> str:
+                 questions: Optional[List[dict]] = None, callback: Optional[Callable] = None,
+                 timeout: Optional[int] = None, auto_select: bool = True) -> str:
     """Ask one question (``question``/``choices``/``multi_select``) or a batch (``questions``
     wins when non-empty). ``callback(question, choices, multi_select=False) -> str`` is
     platform injected (batch-capable ones also take ``questions=``). Returns result JSON.
@@ -202,6 +220,9 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     normalized list in one call; platforms without it are looped one question at a time. Injected by the
     agent runner (cli.py / gateway).
     """
+    timeout, auto_select, controls_error = _timeout_controls(timeout, auto_select)
+    if controls_error:
+        return tool_error(controls_error)
     if questions is not None:
         normalized, error = _normalize_questions(questions)
         if error:
@@ -210,7 +231,8 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
             if callback is None:
                 return tool_error(_UNAVAILABLE)
             try:
-                return _run_batch(normalized, callback, str(question or "").strip())
+                return _run_batch(normalized, callback, str(question or "").strip(),
+                                   timeout=timeout, auto_select=auto_select)
             except Exception as exc:
                 return tool_error(f"Failed to get user input: {exc}")
         # Empty questions array → fall through to the single-question path.
@@ -228,7 +250,8 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     # The bare list goes back to the agent; the "(Recommended)" label is presentation only.
     shown = mark_recommended(choices) if choices is not None else None
     try:
-        raw_response = _invoke_callback(callback, question, shown, multi_select)
+        raw_response = _invoke_callback(callback, question, shown, multi_select,
+                                    timeout=timeout, auto_select=auto_select)
     except Exception as exc:
         return tool_error(f"Failed to get user input: {exc}")
     return json.dumps({"question": question, "choices_offered": choices,
@@ -289,6 +312,15 @@ CLARIFY_SCHEMA = {
                     "required": ["question"],
                 },
             },
+            "timeout": {
+                "type": ["integer", "null"],
+                "description": "This call's timeout in seconds; null uses the global clarify.timeout; 0 means unlimited.",
+            },
+            "auto_select": {
+                "type": "boolean",
+                "default": True,
+                "description": "When true, timeout selects the first option; when false, return a timeout result.",
+            },
             # NOTE: the handler also accepts (unadvertised): a per-question
             # `id` (echoed in the matching response — redundant since rows
             # carry the question text and preserve order), and the legacy
@@ -312,6 +344,8 @@ registry.register(
         choices=args.get("choices"),
         multi_select=args.get("multi_select", False),
         questions=args.get("questions"),
+        timeout=args.get("timeout"),
+        auto_select=args.get("auto_select", True),
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",

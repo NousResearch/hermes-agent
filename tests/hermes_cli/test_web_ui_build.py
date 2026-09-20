@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.main_web_build import _build_web_ui, _run_npm_install_deterministic
-from hermes_cli.main_web_build import _web_ui_build_needed, _compute_web_ui_content_hash, _missing_web_build_tool, _web_ui_stamp_path, _write_web_ui_build_stamp
+from hermes_cli.main_web_build import _web_ui_build_needed, _compute_web_ui_content_hash, _missing_web_build_tool, _web_ui_stamp_path, _write_web_ui_build_stamp, _web_build_idle_timeout_seconds
 from hermes_cli.update_cmd import _web_build_toolchain_ready, _web_toolchain_roots
 
 
@@ -418,4 +418,60 @@ class TestBuildRecoversFromMissingToolchain:
         assert result is True
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
+
+
+class TestWebBuildIdleTimeout:
+    """``HERMES_WEB_BUILD_IDLE_TIMEOUT`` env handling (a cold ``tsc -b`` is silent for minutes).
+
+    The web build must NOT inherit the helper's generic 180s idle window: a
+    silent-but-healthy TypeScript compile gets killed mid-build on slow hosts,
+    leaving the dashboard stale after every update.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", raising=False)
+
+    def test_defaults_to_600_seconds(self):
+        assert _web_build_idle_timeout_seconds() == 600
+
+    def test_reads_explicit_override(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "900")
+        assert _web_build_idle_timeout_seconds() == 900
+
+    def test_junk_override_falls_back_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "banana")
+        with caplog.at_level("WARNING"):
+            assert _web_build_idle_timeout_seconds() == 600
+        assert "Invalid HERMES_WEB_BUILD_IDLE_TIMEOUT" in caplog.text
+
+    def test_non_positive_override_falls_back(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "0")
+        assert _web_build_idle_timeout_seconds() == 600
+
+    def test_build_call_site_uses_the_web_timeout(self, tmp_path):
+        """Contract: the web build passes the enlarged idle window to the helper.
+
+        Asserts the relationship (web build -> web timeout) rather than the
+        literal 600, so retuning the default does not break the test.
+        """
+        from hermes_cli import main_web_build as mwb
+
+        captured: dict = {}
+
+        def _fake_idle(cmd, cwd, *, idle_timeout_seconds=180, indent="    ", env=None):
+            captured["timeout"] = idle_timeout_seconds
+            return __import__("subprocess").CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        web_dir, _ = _make_web_dir(tmp_path)
+        with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", side_effect=_fake_idle), \
+             patch("hermes_cli.main_web_build._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main_web_build._write_web_ui_build_stamp"):
+            assert _build_web_ui(web_dir) is True
+
+        assert captured["timeout"] == mwb._web_build_idle_timeout_seconds()
+        assert captured["timeout"] > 180
 

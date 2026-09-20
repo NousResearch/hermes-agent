@@ -139,6 +139,30 @@ def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[An
     return history[:head_end] + history[tail_start:]
 
 
+def hygiene_no_commit_reason(agent) -> str:
+    """Name WHY a hygiene compression left the session id unchanged with no in-place commit.
+    The terminal ``else`` used to blame "no session_db on the hygiene agent" for every route into it,
+    but that is one of several causes (#71097): an attempt that ABORTED before any commit boundary
+    (lock skip, transient cooldown, summary timeout, codex thread interrupted) leaves
+    ``_last_compression_attempt_in_place`` at ``None``; a DB-less agent is only the case when
+    ``_session_db`` really is missing. Read the per-attempt signals the compressor sets, in that order."""
+    if not bool(getattr(agent, "_last_compression_attempt_recorded", False)):
+        return "compression did not run"
+    lock_skip = getattr(agent, "_compression_skipped_due_to_lock", None)
+    if lock_skip is True or isinstance(lock_skip, str):
+        return "attempt skipped: compression lease held by another process"
+    blocked = getattr(agent, "_compression_blocked_transient", None)
+    if blocked:
+        return f"attempt blocked: {blocked}"
+    if getattr(agent, "_last_compression_attempt_in_place", None) is None:
+        detail = "summary timed out" if getattr(agent, "_last_compression_timed_out", False) else "aborted before commit"
+        warning = getattr(agent, "_last_compression_summary_warning", None)
+        return f"attempt {detail}" + (f": {warning}" if warning else "")
+    if getattr(agent, "_session_db", None) is None:
+        return "no session_db on the hygiene agent"
+    return "in-place commit did not complete"
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -155,6 +179,10 @@ class GatewayTurnMixin:
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
         skey = self._resolve_session_key_or_none(source, session_key)
+        # Every exit path starts clean: the /model-override fast path returns before the pop below,
+        # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
+        # notice must never attach to another session's next turn (#74349).
+        self._pre_agent_fallback_notice = None
 
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -194,6 +222,9 @@ class GatewayTurnMixin:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
+        # runner surfaces it through the agent's one-shot fallback notice (#74349).
+        self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
@@ -1101,9 +1132,9 @@ class GatewayTurnMixin:
             _new_count = plan.msg_count
             _new_tokens = plan.approx_tokens
             logger.warning(
-                "Gateway hygiene compression for session %s did not rotate or compact in place (no "
-                "session_db on the hygiene agent) — preserving the original transcript instead "
-                "of overwriting it with the summary (#21301).", session_entry.session_id,
+                "Gateway hygiene compression for session %s did not rotate or compact in place (%s) — "
+                "preserving the original transcript instead of overwriting it with the summary (#21301).",
+                session_entry.session_id, hygiene_no_commit_reason(_hyg_agent),
             )
 
         logger.info(
@@ -1603,6 +1634,8 @@ class GatewayTurnMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                requested_model=agent_result.get("requested_model"),
+                served_model=agent_result.get("served_model"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -3320,13 +3353,19 @@ class GatewayTurnMixin:
                     if matcher(final_text) is False:
                         return False
             return True
-        if previewed:
-            has_delivered_text = getattr(consumer, "has_delivered_text", None)
-            if callable(has_delivered_text):
-                try:
-                    return bool(has_delivered_text(final_text))
-                except Exception:
-                    return False
+        # Exact-text match against what the consumer DURABLY delivered (commentary, segments, and the
+        # visible prefix only once a real send landed) — safe without the ``previewed`` flag. The codex
+        # app-server bridge delivers the final agentMessage through the commentary path and never sets
+        # response_previewed (#74248 / #80519); gating on the flag re-sent every such reply. Mismatching
+        # commentary still returns False, so a distinct final answer is never suppressed (#65919). Draft
+        # frames are ephemeral and must not count: after draft streaming + a failed finalize send this
+        # predicate must stay False so the fallback final send still fires (#51828 / #33793).
+        has_delivered_text = getattr(consumer, "has_durably_delivered_text", None)
+        if callable(has_delivered_text):
+            try:
+                return bool(has_delivered_text(final_text))
+            except Exception:
+                return False
         return False
 
     def _run_agent_start_turn_worker(self, turn_ctx: TurnContext, run_sync: Callable[[], Any]) -> "GatewayRunner._RunAgentWorker":

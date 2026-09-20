@@ -213,6 +213,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             _u.seed_record_if_missing(name)
             counts["seeded"] += 1
             continue
+        # A bundled skill's telemetry record predates the curator's first sight of it; anchor the clock here, once.
+        if (row.get("provenance") == "bundled" and int(row.get("use_count", 0) or 0) == 0
+                and not _parse_iso(row.get("last_activity_at")) and not row.get("first_seen_at")):
+            _u.reanchor_clock(name)
+            counts["seeded"] += 1
+            continue
         # Never-active skills anchor on created_at so they don't self-archive.
         anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
@@ -1005,7 +1011,7 @@ def _resolve_review_provider() -> tuple:
     explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
     (HTTP 400 "No models provided"). Never raises."""
     rp: Dict[str, Any] = {}
-    overrides, provider, model_name = {}, None, ""
+    overrides, provider, model_name, binding = {}, None, "", None
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1020,7 +1026,8 @@ def _resolve_review_provider() -> tuple:
         if isinstance(rp.get("model"), str) and rp["model"].strip():
             model_name = rp["model"].strip()
     except Exception as e:
-        logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
+        logger.warning("curator: auxiliary.curator.provider '%s' (model '%s') could not be resolved: %s — the review "
+                       "runs on the main model instead", getattr(binding, "provider", None), model_name, e)
     return rp, model_name, provider, overrides
 
 
@@ -1041,10 +1048,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import resolve_reasoning_config
+
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
             request_overrides=request_overrides, **agent_kwargs,
+            # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches
+            # the review fork and the transport applies its default effort (a 400 on non-reasoning models).
+            reasoning_config=resolve_reasoning_config(load_config_readonly(), model_name),
             # No ``terminal``: a shell mv/cp/rm under the skills tree writes bytes
             # with NO ledger entry, so rollback would restore a hollow skill. Every
             # mutation goes through ledgered skill_manage; dropping the toolset

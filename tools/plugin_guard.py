@@ -22,7 +22,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v5"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v7"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {

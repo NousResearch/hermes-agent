@@ -29,6 +29,25 @@ def _sanitize_surrogates(text: str) -> str:
     return _SURROGATE_RE.sub('\ufffd', text)
 
 
+# OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
+# (``multi_tool_use.parallel``, a shell command a weak model put in ``name``) 400s every later
+# request on a strict endpoint (#51944).
+_VALID_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
+    """Coerce a *replayed* tool/function name to ``^[A-Za-z0-9_-]{1,64}$``. Valid names are returned
+    as-is (identity — prompt-cache safe); invalid runs collapse to ``_`` and the result is cut at 64;
+    empty/all-invalid → ``fallback``. Deterministic, so the same stored name always renders the same
+    bytes. Never apply to live tool definitions (schema names must match the dispatch registry)."""
+    if not isinstance(name, str):
+        return fallback
+    if _VALID_TOOL_NAME_RE.fullmatch(name):
+        return name
+    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip("_")
+    return coerced[:64] or fallback
+
+
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
     return text.encode('ascii', errors='ignore').decode('ascii')
@@ -326,6 +345,7 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
 __all__ = [
     "_SURROGATE_RE", "close_interrupted_tool_sequence",
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+    "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",

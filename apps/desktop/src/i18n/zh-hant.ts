@@ -473,6 +473,10 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      hideCodeDiffsTitle: '隱藏程式碼差異',
+      hideCodeDiffsDesc: '將檔案編輯顯示為附有新增和刪除行數的行內工具列，不顯示程式碼。',
+      hideThreadTimelineTitle: '隱藏對話時間軸列',
+      hideThreadTimelineDesc: '隱藏每個對話右側邊緣的導覽列。',
       reasoningCollapsedTitle: '預設摺疊推理過程',
       reasoningCollapsedDesc: '保留串流推理內容，但在您開啟前維持摺疊。',
       uiScaleTitle: '介面縮放',
@@ -607,7 +611,7 @@ export const zhHant = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
-      modelContextLength: '上下文視窗',
+      modelContextLength: '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
       fallbackProviders: '備用模型',
       toolsets: '已啟用工具集',
       timezone: '時區',
@@ -767,6 +771,11 @@ export const zhHant = defineLocale({
         targetRatio: '壓縮目標',
         protectLastN: '保護最近訊息'
       },
+      auxiliary: {
+        compression: {
+          timeout: '壓縮模型逾時（秒）'
+        }
+      },
       delegation: {
         model: '子代理模型',
         provider: '子代理提供方',
@@ -830,6 +839,11 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '對話變大時摘要較早的上下文。',
         codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
+      },
+      auxiliary: {
+        compression: {
+          timeout: '每次呼叫輔助壓縮模型的等待秒數（預設 120）。本機模型較慢時請調高。'
+        }
       },
       browser: {
         useRealProfile:
@@ -2943,6 +2957,7 @@ export const zhHant = defineLocale({
       xhigh: '極高',
       max: '最高',
       ultra: '超高',
+      sendsOnRoute: (level: string) => `此路由實際傳送 ${level}`,
       updateFailed: '模型選項更新失敗',
       fastFailed: '快速模式更新失敗'
     },
@@ -3293,6 +3308,10 @@ export const zhHant = defineLocale({
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorLimitResets: time => `限額將於 ${time} 重設`,
+      errorRetryAtReset: time => `限額重設後重試（${time}）`,
+      errorRetryScheduled: (time, wait) => `將於 ${time} 重試 — 還剩 ${wait}`,
+      errorRetryScheduledCancel: '取消',
       errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
       errorSignInAgain: provider => `重新登入 ${provider}`,

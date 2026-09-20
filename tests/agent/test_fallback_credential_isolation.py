@@ -158,7 +158,8 @@ class TestFallbackCredentialIsolation:
             assert try_activate_fallback(agent) is True
 
         resolve_provider_client.assert_called_once()
-        load_pool.assert_called_once_with("openai-codex")
+        # Loaded once for the exhausted-pool pre-check and once to attach; both for the fallback provider only.
+        assert {c.args for c in load_pool.call_args_list} == {("openai-codex",)}
         assert agent.provider == "openai-codex"
         assert agent.model == "gpt-5.5"
         assert agent.base_url == "https://chatgpt.com/backend-api/codex"
@@ -166,6 +167,40 @@ class TestFallbackCredentialIsolation:
         assert agent._credential_pool is fallback_pool
         assert agent._credential_pool.provider == "openai-codex"
         assert agent._transport_cache == {}
+
+    def test_fallback_skips_a_candidate_whose_pool_is_exhausted_for_hours(self):
+        """#89401: a fallback whose every credential is benched until the weekly quota resets is
+        skipped before any client is built; a short throttle on the next candidate is still tried."""
+        import time
+        from agent.chat_completion_helpers import try_activate_fallback
+
+        agent = _make_agent(provider="anthropic", model="claude", base_url="https://api.anthropic.com", api_mode="chat_completions")
+        agent._fallback_chain = [{"provider": "openai-codex", "model": "gpt-5.5"}, {"provider": "openrouter", "model": "m"}]
+        agent._credential_pool = _make_pool("anthropic")
+        agent._buffer_status = MagicMock()
+        agent._is_azure_openai_url.return_value = False
+        agent._is_direct_openai_url.return_value = False
+        agent._provider_model_requires_responses_api.return_value = False
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded = MagicMock()
+        agent._replace_primary_openai_client = MagicMock()
+        agent.context_compressor = None
+
+        benched = _make_pool("openai-codex")
+        benched.has_available.return_value = False
+        benched.next_available_at.return_value = time.time() + 30995
+        throttled = _make_pool("openrouter")
+        throttled.has_available.return_value = False
+        throttled.next_available_at.return_value = time.time() + 30
+        pools = {"openai-codex": benched, "openrouter": throttled}
+        client = SimpleNamespace(api_key="k", base_url="https://openrouter.ai/api/v1", _custom_headers={})
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, "m")) as resolve, \
+                patch("agent.credential_pool.load_pool", side_effect=lambda p: pools[p]):
+            assert try_activate_fallback(agent) is True
+
+        assert resolve.call_count == 1 and resolve.call_args.args[0] == "openrouter"
+        assert agent.provider == "openrouter" and agent._credential_pool is throttled
 
 
 # ── Test: _recover_with_credential_pool rejects mismatched pool ──────

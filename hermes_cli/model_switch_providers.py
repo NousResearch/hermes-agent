@@ -355,7 +355,21 @@ def _overlay_has_env_creds(pid: str, hermes_slug: str, overlay, read_env) -> boo
             pcfg = PROVIDER_REGISTRY.get(key)
             if pcfg and pcfg.api_key_env_vars and _any_env(pcfg.api_key_env_vars, read_env):
                 return True
+    if not has_creds and hermes_slug == "azure-foundry":
+        has_creds = _azure_entra_configured(read_env)
     return has_creds
+
+
+def _azure_entra_configured(read_env=os.environ.get) -> bool:
+    """Azure Foundry under ``model.auth_mode: entra_id`` mints a per-request bearer, so no
+    ``AZURE_FOUNDRY_API_KEY`` ever exists; the row is configured once the runtime resolver's own
+    inputs are (provider + auth_mode + an endpoint). No token is minted here (#27989)."""
+    from hermes_cli.models import _get_model_config_dict
+    model_cfg = _get_model_config_dict()
+    if (str(model_cfg.get("provider") or "").strip().lower() != "azure-foundry"
+            or str(model_cfg.get("auth_mode") or "").strip().lower() != "entra_id"):
+        return False
+    return bool(str(model_cfg.get("base_url") or "").strip() or read_env("AZURE_FOUNDRY_BASE_URL"))
 
 
 def _has_fast_aws_sdk_signal() -> bool:
@@ -860,9 +874,10 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
     return has_creds
 
 
-def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
+def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 2: Hermes-only providers (nous, openai-codex, copilot, opencode-go, ...)."""
     from agent.models_dev import PROVIDER_TO_MODELS_DEV
+    from hermes_cli.model_switch import _declared_model_ids
     from hermes_cli.providers import HERMES_OVERLAYS
 
     # HERMES_OVERLAYS keys may be models.dev IDs ("github-copilot") while config.yaml uses
@@ -891,6 +906,11 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
         else:
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid,
                                              non_blocking=b.non_blocking_catalogs)
+        # A providers.<overlay>.models block extends the row exactly as it does for built-in rows
+        # (section 1); section 3 never emits it because this row owns the slug (#27989).
+        configured = user_providers.get(hermes_slug) or user_providers.get(pid) if isinstance(user_providers, dict) else None
+        if isinstance(configured, dict):
+            model_ids = list(dict.fromkeys([*_declared_model_ids(configured.get("models")), *model_ids]))
         b.add_builtin_row(
             hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes")
         b.seen_slugs.add(pid.lower())
@@ -917,6 +937,14 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
+            # Subprocess-backed providers own their auth; the binary resolving is the credential
+            # evidence for listing (same gate as the copilot-acp overlay row and hermes auth status).
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+                has_creds = bool(get_external_process_provider_status(cp.slug).get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for %s: %s", cp.slug, exc)
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):
@@ -1203,7 +1231,7 @@ def list_authenticated_providers(
 
     _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
-    _lap_overlay_rows(b, data)
+    _lap_overlay_rows(b, data, user_providers)
     _lap_canonical_rows(b)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)

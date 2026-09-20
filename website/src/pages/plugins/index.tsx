@@ -376,32 +376,6 @@ function PluginCard({
   );
 }
 
-const TRUST_ICONS = {
-  check: "M4 10.5l3.5 3.5L16 5.5",
-  lock: "M6 9V7a4 4 0 118 0v2M5 9h10v8H5z",
-  download: "M10 3v10m0 0l-4-4m4 4l4-4M4 17h12",
-} as const;
-
-function TrustChip({ icon, text }: { icon: keyof typeof TRUST_ICONS; text: string }) {
-  return (
-    <li className={styles.trustChip}>
-      <svg
-        className={styles.trustIcon}
-        viewBox="0 0 20 20"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d={TRUST_ICONS[icon]} />
-      </svg>
-      {text}
-    </li>
-  );
-}
-
 function buildSearchHaystack(p: CatalogPlugin): string {
   return [
     p.name,
@@ -590,7 +564,7 @@ export default function PluginCatalogPage() {
             </nav>
             <p className={styles.heroSub}>
               Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
-              built by the community and reviewed by the Hermes team before it reaches you.
+              built by the community.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
@@ -619,14 +593,6 @@ export default function PluginCatalogPage() {
                   {formatRelativeTime(meta.generatedAt) || "recently"}
                 </span>
               </p>
-            )}
-
-            {!catalogEmpty && (
-              <ul className={styles.trustRow} aria-label="What every listing gets you">
-                <TrustChip icon="check" text="Reviewed by the Hermes team" />
-                <TrustChip icon="lock" text="Installs exactly the version we reviewed" />
-                <TrustChip icon="download" text="One click from Hermes Desktop" />
-              </ul>
             )}
           </div>
         </header>

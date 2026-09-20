@@ -28,8 +28,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_cli.config import (
-    get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
@@ -76,8 +74,9 @@ from hermes_cli.auth_codex import (  # noqa: F401  re-exported
     _codex_access_token_is_expiring, _codex_device_code_login, _codex_http_client,
     _codex_pool_rate_limit_status, _codex_quota_probe_cache, _codex_usage_probe_url,
     _import_codex_cli_tokens, _is_codex_rate_limit_shaped, _login_openai_codex,
-    _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens, _save_codex_tokens,
-    clear_codex_pool_quota_cooldowns, refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
+    _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
+    _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
+    refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
 from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
     _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
     resolve_spotify_runtime_credentials)
@@ -248,40 +247,19 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
 }
 
-# Providers handled outside the registry: copilot/kimi/zai have bespoke token refresh here;
-# openrouter/custom are aggregator/user-supplied and runtime_provider relies on
-# ``openrouter not in PROVIDER_REGISTRY``.
-_REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"})
+# ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
+# module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so
+# a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
+# rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
+from hermes_cli.config import (  # noqa: E402
+    get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
+# Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
+# auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
+from hermes_cli.auth_plugin_providers import (  # noqa: E402
+    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
-def _register_plugin_provider(pp: Any) -> None:
-    """Auto-register one providers/ profile (plugins/model-providers/<name>/) not declared above.
-
-    External-process (ACP) providers have no API-key env vars; registering them is what lets an
-    out-of-tree provider pass ``resolve_provider()``'s known-provider gate ("Unknown provider")."""
-    if pp.auth_type == "external_process":
-        pconfig = ProviderConfig(
-            pp.name, pp.display_name or pp.name, "external_process", inference_base_url=pp.base_url)
-    elif pp.auth_type == "api_key" and pp.env_vars and pp.name not in _REGISTRY_PLUGIN_SKIP:
-        is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
-        pconfig = _api_key_provider(
-            pp.name, pp.display_name or pp.name, pp.base_url,
-            tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
-            next((v for v in pp.env_vars if is_url(v)), None) or "")
-    else:
-        return
-    PROVIDER_REGISTRY[pp.name] = pconfig
-    for alias in pp.aliases:  # so resolve_provider() resolves them too
-        PROVIDER_REGISTRY.setdefault(alias, pconfig)
-
-
-try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
-        if _pp.name not in PROVIDER_REGISTRY:
-            _register_plugin_provider(_pp)
-except Exception:
-    pass
+sync_plugin_provider_registry()
 
 
 def get_anthropic_key() -> str:
@@ -738,7 +716,7 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
+    return _registry_lookup(normalized) is not None or normalized in SERVICE_PROVIDER_NAMES
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
@@ -778,7 +756,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 _POOL_STATUS_FIELDS = (
     "last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message",
-    "last_error_reset_at")
+    "last_error_reset_at", "status_cleared_at")
 
 
 def _merge_disk_cooldown_state(
@@ -788,7 +766,10 @@ def _merge_disk_cooldown_state(
 
     ``write_credential_pool`` persists an in-memory snapshot that may predate another process
     marking the same credential exhausted/dead; without this merge the later rewrite resurrects a
-    rate-limited key as healthy and both processes resume hammering it."""
+    rate-limited key as healthy and both processes resume hammering it. The mirror image is a
+    ``hermes auth reset`` that postdates the snapshot's cooldown (``status_cleared_at`` newer than
+    its ``last_status_at``): the disk row wins there too, or a live session's next ordinary flush
+    would write the reset cooldown straight back (#89415)."""
     if not isinstance(disk_entry, dict):
         return entry
     try:
@@ -801,7 +782,12 @@ def _merge_disk_cooldown_state(
         from agent.credential_pool_model_cooldowns import merge_model_cooldowns
         merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
         merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
+        disk_status_fields = {f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}
 
+        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
+        cleared_ts = _parse_absolute_timestamp(disk_entry.get("status_cleared_at")) or 0.0
+        if entry.get("last_status") in (STATUS_DEAD, STATUS_EXHAUSTED) and cleared_ts > mem_ts:
+            return {**merged, **disk_status_fields}
         disk_status = disk_entry.get("last_status")
         if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
             return merged
@@ -812,14 +798,13 @@ def _merge_disk_cooldown_state(
         if mem_access and disk_access and mem_access != disk_access:
             return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
-        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
         if disk_ts <= mem_ts:
             return merged
         if disk_status == STATUS_EXHAUSTED:
             until = _exhausted_until(PooledCredential.from_dict(provider_id, disk_entry))
             if until is None or until <= time.time():
                 return merged
-        return {**merged, **{f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}}
+        return {**merged, **disk_status_fields}
     except Exception:  # pragma: no cover - best-effort merge
         return entry
 
@@ -1187,6 +1172,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "go": "opencode-go", "opencode-go-sub": "opencode-go",
     "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
+    "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
     "vllm": "custom", "llamacpp": "custom",
@@ -1348,7 +1334,7 @@ def resolve_provider(
     normalized = (requested or "auto").strip().lower()
     normalized = _plugin_aliases().get(normalized, normalized)
 
-    if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
+    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)
@@ -1726,10 +1712,13 @@ def _codex_pool_rate_limited_status() -> Optional[Dict[str, Any]]:
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
-    """Status snapshot for Codex auth (pool first, then legacy provider state)."""
+    """Status snapshot for Codex auth (pool first, then legacy provider state).
+
+    Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
     return _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
-        resolve=resolve_codex_runtime_credentials, on_pool_miss=_codex_pool_rate_limited_status)
+        resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
+        on_pool_miss=_codex_pool_rate_limited_status)
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
@@ -1737,7 +1726,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
     # unconditionally (auth.json may still carry a legacy ``oauth_pkce`` label).
     return _pool_first_oauth_status(
         "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
-        resolve=resolve_xai_oauth_runtime_credentials)
+        resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
@@ -1754,7 +1743,7 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
@@ -1774,14 +1763,21 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         "base_url": base_url, "logged_in": configured}
 
 
-def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[str]]:
+def _external_process_auth_evidence(provider_id: str, resolved_command: Optional[str]) -> tuple[bool, Optional[str]]:
     """Best-effort POSITIVE evidence ``(verified, source)`` that an external-process CLI is authed.
 
-    False means "not verifiable from here", NOT "signed out" (the Copilot CLI may use an OS keychain
-    Hermes can't read). Deliberately subprocess-free: spawning ``gh auth token`` from status
-    endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids."""
-    if provider_id != "copilot-acp":
-        return False, None
+    False means "not verifiable from here", NOT "signed out". Subprocess-free (spawning the CLI from
+    status endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids). Generic evidence
+    for any external-process profile is its binary resolving: the subprocess owns real auth and Hermes
+    has nothing else to inspect, so out-of-tree ACP rows pass credential-gated surfaces (Desktop
+    ``explicit_only`` picker) like the bundled one, whose CLI additionally exposes readable token stores."""
+    if provider_id == "copilot-acp":
+        return _copilot_acp_auth_evidence()
+    return (True, f"command: {resolved_command}") if resolved_command else (False, None)
+
+
+def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
+    """Copilot CLI token stores readable without spawning it (env tokens, plaintext config, hosts.json)."""
     # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
     try:
         from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
@@ -1842,12 +1838,12 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 
     ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
     subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
     command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
     available = bool(resolved_command or base_url.startswith("acp+tcp://"))
-    auth_verified, auth_source = _external_process_auth_evidence(provider_id)
+    auth_verified, auth_source = _external_process_auth_evidence(provider_id, resolved_command)
     return {
         "configured": available, "provider": provider_id, "name": pconfig.name, "command": command,
         "args": args, "resolved_command": resolved_command, "base_url": base_url,
@@ -1874,7 +1870,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
     if status_fn_name:
         return globals()[status_fn_name]()
-    pconfig = PROVIDER_REGISTRY.get(target)
+    pconfig = _registry_lookup(target)
     if pconfig and pconfig.auth_type in _STATUS_BY_AUTH_TYPE:
         return globals()[_STATUS_BY_AUTH_TYPE[pconfig.auth_type]](target)
     return {"logged_in": False}
@@ -1889,7 +1885,10 @@ _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",
-    "aws_sdk": "_get_aws_sdk_auth_status"}
+    "aws_sdk": "_get_aws_sdk_auth_status",
+    # OAuth-shaped plugin providers (their login lives in the plugin's auth_handler, tokens in the pool).
+    "oauth_device_code": "get_plugin_oauth_auth_status",
+    "oauth_external": "get_plugin_oauth_auth_status"}
 
 
 def _get_azure_foundry_auth_status() -> Dict[str, Any]:
@@ -1974,7 +1973,7 @@ _API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
@@ -2005,7 +2004,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
             f"Provider '{provider_id}' is not an external-process provider.",

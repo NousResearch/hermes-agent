@@ -69,6 +69,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -116,6 +117,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
@@ -1085,6 +1087,16 @@ class _ProviderAuthResolutionError(RuntimeError):
     """Provider credential resolution failed. Typed so callers never mislabel other
     RuntimeErrors from run_conversation() (e.g. a closed OpenAI client) as auth failures."""
 
+    def user_text(self) -> str:
+        """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
+        authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
+        from hermes_cli.auth import is_rate_limited_auth_error
+
+        cause = self.__cause__
+        cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
+        label = "Provider rate-limited" if is_rate_limited_auth_error(cause) else "Provider authentication failed"
+        return f"⚠️ {label}: {self}"
+
 
 class _SessionEventQueue:
     """Ordered SSE event queue for one /api/sessions/{id}/chat/stream run. ``payload`` stamps
@@ -1149,6 +1161,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
     interactive_resume: bool = False
+    # Opt-in cap (chars) on tool outputs / tool-call arguments in the stored /v1/responses
+    # transcript; 0 = store verbatim (gateway.api_server.history_tool_output_max_chars, #82513).
+    _history_tool_output_max_chars: int = 0
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
@@ -1188,6 +1203,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._last_resolved_model: Dict[str, str] = {}
         self._session_db_lock: Optional[asyncio.Lock] = None  # single-flight for lazy init
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
+        self._history_tool_output_max_chars = self._resolve_api_server_int(
+            "history_tool_output_max_chars", default=0)
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
         # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
@@ -1290,12 +1307,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _resolve_max_concurrent_runs() -> int:
         """gateway.api_server.max_concurrent_runs (0 disables; default 10; negatives -> 0)."""
-        default = 10
+        return APIServerAdapter._resolve_api_server_int("max_concurrent_runs", default=10)
+
+    @staticmethod
+    def _resolve_api_server_int(key: str, *, default: int) -> int:
+        """Integer setting under gateway.api_server (unreadable config -> default; negatives -> 0)."""
         try:
             from hermes_cli.config import cfg_get, load_config
-            raw = cfg_get(
-                load_config(), "gateway", "api_server", "max_concurrent_runs", default=default)
-            value = int(raw)
+            value = int(cfg_get(load_config(), "gateway", "api_server", key, default=default))
         except Exception:
             return default
         return max(0, value)
@@ -2147,7 +2166,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, gateway_session_key: Optional[str] = None,
+        tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
+        status_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
@@ -2171,6 +2191,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
         # must not collide with the ``**runtime_kwargs`` spread).
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
+        runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(
@@ -2180,6 +2201,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             gateway_session_key=gateway_session_key, session_id=session_id)
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``
+        # off means no callback is installed, so mid-turn commentary never leaves the agent.
+        if not resolve_display_setting(user_config, "api_server", "interim_assistant_messages", True):
+            interim_assistant_callback = None
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy
@@ -2200,6 +2225,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "interim_assistant_callback": interim_assistant_callback,
+            "reasoning_callback": reasoning_callback,
+            "status_callback": status_callback,
             "session_db": self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
@@ -3223,6 +3251,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _commentary(text: str, *, already_streamed: bool = False) -> None:
+            # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)
+            # as its own typed event — never folded into ``assistant.completed`` (#67580).
+            if isinstance(text, str) and text.strip():
+                events.enqueue("assistant.commentary", {
+                    "message_id": message_id, "text": text, "already_streamed": bool(already_streamed)})
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3233,7 +3268,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                    tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
+                    active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3731,7 +3767,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, user_message: str, conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
+        tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
+        status_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
@@ -3771,6 +3808,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                         stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                        interim_assistant_callback=interim_assistant_callback,
+                        reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
@@ -3816,10 +3855,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 except _ProviderAuthResolutionError as exc:
                     # Typed provider-auth failure only, handled once for every caller in
                     # run.py's response shape (text, no HTTP error).
-                    logger.warning("Provider authentication failed for session=%s: %s",
+                    logger.warning("Provider resolution failed for session=%s: %s",
                                    session_id or "", exc)
                     return (
-                        {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [],
+                        {"final_response": exc.user_text(), "messages": [],
                          "api_calls": 0, "tools": [],
                          **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})

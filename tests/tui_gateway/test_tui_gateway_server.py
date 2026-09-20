@@ -985,7 +985,7 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     stale.mkdir()
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_hermes_home", tmp_path / "launch-home")
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
 
     assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
@@ -1006,9 +1006,10 @@ def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_pa
     configured.mkdir()
     stale = tmp_path / "hermes-agent"
     stale.mkdir()
+    launch_home = _write_profile_cfg(tmp_path / "launch-home", str(configured))
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
     monkeypatch.setattr(server, "_profile_home", lambda _name: None)
 
     assert server._completion_cwd({}) == str(configured)
@@ -1022,14 +1023,15 @@ def test_default_session_cwd_prefers_launch_config(monkeypatch, tmp_path):
     configured.mkdir()
     stale = tmp_path / "launch-dir"
     stale.mkdir()
+    launch_home = _write_profile_cfg(tmp_path / "launch-home", str(configured))
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
 
     assert server._default_session_cwd() == str(configured)
 
     # No launch config → fall back to the process env var.
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    (launch_home / "config.yaml").write_text("{}", encoding="utf-8")
     assert server._default_session_cwd() == str(stale)
 
 
@@ -9679,6 +9681,19 @@ def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
     items = _slash_completions("/details c")
 
     assert [item["text"] for item in items] == ["collapsed", "cycle"]
+
+
+def test_config_get_reasoning_renders_dict_form_custom_tier(tmp_path, monkeypatch):
+    """`agent.reasoning_effort: {enabled: true, effort: thinking}` (a provider's bespoke tier)
+    must read back as the tier name, not `str(dict)`."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort:\n    enabled: true\n    effort: thinking\n", encoding="utf-8"
+    )
+
+    resp = server.handle_request({"id": "1", "method": "config.get", "params": {"key": "reasoning"}})
+
+    assert resp["result"]["value"] == "thinking"
 
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):

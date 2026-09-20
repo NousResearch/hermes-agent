@@ -110,6 +110,10 @@ _NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
+# Delegation guard: the recipient named right after the verb is the agent's own subagent/worker
+# ("Send subagents the minimum context they need") — an in-process handoff, not a transfer off
+# the machine. A URL or external service as the destination is still `send_to_url`.
+_NOT_DELEGATE = r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?|workers?|delegates?|children|child)\b)'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -164,8 +168,8 @@ THREAT_PATTERNS = [
     # `${SKILL_DIR}/x`") and on flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
     (r'(?<![-/])\b(dig|nslookup|host)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$]*\$',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
-    (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
-     "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),
+    (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',  # no-tmp: ok — malicious-pattern regex
+     "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),  # no-tmp: ok — malicious-pattern label
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
@@ -381,9 +385,10 @@ THREAT_PATTERNS = [
     # your own context", "**Include context:** cwd, env vars", "save tokens (no need to include code
     # in context)") describes the OPPOSITE of exfiltration and must not match: the verb→target gap is
     # bounded, a negation right after the verb voids the match, and a bare ``context`` target counts
-    # only under transfer verbs (print/send/share) — "include context" is window/information talk.
+    # only under transfer verbs (print/send/share) — "include context" is window/information talk —
+    # and not when the recipient is the agent's own subagent (delegation prose).
     (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
-     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}context\b',
+     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_NOT_DELEGATE}{_SHORT_FILLER}context\b',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),

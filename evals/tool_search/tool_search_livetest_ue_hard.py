@@ -115,7 +115,7 @@ def make_mock(sanitized_name: str):
         if any(v in n for v in ("get", "list", "find", "search", "has_", "is_", "can_")):
             return json.dumps({"result": [{"name": "Entry_0", "value": 1.0}]})
         if "capture" in n or "screenshot" in n:
-            return json.dumps({"result": {"image_path": "/tmp/ue_capture_0001.png"}})
+            return json.dumps({"result": {"image_path": "/nonexistent/ue_capture_0001.png"}})
         return json.dumps({"result": {"ok": True}})
     return _h
 

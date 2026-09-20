@@ -176,7 +176,7 @@ def _needs_ocr_warning(path: str, pages, hosted_error: str = "") -> str:
         f"[NEEDS OCR: pages {page_list} of this PDF are scanned images "
         f"with no text layer — their content is MISSING below. {hosted}"
         "If the missing pages matter: render just those pages with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(path)} /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(path)} $TMPDIR/page` "
         "and inspect via vision_analyze, or check whether an OCR skill is "
         "available (skills_list).]\n")
 
@@ -307,7 +307,7 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         f"{_gap_map(counts, texts, empty)}\n"
         "Decide which gaps you actually need — do NOT OCR or render "
         "everything. For the gaps that matter, render just that range with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(shown)} /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(shown)} $TMPDIR/page` "
         "and inspect each image with the vision_analyze tool, or use the "
         "ocr-and-documents skill (marker-pdf) for bulk OCR of large "
         "ranges.]\n")

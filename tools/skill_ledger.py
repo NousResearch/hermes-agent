@@ -36,6 +36,17 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
 _NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
+# Transient/regeneratable local artifacts that must never be swept into a
+# snapshot, no matter how deep they sit under the skill dir — a stray venv or
+# node_modules turns a multi-KB ledger capture into gigabytes of blobs (#107539).
+# agent.curator_backup applies the same set to the whole-tree tarball.
+TRANSIENT_DIRS = frozenset({
+    ".venv", "venv", "env", ".env",
+    "node_modules", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".git",
+})
+_SNAPSHOT_EXCLUDE_DIRS = TRANSIENT_DIRS
 
 # Explicit actor override: the CLI sets "user", the curator walk sets "curator".
 _actor_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -121,14 +132,18 @@ def read_blob(sha256: str) -> Optional[bytes]:
 
 def snapshot_paths(root: Optional[Path], *, complete_package: bool = False) -> List[Dict[str, str]]:
     """{path, sha256} for every file under *root*, each stored as a blob; [] when root is
-    None/missing. Raises on I/O failure — callers decide whether that is fatal (rollback safety
-    capture) or swallowed (telemetry). ``complete_package`` unions in the newest curator
-    tarball's files (disk hashes win)."""
+    None/missing. Transient local artifacts (venvs, node_modules, caches, .git) are
+    excluded wherever they appear under *root*. Raises on I/O failure — callers decide
+    whether that is fatal (rollback safety capture) or swallowed (telemetry).
+    ``complete_package`` unions in the newest curator tarball's files (disk hashes win)."""
     if root is None:
         return []
     root = Path(root)  # gone from disk -> []; the complete_package fill may still recover it
     files = ([root] if root.is_file()
-             else sorted(p for p in root.rglob("*") if p.is_file()) if root.is_dir() else [])
+             else sorted(p for p in root.rglob("*") if p.is_file()
+                         and not any(part in _SNAPSHOT_EXCLUDE_DIRS
+                                     for part in p.relative_to(root).parts[:-1]))
+             if root.is_dir() else [])
     out = [{"path": str(f), "sha256": _store_blob(f.read_bytes())} for f in files]
     return fill_snapshot_from_curator_backup(root, out) if complete_package else out
 
@@ -284,7 +299,8 @@ def append_entry(
 def compact_ledger() -> Tuple[int, int, int]:
     """Rewrite the ledger with every entry's unchanged paths dropped (see ``_delta``); ids, order and
     rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
-    new file replaces the old only once fully written. Malformed lines are kept verbatim."""
+    new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
+    ``gc_blobs()``: dropped references leave blobs nothing can restore."""
     path = ledger_path()
     try:
         raw = path.read_bytes()
@@ -309,6 +325,41 @@ def compact_ledger() -> Tuple[int, int, int]:
     tmp.write_bytes(data)
     os.replace(tmp, path)
     return kept, len(raw), len(data)
+
+
+def gc_blobs() -> Tuple[int, int]:
+    """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
+    write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
+    (#107539). Malformed ledger lines abort the sweep (nothing deleted) — an unreadable entry
+    may still hold references."""
+    blobs = blobs_dir()
+    if not blobs.is_dir():
+        return 0, 0
+    referenced: set = set()
+    try:
+        lines = ledger_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            return 0, 0
+        for item in (row.get("before") or []) + (row.get("after") or []):
+            referenced.add(str(item.get("sha256", "")))
+    deleted = freed = 0
+    for blob in blobs.iterdir():
+        if blob.is_file() and blob.name not in referenced:
+            try:
+                size = blob.stat().st_size
+                blob.unlink()
+            except OSError:
+                continue
+            deleted += 1
+            freed += size
+    return deleted, freed
 
 
 def record_mutation(

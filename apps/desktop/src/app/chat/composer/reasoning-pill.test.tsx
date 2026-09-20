@@ -16,7 +16,7 @@ const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['mo
   ...over
 })
 
-const tileView = (reasoningEffort: string): SessionView => ({
+const tileView = (reasoningEffort: string, reasoningEffortWire = ''): SessionView => ({
   kind: 'tile',
   $awaitingResponse: atom(false),
   $busy: atom(false),
@@ -28,6 +28,7 @@ const tileView = (reasoningEffort: string): SessionView => ({
   $model: atom('tile/claude-sonnet'),
   $provider: atom('anthropic'),
   $reasoningEffort: atom(reasoningEffort),
+  $reasoningEffortWire: atom(reasoningEffortWire),
   $runtimeId: atom('tile-runtime'),
   $storedId: atom('stored-tile'),
   $turnStartedAt: atom<number | null>(null)
@@ -39,6 +40,32 @@ afterEach(() => {
 })
 
 describe('ReasoningPill', () => {
+  it('shows a clamped pick as what the route sends, never as a distinct level (#61634)', () => {
+    // The gateway says this route clamps `ultra` to `max`: compact "Ultra→Max",
+    // tooltip in the CLI's `/reasoning` wording.
+    const { unmount } = render(
+      <SessionViewProvider value={tileView('ultra', 'max')}>
+        <ReasoningPill disabled={false} model={modelState()} />
+      </SessionViewProvider>
+    )
+
+    const pill = screen.getByTestId('reasoning-pill')
+
+    expect(pill.textContent).toBe('Ultra→Max')
+    expect(pill.getAttribute('aria-label')).toBe('Effort: Ultra (sends Max on this route)')
+    unmount()
+
+    // A verbatim wire level (or one the gateway has not stamped yet) makes no claim.
+    render(
+      <SessionViewProvider value={tileView('high', 'high')}>
+        <ReasoningPill disabled={false} model={modelState()} />
+      </SessionViewProvider>
+    )
+
+    expect(screen.getByTestId('reasoning-pill').textContent).toBe('High')
+    expect(screen.getByTestId('reasoning-pill').getAttribute('aria-label')).toBe('Effort: High')
+  })
+
   it("shows THIS surface's live effort, falling back to the profile default when the session has none", () => {
     $defaultReasoningEffort.set('high')
 

@@ -113,3 +113,44 @@ def test_acp_switch_model_carries_the_live_agent_toolsets_into_the_rebuild(monke
 
     assert made["enabled_toolsets"] == ["hermes-acp", "mcp-demo-search"]
     assert made["disabled_toolsets"] == ["browser"]
+
+
+def test_acp_set_session_model_rejection_is_invalid_params_and_leaves_session_untouched(monkeypatch):
+    """#72439: a ``modelId`` no provider can serve is a bad param (-32602 with the switch_model
+    reason), not a -32603 internal error; and a rebuild that blows up after switch_model accepted
+    the model must not leave ``state.model`` pointing at a model the live agent does not run."""
+    import asyncio
+
+    from acp.exceptions import RequestError
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                        lambda **_kw: ModelSwitchResult(success=False, error_message="`nope` is not a model"))
+    agent, _made = _acp_agent()
+    state = _state()
+    agent.session_manager.get_session = lambda sid: state
+    with pytest.raises(RequestError) as exc:
+        asyncio.run(agent.set_session_model("nope", "s1"))
+    assert exc.value.code == -32602 and exc.value.data == {"details": "`nope` is not a model"}
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                        lambda **_kw: ModelSwitchResult(success=True, new_model="other", target_provider="anthropic"))
+
+    def _boom(**_kw):
+        raise RuntimeError("No Codex credentials stored")
+
+    agent.session_manager._make_agent = _boom
+    old_agent = state.agent
+    with pytest.raises(RuntimeError, match="No Codex credentials"):
+        agent._switch_model(state, "other")
+    assert state.model == "claude-sonnet-5" and state.agent is old_agent
+
+    # A ValueError raised by the rebuild itself (disabled provider, context floor) is not a bad
+    # ``modelId``: it must escape as-is so acp maps it to -32603, not be relabelled -32602.
+    def _rebuild_value_error(**_kw):
+        raise ValueError("provider 'anthropic' is disabled in config")
+
+    agent.session_manager._make_agent = _rebuild_value_error
+    with pytest.raises(ValueError, match="disabled in config") as rebuild_exc:
+        asyncio.run(agent.set_session_model("other", "s1"))
+    assert not isinstance(rebuild_exc.value, RequestError)
+    assert state.model == "claude-sonnet-5" and state.agent is old_agent

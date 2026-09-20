@@ -317,3 +317,25 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     with_timing = build_footer_line(**common, turn_seconds=125.0)
     assert baseline == "gpt-5.4 · 5% · /var/data"
     assert with_timing == baseline
+
+
+def test_format_footer_served_model_is_opt_in_and_skips_same_model():
+    """#54864: `served_model` renders `alias → served` only when listed AND the served model
+    differs from the requested one; the default field set never shows it."""
+    # Default fields: served model is invisible.
+    assert "→" not in format_runtime_footer(
+        model="hermes-router", context_tokens=0, context_length=None, cwd="/x",
+        served_model="gpt-4o-2024-11-20")
+    line = format_runtime_footer(
+        model="hermes-router", context_tokens=0, context_length=None, cwd="/x",
+        served_model="gpt-4o-2024-11-20", fields=["served_model"])
+    assert line == "hermes-router → gpt-4o-2024-11-20"
+    # Hermes fallback route: requested primary → active model.
+    line = format_runtime_footer(
+        model="qwen/qwen3.8-max", context_tokens=0, context_length=None, cwd="/x",
+        requested_model="gpt-5.6-sol", served_model="qwen/qwen3.8-max", fields=["served_model"])
+    assert line == "gpt-5.6-sol → qwen/qwen3.8-max"
+    # Served == requested (no header, no fallback): field skipped, nothing empty rendered.
+    assert format_runtime_footer(
+        model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
+        served_model=None, fields=["served_model"]) == ""

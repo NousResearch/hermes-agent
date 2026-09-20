@@ -99,9 +99,9 @@ With **Group by → Projects**, each project row previews its three most recent 
 
 #### Choosing a model
 
-The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control. When the gateway flags a switch as risky (a large cached context, an expensive model, a data-training tier), the app asks first in a dialog: **Switch anyway** applies it, **Keep current model** (or Esc) leaves everything as it was.
+The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control. When the route clamps a Hermes-internal step (`ultra` is sent as the route's strongest level, e.g. `max`), the pill shows both ends (`Ultra→Max`) and its tooltip spells out the same wording as the CLI, `Ultra (sends Max on this route)`, so the level you see is the level that is sent. When the gateway flags a switch as risky (a large cached context, an expensive model, a data-training tier), the app asks first in a dialog: **Switch anyway** applies it, **Keep current model** (or Esc) leaves everything as it was.
 
-The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead.
+The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead. When dictation talks to the speech-to-text provider directly (client-direct voice), the request honours the same `stt.openai.timeout` budget (default 60 s) as the gateway's own transcription client, so a slow endpoint fails with "Transcription timed out" instead of leaving the mic stuck on transcribing.
 
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
@@ -194,6 +194,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 - **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](./local-models.md).
 - **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
+- **Custom endpoints with an API mode** — **Settings → Providers → Custom Endpoints** has an **API Mode** selector (**Auto-detect**, **Chat Completions**, **Responses API**, **Anthropic Messages**) — the same choice `hermes model` offers for a custom provider. It is saved as `providers.<id>.api_mode` in `config.yaml`, so a Responses-only or Anthropic-compatible host is no longer called on `/chat/completions`. **Test** checks the transport you will actually use, not just `/v1/models`: it sends a one-token request to the pinned mode's route (or to the mode Auto-detect resolves to) and fails with the transport named when the host does not serve it. **Test** also keeps the alias metadata a gateway advertises in `/v1/models` (`canonical_model`, `reasoning_effort`): picking an alias such as `gpt-5.6-sol-high` saves the canonical model and pins its effort under `agent.reasoning_overrides`.
 - **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
 - **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal. In the terminal backend picker, selecting a backend marked **Needs setup** asks for confirmation first; declining leaves the current backend selected.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
@@ -537,8 +538,19 @@ generic error toast. The card offers recovery actions matched to the failure:
 
 - **Retry** — re-runs the failed turn in place (hidden when retrying would
   deterministically reproduce the failure, e.g. a content-policy rejection).
-- **Switch provider** — jumps to Settings → Models for provider, endpoint,
-  auth, and billing failures.
+  When a rate-limit or usage-limit response names when the limit lifts
+  (`Retry-After` header or a `resets_at` field), the card shows **Limit resets
+  at HH:mm (in 1h 05m)** next to Retry so you know when a retry will work; the
+  CLI/TUI print the same line under the error. The hint itself is
+  informational, but the card also offers **Retry when the limit resets
+  (HH:mm)**: click it and the app retries that turn once at the reset time
+  with a live countdown and a **Cancel** control. The schedule lives only in
+  the open window — switching sessions, sending another message, or closing
+  the app drops it, and nothing retries unattended.
+- **Switch provider** — for provider, endpoint, auth, and billing failures,
+  opens the composer's live model menu so you can move **this chat** to another
+  provider/model right away (Settings → Models only changes the default for new
+  chats). When no chat surface is on screen it falls back to Settings → Models.
 - **Open logs** — opens `HERMES_HOME/logs` in your file manager. On a remote
   or Cloud connection the button reads **Open Desktop logs**: it opens the
   local Desktop-side logs (transport evidence), since the failed turn's
@@ -630,7 +642,7 @@ Point the app at a specific checkout, or sandbox it from your real config:
 
 ```bash
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=/tmp/throwaway npm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 

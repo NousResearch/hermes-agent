@@ -35,6 +35,11 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao"})
 
+# Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
+# only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
+# deliver=origin destination.
+_NON_PUSH_ORIGIN_PLATFORMS = frozenset({"api_server"})
+
 # Platforms supporting a cron/notification home target -> env var used by gateway config.
 _HOME_TARGET_ENV_VARS = {
     "matrix": "MATRIX_HOME_ROOM",
@@ -89,6 +94,11 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     """
     origin = job.get("origin")
     if isinstance(origin, dict) and origin.get("platform") and origin.get("chat_id"):
+        # Jobs stamped before non-push origins stopped being captured (#69304): the api_server
+        # adapter's send() is a stub, so honouring this origin fails every fire with
+        # last_status=ok. Treat it as missing so deliver=origin takes the home-channel fallback.
+        if str(origin["platform"]).lower() in _NON_PUSH_ORIGIN_PLATFORMS:
+            return None
         return origin
     return None
 
@@ -1434,8 +1444,12 @@ def _live_send_text(
         platform=t.platform, chat_id=str(t.chat_id), thread_id=route_thread_id, is_explicit=True)
     # Thread routing goes via the target, not a bare metadata "thread_id": the router only applies
     # its Telegram DM-topic detection when thread_id/message_thread_id are absent from metadata.
+    # Send through the already-authorized transport: re-resolving from the plain target_adapters
+    # dict cannot re-derive the SharedRouteAdapters satellite grant (the satellite owned
+    # platforms.<p> block is disabled), yields None, and drops the delivery (#115656).
     future = safe_schedule_threadsafe(
-        router._deliver_to_platform(route_target, text_to_send, route_metadata), t.loop)
+        router._deliver_to_platform(
+            route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None

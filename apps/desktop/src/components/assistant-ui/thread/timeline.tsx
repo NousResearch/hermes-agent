@@ -1,4 +1,5 @@
 import { useAui, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -6,6 +7,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $hideThreadTimeline } from '@/store/thread-timeline'
 
 import { messageContentText } from './content'
 import {
@@ -27,8 +29,13 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-/** Hidden panes do not subscribe to streaming messages or measure layout. */
-export const ThreadTimeline: FC = () => (usePaneVisible() ? <ActiveThreadTimeline /> : null)
+/** Hidden rails do not subscribe to streaming messages or measure layout. */
+export const ThreadTimeline: FC = () => {
+  const paneVisible = usePaneVisible()
+  const hidden = useStore($hideThreadTimeline)
+
+  return paneVisible && !hidden ? <ActiveThreadTimeline /> : null
+}
 
 const ActiveThreadTimeline: FC = () => {
   const view = useSessionView()

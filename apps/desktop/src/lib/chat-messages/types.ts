@@ -83,6 +83,7 @@ export type GatewayEventPayload = {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   approval_mode?: string

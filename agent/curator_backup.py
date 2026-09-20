@@ -40,6 +40,17 @@ DEFAULT_KEEP = 2
 # skills held the CLI prompt for 6 minutes).
 _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git", ".archive", ".curator_ledger.jsonl"}
 
+
+def _excluded_member(ti: tarfile.TarInfo) -> bool:
+    """Skip excluded names anywhere in the path, plus regeneratable DIRECTORIES (venv, node_modules,
+    caches — a 1.3 GB torch venv inside one skill made every snapshot 349 MB, #107539). Directory
+    parts only: a plain file that happens to be called ``venv`` is skill content."""
+    from tools.skill_ledger import TRANSIENT_DIRS
+
+    parts = Path(ti.name).parts
+    dir_parts = parts if ti.isdir() else parts[:-1]
+    return any(p in _EXCLUDE_TOP_LEVEL for p in parts) or any(p in TRANSIENT_DIRS for p in dir_parts)
+
 # Snapshot id: UTC ISO with colons replaced by dashes (Windows-safe filename); optional ``-NN`` suffix for same-second snapshots.
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
@@ -163,9 +174,9 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
             for entry in sorted(skills.iterdir()):
                 if entry.name not in _EXCLUDE_TOP_LEVEL:
-                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested _EXCLUDE_TOP_LEVEL paths too.
+                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested paths too.
                     tf.add(str(entry), arcname=entry.name, recursive=True,
-                           filter=lambda ti: None if any(p in _EXCLUDE_TOP_LEVEL for p in Path(ti.name).parts) else ti)
+                           filter=lambda ti: None if _excluded_member(ti) else ti)
         # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
         _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest))
     except (OSError, tarfile.TarError) as e:
@@ -327,15 +338,19 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
     (submodule / worktree ``gitdir:`` pointer) — both are moved. Best-effort and conditional: an entry is carried only when
     its parent skill dir was restored and nothing sits at the target. If the target snapshot predates the skill, the entry
     is dropped with the staging dir rather than left orphaned; the safety snapshot excludes these paths too, so not undoable."""
+    from tools.skill_ledger import TRANSIENT_DIRS
+
     for dirpath, dirnames, filenames in os.walk(staged):
-        for src in [Path(dirpath) / n for n in (*dirnames, *filenames) if n in _EXCLUDE_TOP_LEVEL]:
+        carried = [Path(dirpath) / n for n in filenames if n in _EXCLUDE_TOP_LEVEL]
+        carried += [Path(dirpath) / n for n in dirnames if n in _EXCLUDE_TOP_LEVEL or n in TRANSIENT_DIRS]
+        for src in carried:
             dest = skills / src.relative_to(staged)
             if dest.parent.is_dir() and not dest.exists():
                 try:
                     shutil.move(str(src), str(dest))
                 except OSError as e:
                     logger.debug("Could not restore excluded entry %s: %s", src, e)
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL]
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL and d not in TRANSIENT_DIRS]
 
 
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:

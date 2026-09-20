@@ -54,6 +54,18 @@ def _read_proc_argv(pid: int) -> Optional[List[str]]:
         return None
 
 
+def describe_holder_pid(pid: int) -> str:
+    """``PID 123 (hermes gateway run)`` for operator-facing holder lists; /proc argv first, psutil elsewhere."""
+    argv = _read_proc_argv(pid)
+    if argv is None and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline() or None
+        except Exception:
+            argv = None
+    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80] if argv else "command line unavailable"
+    return f"PID {pid} ({who})"
+
+
 def _looks_like_python_executable(program: str) -> bool:
     name = os.path.basename(program).lower().removesuffix(".exe")
     for prefix in ("python", "pypy"):

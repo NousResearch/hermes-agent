@@ -163,6 +163,45 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
 
+class TestResponsesItemImageAccounting:
+    """Responses ``function_call_output`` items carry tool-result images under
+    ``output`` (the converter moves chat ``content`` there); the estimator must
+    price them with the flat per-image model, never as base64 text (#108320)."""
+
+    def test_function_call_output_image_matches_chat_estimate(self):
+        """The carrier key alone (``content`` vs ``output``) must not change the
+        accounting for the same image."""
+        import base64
+        import os
+
+        payload = (
+            "data:image/png;base64," + base64.b64encode(os.urandom(100_000)).decode()
+        )
+        chat = {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": payload}}],
+        }
+        responses_item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [{"type": "input_image", "image_url": payload}],
+        }
+
+        chat_est = estimate_messages_tokens_rough([chat])
+        responses_est = estimate_messages_tokens_rough([responses_item])
+
+        assert abs(chat_est - responses_est) < 200
+
+    def test_function_call_output_text_output_still_counted(self):
+        """Plain-string ``output`` (the common tool-result shape) is unaffected."""
+        item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "plain tool result " * 100,
+        }
+        est = estimate_messages_tokens_rough([item])
+        assert est >= (len(item["output"]) // 4) * 0.9
+
 
 class TestEstimateRequestTokensRough:
     def test_caches_tools_estimate(self):
@@ -662,6 +701,51 @@ class TestCodexOAuthContextLength:
                     provider="openai-codex",
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
+
+    @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])
+    def test_opted_in_variant_capped_at_live_catalog_max(self, catalog_max, expected):
+        """An explicit ``-900k`` opt-in resolves to min(900K, catalog ``max_context_window``):
+        gpt-5.6 advertises 272K with an 872K max (#105443); a catalog without the field or one
+        above the live-verified cap keeps 900K."""
+        from agent.model_metadata import get_model_context_length
+
+        item = {"slug": "gpt-5.6-luna", "context_window": 272_000}
+        if catalog_max is not None:
+            item["max_context_window"] = catalog_max
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {"models": [item]}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-luna-900k",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == expected
+
+    def test_base_slug_keeps_advertised_ctx_even_with_catalog_max(self):
+        """The catalogue max never leaks into the base slug: extended context is
+        opt-in via the ``-900k`` alias only (#105443)."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": "gpt-5.6-sol", "context_window": 272_000, "max_context_window": 872_000}]
+        }
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
 
     @pytest.mark.parametrize("slug", ["gpt-5.5", "gpt-5.4-mini"])
     def test_slugs_that_enforce_272k_keep_advertised_value(self, slug):
@@ -1241,7 +1325,43 @@ class TestGetModelContextLength:
         # The local probe MUST be called exactly once
         mock_local_ctx.assert_called_once()
 
+    # ── Codex routes are keyed on the transport, not the host (#116191) ──────────────
 
+    @pytest.mark.parametrize(
+        "provider, custom_providers",
+        [
+            ("custom:codex-proxy", [{"name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses"}]),
+            ("openai-codex", None),  # HERMES_CODEX_BASE_URL / model.base_url proxy per #115902
+        ],
+    )
+    def test_codex_route_behind_proxy_resolves_codex_oauth_window(self, provider, custom_providers):
+        """A Codex model served through a generic proxy URL must get the Codex OAuth window, not the
+        direct-API catalog window: the compressor otherwise fires ~2x past the Codex limit."""
+        from agent import model_metadata as mm
+        proxy_models = {"gpt-6-astra": {"id": "gpt-6-astra"}}  # like CLIProxyAPI's /models: no context field
+        with (
+            patch.object(mm, "get_cached_context_length", return_value=1_050_000),  # stale pre-fix entry must not win
+            patch.object(mm, "fetch_endpoint_model_metadata", return_value=proxy_models),
+            patch.object(mm, "_query_ollama_api_show", return_value=None),
+            patch.object(mm, "is_local_endpoint", return_value=False),
+            patch.object(mm, "_fetch_codex_oauth_context_lengths_with_source", return_value=({}, False)),
+        ):
+            ctx = get_model_context_length(
+                "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", api_key="proxy-key",
+                provider=provider, custom_providers=custom_providers,
+            )
+        assert ctx == mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
+
+    def test_codex_proxy_route_explicit_context_length_override_still_wins(self):
+        """providers.<name>.models[].context_length beats the Codex table on a codex_responses route (#102644)."""
+        custom = [{
+            "name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses",
+            "models": {"gpt-6-astra": {"context_length": 321_000}},
+        }]
+        ctx = get_model_context_length(
+            "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", provider="custom:codex-proxy", custom_providers=custom,
+        )
+        assert ctx == 321_000
 
 
 # =========================================================================

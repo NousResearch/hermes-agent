@@ -15,6 +15,11 @@ import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+import { VoiceDevicePicker } from './voice-device-picker'
+
+// Device rows need a control that enumerates the machine's hardware, which a static option list
+// cannot express — they get their own picker (with a "System default" entry).
+const DEVICE_KEYS = new Set(['voice.mic_device_id', 'voice.speaker_device_id'])
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -86,6 +91,19 @@ export function ConfigField({
   // dedicated structured editor instead.
   if (schemaKey === 'fallback_providers') {
     return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+  }
+
+  // The device rows render their own control: the option list is this machine's hardware, which a
+  // static enum cannot express, and the value must survive a device being unplugged (see
+  // voice-devices.ts — recording falls back to the system default and the row says so).
+  if (DEVICE_KEYS.has(schemaKey)) {
+    return row(
+      <VoiceDevicePicker
+        onChange={next => onChange(next)}
+        schemaKey={schemaKey}
+        value={String(value ?? '')}
+      />
+    )
   }
 
   if (schema.type === 'boolean') {

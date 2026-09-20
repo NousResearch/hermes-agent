@@ -7,6 +7,7 @@ import {
   type DirectTtsConfig,
   synthesizeSpeechClientDirect
 } from '@/lib/voice-client-direct'
+import { applyAudioOutputDevice } from '@/lib/voice-devices'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
@@ -272,6 +273,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         try {
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
+            void applyAudioOutputDevice(audio)
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
@@ -303,7 +305,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   }
 
   const ingest = (flush: boolean) => {
-    const cut = cutSentences(buffer, flush, tts.min_len)
+    const cut = cutSentences(buffer, flush)
     buffer = cut.rest
 
     if (cut.sentences.length > 0) {
@@ -580,6 +582,7 @@ async function playSpeechDataUrl(
   }
 
   const audio = new Audio(response.data_url)
+  void applyAudioOutputDevice(audio)
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
 

@@ -1185,6 +1185,11 @@ DEFAULT_CONFIG = {
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
         },
         "record_key": "ctrl+b",
+        # Desktop microphone/speaker selection: browser device ids from enumerateDevices().
+        # NOT wake_word.input_device, which is a PortAudio index consumed by the Python side.
+        # Empty = follow whatever the OS currently uses.
+        "mic_device_id": "",
+        "speaker_device_id": "",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,

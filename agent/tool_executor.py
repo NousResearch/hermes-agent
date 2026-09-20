@@ -53,6 +53,11 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from hermes_cli.mem_trim import trim_memory
+
+# A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops;
+# once spilled and flushed it is the natural point to hand allocator pages back (#70684).
+_LARGE_TOOL_RESULT_TRIM_CHARS = 1_000_000
 
 logger = logging.getLogger(__name__)
 
@@ -1098,6 +1103,8 @@ def _commit_tool_result(
             agent.tool_progress_callback, "Tool progress",
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
         )
+    if isinstance(function_result, str) and len(function_result) >= _LARGE_TOOL_RESULT_TRIM_CHARS:
+        trim_memory(reason="large tool result")
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
 
 

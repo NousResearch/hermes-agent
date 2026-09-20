@@ -614,6 +614,40 @@ class TestWeixinVoiceSending:
         assert voice_item["bits_per_sample"] == 16
 
 
+class TestWeixinMediaKwargsCompatibility:
+    """Weixin media senders accept base-adapter routing kwargs without forwarding them."""
+
+    @pytest.mark.parametrize(
+        ("method_name", "path_kwarg", "path", "expected_kwargs"),
+        [
+            ("send_voice", "audio_path", "/tmp/note.mp3", {"force_file_attachment": True}),
+            ("send_video", "video_path", "/tmp/clip.mp4", {}),
+        ],
+    )
+    def test_media_senders_ignore_routing_kwargs_before_file_upload(
+        self, method_name, path_kwarg, path, expected_kwargs
+    ):
+        adapter = _make_adapter()
+        adapter._send_session = object()
+        adapter._token = "test-token"
+        adapter._send_file = AsyncMock(return_value="message-id")
+
+        result = asyncio.run(
+            getattr(adapter, method_name)(
+                chat_id="wxid_test123",
+                **{path_kwarg: path},
+                caption="Test caption",
+                metadata={"thread_id": "thread-123"},
+                is_voice=True,
+            )
+        )
+
+        assert result.success is True
+        adapter._send_file.assert_awaited_once_with(
+            "wxid_test123", path, "Test caption", **expected_kwargs
+        )
+
+
 class TestIsStaleSessionRet:
     """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
 

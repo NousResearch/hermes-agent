@@ -206,6 +206,13 @@ class LSPClient:
             if not self._connection_is_open():
                 raise LSPProtocolError("server connection closed during initialization")
             self._state = "running"
+        except asyncio.TimeoutError as e:
+            # A dead/silent server surfaces as the initialize future timing out. Translate to the
+            # client's protocol-failure contract so every caller (and test) can catch the one
+            # exception type for "server failed to come up" instead of also handling TimeoutError.
+            self._state = "error"
+            await self._cleanup_process()
+            raise LSPProtocolError(f"LSP server failed to initialize within {INITIALIZE_TIMEOUT:g}s") from e
         except Exception:
             self._state = "error"
             await self._cleanup_process()

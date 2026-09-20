@@ -312,6 +312,7 @@ export function useGatewayBoot({
     // Reset together with the backoff counters: on a STABLE open (isStableOpen)
     // or a manual/wake-driven reconnect — never on a bare 'open' that dies.
     let escalated = false
+
     const resetReconnectBackoff = () => {
       reconnectAttempt = 0
       reconnectFailingSince = null

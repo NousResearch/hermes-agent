@@ -40,17 +40,21 @@ vi.mock('@/hermes', () => ({
     // Mirrors json-rpc-gateway: 'connecting' → 'open' on success, → 'error' on a refused dial.
     connect = async (wsUrl: string): Promise<void> => {
       this.emitState('connecting')
+
       try {
         await gatewayMocks.connect(wsUrl)
       } catch (error) {
         this.emitState('error')
+
         throw error
       }
+
       this.emitState('open')
     }
     onEvent = vi.fn(() => () => {})
     onState = vi.fn((listener: (state: string) => void) => {
       this.stateListener = listener
+
       return () => {
         this.stateListener = null
       }

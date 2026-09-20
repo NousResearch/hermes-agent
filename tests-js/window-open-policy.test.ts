@@ -36,6 +36,31 @@ describe('window-open policy (GHSA-9f4c-93c8-jc8g)', () => {
     assert.ok(seen.every(origin => !origin.includes('SECRET') && !origin.includes('/steal')))
   })
 
+  test('trusted Hub frames hand links to the audited opener while Electron still denies the popup', () => {
+    const opened: string[] = []
+    const handler = createWindowOpenHandler(undefined, {
+      getOpenerOrigin: () => 'https://hermes-agent.nousresearch.com',
+      openExternalUrl: url => opened.push(url)
+    })
+
+    assert.deepEqual(handler({ url: 'https://github.com/NousResearch/hermes-agent' }), { action: 'deny' })
+    assert.deepEqual(handler({ url: 'file:///etc/passwd' }), { action: 'deny' })
+    assert.deepEqual(opened, ['https://github.com/NousResearch/hermes-agent'])
+  })
+
+  test('opaque and untrusted frame origins never trigger the external opener', () => {
+    for (const origin of ['null', 'https://attacker.test']) {
+      const opened: string[] = []
+      const handler = createWindowOpenHandler(undefined, {
+        getOpenerOrigin: () => origin,
+        openExternalUrl: url => opened.push(url)
+      })
+
+      assert.deepEqual(handler({ url: 'https://github.com' }), { action: 'deny' })
+      assert.deepEqual(opened, [])
+    }
+  })
+
   test('a throwing observer still yields an explicit deny', () => {
     const handler = createWindowOpenHandler(() => {
       throw new Error('logging blew up')

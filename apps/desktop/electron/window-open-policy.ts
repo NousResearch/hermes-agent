@@ -1,19 +1,21 @@
+import { isHermesHubExternalUrl, isHermesHubOrigin } from './hub-iframe-policy'
+
 /**
  * Window-open policy for every BrowserWindow's webContents.
  *
- * Every external URL the desktop opens on purpose goes through the audited
- * `hermes:openExternal` IPC channel (`openExternalUrl` in main.ts: http/https/
- * mailto allowlist, guarded file:). The `window.open` / `target=_blank` path
- * that reaches `setWindowOpenHandler` is therefore only ever driven by content
- * we did NOT initiate — most dangerously untrusted HTML in sandboxed
- * `allow-scripts` iframes (artifact previews, inline preview directives).
+ * External URLs normally go through the audited `hermes:openExternal` IPC
+ * channel. The one exception is the trusted Hermes Hub iframe: its `_blank`
+ * links reach this handler, where the opener frame origin is checked before the
+ * URL is handed to that same audited opener. All other popup requests stay
+ * side-effect free, especially untrusted artifact-preview iframes.
  *
  * GHSA-9f4c-93c8-jc8g (CVE-2026-70608): a sandboxed iframe without
  * `allow-popups` and without a user gesture can still reach this handler via
  * the OpenURL navigation path. If the handler opens `details.url` as a side
  * effect, a malicious artifact forces the user's OS browser to an attacker URL.
  * There is no fixed Electron 40.x, so the defence lives here regardless of the
- * pin: deny every request and never open a URL from this handler.
+ * pin: Electron always denies popup creation; only the exact Hub origin may
+ * delegate http/https/mailto links to the audited OS-browser opener.
  */
 
 export interface WindowOpenRequestLike {
@@ -22,6 +24,11 @@ export interface WindowOpenRequestLike {
 
 export interface WindowOpenDecision {
   action: 'deny'
+}
+
+export interface TrustedWindowOpenOptions {
+  getOpenerOrigin: () => string | undefined
+  openExternalUrl: (url: string) => unknown
 }
 
 /**
@@ -44,9 +51,26 @@ export function describeDeniedUrl(url: string): string {
  * observer must not be able to change the decision.
  */
 export function createWindowOpenHandler(
-  onDenied?: (origin: string) => void
+  onDenied?: (origin: string) => void,
+  trustedHub?: TrustedWindowOpenOptions
 ): (details: WindowOpenRequestLike) => WindowOpenDecision {
   return details => {
+    if (trustedHub) {
+      try {
+        if (isHermesHubOrigin(trustedHub.getOpenerOrigin()) && isHermesHubExternalUrl(details.url)) {
+          try {
+            trustedHub.openExternalUrl(details.url)
+          } catch {
+            // The Electron popup remains denied even if external opening fails.
+          }
+
+          return { action: 'deny' }
+        }
+      } catch {
+        // Opener inspection failed; fall through to the unconditional deny path.
+      }
+    }
+
     try {
       onDenied?.(describeDeniedUrl(details.url))
     } catch {

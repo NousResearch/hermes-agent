@@ -247,6 +247,7 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -7611,19 +7612,23 @@ function installDownloadHandling() {
 function installMediaPermissions() {
   // Async request handler: the prompt-style path (most platforms).
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    callback(isMediaCapturePermission(permission, details))
+    callback(
+      isMediaCapturePermission(permission, details) ||
+        isHermesHubClipboardWrite(permission, undefined, details?.requestingUrl)
+    )
   })
 
   // Synchronous check handler: Chromium consults this for getUserMedia on
   // Windows in addition to (or instead of) the request handler. Without it,
   // the check defaults to false and capture is denied before the request
   // handler ever runs.
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
     return (
       permission === 'media' ||
       (permission as string) === 'automatic-fullscreen' ||
       permission === ('audioCapture' as any) /* todo: is this needed? */ ||
-      permission === ('videoCapture' as any)
+      permission === ('videoCapture' as any) ||
+      isHermesHubClipboardWrite(permission, requestingOrigin, details?.requestingUrl)
     )
   })
 }
@@ -13429,10 +13434,23 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenuBridge(win)
-  // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
-  // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
+  // Electron popup creation is always denied (GHSA-9f4c-93c8-jc8g). The
+  // trusted Hub iframe may delegate browser-safe links to openExternalUrl after
+  // its focused-frame origin is verified; every other frame stays side-effect free.
   win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
+    createWindowOpenHandler(
+      origin => rememberLog(`[window-open] denied: ${origin}`),
+      {
+        getOpenerOrigin: () => {
+          try {
+            return win.webContents.focusedFrame?.origin
+          } catch {
+            return undefined
+          }
+        },
+        openExternalUrl
+      }
+    )
   )
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {

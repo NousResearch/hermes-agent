@@ -632,7 +632,8 @@ export const PluginsTab = memo(function PluginsTab({
               }}
             >
               <iframe
-                sandbox="allow-scripts allow-same-origin"
+                allow="clipboard-write"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
                 src={CATALOG_PICKER_URL}
                 style={{
                   background: 'transparent',

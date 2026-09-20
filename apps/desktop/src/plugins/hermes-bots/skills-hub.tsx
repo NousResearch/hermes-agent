@@ -181,8 +181,9 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             }}
           >
             <iframe
+              allow="clipboard-write"
               ref={frameRef}
-              sandbox="allow-scripts allow-same-origin"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
               src={HUB_PICKER_URL}
               style={{
                 width: '133.34%',

@@ -1,6 +1,7 @@
 """Tests for the LLM chain and the topic-leak sanitiser
 (no raw git commit subjects in topics/titles)."""
 import time
+import pathlib
 
 import pytest
 import requests
@@ -63,29 +64,48 @@ def test_llm_configs_use_governed_config_and_runtime_resolution(monkeypatch):
 def test_content_config_uses_surface_override_and_ignores_root(monkeypatch, tmp_path):
     from hermes_constants import get_hermes_home
 
-    root = tmp_path / "hermes"
-    surface = root / "profiles" / "content-strategist"
-    surface.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    # The fixture tree must NOT live under the real ~/.hermes: on hosts where
+    # pytest's tmpdir sits inside the native Hermes root, get_default_hermes_root()
+    # collapses HERMES_HOME back to the real root (it assumes profile mode), so
+    # profile resolution would see the operator's real profiles tree instead of
+    # the fixture. /tmp is outside every platform-native Hermes root.
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory(dir="/tmp") as _td:
+        root = pathlib.Path(_td) / "hermes"
+        surface = root / "profiles" / "content-strategist"
+        surface.mkdir(parents=True)
+        # A named profile only counts as live when it carries an identity marker
+        # (config.yaml/.env/SOUL.md/...). An empty dir resolves as "unavailable"
+        # under current profile semantics.
+        (surface / "profile.yaml").touch()
+        monkeypatch.setenv("HERMES_HOME", str(root))
 
-    seen = []
-    governed = {"model": {"provider": "content", "default": "deepseek-v4-flash"}}
+        seen = []
+        governed = {"model": {"provider": "content", "default": "deepseek-v4-flash"}}
 
-    def canonical_loader():
-        seen.append(get_hermes_home())
-        return governed if get_hermes_home() == surface else {
-            "model": {"provider": "root", "default": "root-model"}
-        }
+        def canonical_loader():
+            seen.append(get_hermes_home())
+            return governed if get_hermes_home() == surface else {
+                "model": {"provider": "root", "default": "root-model"}
+            }
 
-    assert lg._load_hermes_config(config_loader=canonical_loader) == governed
-    assert seen == [surface]
-    assert get_hermes_home() == root
+        assert lg._load_hermes_config(config_loader=canonical_loader) == governed
+        assert seen == [surface]
+        assert get_hermes_home() == root
 
 
 def test_content_config_missing_or_invalid_surface_fails_closed(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "missing-root"))
-    with pytest.raises(RuntimeError, match="content-strategist.*unavailable"):
-        lg._load_hermes_config()
+    # The temp home must NOT live under the real ~/.hermes: get_default_hermes_root()
+    # collapses any HERMES_HOME inside the native root back to the real root (it
+    # assumes profile mode), so the fixture's "missing root" would resolve to the
+    # operator's real profiles tree and never raise. Use /tmp directly — the
+    # machine's TMPDIR may itself point inside the Hermes root.
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory(dir="/tmp") as _td:
+        missing_root = pathlib.Path(_td) / "missing-root"
+        monkeypatch.setenv("HERMES_HOME", str(missing_root))
+        with pytest.raises(RuntimeError, match="content-strategist.*unavailable"):
+            lg._load_hermes_config()
     with pytest.raises(RuntimeError, match="content-strategist.*invalid config"):
         lg._load_hermes_config(home_resolver=lambda: tmp_path, config_loader=lambda: [])
 

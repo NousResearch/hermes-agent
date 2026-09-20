@@ -20,20 +20,20 @@ export function rafCoalesce<T>(apply: (value: T) => void): {
     }
   }
 
+  const dropFrame = (): void => {
+    if (frame !== null) {
+      cancelAnimationFrame(frame)
+      frame = null
+    }
+  }
+
   return {
     cancel() {
-      if (frame !== null) {
-        cancelAnimationFrame(frame)
-        frame = null
-      }
-
+      dropFrame()
       pending = null
     },
     finish() {
-      if (frame !== null) {
-        cancelAnimationFrame(frame)
-        frame = null
-      }
+      dropFrame()
 
       if (pending !== null) {
         apply(pending)

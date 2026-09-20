@@ -1,5 +1,6 @@
 """Tests for tools/process_registry.py — ProcessRegistry query methods, pruning, checkpoint."""
 
+from contextlib import suppress
 import json
 import os
 import shlex
@@ -952,6 +953,248 @@ class TestSpawnEnvSanitization:
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
 
+    @pytest.mark.linux_only
+    @pytest.mark.live_system_guard_bypass
+    def test_spawn_via_env_uses_detached_configured_local_broker_launch(
+        self, registry, tmp_path
+    ):
+        """The process registry asks the broker to own the background worker directly."""
+        class FakeLocalBrokerEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+
+            def __init__(self):
+                self.calls = []
+                self.proc = None
+
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def _start_broker_background(self, command, **kwargs):
+                self.calls.append((command, kwargs))
+                self.proc = subprocess.Popen(
+                    ["/bin/bash", "-c", command],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return self.proc.pid, 9876, "hermes-local-exec-test.scope"
+
+            def execute(self, *_args, **_kwargs):
+                pytest.fail("broker background launch must not use a foreground lease")
+
+        env = FakeLocalBrokerEnv()
+        fake_thread = MagicMock()
+
+        try:
+            with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+                patch.object(registry, "_write_checkpoint"):
+                session = registry.spawn_via_env(env, "sleep 300")
+
+            assert env.proc is not None
+            assert session.pid == env.proc.pid
+            assert session.host_start_time == 9876
+            assert session.systemd_unit == "hermes-local-exec-test.scope"
+            assert os.getsid(session.pid) == session.pid
+            assert env.calls[0][1] == {"timeout": 10}
+            fake_thread.start.assert_called_once()
+        finally:
+            if env.proc is not None:
+                with suppress(ProcessLookupError):
+                    os.killpg(env.proc.pid, signal.SIGKILL)
+                with suppress(subprocess.TimeoutExpired):
+                    env.proc.wait(timeout=5)
+    @pytest.mark.linux_only
+    def test_broker_background_setup_failure_does_not_exec_worker(
+        self, registry, tmp_path
+    ):
+        broker_temp = tmp_path / "broker-temp"
+        launched = tmp_path / "worker-launched"
+
+        class FakeLocalBrokerEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+
+            def get_temp_dir(self):
+                return str(broker_temp)
+
+            def _start_broker_background(self, command, **_kwargs):
+                subprocess.run(
+                    [
+                        "/bin/bash",
+                        "-c",
+                        f"printf() {{ return 1; }}; {command}",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                return 123, 9876, ""
+
+        with (
+            patch("tools.process_registry.threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            registry.spawn_via_env(
+                FakeLocalBrokerEnv(),
+                f"touch {shlex.quote(str(launched))}",
+            )
+
+        assert not launched.exists()
+
+    @pytest.mark.linux_only
+    def test_broker_background_requires_pid_identity_and_setup_artifacts(
+        self, registry, tmp_path, monkeypatch
+    ):
+        class FakeLocalBrokerEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+            _local_exec_broker_uid = 1003
+
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def _start_broker_background(self, _command, **_kwargs):
+                return 4242, 9876, "hermes-local-exec-test.scope"
+
+            def execute(self, command, **_kwargs):
+                self.commands.append(command)
+                if command.startswith("env -u DBUS_SESSION_BUS_ADDRESS"):
+                    return {"output": "", "returncode": 0}
+                if "wc -c" in command:
+                    return {"output": "0 0\n"}
+                if command.startswith("cat "):
+                    return {"output": ""}
+                return {"output": "1\n"}
+
+        env = FakeLocalBrokerEnv()
+        with patch("tools.process_registry.threading.Thread", return_value=MagicMock()), patch.object(
+            registry, "_write_checkpoint"
+        ):
+            session = registry.spawn_via_env(env, "sleep 300")
+        assert session.host_start_time == 9876
+
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(
+            "tools.process_registry._stop_systemd_unit",
+            lambda _unit: pytest.fail("broker-owned scope was stopped locally"),
+        )
+        result = registry.kill_process(session.id)
+        assert result["status"] == "already_exited"
+        assert (
+            "env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR=/run/user/1003 "
+            "systemctl --user stop hermes-local-exec-test.scope"
+        ) in env.commands
+        assert not any(command.startswith("kill -TERM") for command in env.commands)
+
+        failed = registry._new_session(
+            "broken setup", "", "", "", None, env_ref=env, pid_scope="sandbox"
+        )
+        failed.pid = 4243
+        failed.host_start_time = 9877
+        monkeypatch.setattr("tools.process_registry.time.sleep", lambda _seconds: None)
+        registry._env_poller_loop(
+            failed,
+            env,
+            str(tmp_path / "missing.log"),
+            str(tmp_path / "missing.pid"),
+            str(tmp_path / "missing.exit"),
+        )
+        assert failed.exited is True
+        assert failed.completion_reason == "failed_start"
+        assert failed.termination_source == "failed_start"
+
+    @pytest.mark.linux_only
+    def test_broker_background_waits_for_live_launcher_setup_artifacts(
+        self, registry, tmp_path, monkeypatch
+    ):
+        class FakeLocalBrokerEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+
+            def __init__(self):
+                self.pid_reads = 0
+
+            def execute(self, command, **_kwargs):
+                if "wc -c" in command:
+                    return {"output": "0 0\n"}
+                if command.startswith("cat ") and command.endswith(".pid 2>/dev/null"):
+                    self.pid_reads += 1
+                    return {"output": "" if self.pid_reads == 1 else "4242\n"}
+                if command.startswith("kill -0"):
+                    return {"output": "1\n"}
+                if command.startswith("cat ") and command.endswith(".exit 2>/dev/null"):
+                    return {"output": "0\n"}
+                raise AssertionError(command)
+
+        env = FakeLocalBrokerEnv()
+        session = registry._new_session(
+            "slow setup", "", "", "", None, env_ref=env, pid_scope="sandbox"
+        )
+        session.pid = 4242
+        session.host_start_time = 9876
+        identity_checks = iter((True, False))
+        monkeypatch.setattr(
+            registry, "_host_pid_is_ours", lambda *_args: next(identity_checks)
+        )
+        monkeypatch.setattr("tools.process_registry.time.sleep", lambda _seconds: None)
+
+        registry._env_poller_loop(
+            session,
+            env,
+            str(tmp_path / "slow.log"),
+            str(tmp_path / "slow.pid"),
+            str(tmp_path / "slow.exit"),
+        )
+
+        assert env.pid_reads == 2
+        assert session.exited is True
+        assert session.completion_reason == "exited"
+        assert session.exit_code == 0
+
+    @pytest.mark.linux_only
+    def test_broker_background_reads_matching_pid_artifact_once(
+        self, registry, tmp_path, monkeypatch
+    ):
+        class FakeLocalBrokerEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+
+            def __init__(self):
+                self.pid_reads = 0
+                self.liveness_checks = 0
+
+            def execute(self, command, **_kwargs):
+                if "wc -c" in command:
+                    return {"output": "0 0\n"}
+                if command.startswith("cat ") and command.endswith(".pid 2>/dev/null"):
+                    self.pid_reads += 1
+                    return {"output": "4242\n"}
+                if command.startswith("kill -0"):
+                    self.liveness_checks += 1
+                    return {"output": "1\n" if self.liveness_checks == 3 else "0\n"}
+                if command.startswith("cat ") and command.endswith(".exit 2>/dev/null"):
+                    return {"output": "0\n"}
+                raise AssertionError(command)
+
+        env = FakeLocalBrokerEnv()
+        session = registry._new_session(
+            "matched setup", "", "", "", None, env_ref=env, pid_scope="sandbox"
+        )
+        session.pid = 4242
+        session.host_start_time = 9876
+        monkeypatch.setattr("tools.process_registry.time.sleep", lambda _seconds: None)
+
+        registry._env_poller_loop(
+            session,
+            env,
+            str(tmp_path / "matched.log"),
+            str(tmp_path / "matched.pid"),
+            str(tmp_path / "matched.exit"),
+        )
+
+        assert env.pid_reads == 1
+        assert session.exit_code == 0
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False
@@ -1402,6 +1645,101 @@ class TestCheckpoint:
 # =========================================================================
 
 class TestKillProcess:
+    def test_kill_sandbox_session_targets_launcher_process_group(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_broker_group", command="sleep 999")
+        session.env_ref = env
+        session.pid = 4321
+        session.host_start_time = 9876
+        session.pid_scope = "sandbox"
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: True)
+
+        assert registry._signal_kill(session, session.id, False) is None
+        assert env.commands[0][0] == (
+            "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null"
+        )
+
+    def test_kill_broker_session_stops_scope_through_broker_owner(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+            _local_exec_broker_uid = 1003
+
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_broker_scope", command="sleep 999")
+        session.env_ref = env
+        session.pid = 4321
+        session.host_start_time = 9876
+        session.pid_scope = "sandbox"
+        session.systemd_unit = "hermes-local-exec-4321-deadbeef.scope"
+        registry._running[session.id] = session
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: True)
+        monkeypatch.setattr(
+            "tools.process_registry._stop_systemd_unit",
+            lambda _unit: pytest.fail("broker-owned scope was stopped locally"),
+        )
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "killed"
+        assert env.commands == [
+            (
+                "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null",
+                {"timeout": 5},
+            ),
+            (
+                "env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR=/run/user/1003 "
+                "systemctl --user stop hermes-local-exec-4321-deadbeef.scope",
+                {"timeout": 15},
+            ),
+        ]
+
+    def test_kill_broker_session_reports_scope_stop_failure(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+            _local_exec_broker_uid = 1003
+
+            def execute(self, command, **_kwargs):
+                if command.startswith("kill "):
+                    return {"output": "", "returncode": 0}
+                return {"output": "Failed to connect to bus", "returncode": 1}
+
+        session = _make_session(sid="proc_broker_scope_fail", command="sleep 999")
+        session.env_ref = FakeEnv()
+        session.pid = 4321
+        session.host_start_time = 9876
+        session.pid_scope = "sandbox"
+        session.systemd_unit = "hermes-local-exec-4321-deadbeef.scope"
+        registry._running[session.id] = session
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: True)
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "error"
+        assert "scope" in result["error"]
+
     def test_kill_already_exited(self, registry):
         s = _make_session(exited=True, exit_code=0)
         registry._finished[s.id] = s

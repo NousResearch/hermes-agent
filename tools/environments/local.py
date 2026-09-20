@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
@@ -34,6 +35,121 @@ from tools.environments.local_pythonpath import (
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+class _BrokerProcessHandle:
+    """ProcessHandle backed by the broker connection that owns the child lease."""
+
+    def __init__(
+        self, conn, pid: int, stdout_fd: int, stdin_fd: int | None, remainder: bytes = b""
+    ):
+        self._conn = conn
+        self.pid = pid
+        self._returncode = None
+        self._failure = None
+        self._reply = remainder
+        self._poll_lock = threading.Lock()
+        self.stdout = os.fdopen(stdout_fd, "r", encoding="utf-8", errors="replace")
+        self.stdin = (
+            os.fdopen(stdin_fd, "w", encoding="utf-8", errors="replace")
+            if stdin_fd is not None
+            else None
+        )
+        conn.setblocking(False)
+
+    @property
+    def returncode(self):
+        return self._returncode
+
+    def poll(self):
+        with self._poll_lock:
+            from tools.local_exec_broker import MAX_REPLY_BYTES
+
+            if self._failure is not None:
+                raise self._failure
+            if self._returncode is not None:
+                return self._returncode
+            if b"\n" not in self._reply and len(self._reply) > MAX_REPLY_BYTES:
+                self._reply = b""
+                self._conn.close()
+                self._close_stdin_handle()
+                self._failure = EnvironmentConnectionError(
+                    "configured local execution broker returned an oversized exit reply",
+                    retry_hint=(
+                        "Restart the operator-owned broker service and retry the command."
+                    ),
+                )
+                raise self._failure
+            if b"\n" not in self._reply:
+                try:
+                    chunk = self._conn.recv(4096)
+                except BlockingIOError:
+                    return None
+                if chunk:
+                    if len(self._reply) + len(chunk) > MAX_REPLY_BYTES:
+                        self._reply = b""
+                        self._conn.close()
+                        self._close_stdin_handle()
+                        self._failure = EnvironmentConnectionError(
+                            "configured local execution broker returned an oversized exit reply",
+                            retry_hint=(
+                                "Restart the operator-owned broker service and retry the command."
+                            ),
+                        )
+                        raise self._failure
+                    self._reply += chunk
+                    if b"\n" not in self._reply:
+                        return None
+                else:
+                    self._conn.close()
+                    self._close_stdin_handle()
+                    self._failure = EnvironmentConnectionError(
+                        "configured local execution broker failed during command execution",
+                        retry_hint=(
+                            "Restart the operator-owned broker service and retry the command."
+                        ),
+                    )
+                    raise self._failure
+            if b"\n" in self._reply:
+                import json
+
+                try:
+                    reply = json.loads(self._reply.split(b"\n", 1)[0])
+                    self._returncode = int(reply["exit"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    self._conn.close()
+                    self._close_stdin_handle()
+                    self._failure = EnvironmentConnectionError(
+                        f"configured local execution broker returned an invalid exit reply: {exc}",
+                        retry_hint=(
+                            "Restart the operator-owned broker service and retry the command."
+                        ),
+                    )
+                    raise self._failure from exc
+                self._conn.close()
+            return self._returncode
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("local execution broker", timeout)
+            time.sleep(0.01)
+        return self._returncode
+
+    def _close_stdin_handle(self):
+        if self.stdin is not None:
+            with contextlib.suppress(OSError, ValueError):
+                self.stdin.close()
+
+    def kill(self):
+        with self._poll_lock:
+            if self._returncode is not None:
+                return
+            self._returncode = -signal.SIGKILL
+            with contextlib.suppress(OSError):
+                self._conn.shutdown(socket.SHUT_RDWR)
+            self._conn.close()
+            self._close_stdin_handle()
 
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
@@ -857,6 +973,32 @@ class LocalEnvironment(BaseEnvironment):
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
+        from hermes_cli.config import load_config_readonly
+
+        terminal_cfg = (load_config_readonly() or {}).get("terminal") or {}
+        if "local_exec_broker" in terminal_cfg:
+            broker_cfg = terminal_cfg["local_exec_broker"]
+            broker_socket = (
+                broker_cfg.get("socket") if isinstance(broker_cfg, dict) else None
+            )
+            broker_uid = broker_cfg.get("uid") if isinstance(broker_cfg, dict) else None
+            if not isinstance(broker_socket, str) or not broker_socket:
+                raise EnvironmentConnectionError(
+                    "terminal.local_exec_broker requires a non-empty string socket"
+                )
+            if (
+                not isinstance(broker_uid, int)
+                or isinstance(broker_uid, bool)
+                or broker_uid < 0
+            ):
+                raise EnvironmentConnectionError(
+                    "terminal.local_exec_broker requires a non-negative integer uid"
+                )
+            self._local_exec_broker_socket = broker_socket
+            self._local_exec_broker_uid = broker_uid
+        else:
+            self._local_exec_broker_socket = None
+            self._local_exec_broker_uid = None
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -921,6 +1063,54 @@ class LocalEnvironment(BaseEnvironment):
                 self.cwd, safe_cwd)
         self.cwd = safe_cwd
 
+    def _start_broker_background(
+        self, cmd_string: str, *, timeout: int = 10
+    ) -> tuple[int, int, str]:
+        """Launch one broker-owned background worker outside the caller's lease."""
+        if not self._local_exec_broker_socket or self._local_exec_broker_uid is None:
+            raise RuntimeError("local execution broker is not configured")
+        if _IS_WINDOWS:
+            raise RuntimeError("terminal.local_exec_broker is supported only on POSIX")
+        from tools.local_exec_broker import BrokerError, request_launch
+
+        self._recover_cwd()
+        conn = None
+        try:
+            conn, reply, _remainder = request_launch(
+                self._local_exec_broker_socket,
+                expected_peer_uid=self._local_exec_broker_uid,
+                argv=[_find_bash(), "-c", cmd_string],
+                cwd=self.cwd,
+                env=_make_run_env(self.env),
+                fds=[],
+                timeout=timeout,
+                detached=True,
+            )
+            pid = reply.get("pid")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                raise BrokerError("bad_reply", "broker returned an invalid launch reply")
+            start_time = reply.get("start_time")
+            if reply.get("detached") is not True:
+                raise BrokerError("bad_reply", "broker did not acknowledge detached launch")
+            if (
+                not isinstance(start_time, int)
+                or isinstance(start_time, bool)
+                or start_time <= 0
+            ):
+                raise BrokerError("bad_reply", "broker returned an invalid process start time")
+            systemd_unit = reply.get("systemd_unit", "")
+            if not isinstance(systemd_unit, str) or (
+                systemd_unit
+                and re.fullmatch(r"[A-Za-z0-9_.@:-]+\.scope", systemd_unit) is None
+            ):
+                raise BrokerError("bad_reply", "broker returned an invalid systemd scope unit")
+            conn.sendall(b'{"op":"detach_ack"}\n')
+            return pid, start_time, systemd_unit
+        finally:
+            if conn is not None:
+                with contextlib.suppress(OSError):
+                    conn.close()
+
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
@@ -930,6 +1120,71 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        if self._local_exec_broker_socket:
+            if _IS_WINDOWS:
+                raise RuntimeError("terminal.local_exec_broker is supported only on POSIX")
+            assert self._local_exec_broker_uid is not None
+            from tools.local_exec_broker import BrokerError, request_launch
+
+            stdout_r, stdout_w = os.pipe()
+            stdin_r = stdin_w = None
+            conn = None
+            if stdin_data is not None:
+                stdin_r, stdin_w = os.pipe()
+            try:
+                conn, reply, remainder = request_launch(
+                    self._local_exec_broker_socket,
+                    expected_peer_uid=self._local_exec_broker_uid,
+                    argv=args,
+                    cwd=self.cwd,
+                    env=_make_run_env(self.env),
+                    fds=[],
+                    stdin_fd=stdin_r,
+                    stdout_fd=stdout_w,
+                    timeout=timeout,
+                )
+                pid = reply.get("pid")
+                if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                    raise BrokerError(
+                        "bad_reply", "broker returned an invalid launch reply"
+                    )
+                os.close(stdout_w)
+                stdout_w = None
+                if stdin_r is not None:
+                    os.close(stdin_r)
+                    stdin_r = None
+                handle_stdout_fd, stdout_r = stdout_r, None
+                handle_stdin_fd, stdin_w = stdin_w, None
+                proc = _BrokerProcessHandle(
+                    conn, pid, handle_stdout_fd, handle_stdin_fd, remainder
+                )
+            except BaseException as exc:
+                if conn is not None:
+                    with contextlib.suppress(OSError):
+                        conn.close()
+                for fd in (stdout_r, stdout_w, stdin_r, stdin_w):
+                    if fd is not None:
+                        with contextlib.suppress(OSError):
+                            os.close(fd)
+                if isinstance(exc, BrokerError) and exc.code == "request_too_large":
+                    raise EnvironmentConnectionError(
+                        f"local execution broker request is too large: {exc.message}",
+                        retry_hint=(
+                            "Reduce the command or environment payload before retrying."
+                        ),
+                    ) from exc
+                if isinstance(exc, (BrokerError, OSError)):
+                    raise EnvironmentConnectionError(
+                        f"configured local execution broker is unavailable: {exc}",
+                        retry_hint=(
+                            "Verify terminal.local_exec_broker.socket and the "
+                            "operator-owned broker service."
+                        ),
+                    ) from exc
+                raise
+            if stdin_data is not None:
+                _pipe_stdin(proc, stdin_data)
+            return proc
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

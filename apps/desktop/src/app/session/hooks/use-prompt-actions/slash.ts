@@ -16,6 +16,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { deliverDirectBot, parseDirectBotInvocation } from '@/lib/direct-bot-routing'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -36,6 +37,7 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  getSessionOwnerHint,
   setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
@@ -963,6 +965,55 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)
+          }
+        },
+        to: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const invocation = parseDirectBotInvocation(ctx.arg)
+
+          if (!invocation) {
+            resolved.render('usage: /to <bot-handle> <prompt>')
+
+            return
+          }
+
+          const getRoster = window.hermesDesktop?.getAgentRoster
+
+          if (!getRoster) {
+            resolved.render('error: this Desktop build cannot enumerate Bot routes; update Hermes Desktop')
+
+            return
+          }
+
+          try {
+            const roster = await getRoster()
+            const sourceOwner = resolved.storedSessionId ? getSessionOwnerHint(resolved.storedSessionId) : undefined
+            const sourceProfile = normalizeProfileKey(sourceOwner?.profile || $activeGatewayProfile.get())
+            const sourceConnection = String(sourceOwner?.connectionId || $connection.get()?.connectionId || 'local')
+            const normalizedTarget = invocation.target.replace(/^@/, '').toLowerCase()
+
+            const target = roster.agents.find(
+              agent =>
+                agent.handle.toLowerCase() === normalizedTarget || agent.profile.toLowerCase() === normalizedTarget
+            )
+
+            resolved.render(target ? `Sending to @${target.handle}…` : `Resolving @${normalizedTarget}…`)
+
+            const result = await deliverDirectBot(roster, invocation, {
+              connectionId: sourceConnection,
+              profile: sourceProfile
+            })
+
+            resolved.render(
+              result.reply ? `@${result.bot.handle} replied:\n\n${result.reply}` : `Delivered to @${result.bot.handle}.`
+            )
+          } catch (err) {
+            resolved.render(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {

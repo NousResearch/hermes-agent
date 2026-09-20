@@ -71,6 +71,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
+    CommandDef("to", "Send a prompt directly to a Bot without leaving this session", "Session",
+               args_hint="<bot-handle> <prompt>", cli_only=True, argument_mode="mixed", desktop="hidden"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
     CommandDef("worktree", "Show, list, create, or prune isolated git worktrees", "Session",

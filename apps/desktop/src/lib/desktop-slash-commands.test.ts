@@ -84,6 +84,8 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/version')).toBe(true)
     expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
     expect(isDesktopSlashCommand('/yolo')).toBe(true)
+    expect(resolveDesktopCommand('/to')?.surface).toEqual({ kind: 'action', action: 'to' })
+    expect(desktopSlashCommandArgumentMode('/to')).toBe('mixed')
     expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
     expect(isDesktopSlashCommand('/approvals')).toBe(true)
     expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })

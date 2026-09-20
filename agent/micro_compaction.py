@@ -6,6 +6,7 @@ breaks the provider prompt cache.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -212,11 +213,33 @@ class MicroCompactionMixin:
                 return messages
             self._micro_compact_turns_since_pass = 0
 
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        external_store = bool(
+            session_db and session_id and getattr(session_db, "uses_external_conversation_store", False)
+        )
+        attempt_summary_before = self._micro_compact_rolling_summary
+        attempt_cursor_before = self._micro_compact_cursor
+        attempt_failures_before = self._micro_compact_consecutive_failures
+        attempt_failure_cursor_before = self._micro_compact_last_failure_cursor
+
         n_messages = len(messages)
         exchange = self._next_exchange(messages) if n_messages >= 4 else None
         if exchange is None:
             return messages
         exchange_start, exchange_end = exchange
+
+        expected_revision = expected_active_ids = None
+        if external_store:
+            try:
+                expected_revision, expected_active_ids = session_db.conversation_compaction_fence(session_id)
+            except Exception as exc:
+                logger.info("Micro-compaction skipped: external compaction fence unavailable: %s", exc)
+                self._micro_compact_rolling_summary = attempt_summary_before
+                self._micro_compact_cursor = attempt_cursor_before
+                self._micro_compact_consecutive_failures = attempt_failures_before
+                self._micro_compact_last_failure_cursor = attempt_failure_cursor_before
+                return messages
 
         # Telemetry baseline; taken only once an exchange exists so no-op turns don't pay.
         _started_at = time.monotonic()
@@ -231,9 +254,23 @@ class MicroCompactionMixin:
         # Defrag rewrites summary text/marker in place (no splice, no cursor move) instead of
         # absorbing this turn.
         if self._needs_defrag():
+            defrag_messages_before = copy.deepcopy(messages) if external_store else None
+            flush_invalidated_before = getattr(self, "_flush_scan_cursor_invalidated", False)
             defragged = self._defrag_rolling_summary(messages)
             if defragged:
-                self._sync_micro_compact_to_db(messages)
+                persisted = self._sync_micro_compact_to_db(
+                    messages, expected_revision=expected_revision,
+                    expected_active_ids=expected_active_ids,
+                )
+                if external_store and not persisted:
+                    messages[:] = defrag_messages_before
+                    self._micro_compact_rolling_summary = attempt_summary_before
+                    self._micro_compact_cursor = attempt_cursor_before
+                    self._micro_compact_consecutive_failures = attempt_failures_before
+                    self._micro_compact_last_failure_cursor = attempt_failure_cursor_before
+                    self._flush_scan_cursor_invalidated = flush_invalidated_before
+                    _telemetry("defrag_persist_failed", messages, tokens_after=_tokens_before)
+                    return messages
                 self._reset_micro_failure_tracking()
             outcome = "defrag" if defragged else "defrag_failed"
             _telemetry(outcome, messages, tokens_after=estimate_messages_tokens_rough(messages))
@@ -256,7 +293,19 @@ class MicroCompactionMixin:
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
-        self._sync_micro_compact_to_db(result)
+        persisted = self._sync_micro_compact_to_db(
+            result, expected_revision=expected_revision,
+            expected_active_ids=expected_active_ids,
+        )
+        if external_store and not persisted:
+            self._micro_compact_rolling_summary = attempt_summary_before
+            self._micro_compact_cursor = attempt_cursor_before
+            self._micro_compact_consecutive_failures = attempt_failures_before
+            self._micro_compact_last_failure_cursor = attempt_failure_cursor_before
+            _telemetry(
+                "persist_failed", messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens,
+            )
+            return messages
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
         )
@@ -340,24 +389,41 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _sync_micro_compact_to_db(self, compacted_messages: List[Dict[str, Any]]) -> None:
-        """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
-        Without this the old exchange rows stay ``active=1`` and a resume double-loads both the
-        summary and the originals."""
+    def _sync_micro_compact_to_db(
+        self, compacted_messages: List[Dict[str, Any]], *, expected_revision=None, expected_active_ids=None,
+    ) -> bool:
+        """Persist the micro-compacted set and report whether canonical publication succeeded.
+
+        SQLite keeps the historical best-effort behavior on a sync error: the in-memory
+        micro-summary remains usable and a later batch compaction repairs durability. An
+        external conversation store is canonical, so its publication failure returns
+        ``False`` and the caller must roll back the local micro-compaction state.
+        """
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return
+            return True
+        external = bool(getattr(session_db, "uses_external_conversation_store", False))
         try:
             # Every row except the marker is a carried-forward original: archive rewind-style.
-            session_db.archive_and_compact(session_id, compacted_messages, tail_count=max(0, len(compacted_messages) - 1))
+            session_db.archive_and_compact(
+                session_id, compacted_messages, tail_count=max(0, len(compacted_messages) - 1),
+                expected_revision=expected_revision, expected_active_ids=expected_active_ids,
+            )
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
-        except Exception:
+            return True
+        except Exception as exc:
+            if external:
+                logger.info(
+                    "External micro-compaction publication failed; rolling back local rewrite: %s", exc
+                )
+                return False
             logger.info(
                 "Micro-compaction DB sync failed — resume will double-load "
                 "compacted messages until the next batch compression"
             )
+            return True
 
     def _splice_micro_compact_result(
         self, messages: List[Dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,

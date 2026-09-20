@@ -848,7 +848,8 @@ class SessionMessagesMixin:
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
-        lock_holder: Optional[str] = None, tail_count: int = 0) -> int:
+        lock_holder: Optional[str] = None, tail_count: int = 0, *,
+        expected_revision=None, expected_active_ids=None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -868,6 +869,48 @@ class SessionMessagesMixin:
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
         """
         from hermes_state import SessionCompressionInProgressError
+        if self._conversation_store is not None:
+            from conversation_store import ConversationStoreError
+            if expected_revision is None or expected_active_ids is None:
+                raise ConversationStoreError(
+                    "external compaction requires the revision and active ids observed before compaction"
+                )
+
+            def _guard(conn):
+                if lock_holder is not None:
+                    lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
+                    if (lock_row is None or lock_row["holder"] != lock_holder
+                        or float(lock_row["expires_at"]) <= time.time()):
+                        raise SessionCompressionInProgressError(
+                            f"Compression lease for {session_id!r} lost before commit; refusing stale compaction"
+                        )
+            self._execute_write(_guard, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+            self._publish_external_compaction(
+                session_id, compacted_messages, expected_revision=expected_revision,
+                expected_active_ids=expected_active_ids, model_config_patch=model_config_patch,
+                tail_count=tail_count)
+            try:
+                tool_calls = sum(
+                    _tool_calls_count(_parse_tool_calls(message.get("tool_calls")))
+                    for message in compacted_messages
+                )
+                def _shadow(conn):
+                    patch = model_config_patch is not None
+                    patched_model_config = self._merge_model_config_json(
+                        conn, session_id, model_config_patch, on_missing="raise"
+                    ) if patch else None
+                    conn.execute(
+                        f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
+                        (len(compacted_messages), tool_calls,
+                         *((patched_model_config,) if patch else ()), session_id),
+                    )
+                self._execute_write(_shadow, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
+            except Exception:
+                logger.warning(
+                    "Canonical compaction committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return len(compacted_messages)
+
         def _do(conn):
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -907,6 +950,51 @@ class SessionMessagesMixin:
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
         return self._execute_write(_do)
+
+    def _publish_external_compaction(
+        self, session_id: str, compacted_messages: List[Dict[str, Any]], *,
+        expected_revision, expected_active_ids, mode: str = "in_place",
+        child_conversation=None, pending_parent_messages=(), model_config_patch=None,
+        tail_count: int = 0,
+    ):
+        """Publish canonical compaction without materializing transcript rows in SQLite."""
+        if self._conversation_store is None:
+            raise RuntimeError("external compaction requires a conversation store")
+        from conversation_store import ConversationMutationResult, ConversationStoreError
+        result = self._conversation_store.publish_compaction(
+            session_id, [dict(message) for message in compacted_messages],
+            expected_revision=expected_revision, expected_active_ids=tuple(expected_active_ids),
+            mode=mode, child_conversation=child_conversation,
+            pending_parent_messages=tuple(dict(message) for message in pending_parent_messages),
+            model_config_patch=model_config_patch, tail_count=tail_count)
+        if not isinstance(result, ConversationMutationResult):
+            raise ConversationStoreError("conversation store compaction must return ConversationMutationResult")
+        details = result.details if isinstance(result.details, dict) else {}
+        compacted_ids = tuple(result.message_ids) or tuple(details.get("compacted_message_ids", ()))
+        compacted_canonical = tuple(result.canonical_messages) or tuple(
+            details.get("compacted_canonical_messages", ())
+        )
+        pending_ids = tuple(details.get("pending_parent_message_ids", ()))
+        pending_canonical = tuple(details.get("pending_parent_canonical_messages", ()))
+        groups = (
+            ("compacted", compacted_messages, compacted_ids, compacted_canonical),
+            ("pending_parent", pending_parent_messages, pending_ids, pending_canonical),
+        )
+        for name, target, ids, canonical in groups:
+            if target and len(ids) != len(target):
+                raise ConversationStoreError(f"compaction result missing {name} message ids")
+            if canonical and len(canonical) != len(target):
+                raise ConversationStoreError(f"compaction result returned mismatched {name} messages")
+            for index, message in enumerate(target):
+                row = canonical[index] if canonical else {}
+                row_id = row.get("_row_id") if isinstance(row, dict) else None
+                row_id = row_id if isinstance(row_id, int) else ids[index]
+                if not isinstance(row_id, int):
+                    raise ConversationStoreError("conversation store compaction ids must be integers")
+                message["_row_id"] = row_id
+                if isinstance(row, dict) and "content" in row and row.get("content") != message.get("content"):
+                    message["_canonical_content"] = row["content"]
+        return result
 
     def _message_column_names(self, conn) -> List[str]:
         """Column names of the messages table, cached per-connection era."""

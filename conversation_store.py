@@ -224,6 +224,17 @@ class ConversationStore(ABC):
 
     def publish_compaction(
         self, conversation_id: str, messages, *, expected_revision: ConversationRevision,
-        model_config_patch=None, tail_count: int = 0,
+        expected_active_ids=None, model_config_patch=None, tail_count: int = 0,
+        mode: str = "in_place", child_conversation=None, pending_parent_messages=(),
     ):
+        """Publish a fenced compaction generation atomically.
+
+        ``expected_revision`` and ``expected_active_ids`` are the provider-atomic
+        compaction-start fence.  A provider must reject any canonical change after
+        that fence; it must not merge a later append into this stale summary.
+        For ``mode='rotated'`` the pending parent rows are part of this same
+        operation: they are appended to parent evidence, the child is created and
+        populated, and the parent is closed atomically.  Implementations return
+        canonical ids/content for both message groups in ``details``.
+        """
         raise NotImplementedError

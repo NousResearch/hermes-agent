@@ -90,6 +90,65 @@ class MutationStore(ConversationStore):
             canonical_messages=tuple(deepcopy(rows)),
         )
 
+    def publish_compaction(
+        self, conversation_id, messages, *, expected_revision, expected_active_ids=None,
+        model_config_patch=None, tail_count=0, mode="in_place", child_conversation=None,
+        pending_parent_messages=(),
+    ):
+        self._check(conversation_id, expected_revision, expected_active_ids)
+        active = [row for row in self.messages[conversation_id] if row.get("active", True)]
+        if mode != "rotated":
+            carried_ids = set()
+            if tail_count:
+                carried_ids = {row["_row_id"] for row in active[-int(tail_count):]}
+            for row in active:
+                row["active"] = False
+                row["compacted"] = row["_row_id"] not in carried_ids
+
+        pending_rows = [self._new_row(message) for message in pending_parent_messages]
+        self.messages[conversation_id].extend(pending_rows)
+
+        if model_config_patch:
+            config = dict(self.conversations[conversation_id].get("model_config") or {})
+            for key, value in model_config_patch.items():
+                if value is None:
+                    config.pop(key, None)
+                else:
+                    config[key] = value
+            self.conversations[conversation_id]["model_config"] = config
+
+        if mode == "rotated":
+            if not child_conversation:
+                raise ValueError("rotated compaction requires child_conversation")
+            child_id = child_conversation["id"]
+            self.conversations[conversation_id]["end_reason"] = "compression"
+            self.conversations[conversation_id]["ended_at"] = time.time()
+            self.conversations[child_id] = deepcopy(child_conversation)
+            self.rev[child_id] = 1
+            self.messages[child_id] = []
+            compacted_rows = [self._new_row(message) for message in messages]
+            self.messages[child_id].extend(compacted_rows)
+            self.rev[conversation_id] += 1
+            return ConversationMutationResult(
+                revision=self.get_revision(conversation_id), affected_count=len(compacted_rows),
+                message_ids=tuple(row["_row_id"] for row in compacted_rows),
+                canonical_messages=tuple(deepcopy(compacted_rows)),
+                details={
+                    "child_conversation_id": child_id,
+                    "pending_parent_message_ids": tuple(row["_row_id"] for row in pending_rows),
+                    "pending_parent_canonical_messages": tuple(deepcopy(pending_rows)),
+                },
+            )
+
+        compacted_rows = [self._new_row(message) for message in messages]
+        self.messages[conversation_id].extend(compacted_rows)
+        self.rev[conversation_id] += 1
+        return ConversationMutationResult(
+            revision=self.get_revision(conversation_id), affected_count=len(compacted_rows),
+            message_ids=tuple(row["_row_id"] for row in compacted_rows),
+            canonical_messages=tuple(deepcopy(compacted_rows)),
+        )
+
     def rewind_to_message(
         self, conversation_id, message_id, *, expected_revision, expected_active_ids,
         expected_target_content=None, preserve_compaction_handoff=False,

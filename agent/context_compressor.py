@@ -3167,6 +3167,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
+        expected_revision = expected_active_ids = None
+        if session_db and session_id and getattr(session_db, "uses_external_conversation_store", False):
+            try:
+                expected_revision, expected_active_ids = session_db.conversation_compaction_fence(session_id)
+            except Exception as exc:
+                logger.warning("Proactive prune could not capture external compaction fence: %s", exc)
+                return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
@@ -3188,6 +3195,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 session_db.archive_and_compact(
                     session_id, pruned_msgs,
                     model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
+                    expected_revision=expected_revision, expected_active_ids=expected_active_ids,
                 )
             except Exception as exc:
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)

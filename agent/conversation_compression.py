@@ -2585,6 +2585,8 @@ class _CompressionLease:
         self._lifecycle = lifecycle
         self.holder: Optional[str] = None
         self.watermark: Optional[int] = None
+        self.start_revision: Any = None
+        self.start_active_ids: tuple[int, ...] = ()
         self._refresher: Optional[_CompressionLockLeaseRefresher] = None
         self._released = False
         self._release_guard = threading.Lock()
@@ -2690,13 +2692,20 @@ def _try_acquire_durable_lock(lease: _CompressionLease, try_acquire: Any, commit
         acquired = try_acquire(lease.sid, lease.holder, ttl_seconds=lease.ttl)
         if acquired:
             try:
-                lease.watermark = lease.db.get_active_message_watermark(lease.sid)
+                if getattr(lease.db, "uses_external_conversation_store", False):
+                    lease.start_revision, lease.start_active_ids = (
+                        lease.db.conversation_compaction_fence(lease.sid)
+                    )
+                else:
+                    lease.watermark = lease.db.get_active_message_watermark(lease.sid)
                 # A captured watermark makes the commit safe against later rows on BOTH commit
                 # paths; tell the fence so a host may keep this attempt's admission.
                 if commit_fence is not None:
                     with contextlib.suppress(AttributeError):  # test doubles without the method
                         commit_fence.mark_commit_watermark_fenced()
             except Exception as _wm_err:
+                if getattr(lease.db, "uses_external_conversation_store", False):
+                    raise
                 logger.warning(
                     "compression watermark capture failed for session=%s (%s) — concurrent appends this cycle "
                     "will be archived with the snapshot", lease.sid, _wm_err,
@@ -2816,6 +2825,8 @@ def _acquire_compression_lease(
             _emit_aborted_attempt_telemetry(agent, attempt_started_at, "commit_fence_cancelled")
             lease.release()
             return None, _existing_sp
+    if getattr(_lock_db, "uses_external_conversation_store", False) and lease.start_revision is None:
+        lease.start_revision, lease.start_active_ids = _lock_db.conversation_compaction_fence(_lock_sid)
     return lease, None
 
 
@@ -3277,6 +3288,50 @@ def _publish_rotated_compaction(
     # healed by publish (don't abort); the lease is re-acquirable (don't check it).
     if _parent_deliberately_ended(agent._session_db, old_session_id):
         raise RuntimeError(f"Compression parent already ended: {old_session_id}")
+    _profile_for_child = None
+    with contextlib.suppress(Exception):
+        from hermes_cli.profiles import get_active_profile_name
+        _profile_for_child = get_active_profile_name()
+    if _profile_for_child == "default":
+        _profile_for_child = None
+    # External stores cannot safely flush this batch first: that would advance the
+    # provider revision and invalidate the compaction-start fence. Collect the
+    # exact rows the ordinary flush would append, then include them in the same
+    # provider-atomic parent->child publication.
+    if getattr(agent._session_db, "uses_external_conversation_store", False):
+        from agent.session_persistence import _db_flush_collect, sync_flushed_message_markers
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        pending_rows, pending_messages = _db_flush_collect(agent, messages, persisted_history)
+        old_title = agent._session_db.get_session_title(old_session_id)
+        new_session_id = mint_session_id()
+        agent._session_db.publish_compression_child(
+            parent_session_id=old_session_id, child_session_id=new_session_id,
+            source=_compression_child_source(agent, old_session_id), model=agent.model,
+            model_config=agent._session_init_model_config, system_prompt=new_system_prompt,
+            messages=compressed, cwd=getattr(agent, "working_directory", None),
+            profile_name=_profile_for_child, compression_lock_holder=lease.holder,
+            require_compression_lease=lease.holder is not None,
+            require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
+            expected_revision=lease.start_revision, expected_active_ids=lease.start_active_ids,
+            pending_parent_messages=pending_rows,
+        )
+        sync_flushed_message_markers(pending_messages, pending_rows)
+        if compressed_user_turn_outcome in {"inserted", "merged"}:
+            source_message = next((m for m in reversed(messages) if _is_real_user_message(m)), None)
+            if isinstance(source_message, dict):
+                source_message[_DB_PERSISTED_MARKER] = True
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list) and session_messages is not messages:
+                    _stamp_scoped_twins(session_messages, source_message, exact_counts_stamped=True)
+        for handoff_message in compressed:
+            if isinstance(handoff_message, dict):
+                handoff_message[_DB_PERSISTED_MARKER] = True
+        agent.session_id = new_session_id
+        agent._db_flush_scan_prefix = None
+        _rebind_session_context(agent.session_id)
+        agent._session_db_created = True
+        _carry_session_state_to_child(agent, old_session_id, old_title)
+        return
     # Foreign-tail ceiling: the flush below writes OUR rows (already in handoff);
     # rows above the start watermark up to this MAX(id) are foreign appends.
     # No trustworthy ceiling means the clone could duplicate the handoff: skip tail preservation this rotation.
@@ -3288,12 +3343,6 @@ def _publish_rotated_compaction(
     # Publish closure + child + handoff in one transaction so no reader sees an
     # empty child. Child stays on the parent's profile ("default" persists as NULL);
     # publish also COALESCEs from the parent row for threads lacking HERMES_HOME.
-    _profile_for_child = None
-    with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
-        _profile_for_child = get_active_profile_name()
-    if _profile_for_child == "default":
-        _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -3609,6 +3658,7 @@ def _commit_compaction(
                     agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder,
                     tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    expected_revision=lease.start_revision, expected_active_ids=lease.start_active_ids,
                 )
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next

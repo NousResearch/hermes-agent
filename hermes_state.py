@@ -668,6 +668,30 @@ class SessionDB(
             raise TypeError("conversation store snapshot() must return ConversationSnapshot")
         return snapshot
 
+    def conversation_compaction_fence(self, session_id: str):
+        """Return one stable external ``(revision, active_ids)`` observation.
+
+        ``active_message_ids()`` and ``get_revision()`` are separate provider reads.
+        Reading the revision on both sides turns them into a stable observation
+        without requiring a provider-specific snapshot payload shape. Every
+        canonical mutation must advance the revision, so a changed revision
+        retries rather than authorizing compaction from mixed states.
+        """
+        if self._conversation_store is None:
+            return None, ()
+        from conversation_store import ConversationConflictError
+        for _ in range(4):
+            before = self.conversation_revision(session_id)
+            active_ids = tuple(
+                int(row_id) for row_id in self._conversation_store.active_message_ids(session_id)
+            )
+            after = self.conversation_revision(session_id)
+            if before == after:
+                return before, active_ids
+        raise ConversationConflictError(
+            f"conversation changed while capturing compaction fence for {session_id!r}"
+        )
+
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
         malformed sqlite_master), generation stamp."""

@@ -231,7 +231,8 @@ class SessionCompressionMixin:
         system_prompt: str = None, cwd: str = None, profile_name: str = None,
         compression_lock_holder: str = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
-        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
+        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None,
+        expected_revision=None, expected_active_ids=None, pending_parent_messages=()) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
         ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
@@ -246,6 +247,114 @@ class SessionCompressionMixin:
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
         from hermes_state_errors import CompressionSessionBusyError
+        if self._conversation_store is not None:
+            from conversation_store import ConversationStoreError
+            if expected_revision is None or expected_active_ids is None:
+                raise ConversationStoreError(
+                    "external rotated compaction requires the revision and active ids observed before compaction"
+                )
+
+            def _guard_external(conn):
+                if require_lease_refresh and compression_lock_holder:
+                    conn.execute(
+                        "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",
+                        (time.time() + lease_ttl_seconds, parent_session_id, compression_lock_holder))
+                lock_row = conn.execute(_LOCK_ROW_SQL, (parent_session_id,)).fetchone()
+                if require_compression_lease and (
+                    lock_row is None or not compression_lock_holder
+                    or lock_row["holder"] != compression_lock_holder
+                    or float(lock_row["expires_at"]) <= time.time()
+                ):
+                    raise CompressionSessionBusyError(
+                        f"Compression lease lost before publication: {parent_session_id}"
+                    )
+                parent = conn.execute(
+                    "SELECT ended_at, end_reason FROM sessions WHERE id = ?", (parent_session_id,)
+                ).fetchone()
+                if parent is None:
+                    raise RuntimeError(f"Compression parent not found: {parent_session_id}")
+                if parent["ended_at"] is not None and not is_automatic_end_reason(parent["end_reason"]):
+                    raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
+            self._execute_write(_guard_external)
+
+            parent_shadow = self.get_session(parent_session_id) or {}
+            child_conversation = {
+                "id": child_session_id,
+                "source": source,
+                "parent_session_id": parent_session_id,
+                "cwd": cwd or parent_shadow.get("cwd"),
+                "profile_name": profile_name or parent_shadow.get("profile_name"),
+                "git_repo_root": parent_shadow.get("git_repo_root"),
+                "user_id": parent_shadow.get("user_id"),
+                "session_key": parent_shadow.get("session_key"),
+                "chat_id": parent_shadow.get("chat_id"),
+                "chat_type": parent_shadow.get("chat_type"),
+                "thread_id": parent_shadow.get("thread_id"),
+                "display_name": parent_shadow.get("display_name"),
+                "origin_json": parent_shadow.get("origin_json"),
+                "model": model,
+                "model_config": model_config,
+                "started_at": time.time(),
+            }
+            self._publish_external_compaction(
+                parent_session_id, messages, expected_revision=expected_revision,
+                expected_active_ids=expected_active_ids, mode="rotated",
+                child_conversation=child_conversation,
+                pending_parent_messages=pending_parent_messages,
+            )
+
+            try:
+                def _shadow_external(conn):
+                    parent = conn.execute(
+                        """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
+                                  user_id, session_key, chat_id, chat_type,
+                                  thread_id, display_name, origin_json, profile_name
+                           FROM sessions WHERE id = ?""",
+                        (parent_session_id,),
+                    ).fetchone()
+                    if parent is None:
+                        raise RuntimeError(f"Compression parent not found: {parent_session_id}")
+                    if parent["ended_at"] is not None and is_automatic_end_reason(parent["end_reason"]):
+                        conn.execute(
+                            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                            (parent_session_id,),
+                        )
+                    self._publish_child_session_row(
+                        conn, parent, parent_session_id=parent_session_id,
+                        child_session_id=child_session_id, source=source, model=model,
+                        model_config=model_config, system_prompt=system_prompt, cwd=cwd,
+                        profile_name=profile_name,
+                    )
+                    tool_calls = sum(
+                        len(message.get("tool_calls") or [])
+                        for message in messages if isinstance(message, dict)
+                    )
+                    conn.execute(
+                        "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                        (len(messages), tool_calls, child_session_id),
+                    )
+                    pending_tool_calls = sum(
+                        len(message.get("tool_calls") or [])
+                        for message in pending_parent_messages if isinstance(message, dict)
+                    )
+                    if pending_parent_messages:
+                        conn.execute(
+                            "UPDATE sessions SET message_count = message_count + ?, "
+                            "tool_call_count = tool_call_count + ? WHERE id = ?",
+                            (len(pending_parent_messages), pending_tool_calls, parent_session_id),
+                        )
+                    conn.execute(
+                        "UPDATE sessions SET ended_at = ?, end_reason = 'compression' WHERE id = ?",
+                        (time.time(), parent_session_id),
+                    )
+                self._execute_write(_shadow_external)
+            except Exception:
+                logger.warning(
+                    "Canonical rotated compaction committed but local shadow publication failed for %s",
+                    parent_session_id, exc_info=True,
+                )
+            return
+
         def _do(conn):
             if require_lease_refresh and compression_lock_holder:
                 conn.execute(

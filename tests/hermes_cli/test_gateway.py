@@ -529,6 +529,44 @@ class TestWaitForGatewayExit:
         assert calls == [(22, True)]
 
 
+class TestRestartWaitsForApiServerPort:
+    """Regression for #91547: ``hermes gateway restart`` waited only for the old PID; on macOS the
+    replacement then hit EADDRINUSE and ran with no API server."""
+
+    def test_port_is_reported_free_once_the_old_listener_closes(self):
+        import socket
+        import threading
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        threading.Timer(0.3, listener.close).start()
+
+        assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
+
+    def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
+        import socket
+
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        cfg = GatewayConfig()
+        cfg.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True, extra={"port": port})
+        monkeypatch.setattr(gateway, "load_gateway_config", lambda: cfg)
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+        try:
+            # config.yaml port wins over the env default: the busy configured port is what we wait on
+            assert gateway._wait_for_api_server_port_free(timeout=0.3) is False
+            cfg.platforms[Platform.API_SERVER].enabled = False
+            assert gateway._wait_for_api_server_port_free(timeout=0.3) is True
+        finally:
+            listener.close()
+
+
 class TestStopProfileGateway:
     def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
         """Windows must let the marker watcher run before escalating (#112750)."""
@@ -1284,6 +1322,60 @@ def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch
         )
 
 
+@pytest.mark.windows_only
+def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypatch):
+    """gateway <- cmd.exe <- svchost.exe(Schedule) <- services.exe: the Task Scheduler host is not the
+    gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
+    Hermes-owned service (by binary path) stays SCM-supervised."""
+    import psutil
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
+    profile = SimpleNamespace(profile="default", pid=18480, create_time=18480.0)
+
+    class FakeService:
+        def __init__(self, name, binpath):
+            self._name, self._binpath = name, binpath
+
+        def as_dict(self):
+            return {"name": self._name, "binpath": self._binpath, "pid": 2360, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(12296), FakeProcess(2360), FakeProcess(4)]
+
+        def children(self, recursive=False):
+            assert self.pid == 2360 and recursive is True
+            return [FakeProcess(12296), FakeProcess(18480)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    def run(service):
+        return gateway.find_windows_gateway_services(
+            psutil_module=SimpleNamespace(
+                win_service_iter=lambda: [service], Process=FakeProcess, AccessDenied=psutil.AccessDenied),
+            profile_processes=[profile],
+        )
+
+    assert run(FakeService("Schedule", r"C:\Windows\system32\svchost.exe -k netsvcs -p -s Schedule")) == []
+    owned = run(FakeService("gw", r'"C:\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run'))
+    assert [(s.name, s.service_pid, s.gateway_pid) for s in owned] == [("gw", 2360, 18480)]
+
+    # QueryServiceConfig denied to this user (hardened third-party service): not Hermes's, and never a
+    # reason to abort the whole enumeration; a Hermes-NAMED service is settled without asking binpath.
+    class DeniedConfigService(FakeService):
+        def binpath(self):
+            raise psutil.AccessDenied(2360, self._name)
+
+    assert run(DeniedConfigService("Hardened", "")) == []
+    named = run(DeniedConfigService("HermesGateway", ""))
+    assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
+
+
 def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):
     """A shared host PID cannot prove which service owns the gateway subtree."""
     monkeypatch.setattr(gateway.sys, "platform", "win32")
@@ -1310,7 +1402,10 @@ def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypat
             return float(self.pid)
 
     fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [FakeService("ServiceA"), FakeService("ServiceB")],
+        win_service_iter=lambda: [
+            FakeService("HermesGatewayA"),
+            FakeService("HermesGatewayB"),
+        ],
         Process=FakeProcess,
     )
 

@@ -26,10 +26,14 @@ def _root() -> Path:
 
 
 def read_pending(key: str) -> dict | None:
+    """Exact-id read: fails closed on anything but a JSON object, never licensing an overwrite."""
     try:
-        return json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
+        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        raise ValueError(f"deferred Bot Chat receipt {key} is not a JSON object ({type(record).__name__})")
+    return record
 
 
 def _records(root: Path) -> list[tuple[Path, dict]]:
@@ -37,6 +41,8 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     for path in root.glob("*.json"):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
         except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
             # Keep damaged or unreadable receipts as evidence; never replay them or block peers
             # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).
@@ -94,7 +100,7 @@ def _drain(root: Path) -> None:
     for path, _ in records:
         with _FileLock(root / ".lock"):
             record = json.loads(path.read_text(encoding="utf-8"))
-            if record["status"] != "queued":
+            if not isinstance(record, dict) or record["status"] != "queued":
                 continue
             home = Path(record["home"])
             # A failure notice queued before the target profile opted out is settled as

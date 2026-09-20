@@ -11,7 +11,7 @@ import {
   pinLegacyNewChatProfile
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/projects'
-import { windowProfileOverride } from '@/store/windows'
+import { isPeerInstanceWindow, isProfilePinnedWindow, windowConnectionOverride, windowProfileOverride } from '@/store/windows'
 
 /** Only generic New Session actions consult this preference. Explicit profile,
  * agent, project and existing-session actions keep their captured owner. */
@@ -22,10 +22,11 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
     return null
   }
 
-  const profile = windowProfileOverride()
-  const saved = profile
-    ? { connectionId: new URLSearchParams(window.location.search).get('connectionId') || null, profile }
-    : $defaultProfileRoute.get()
+  // An ordinary New Window inherits its opener only for boot. Reusing that
+  // seed here would undo a later device/profile selection. Only an explicit
+  // "Open profile in new window" makes the peer's launch route a default.
+  const profile = !isPeerInstanceWindow() || isProfilePinnedWindow() ? windowProfileOverride() : null
+  const saved = profile ? { connectionId: windowConnectionOverride(), profile } : $defaultProfileRoute.get()
 
   if (!saved) {
     return null

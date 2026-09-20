@@ -40,7 +40,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import pre_agent_fallback_notice
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -247,7 +247,8 @@ async def run_codex_hygiene_compaction(
     count_before = getattr(compressor, "compression_count", 0)
     # copy_context carries profile secret scope / HERMES_HOME override (executors don't propagate ContextVars).
     worker_future = asyncio.get_running_loop().run_in_executor(
-        None, copy_context().run, lambda: agent._compress_context(history, "", approx_tokens=approx_tokens))
+        None, copy_context().run,
+        lambda: agent._compress_context(history, "", approx_tokens=approx_tokens, task_id=session_id or "default"))
     track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
     if callable(track_worker):
         # ``wait_for`` only cancels the asyncio wrapper; keep the running executor thread visible to shutdown.
@@ -374,8 +375,12 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r")",
     re.IGNORECASE)
 
+# ``401`` as a status token: not glued to a digit or a timestamp/identifier separator on the left
+# (``05:14:15,401``), but trailing punctuation is a real envelope (``HTTP 401: Unauthorized``,
+# ``returned 401.``) and must keep matching (#89401).
 _GATEWAY_AUTH_ERROR_RE = re.compile(
-    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key"
+    r"|(?<![\d:,.])401(?!\d))",
     re.IGNORECASE)
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
@@ -385,9 +390,28 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
 _CONNECTION_ERROR_MARKERS = (
     r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)", r"(?:\w+\.)?connect\s*(?:error|timeout)",
     r"connection\s+refused", r"connection\s+reset", r"connection\s+aborted", r"actively\s+refused",
-    r"winerror\s+10061", r"errno\s+111", r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable",
+    r"winerror\s+10061\b", r"errno\s+111\b", r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable",
     r"cannot\s+connect", r"failed\s+to\s+establish", r"could\s+not\s+connect")
 _GATEWAY_CONNECTION_ERROR_RE = re.compile("(" + "|".join(_CONNECTION_ERROR_MARKERS) + ")", re.IGNORECASE)
+
+# An ESTABLISHED connection died mid-request. Says nothing about whether the endpoint is up:
+# an earlier call in the same turn may already have been answered by it (#26339, #116323).
+_CONNECTION_INTERRUPTED_MARKERS = (
+    r"connection\s+reset", r"connection\s+aborted", r"errno\s+104\b", r"errno\s+103\b",
+    r"broken\s+pipe", r"server\s+disconnected", r"peer\s+closed\s+connection",
+    r"connection\s+was\s+closed", r"network\s+connection\s+lost", r"unexpected\s+eof",
+    r"incomplete\s+chunked\s+read", r"response\s+ended\s+prematurely", r"socket\s+hang\s+up",
+    r"(?:\w+\.)?remoteprotocolerror", r"(?:\w+\.)?readerror")
+_GATEWAY_CONNECTION_INTERRUPTED_RE = re.compile(
+    "(" + "|".join(_CONNECTION_INTERRUPTED_MARKERS) + ")", re.IGNORECASE)
+
+# Nothing accepted the connection / no path to the host: "the endpoint is not up" IS the diagnosis.
+_ENDPOINT_UNREACHABLE_MARKERS = (
+    r"connection\s+refused", r"actively\s+refused", r"winerror\s+10061\b", r"errno\s+111\b",
+    r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable", r"cannot\s+connect",
+    r"failed\s+to\s+establish", r"could\s+not\s+connect", r"(?:\w+\.)?connect\s*(?:error|timeout)")
+_GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
+    "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
@@ -579,17 +603,31 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
         + format_approval_deadline_line(approval_timeout_seconds()))
 
-# Ordered: auth beats policy beats rate-limit beats connection; first match wins. Copy names the
-# slash command the chat user can run; raw provider text stays in the gateway log (`hermes logs`).
+# Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
+# first because a quota/429 envelope often also carries an auth-shaped preamble ("Provider
+# authentication failed: ... quota exhausted (429) ... Credentials are still valid") and re-auth can
+# never fix a quota, so text with both signals must fail safe toward the quota reply (#89401). Copy
+# names the slash command the chat user can run; raw provider text stays in the gateway log.
+#
+# The three connection rows are not interchangeable (#116323): a RESET/EOF on an established
+# connection says nothing about whether the endpoint is up (an earlier call in the same turn may have
+# been answered by it), a REFUSED/unroutable connect is the endpoint-down case #86570 wrote the
+# wording for, and a cause-free SDK ``APIConnectionError: Connection error.`` supports neither
+# diagnosis, so the catch-all names the failure without asserting a cause.
 _PROVIDER_ERROR_REPLIES = (
+    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
     (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
                              "or ask whoever runs this bot to run `hermes doctor` on the host."),
     (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
                                   "message, or use /model to switch models."),
-    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
-    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
-                                   "endpoint is not running or is unreachable. Wait a moment and use /retry; "
-                                   "if it persists, run `hermes doctor` on the host."))
+    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "⚠️ The connection to the AI model service was interrupted mid-request — "
+                                         "usually transient. Use /retry to try again; if it keeps happening, run "
+                                         "`hermes doctor` on the host."),
+    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
+                                       "endpoint is not running or is unreachable. Wait a moment and use /retry; "
+                                       "if it persists, run `hermes doctor` on the host."),
+    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ Hermes could not reach the AI model service (no further detail from the "
+                                   "SDK). Use /retry to try again; if it persists, run `hermes doctor` on the host."))
 
 
 # Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
@@ -599,11 +637,23 @@ _CONTEXT_OVERFLOW_REPLY = (
     "Use /compress to shorten the history, or /new to start a fresh conversation.")
 
 
+def _rate_limit_reply(text: str) -> str:
+    """Name the reset window a quota 429 carries (``resets_in_seconds`` body field, the credential
+    pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
+    (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
+    from agent.retry_utils import format_reset_window, reset_delay_from_message
+    seconds = reset_delay_from_message(text) or 0
+    if seconds < 120:
+        return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
+    return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
+            "Use /retry after that, or /model to switch models.")
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     for pattern, reply in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
-            return reply
+            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else reply
     return (
         "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
         "models. Details are in the gateway log (`hermes logs`).")
@@ -649,6 +699,15 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     from agent.message_sanitization import _sanitize_surrogates
 
     text = _sanitize_surrogates(str(text))
+
+    # Some OpenAI-compatible providers leak their exact end-of-sequence control token into
+    # ``final_response`` even though finish_reason is already ``stop``.  It is transport metadata,
+    # not an assistant message; without filtering, chat adapters send a literal ``<|eos|>`` bubble.
+    # Reuse the MEDIA boundary's exact, terminal-only recognizer (#111046 / #111348): examples
+    # mentioning the token mid-response and non-exact variants remain byte-identical.
+    _eos_start = _terminal_sentinel_start(text)
+    if _eos_start >= 0:
+        text = text[:_eos_start].rstrip()
 
     # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
     # See #7921.
@@ -899,8 +958,9 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), and the local Python toolchain probe (#106064). Context files remain lazy because they
-    need the active turn's agent and model context."""
+    TTL cache), the local Python toolchain probe (#106064), and the default route's context-window
+    metadata (#105986) — a catalog HTTP probe that must not sit between the first inbound turn and its
+    inference request. Context files remain lazy because they need the active turn's agent."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
@@ -914,6 +974,13 @@ def _warm_turn_machinery_sync() -> int:
         from tools.env_probe import get_environment_probe_line
 
         get_environment_probe_line()
+    try:
+        # Same route/credential/profile rules as the turn itself; primes the process-local catalog
+        # caches (codex OAuth, OpenRouter) so AIAgent construction on the first turn is a cache hit.
+        ctx = _resolve_gateway_model_context()
+        logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
+    except Exception:
+        logger.debug("model-context warm-up failed (non-fatal)", exc_info=True)
     return len(tool_defs)
 
 
@@ -1612,7 +1679,7 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
     homes = _multiplex_profile_homes(config)
-    active = get_active_profile_name() or "default"
+    active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
     if any(name == active for name, _home in homes):
         return homes
     try:
@@ -1842,8 +1909,6 @@ _AGENT_ENV_BRIDGE = {
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
-    # Internal bridge only — config.yaml (agent.reconnect_attention_after) is the documented setting.
-    "reconnect_attention_after": "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
@@ -2101,6 +2166,7 @@ from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
+    _terminal_sentinel_start,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
@@ -2188,6 +2254,8 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
+    # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
+    "_transcript_lag_streaks",
     # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
     # future conversation's first user message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes")
@@ -2195,28 +2263,32 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
-    ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only."""
+    ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
+    An ``AuthError`` from the primary walks the configured fallback chain through the shared
+    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
     from hermes_cli.runtime_provider import (
-        resolve_runtime_provider, format_runtime_provider_error, _get_model_config)
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+        resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
+
+    # Capture primary provider/model from config before the try block so we
+    # can include it in the fallback notice if the primary fails (#74349).
+    _model_cfg = _get_model_config()
+    _primary_model = (_model_cfg.get("default") or "").strip()
+    _primary_provider = (_model_cfg.get("provider") or "").strip()
 
     try:
-        runtime = resolve_runtime_provider()
-    except AuthError as auth_exc:
-        # Rate-limit cap vs real auth failure: both use the fallback chain; the log must not mislabel.
-        # Distinguish a transient rate-limit/quota cap (credentials are fine, re-auth cannot help) from a
-        # genuine auth failure (expired/revoked token). See #32790.
-        if is_rate_limited_auth_error(auth_exc):
-            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
-        else:
-            logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
-        if fb_config is not None:
-            return fb_config
-        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config())
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    if fallback_entry is not None:
+        # The entry's model is the one this agent must send (#112600). Carry the fallback notice so the
+        # gateway can surface a user-visible provider switch (#74349); the caller must pop
+        # ``_fallback_notice`` before forwarding kwargs to AIAgent.
+        return {**_runtime_agent_kwargs(runtime), "model": fallback_entry["model"],
+                "_fallback_notice": pre_agent_fallback_notice(
+                    _primary_provider, _primary_model,
+                    runtime.get("provider") or fallback_entry.get("provider") or "unknown",
+                    fallback_entry.get("model") or "default")}
 
     capabilities = runtime.get("capabilities")
     capabilities = (
@@ -2340,8 +2412,8 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
     """Resolve runtime credentials for a specific provider (e.g. from channel override).
 
     ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
-    (OpenCode free tier, Zen/Go relay + api_mode) must see it rather than config's ``default``,
-    or a ``*-free`` default routes a Go-only override to the keyless Zen relay (#112600)."""
+    (Zen/Go relay + api_mode) must see it rather than config's ``default``, or a Go-only override
+    resolves an api_mode/base_url the sent model cannot use (#112600)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
@@ -2374,39 +2446,6 @@ def _credential_pool_for_provider(provider: Optional[str]):
     except Exception:
         logger.debug("Failed to resolve credential pool for provider=%s", provider, exc_info=True)
         return None
-
-
-def _try_resolve_fallback_provider() -> dict | None:
-    """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    try:
-        cfg = _load_gateway_config()
-        fb_list = get_fallback_chain(cfg)
-        if not fb_list:
-            return None
-        for entry in fb_list:
-            try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry), target_model=entry.get("model") or None)
-                # Named custom entries resolve to the bare "custom" billing class; persist the configured
-                # identity so UI/billing rows match the manual-switch path (#98739).
-                runtime["provider"] = effective_runtime_provider(entry, runtime)
-                # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
-                logger.info(
-                    # Log the literal `provider` key from config, not the resolved runtime category — an
-                    # Ollama fallback resolves through the OpenAI-compatible path and would otherwise be
-                    # logged as "openrouter", contradicting the operator's config (#32790).
-                    "Fallback provider resolved: %s model=%s",
-                    entry.get("provider") or runtime.get("provider"), entry.get("model"))
-                return {**_runtime_agent_kwargs(runtime), "model": entry.get("model")}
-            except Exception as fb_exc:
-                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
-                continue
-    except Exception:
-        pass
-    return None
 
 
 def _event_media_type_at(event, index: int) -> str:
@@ -3192,26 +3231,37 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
 # Max seconds between platform reconnect retries (primary watcher and secondary profiles share it).
 _RECONNECT_BACKOFF_CAP = 300
 
-# Seconds continuously in the reconnect queue before NEEDS_ATTENTION. Retrying never stops (transient
-# outages must self-heal); this only makes a permanently-failing loop loud. 0 disables.
-_RECONNECT_ATTENTION_AFTER_SECONDS = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
-
-
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _reconnect_attention_after_secs() -> float:
+    """``agent.reconnect_attention_after`` of the profile whose scope is bound at call time (the launch
+    profile's when unbound). Seconds continuously in the reconnect queue before NEEDS_ATTENTION; retrying
+    never stops (transient outages must self-heal), this only makes a permanently-failing loop loud.
+    Non-positive disables. Read per call, never cached: one process serves many profiles and a config
+    edit must not need a gateway restart (#115635)."""
+    from hermes_cli.config import load_config_readonly
+    agent_cfg = load_config_readonly().get("agent")
+    raw = agent_cfg.get("reconnect_attention_after") if isinstance(agent_cfg, dict) else None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_CONFIG["agent"]["reconnect_attention_after"])
+
+
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """True when a reconnect-queue entry has waited long enough for NEEDS_ATTENTION.
     ``queued_at`` is re-stamped on each (re)entry, so only *continuous* failure escalates."""
-    if _RECONNECT_ATTENTION_AFTER_SECONDS <= 0:
+    threshold = _reconnect_attention_after_secs()
+    if threshold <= 0:
         return False  # escalation disabled
     queued_at = info.get("queued_at")
     if queued_at is None:
         info["queued_at"] = now
         return False
-    return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
+    return (now - queued_at) >= threshold
 
 
 # "No session DB pinned": lets ``_session_db`` distinguish "resolve from profile scope" from a
@@ -3507,6 +3557,9 @@ class GatewayRunner(
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
         # live on SessionState too. See gateway.session_stall.
         self._session_stall_notified: Dict[str, bool] = {}
+        # Consecutive "persisted transcript lagged live cached history" turns per session key; see
+        # run_turn_runner._load_turn_history (#114266). Cleared on /new.
+        self._transcript_lag_streaks: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions auto-resume, real inbound messages
         # queue instead of competing with the synthetic resume turns; drained after all resume tasks end.
         self._startup_restore_in_progress = False
@@ -3667,6 +3720,7 @@ class GatewayRunner(
         # the clock; and a one-shot latch so the "platform owns the suspend" notice logs once.
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
+        self._scale_to_zero_direct_platform_logged: bool = False
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
@@ -3834,9 +3888,14 @@ class GatewayRunner(
                 pass
         config = getattr(self, "config", None)
         # Mirror SessionStore._resolve_profile_for_key so this fallback yields the primary path's
-        # namespace: None (legacy agent:main) unless multiplexing is on, then the active profile.
+        # namespace: None (legacy agent:main) unless multiplexing is on, then the pinned identity's
+        # runtime profile, the source stamp, or the active profile.
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
         _profile = None
-        if getattr(config, "multiplex_profiles", False):
+        if identity is not None:
+            _profile = identity.session_key_profile
+        elif getattr(config, "multiplex_profiles", False):
             if source.profile:
                 _profile = source.profile
             else:
@@ -4302,12 +4361,13 @@ class GatewayRunner(
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
-        except Exception:
+                parent_chat_id=getattr(source, "parent_chat_id", None),
+                adapter_profile=adapter_profile, user_id=getattr(source, "user_id", None))
+        except Exception as exc:
             logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
+                "Rejecting %s/%s: profile route matching failed",
                 source.platform, source.chat_id, exc_info=True)
-            return None
+            raise ProfileRouteRejected("matcher") from exc
         if matched:
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
@@ -4329,11 +4389,16 @@ class GatewayRunner(
         return None
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
-        """Resolve which profile's HERMES_HOME serves this source: ``source.profile``, then
-        ``_profile_name_for_source`` (sources bypassing ``build_source``), then the active profile."""
+        """Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime
+        home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing
+        ``build_source``), then the active profile."""
         from gateway.profile_routing import ProfileRouteRejected
+        from gateway.session_identity import identity_of
         from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
         from hermes_constants import get_hermes_home
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.runtime_home
         explicit_profile = None  # explicitly requested (source or routing) vs. default fallback
         try:
             name = (source.profile or "").strip() or self._profile_name_for_source(source)
@@ -4596,8 +4661,13 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
-    from gateway.run_profile_reconcile import _mcp_config_reconciler
-    chores: list[tuple[int, str, Any]] = []
+    from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
+    chores: list[tuple[int, str, Any]] = [
+        # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
+        # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
+        # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
+        # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
+        (1, "Runtime heartbeat", _write_runtime_status_quiet)]
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
@@ -4614,9 +4684,10 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        (60, "Curator tick", _housekeeping_curator),
-        (60, "Sync pull tick", _housekeeping_skill_sync),
-        (60, "Org sync pull tick", _housekeeping_org_skill_sync),
+        # Per served profile: each profile has its own skills tree, curator state and Nous login.
+        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
+        (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),

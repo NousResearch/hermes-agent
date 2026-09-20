@@ -140,7 +140,7 @@ profile-scoped code runs without the override where one is expected.
 
 ## Inbound routing
 
-`gateway.profile_routes` maps `(platform, guild_id, chat_id, thread_id)` to a
+`gateway.profile_routes` maps `(platform, user_id, guild_id, chat_id, thread_id)` to a
 profile; matching is conjunctive, most-specific-first, with parent-chain chat
 matching for threads. Routing only runs when multiplexing is active, and a
 matched route whose target is outside the served set is rejected (the event is
@@ -168,13 +168,75 @@ Pairing stores are constructed per served profile.
 ## Per-bot session lanes
 
 Session keys are namespaced by profile (`agent:main` for default,
-`agent:<name>` for named profiles). Adapters carry `_owner_profile`
-(installed at adapter configuration time, before any inbound event) because
-adapter ingress runs before `SessionSource.profile` is stamped;
-`_session_key_profile` resolves source stamp → owner profile → store
-resolver. Text/media batching, active-session tracking, and the busy-session
-guard are all keyed per lane, so two bots sharing a chat do not share a
-session lane.
+`agent:<name>` for named profiles). Every inbound event carries ONE frozen
+`RoutingIdentity` (`gateway/session_identity.py`), resolved by
+`resolve_identity()` at the runner's ingress handlers and pinned on the source
+as a wire-invisible attribute: `transport_profile` (the bot that received it —
+credential, allowlist, `authorization_home`), `runtime_profile` (the routed
+profile that executes — `runtime_home`, key `namespace`, `store_path`) and a
+weak `transport` ref to the receiving adapter. `"default"` is spelled out;
+`None` never means default. Under multiplexing a route to an unserved profile
+raises `IdentityUnresolved` and the event is dropped.
+
+Adapters also carry `_owner_profile` (installed at adapter configuration time,
+before any inbound event). Every ingress path canonicalizes the identity FIRST
+— `BasePlatformAdapter._canonicalize` runs at `handle_message`, text/photo/album
+batching, the busy path and every adapter-derived session key; the runner's
+per-profile and default handlers, the auth-check callback and the shared
+`_handle_message` gate do the same — so no lane is keyed before the receiving
+bot is known. Text/media batching, active-session tracking, the busy-session
+guard, `/stop` `/new` `/reset` and clarify replies are all keyed per lane, so
+two bots sharing a chat do not share a session lane and a control command on one
+bot cannot reach the other's run. A route to an unserved profile is dropped with
+one WARNING at the first seam it reaches, never keyed into `agent:main`. Copy a
+source with `session_identity.replace_source`, not `dataclasses.replace`, or the
+copy loses its transport and identity.
+
+## Intake vs delivery: which bot acts on an event
+
+Two runner seams answer the two questions a multiplexed gateway keeps
+conflating (`gateway/authz_mixin.py`):
+
+- `_intake_adapter_for(source)` — the bot that **received** the event. Live
+  provenance only: the transport ref `build_source` pinned, the process-level
+  relay adapter for relay-delivered events, or the adapter currently
+  registered for the identity's `transport_profile` after a reconnect. It
+  gates intake policy (Slack ignored channels, relay fronting, re-dispatch of
+  a queued live event) and returns `None` for a source with no live
+  provenance — nothing may re-admit a restored row on a guessed bot.
+- `_delivery_adapter_for(source)` — the bot that **answers**: sends, edits,
+  typing, progress, pickers, pending-message slots. The receiving bot whenever
+  it is known; otherwise the unique owner of `(platform, runtime_profile)` —
+  a secondary's own adapter, the primary for a shared-bot satellite, and
+  `None` for a secondary whose bot is disconnected (it never borrows the
+  default bot).
+
+| Topology | Runtime (`runtime_profile`, key namespace, home) | Intake | Delivery |
+| --- | --- | --- | --- |
+| Per-credential bot, no route | The bot's own profile | Owner adapter | Owner adapter |
+| Shared credential → satellite via `profile_routes` | Routed profile | Receiving (shared) adapter | Receiving adapter; after a restart the satellite still drains through the primary |
+| Shared bot → a profile that owns its own bot | Routed profile | Receiving adapter | Receiving adapter — the conversation stays with the bot the user wrote to |
+| Secondary-owned bot → `default` (`bot_profile: <secondary>`) | `default` (`agent:main`, default home) | Receiving (secondary) adapter | Receiving adapter |
+| Restored / synthetic source, no live provenance | Stored `source.profile` | **None** (fail closed) | Unique owner of `(platform, runtime)`, else `None` |
+
+Outside multiplexing there is one adapter per platform, so both seams return
+it. `tests/gateway/test_multiplex_transport_matrix.py` asserts every row.
+
+### Restore, relay, callbacks and thread hops
+
+The routing entry persists `transport_profile` next to the key (and the
+`sessions.transport_profile` column in `state.db`), so after a restart a
+revived lane still knows which bot received it: `_restored_source(entry)`
+re-pins a `RoutingIdentity` with no live adapter and `_delivery_adapter_for`
+delivers through that bot's adapter or fails closed — a satellite routed
+through the default bot keeps answering from the default bot, a lane owned by
+a secondary never falls back to the default bot's credential. Entries written
+before the column existed carry `null` and keep the shared-bot heuristics.
+Over the relay, every outbound frame's `metadata.profile` (and `follow_up`'s
+key namespace) tells the connector which profile to stamp on the next
+`passthrough_forward`, so a button press after a routed slash command stays in
+the same profile. Deferred callbacks (`/model` picker) capture the routed home
+at command time and the gateway's executor hops copy the ContextVar scope.
 
 ## Control plane
 

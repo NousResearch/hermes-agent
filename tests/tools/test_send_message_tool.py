@@ -1821,3 +1821,53 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+def test_not_configured_error_names_resolved_home_and_consulted_sources(tmp_path, monkeypatch):
+    """The 'not configured' error names the files this process actually read (resolved home, not a
+    hardcoded ``~/.hermes``) and what each source held, so a Windows/profile home user can fix the right file."""
+    from gateway.config import GatewayConfig
+    from tools.send_message_tool import _resolve_platform_config
+
+    home = tmp_path / "AppData" / "Local" / "hermes"
+    home.mkdir(parents=True)
+    (home / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    (home / "config.yaml").write_text("platforms:\n  discord:\n    enabled: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert "~/.hermes" not in err
+    assert f"{home / '.env'} (no DISCORD_BOT_TOKEN)" in err
+    assert f"{home / 'config.yaml'} (platforms.discord.enabled: false)" in err
+    assert "environment (DISCORD_BOT_TOKEN unset)" in err
+
+
+def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_path, monkeypatch):
+    """Under ``HERMES_HOME=<root>/profiles/<p>`` the error says a live gateway from the default root has the
+    platform connected (its credentials never came from this profile's ``.env``) and lists external secret
+    sources by name only (#114272 step 5)."""
+    import json
+    import os
+
+    from gateway.config import GatewayConfig
+    from tools.send_message_tool import _resolve_platform_config
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    (root / "gateway_state.json").write_text(
+        json.dumps({"pid": os.getpid(), "platforms": {"discord": {"state": "connected"}}}), encoding="utf-8")
+    (profile / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    (profile / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: false\n    session_token: SECRET-VALUE\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert (f"A gateway (pid {os.getpid()}) running from {root} has discord connected; "
+            f"this shell is scoped to profile home {profile} whose .env has no DISCORD_BOT_TOKEN.") in err
+    assert "external secret sources (bitwarden: disabled)" in err
+    assert "SECRET-VALUE" not in err

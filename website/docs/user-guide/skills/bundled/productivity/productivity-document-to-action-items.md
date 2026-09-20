@@ -21,7 +21,7 @@ Extract cited obligations, deadlines, tasks from documents.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Documents`, `OCR`, `Action-Items`, `Deadlines`, `Extraction` |
-| Related skills | [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) |
+| Related skills | [`pdf`](./productivity-pdf.md), [`pdf`](./productivity-pdf.md), [`docx`](./productivity-docx.md), [`notion`](./productivity-notion.md) |
 
 ## Reference: full SKILL.md
 

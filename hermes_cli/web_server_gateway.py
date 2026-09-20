@@ -362,7 +362,7 @@ def _profile_action_environment(
         )
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
-        from tools.environments.local import build_subprocess_env
+        from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
         action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
@@ -379,6 +379,10 @@ def _profile_action_environment(
             profile_keys.update(get_secret_source_values(source_home).keys())
         for key in profile_keys:
             action_env.pop(key, None)
+        # Authorization gates that reached this process outside any dotenv (unit-file
+        # ``Environment=``, an operator export) are not in ``profile_keys``; the target
+        # profile's ``.env`` rarely defines them, so they would survive into the child (#113270).
+        strip_launch_profile_env(action_env, target_home)
 
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative
         # and resolves to the same validated directory.

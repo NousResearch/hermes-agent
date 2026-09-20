@@ -14,6 +14,8 @@ export const APPEARANCE_SETTING_IDS = {
   appActions: 'appearance.app-actions',
   backdrop: 'appearance.backdrop',
   embeds: 'appearance.embeds',
+  hideCodeDiffs: 'appearance.hide-code-diffs',
+  hideThreadTimeline: 'appearance.hide-thread-timeline',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
   theme: 'appearance.theme',

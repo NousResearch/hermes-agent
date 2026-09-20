@@ -11,6 +11,7 @@ playback). Origin seams are resolved through :func:`_origin` at call time.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
 import os
 import platform
@@ -139,7 +140,11 @@ class _StreamerPlayback:
 
     def __init__(self, streamer, stop_event: threading.Event):
         self.streamer, self.stop_event = streamer, stop_event
-        self.output_stream = self._open_output_stream()
+        # The device is opened lazily, once the first sentence's first chunk has arrived: an
+        # OpenAI-compatible endpoint reports its real PCM rate in the response headers, so
+        # ``streamer.sample_rate`` is only trustworthy after the request answered (#76466).
+        self.output_stream = None
+        self._use_device = self._device_usable()
         self._audio_queue: "queue.Queue[Optional[queue.Queue[Optional[bytes]]]]" = queue.Queue()
         self._prefetch_threads: List[threading.Thread] = []
         self._prefetch_sem = threading.Semaphore(3)
@@ -153,20 +158,35 @@ class _StreamerPlayback:
         stream.start()
         return stream
 
-    def _open_output_stream(self):
+    def _device_usable(self) -> bool:
         # macOS skips sounddevice entirely: PortAudio/CoreAudio init triggers a
         # kTCCServiceMediaLibrary prompt though output needs no media-library access.
-        # None routes every sentence through tempfile -> afplay.
-        # See PR #62601 / #13291.
+        # False routes every sentence through tempfile -> afplay. See PR #62601 / #13291.
         if platform.system() == "Darwin":
-            return None
+            return False
         try:
-            return self._create_output_stream()
+            _origin()._import_sounddevice()
         except (ImportError, OSError) as exc:
             logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+            return False
+        return True
+
+    def _ensure_output_stream(self) -> bool:
+        """Open PortAudio at the streamer's *current* rate, reopening it when the rate changed
+        (a different endpoint answered); False routes the sentence through a temp WAV."""
+        rate = int(self.streamer.sample_rate)
+        if self._current_stream is not None and self._current_rate == rate:
+            return True
+        if self._current_stream is None and self._reinit_count >= self._MAX_REINIT:
+            return False
+        self.close_output_stream()
+        try:
+            self.output_stream = self._create_output_stream()
         except Exception as exc:
             logger.warning("sounddevice OutputStream failed: %s", exc)
-        return None
+            self.output_stream, self._reinit_count = None, self._MAX_REINIT  # don't retry per sentence
+        self._current_stream, self._current_rate = self.output_stream, rate
+        return self._current_stream is not None
 
     def close_output_stream(self) -> None:
         """Always release the device so a later stream can open it."""
@@ -203,7 +223,8 @@ class _StreamerPlayback:
             self._prefetch_sem.release()
 
     def _play_sentence_via_tempfile(self, chunk_queue) -> None:
-        _play_via_tempfile(_drain_chunks(chunk_queue), self.stop_event, self.streamer.sample_rate)
+        chunks = _drain_chunks(chunk_queue)  # drained first: the rate is final once chunks exist
+        _play_via_tempfile(chunks, self.stop_event, self.streamer.sample_rate)
 
     def _for_each_sentence(self, play: Callable[[queue.Queue], None]) -> None:
         """Feed queued sentences to *play* in order until the end sentinel; stopped sentences are skipped."""
@@ -236,10 +257,15 @@ class _StreamerPlayback:
 
     def _play_sentence_via_stream(self, chunk_queue) -> None:
         """Write one sentence's PCM to PortAudio; after an unrecoverable write failure the rest is dropped."""
-        if self._current_stream is None:
-            self._play_sentence_via_tempfile(chunk_queue)
+        chunks = iter(chunk_queue.get, None)
+        first = next(chunks, None)  # blocks until the endpoint answered: the rate is final now
+        if first is None:
             return
-        for aligned in _align_int16_chunks(iter(chunk_queue.get, None), self.stop_event, pad_tail=False):
+        chunks = itertools.chain([first], chunks)
+        if not self._ensure_output_stream():
+            _play_via_tempfile(list(chunks), self.stop_event, self.streamer.sample_rate)
+            return
+        for aligned in _align_int16_chunks(chunks, self.stop_event, pad_tail=False):
             try:
                 self._write_pcm(aligned)
             except Exception as write_exc:
@@ -251,7 +277,7 @@ class _StreamerPlayback:
 
     def _playback_worker(self) -> None:
         """Single consumer: play audio segments from the queue in order."""
-        if self.output_stream is None:
+        if not self._use_device:
             self._for_each_sentence(self._play_sentence_via_tempfile)
             return
         import numpy as _np
@@ -259,7 +285,7 @@ class _StreamerPlayback:
             from tools.voice_mode import mark_audio_output_active
         except Exception:
             mark_audio_output_active = lambda _active: None  # noqa: E731
-        self._np, self._reinit_count, self._current_stream = _np, 0, self.output_stream
+        self._np, self._reinit_count, self._current_stream, self._current_rate = _np, 0, None, None
         mark_audio_output_active(True)
         try:
             self._for_each_sentence(self._play_sentence_via_stream)
@@ -302,7 +328,7 @@ def stream_tts_to_speaker(
                 stream_max_len = origin._resolve_max_text_length(
                     provider or origin._get_provider(tts_config), tts_config)
             playback = _StreamerPlayback(streamer, stop_event)
-        chunker = SentenceChunker()
+        chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)
 
         def _speak_sentence(sentence: str) -> None:

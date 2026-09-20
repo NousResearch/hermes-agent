@@ -821,7 +821,11 @@
      · things you point at (paths)          → neutral, they're the common case
      · things you fetch (links, media)      → secondary
      · things that act (commands, tools)    → accent
-     · things that change code (skills, git)→ warm */
+     · things that change code (skills, git)→ warm
+   The fallback is declared FIRST: it shares specificity with every kind rule
+   below, so source order alone decides the cascade — declared after them it
+   would repaint every kinded reference in the raw primary (#114612). */
+.ref,
 [data-ref] {
   --ref-color: var(--dt-primary);
 }
@@ -868,8 +872,6 @@
 }
 
 .ref {
-  --ref-color: var(--dt-primary);
-
   /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
      sets `prose a { font-weight: 500 }`, which outranks a utility class on the
      anchor — so the override belongs here, on the shared class. */
@@ -1995,7 +1997,11 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
+/* Themed at the renderer root so every `aui-md` consumer (assistant turns,
+   system-message reports, session-import previews) inherits it; the room
+   selector covers the plugin's raw-Streamdown fallback, which has no `.aui-md`. */
+.aui-md :not(pre) > code,
+[data-slot='group-chat-message-content'] :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }

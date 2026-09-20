@@ -133,7 +133,8 @@ def _worker(
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)
     except Exception as exc:
-        msg = str(exc)
+        from tools.mcp_dashboard_oauth import exception_message
+        msg = exception_message(exc)
         with suppress(Exception):
             from tools.mcp_oauth import humanize_oauth_registration_error
             msg = humanize_oauth_registration_error(
@@ -199,8 +200,9 @@ def start_flow(
             time.sleep(0.1)
         if not auth_url:
             raise TimeoutError("Timed out waiting for MCP authorization URL")
-    except Exception:
-        flow.mark_error("Timed out waiting for MCP authorization URL")
+    except Exception as exc:
+        from tools.mcp_dashboard_oauth import exception_message
+        flow.mark_error(exception_message(exc))  # no-op when the worker already recorded the cause
         _shutdown_listener(rec)
         raise
     # ``flow`` mirrors the provider-OAuth discriminator: open a URL then poll (no user_code).

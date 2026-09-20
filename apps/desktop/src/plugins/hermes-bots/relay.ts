@@ -268,16 +268,25 @@ async function syncRelayRosters() {
       // forgets it — a replacement sole connection has never been told. An
       // empty route list (registry not loaded yet) must not spend the clear.
       if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
-        relay.rosterClearedFor = connections[0].id
-        await Promise.all(
+        const cleared = await Promise.all(
           connections.map(async connection => {
             try {
               await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
+
+              return true
             } catch {
-              // Older backend without the relay RPCs — skip this connection.
+              // An older backend without the relay RPCs, but also a socket that is not up yet —
+              // requestProfile throws for both. Either way this gateway still holds the departed
+              // machine's agents, so the clear is NOT spent and the next tick tries again.
+              return false
             }
           })
         )
+
+        // Spend it only once every gateway has actually forgotten.
+        if (cleared.every(Boolean)) {
+          relay.rosterClearedFor = connections[0].id
+        }
       }
 
       return

@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from cron.constants import FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
@@ -925,13 +926,6 @@ def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> 
 _persisted_error_recoveries: int = 0
 # Bounded in-memory history kept by every probe-visible fire-path counter.
 _TELEMETRY_RECENT_HISTORY = 20
-# A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
-# for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
-FIRE_CLAIM_TTL_SECONDS = 300
-# A hosted/webhook fire for the armed slot can arrive a few seconds before the stored
-# ``next_run_at`` (the fire scheduler's clock runs ahead of ours). Claims that early still own
-# the slot; only claims further ahead are off-tick manual/dashboard fires.
-FIRE_CLAIM_SKEW_SECONDS = 60
 _persisted_error_recoveries_recent: list = []
 
 
@@ -950,6 +944,9 @@ def _job_is_stale_error_recurring(
     """
     if job.get("last_status") != "error":
         return False
+    from cron.quota_hold import hold_active
+    if hold_active(job, now):
+        return False  # deliberately parked past a provider usage window, not wedged (#89376)
     if _job_running_in_this_process(str(job.get("id") or "")):
         return False
     # A fresh fire_claim means the job is running in ANOTHER process sharing this
@@ -2058,6 +2055,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
+            # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
+            # the record from the stale-error re-arm while no longer describing where it is
+            # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
+            from cron.quota_hold import clear_state as _clear_quota_hold
+            _clear_quota_hold(updated)
         if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
@@ -2164,11 +2166,31 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
+    """Resume a paused job. Accepts a job ID or name.
+
+    A recurring job paused across one of its slots must not lose that slot silently: the stored
+    ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
+    catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
+    fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
+    instants recompute from now as before.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    next_run_at = compute_next_run(job["schedule"])
+    stored_next = job.get("next_run_at")
+    stored_dt = _parse_aware(stored_next) if stored_next else None
+    if (
+        job["schedule"].get("kind") in {"cron", "interval"}
+        and stored_dt is not None
+        and stored_dt <= _hermes_now()
+    ):
+        next_run_at = stored_next
+        logger.info(
+            "Job '%s' resumed with occurrence %s that elapsed while paused kept due; the next "
+            "tick fires it (late/catch-up) or logs the skip.",
+            job.get("name", job["id"]), stored_next)
+    else:
+        next_run_at = compute_next_run(job["schedule"])
     if next_run_at is None and job["schedule"].get("kind") == "once":
         run_at = job["schedule"].get("run_at", "unknown")
         raise ValueError(
@@ -2443,6 +2465,7 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
+    quota_hold_seconds: Optional[float] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2456,6 +2479,10 @@ def mark_job_run(
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
     earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
     (Cowork-style; see cron/unreachable_retry.py).
+
+    ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
+    ``retry after <N>s``). Recurring jobs are parked at their first occurrence after the window
+    instead of re-firing into it on every tick (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2468,6 +2495,7 @@ def mark_job_run(
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
         _advance_after_run(job, now)
+        from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
         if not success and model_unreachable and not is_terminal_job(job):
@@ -2475,6 +2503,10 @@ def mark_job_run(
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
+        if not success and quota_hold_seconds and not is_terminal_job(job):
+            quota_hold.plan_hold(job, quota_hold_seconds)
+        else:
+            quota_hold.clear_state(job)
         save_jobs(jobs)
         return True
 

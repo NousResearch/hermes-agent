@@ -69,6 +69,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -116,6 +117,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
@@ -137,6 +139,7 @@ from gateway.browser_control_broker import (
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms.tcp_site import start_tcp_site
 
 
 logger = logging.getLogger(__name__)
@@ -199,6 +202,20 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+
+
+def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
+    """Host/port the adapter binds: config.yaml ``platforms.api_server`` wins over the env fallbacks.
+
+    Shared with the CLI restart path, which must wait on the SAME address the replacement will
+    bind — an env-only reading missed every config.yaml port (#91547).
+    """
+    host = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
+    raw_port = extra.get("port")
+    if raw_port is None:
+        raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
+    return host, _coerce_port(raw_port, DEFAULT_PORT)
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 # Send a comment before remote API clients' common 20-second idle deadline.
@@ -1070,6 +1087,16 @@ class _ProviderAuthResolutionError(RuntimeError):
     """Provider credential resolution failed. Typed so callers never mislabel other
     RuntimeErrors from run_conversation() (e.g. a closed OpenAI client) as auth failures."""
 
+    def user_text(self) -> str:
+        """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
+        authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
+        from hermes_cli.auth import is_rate_limited_auth_error
+
+        cause = self.__cause__
+        cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
+        label = "Provider rate-limited" if is_rate_limited_auth_error(cause) else "Provider authentication failed"
+        return f"⚠️ {label}: {self}"
+
 
 class _SessionEventQueue:
     """Ordered SSE event queue for one /api/sessions/{id}/chat/stream run. ``payload`` stamps
@@ -1134,6 +1161,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
     interactive_resume: bool = False
+    # Opt-in cap (chars) on tool outputs / tool-call arguments in the stored /v1/responses
+    # transcript; 0 = store verbatim (gateway.api_server.history_tool_output_max_chars, #82513).
+    _history_tool_output_max_chars: int = 0
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
@@ -1142,11 +1172,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
-        self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        raw_port = extra.get("port")
-        if raw_port is None:
-            raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
-        self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
+        self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
@@ -1177,6 +1203,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._last_resolved_model: Dict[str, str] = {}
         self._session_db_lock: Optional[asyncio.Lock] = None  # single-flight for lazy init
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
+        self._history_tool_output_max_chars = self._resolve_api_server_int(
+            "history_tool_output_max_chars", default=0)
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
         # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
@@ -1208,6 +1236,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
         ``GatewayRunner._running_agents``): exactly the set the drain waits on. Returns count."""
+        run_ids = {
+            run_id for run_id, task in self._active_run_tasks.items() if not task.done()
+        } | set(self._active_run_agents)
+        _api_runs._mark_shutdown_interrupted_runs(self, run_ids)
         # Dedupe by identity: an agent in both registries must be interrupted once.
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())
@@ -1275,12 +1307,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _resolve_max_concurrent_runs() -> int:
         """gateway.api_server.max_concurrent_runs (0 disables; default 10; negatives -> 0)."""
-        default = 10
+        return APIServerAdapter._resolve_api_server_int("max_concurrent_runs", default=10)
+
+    @staticmethod
+    def _resolve_api_server_int(key: str, *, default: int) -> int:
+        """Integer setting under gateway.api_server (unreadable config -> default; negatives -> 0)."""
         try:
             from hermes_cli.config import cfg_get, load_config
-            raw = cfg_get(
-                load_config(), "gateway", "api_server", "max_concurrent_runs", default=default)
-            value = int(raw)
+            value = int(cfg_get(load_config(), "gateway", "api_server", key, default=default))
         except Exception:
             return default
         return max(0, value)
@@ -1293,7 +1327,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         profile_name = ""
         with suppress(Exception):
             from hermes_cli.profiles import get_active_profile_name
-            profile = get_active_profile_name()
+            profile = get_active_profile_name()  # launch profile, pre-identity (advertised model name)
             if profile and profile not in {"default", "custom"}:
                 profile_name = profile
         return resolve_effective_model(explicit, profile_name, "hermes-agent")
@@ -2132,7 +2166,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, gateway_session_key: Optional[str] = None,
+        tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
+        status_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
@@ -2156,6 +2191,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
         # must not collide with the ``**runtime_kwargs`` spread).
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
+        runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(
@@ -2165,6 +2201,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             gateway_session_key=gateway_session_key, session_id=session_id)
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``
+        # off means no callback is installed, so mid-turn commentary never leaves the agent.
+        if not resolve_display_setting(user_config, "api_server", "interim_assistant_messages", True):
+            interim_assistant_callback = None
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy
@@ -2185,6 +2225,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "interim_assistant_callback": interim_assistant_callback,
+            "reasoning_callback": reasoning_callback,
+            "status_callback": status_callback,
             "session_db": self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
@@ -2770,6 +2813,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
+                                        notification_category: str = "result") -> None:
+        """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key);
+        see ``api_server_runs.run_internal_session_turn``."""
+        await _api_runs.run_internal_session_turn(
+            self, session_id=session_id, text=text, profile=profile,
+            notification_category=notification_category, _api_server=sys.modules[__name__])
+
     @_require_auth
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -2807,8 +2858,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
                 # the tui_gateway lookups heal.
                 from tools.bot_mode_probe import BOT_CHAT_TITLE
-                stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
-                if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
+
+                def _resurrect() -> bool:
+                    # Lookup + unarchive (a WRITE with the full write patience) as one worker-thread
+                    # hop: a contended lock parks this thread, never the event loop (#113772).
+                    stale = db.get_session_by_title(title_filter)
+                    return bool(stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]))
+
+                if title_filter == BOT_CHAT_TITLE and await asyncio.to_thread(_resurrect):
                     sessions = await _list()
             except Exception:
                 pass  # resolution degrades to today's no-row behavior
@@ -3051,7 +3108,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return None, lock_error
-        if not self._persist_session_runtime_lock(session_id, runtime_request):
+        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return None, _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         lock_active = bool(runtime_request.get("require_model_lock"))
@@ -3194,6 +3251,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _commentary(text: str, *, already_streamed: bool = False) -> None:
+            # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)
+            # as its own typed event — never folded into ``assistant.completed`` (#67580).
+            if isinstance(text, str) and text.strip():
+                events.enqueue("assistant.commentary", {
+                    "message_id": message_id, "text": text, "already_streamed": bool(already_streamed)})
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3204,7 +3268,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                    tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
+                    active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3303,7 +3368,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return lock_error
-        if not self._persist_session_runtime_lock(session_id, runtime_request):
+        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
             return _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         requested = runtime_request.get("requested") or {}
@@ -3645,6 +3710,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         raw_model = getattr(agent, "model", "")
         actual_provider = self._clean_runtime_id(raw_provider, max_len=80) if isinstance(raw_provider, str) else ""
         actual_model = self._clean_runtime_id(raw_model) if isinstance(raw_model, str) else ""
+        resolved_provider = self._clean_runtime_id(runtime.get("provider"), max_len=80)
         for key, actual in (("provider", actual_provider), ("model", actual_model)):
             if actual:
                 runtime[key] = actual
@@ -3653,14 +3719,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route = route or {}
         requested_runtime = requested_runtime or {}
         if confirmed_runtime_lock:
-            expected_provider = self._clean_runtime_id(
+            requested_provider = self._clean_runtime_id(
                 route.get("provider") or requested_runtime.get("provider"), max_len=80)
+            # _create_agent records the provider after resolving the request through the
+            # provider catalog. Compare that identity with the agent's actual runtime so
+            # aliases and named custom providers do not fail a literal-string check.
+            expected_provider = self._clean_runtime_id(
+                resolved_provider or requested_provider, max_len=80)
             expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
             if (expected_provider and actual_provider != expected_provider) or (
                 expected_model and actual_model != expected_model):
                 raise RuntimeError(
                     "confirmed model lock runtime mismatch: "
-                    f"expected provider={expected_provider or '<unspecified>'} "
+                    f"expected provider={requested_provider or expected_provider or '<unspecified>'} "
                     f"model={expected_model or '<unspecified>'}; "
                     f"actual provider={actual_provider or '<unknown>'} "
                     f"model={actual_model or '<unknown>'}")
@@ -3702,7 +3773,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, user_message: str, conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
+        tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
+        status_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
@@ -3742,6 +3814,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                         stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                        interim_assistant_callback=interim_assistant_callback,
+                        reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
@@ -3787,10 +3861,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 except _ProviderAuthResolutionError as exc:
                     # Typed provider-auth failure only, handled once for every caller in
                     # run.py's response shape (text, no HTTP error).
-                    logger.warning("Provider authentication failed for session=%s: %s",
+                    logger.warning("Provider resolution failed for session=%s: %s",
                                    session_id or "", exc)
                     return (
-                        {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [],
+                        {"final_response": exc.user_text(), "messages": [],
                          "api_calls": 0, "tools": [],
                          **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
@@ -3991,19 +4065,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly (a pre-probe raced the bind, misreporting TIME_WAIT as "in use").
-            # SO_REUSEADDR off on macOS (BSD can split traffic between two listeners).
             # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
             # real bind and reported a TIME_WAIT socket as "in use" (#10297), failing gateway restarts for
-            # up to ~60s. SO_REUSEADDR is platform-dependent (same rationale as the webhook adapter,
-            # #65482): - macOS (BSD semantics): two sockets with SO_REUSEADDR can silently split traffic
-            # while both report success — disable. - Linux: SO_REUSEADDR only permits rebinding past
-            # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
-            # (enabled) for instant restart rebinds.
-            self._site = web.TCPSite(
-                self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
+            # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
+            # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
             try:
-                await self._site.start()
+                # aiohttp registers a site with its runner before binding, so a failed start leaves the
+                # site registered: rebuild the runner per attempt rather than reach into its internals.
+                for attempt in range(_BIND_ATTEMPTS):
+                    try:
+                        self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
+                        break
+                    except OSError as exc:
+                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                            raise
+                        await self._runner.cleanup()
+                        self._runner = web.AppRunner(self._app)
+                        await self._runner.setup()
+                        await asyncio.sleep(0.2 * (attempt + 1))
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

@@ -140,3 +140,28 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Sibling session is completely untouched.
     assert sess_a["model_override"] is None
     assert sess_a["agent"].model == "minimax/m3"
+
+
+def test_resumed_row_cannot_pin_stale_wire_onto_per_model_provider():
+    """#96066: a persisted opencode-go row written while the session ran an anthropic_messages model must not
+    route deepseek-v4-flash-vision-exp through the Anthropic wire or the other family's relay URL on resume;
+    the route is re-derived from the target model. Fixed-wire providers keep honoring their row."""
+    from tui_gateway import server
+
+    def fake_resolve(**kwargs):
+        provider = kwargs["requested"]
+        fresh = {"opencode-go": ("chat_completions", "https://opencode.ai/zen/go/v1"),
+                 "anthropic": ("anthropic_messages", "https://api.anthropic.com")}[provider]
+        return {"provider": provider, "requested_provider": provider, "api_mode": fresh[0], "base_url": fresh[1],
+                "api_key": "k", "source": "config"}
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=fake_resolve):
+        for stale_url in ("https://opencode.ai/zen/go", "https://opencode.ai/zen/v1"):
+            _, runtime = server._resolve_agent_model_runtime(
+                {"model": "deepseek-v4-flash-vision-exp", "provider": "opencode-go",
+                 "base_url": stale_url, "api_mode": "anthropic_messages"}, None)
+            assert (runtime["api_mode"], runtime["base_url"]) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+        _, runtime = server._resolve_agent_model_runtime(
+            {"model": "claude-opus-4-6", "provider": "anthropic",
+             "base_url": "https://my-proxy.example", "api_mode": "anthropic_messages"}, None)
+        assert (runtime["api_mode"], runtime["base_url"]) == ("anthropic_messages", "https://my-proxy.example")

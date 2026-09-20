@@ -32,10 +32,17 @@ def configured_provider(home: Path) -> str:
     return str(memory.get("provider") or "").strip()
 
 
-def provider_present(name: str) -> bool:
-    """True when the provider resolves anywhere Hermes looks (bundled, user dir, entry point)."""
+def provider_present(name: str, home: Path) -> bool:
+    """True when the provider resolves anywhere Hermes looks for *home* (bundled, that home's user
+    plugins, entry point). The lookup reads the active home, so it is bound explicitly: the update
+    hook walks several profile homes from one process."""
     from plugins.memory import find_provider_dir
-    return find_provider_dir(name) is not None
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        return find_provider_dir(name) is not None
+    finally:
+        reset_hermes_home_override(token)
 
 
 def catalog_source(name: str) -> Optional[str]:
@@ -53,7 +60,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     update or the agent down with it.
     """
     name = configured_provider(home)
-    if not name or provider_present(name):
+    if not name or provider_present(name, home):
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "

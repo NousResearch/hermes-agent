@@ -194,6 +194,43 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
+def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
+    """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
+    must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
+    and loses the worker pid for a handoff that actually succeeded."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
+
+    real_dump = json.dump
+    visible_while_writing = []
+
+    def spying_dump(obj, fp, *args, **kwargs):
+        # The body is being produced right now: a reader must not be able to see the ack yet.
+        visible_while_writing.append(ack.exists())
+        return real_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(scheduler.json, "dump", spying_dump)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert visible_while_writing == [False]
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
+
+
 def test_external_worker_refuses_to_run_without_durable_ownership(
     tmp_path, monkeypatch
 ):
@@ -479,6 +516,69 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     ) is True
     recover.assert_called_once_with()
     assert get.call_count == 2
+
+
+def test_terminal_early_return_still_reaps_the_worker(monkeypatch):
+    """The ledger can turn terminal while the worker is still tearing down; the
+    waiter returns then, but the gateway stays the worker's parent, so the exit
+    must still be waited for somewhere — otherwise the worker lingers as a
+    zombie under the gateway until it is restarted (#114509)."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+        raising=False,
+    )
+
+    def wait(timeout=None):
+        if wait.calls == 0:
+            wait.calls += 1
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+        return 0
+
+    wait.calls = 0
+    process = Mock()
+    process.pid = 4321
+    process.wait.side_effect = wait
+
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    # the background reaper owns the second and final wait(); no third caller appears
+    deadline = time.monotonic() + 5.0
+    while process.wait.call_count < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert process.wait.call_count == 2
+
+
+def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
+    """End-to-end zombie guard: after the early return the real worker process
+    must be reaped without the test itself calling wait()/poll() — reading
+    ``Popen.returncode`` reaps nothing, so only the background thread can set
+    it (#114509)."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+        raising=False,
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(1.3)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    deadline = time.monotonic() + 8.0
+    while process.returncode is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert process.returncode == 0
 
 
 def test_launch_external_worker_stays_in_process_outside_managed_gateway(

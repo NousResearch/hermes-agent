@@ -314,9 +314,8 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
 
 def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch):
     """`hermes -m mimo-v2.5 --provider opencode-go` must resolve credentials for the model the
-    CLI will send: the OpenCode free-tier rung keys off the effective model, and without
-    target_model a `*-free` config default routes an explicit paid model to the keyless Zen
-    relay (#112600)."""
+    CLI will send: the Zen/Go rungs key off the effective model, and without target_model a
+    `*-free` config default decides the api_mode/base_url for an explicit paid model (#112600)."""
     cli = _import_cli()
     seen = {}
 
@@ -342,8 +341,8 @@ def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch
 
 def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_path):
     """The auth-fallback rung must resolve credentials for the ENTRY's model, exactly like the
-    primary path does for `-m`: with a `*-free` config default and no target_model, the OpenCode
-    free-tier rung wins and a Go-only fallback entry is built against the Zen relay (#112600)."""
+    primary path does for `-m`: a `*-free` config default must not decide the api_mode/base_url
+    a Go-only fallback entry is built with (#112600)."""
     from hermes_cli.auth import AuthError
     from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
@@ -531,6 +530,58 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert "codex" in shell.model.lower()
     # LLM_MODEL env var is NOT used
     assert shell.model != "should-be-ignored"
+
+
+@pytest.mark.parametrize(
+    ("reasoning_flag", "expected_effort"),
+    [(None, "high"), ("low", "low")],
+    ids=["fallback_model_override_applies", "explicit_cli_flag_outranks"],
+)
+def test_startup_fallback_re_resolves_reasoning_for_the_fallback_model(monkeypatch, reasoning_flag, expected_effort):
+    """Startup auth fallback swaps the model, so the CLI-level reasoning_config must follow it
+    (per-model override for the fallback model, not the launch model's effort); an explicit
+    ``--reasoning`` is the user's intent for this run and survives the swap."""
+    cli = _import_cli()
+    monkeypatch.setattr(cli, "_cprint", lambda *a, **k: None)
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "primary-model", "provider": "openai-codex"})
+    monkeypatch.setitem(cli.CLI_CONFIG, "fallback_providers", [{"provider": "zai", "model": "glm-5.3-flash"}])
+    monkeypatch.setitem(cli.CLI_CONFIG, "agent", {
+        **cli.CLI_CONFIG.get("agent", {}), "reasoning_effort": "medium",
+        "reasoning_overrides": {"glm-5.3-flash": "high"}})
+
+    def _runtime_resolve(requested=None, **kwargs):
+        if requested == "openai-codex":
+            raise AuthError("quota exhausted", provider="openai-codex", code="auth_failed")
+        return {"provider": "zai", "api_mode": "chat_completions",
+                "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-zai", "source": "env"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    shell = cli.HermesCLI(compact=True, max_turns=1, reasoning=reasoning_flag)
+    assert shell.reasoning_config["effort"] == ("medium" if reasoning_flag is None else reasoning_flag)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert (shell.model, shell.provider) == ("glm-5.3-flash", "zai")
+    assert shell.reasoning_config["effort"] == expected_effort
+
+
+def test_custom_entry_model_swap_re_resolves_reasoning(monkeypatch):
+    """`hermes chat --model <custom-provider-name>`: the runtime's explicit `model` replaces the
+    slug, so the CLI-level reasoning_config must follow to that model's per-model override."""
+    cli = _import_cli()
+    monkeypatch.setattr(cli, "_cprint", lambda *a, **k: None)
+    monkeypatch.setitem(cli.CLI_CONFIG, "agent", {
+        **cli.CLI_CONFIG.get("agent", {}), "reasoning_effort": "medium",
+        "reasoning_overrides": {"real-model": "high"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "name": "my-lan", "model": "real-model", "api_mode": "chat_completions",
+                      "base_url": "http://10.0.0.7:11434/v1", "api_key": "sk-lan", "source": "custom"})
+    shell = cli.HermesCLI(model="my-lan", compact=True, max_turns=1)
+    assert shell.reasoning_config["effort"] == "medium"
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "real-model"
+    assert shell.reasoning_config["effort"] == "high"
 
 
 
@@ -782,5 +833,4 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
 
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
-
 

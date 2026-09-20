@@ -44,6 +44,12 @@ describe('readPreUpdateBackupEnabled', () => {
     )
   })
 
+  it('fails safe when runtime resolution fails', async () => {
+    await expect(
+      readPreUpdateBackupEnabled(Promise.reject(new Error('resolver failed')), '/profiles/active', vi.fn())
+    ).resolves.toBe(true)
+  })
+
   it.each([
     ['runtime failure', vi.fn().mockRejectedValue(new Error('probe failed'))],
     ['malformed output', vi.fn().mockResolvedValue({ stdout: 'not-json' })]

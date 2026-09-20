@@ -20,19 +20,21 @@ export interface HermesConfigRuntime {
 }
 
 export async function readPreUpdateBackupEnabled(
-  runtime: HermesConfigRuntime,
+  runtime: HermesConfigRuntime | Promise<HermesConfigRuntime>,
   hermesHome: string,
   run = execFileAsync
 ): Promise<boolean> {
-  if (!runtime.command || !runtime.args) {
-    return true
-  }
-
   try {
-    const result = await run(runtime.command, runtime.args, {
+    const resolvedRuntime = await runtime
+
+    if (!resolvedRuntime.command || !resolvedRuntime.args) {
+      return true
+    }
+
+    const result = await run(resolvedRuntime.command, resolvedRuntime.args, {
       encoding: 'utf8',
-      env: { ...process.env, ...runtime.env, HERMES_HOME: hermesHome },
-      shell: Boolean(runtime.shell),
+      env: { ...process.env, ...resolvedRuntime.env, HERMES_HOME: hermesHome },
+      shell: Boolean(resolvedRuntime.shell),
       timeout: 15_000,
       windowsHide: true
     })

@@ -4536,14 +4536,12 @@ async function preflightStateDb(hermesHome, rememberLog) {
         )
       }
 
-      const configRuntime = await resolveHermesBackend([
-        'config',
-        'get',
-        'updates.pre_update_backup',
-        '--json'
-      ])
-
-      if (!(await readPreUpdateBackupEnabled(configRuntime, hermesHome))) {
+      if (
+        !(await readPreUpdateBackupEnabled(
+          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          hermesHome
+        ))
+      ) {
         rememberLog('[updates] emergency state.db backup disabled by updates.pre_update_backup')
 
         return

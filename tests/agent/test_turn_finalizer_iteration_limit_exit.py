@@ -54,6 +54,9 @@ class _LimitAgent:
     def _emit_status(self, *_args, **_kwargs):
         pass
 
+    def _emit_diagnostic_status(self, *_args, **_kwargs):
+        pass
+
     def _safe_print(self, *_args, **_kwargs):
         pass
 

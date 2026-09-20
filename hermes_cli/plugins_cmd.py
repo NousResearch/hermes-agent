@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -677,6 +678,28 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
+def _rmtree_make_writable(func, path, exc_info) -> None:
+    """Retry a failed tree removal after clearing Windows read-only attributes."""
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if not isinstance(exc, PermissionError):
+        raise exc
+    for target in (path, os.path.dirname(path)):
+        if target:
+            try:
+                os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+    func(path)
+
+
+def _remove_plugin_tree(path: Path) -> None:
+    """Remove a plugin tree, including Git's read-only object files on Windows."""
+    try:
+        shutil.rmtree(path, onexc=_rmtree_make_writable)
+    except TypeError:  # Python 3.11 uses the legacy ``onerror`` callback name.
+        shutil.rmtree(path, onerror=_rmtree_make_writable)
+
+
 def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
     """Move the validated clone into place and persist metadata; on any failure restore the
     previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
@@ -688,7 +711,7 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
         _write_install_metadata(new_metadata)
     except Exception:
         if target.exists():
-            shutil.rmtree(target)
+            _remove_plugin_tree(target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
         if old_metadata:
@@ -963,7 +986,7 @@ def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     metadata = _read_install_metadata()
     if target.name not in metadata:
-        shutil.rmtree(target)
+        _remove_plugin_tree(target)
         return
     updated = {k: v for k, v in metadata.items() if k != target.name}
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
@@ -981,7 +1004,7 @@ def _remove_plugin_core(target: Path) -> None:
             ) from restore_exc
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    shutil.rmtree(staging)
+    _remove_plugin_tree(staging)
 
 
 def cmd_remove(name: str) -> None:
